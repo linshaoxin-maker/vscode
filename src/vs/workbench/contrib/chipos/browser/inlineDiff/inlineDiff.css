@@ -1,0 +1,137 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── Inline Diff decorations ──────────────────────────────────────────────── */
+
+.chipos-diff-insert-line {
+	background: rgba(40, 167, 69, 0.15) !important;
+}
+
+.chipos-diff-insert-gutter {
+	background: rgba(40, 167, 69, 0.4);
+	width: 4px !important;
+}
+
+.chipos-diff-delete-zone {
+	background: rgba(220, 53, 69, 0.1);
+	border-left: 3px solid rgba(220, 53, 69, 0.5);
+	padding: 0 12px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: var(--vscode-editor-font-size, 12px);
+	line-height: var(--vscode-editor-line-height, 18px);
+	color: var(--vscode-diffEditor-removedTextForeground, var(--vscode-editor-foreground));
+	opacity: 0.7;
+	overflow: hidden;
+	white-space: pre;
+}
+
+.chipos-diff-delete-line-content {
+	text-decoration: line-through;
+	opacity: 0.8;
+}
+
+.chipos-diff-modify-line {
+	background: rgba(255, 193, 7, 0.15) !important;
+}
+
+.chipos-diff-modify-gutter {
+	background: rgba(255, 193, 7, 0.4);
+	width: 4px !important;
+}
+
+/* ── Diff action widget (Accept/Reject per hunk) ──────────────────────────── */
+
+.chipos-diff-actions {
+	display: inline-flex;
+	gap: 4px;
+	padding: 2px 4px;
+	background: var(--vscode-editor-background);
+	border: 1px solid var(--vscode-panel-border, transparent);
+	border-radius: 4px;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+	z-index: 10;
+}
+
+.chipos-diff-accept,
+.chipos-diff-reject {
+	border: none;
+	border-radius: 3px;
+	padding: 2px 8px;
+	font-size: 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 3px;
+}
+
+.chipos-diff-accept {
+	background: rgba(40, 167, 69, 0.15);
+	color: var(--vscode-charts-green, #89d185);
+}
+
+.chipos-diff-accept:hover {
+	background: rgba(40, 167, 69, 0.3);
+}
+
+.chipos-diff-reject {
+	background: rgba(220, 53, 69, 0.15);
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.chipos-diff-reject:hover {
+	background: rgba(220, 53, 69, 0.3);
+}
+
+/* ── Diff summary widget ──────────────────────────────────────────────────── */
+
+.chipos-diff-summary {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 12px;
+	background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+	border-radius: 4px;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+	font-size: 12px;
+	z-index: 20;
+}
+
+.chipos-diff-summary-text {
+	color: var(--vscode-editor-foreground);
+	font-weight: 500;
+}
+
+.chipos-diff-accept-all {
+	background: var(--vscode-charts-green, #89d185);
+	color: #fff;
+	border: none;
+	border-radius: 3px;
+	padding: 3px 10px;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.chipos-diff-accept-all:hover {
+	opacity: 0.85;
+}
+
+.chipos-diff-reject-all {
+	background: var(--vscode-errorForeground, #f48771);
+	color: #fff;
+	border: none;
+	border-radius: 3px;
+	padding: 3px 10px;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.chipos-diff-reject-all:hover {
+	opacity: 0.85;
+}
+
+.chipos-diff-summary-hidden {
+	display: none;
+}
