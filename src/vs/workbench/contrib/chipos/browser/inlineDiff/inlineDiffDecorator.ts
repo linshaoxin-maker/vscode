@@ -3,11 +3,11 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { Emitter, Event } from 'vs/base/common/event';
-import * as dom from 'vs/base/browser/dom';
-import type { IDiffHunk } from 'vs/workbench/contrib/chipos/browser/inlineDiff/diffComputer';
-import { DiffActionWidget } from 'vs/workbench/contrib/chipos/browser/inlineDiff/diffActionWidget';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import * as dom from '../../../../../base/browser/dom.js';
+import type { IDiffHunk } from '../../../../../workbench/contrib/chipos/browser/inlineDiff/diffComputer.js';
+import { DiffActionWidget } from '../../../../../workbench/contrib/chipos/browser/inlineDiff/diffActionWidget.js';
 
 const $ = dom.$;
 

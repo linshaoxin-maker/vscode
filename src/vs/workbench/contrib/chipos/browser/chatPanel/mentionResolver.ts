@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { IFileService } from 'vs/platform/files/common/files';
-import { URI } from 'vs/base/common/uri';
-import type { IMentionItem, IContextFile } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { URI } from '../../../../../base/common/uri.js';
+import type { IMentionItem, IContextFile } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 
 const MAX_CONTENT_SIZE = 100 * 1024;
 const TRUNCATED_SIZE = 50 * 1024;

@@ -3,18 +3,18 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable, IDisposable } from 'vs/base/common/lifecycle';
-import { Emitter, Event } from 'vs/base/common/event';
-import * as dom from 'vs/base/browser/dom';
-import { IContextKeyService, RawContextKey, IContextKey } from 'vs/platform/contextkey/common/contextkey';
-import { IFileService } from 'vs/platform/files/common/files';
-import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
-import type { IMentionItem } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
-import { MentionProvider } from 'vs/workbench/contrib/chipos/browser/chatPanel/mentionProvider';
-import { MentionCompletionWidget } from 'vs/workbench/contrib/chipos/browser/chatPanel/mentionCompletionWidget';
-import { ModeSwitchWidget } from 'vs/workbench/contrib/chipos/browser/chatPanel/modeSwitchWidget';
-import type { SessionMode } from 'vs/workbench/contrib/chipos/browser/chatPanel/chatSessionManager';
+import { Disposable, IDisposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import * as dom from '../../../../../base/browser/dom.js';
+import { IContextKeyService, RawContextKey, IContextKey } from '../../../../../platform/contextkey/common/contextkey.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import { MentionProvider } from '../../../../../workbench/contrib/chipos/browser/chatPanel/mentionProvider.js';
+import { MentionCompletionWidget } from '../../../../../workbench/contrib/chipos/browser/chatPanel/mentionCompletionWidget.js';
+import { ModeSwitchWidget } from '../../../../../workbench/contrib/chipos/browser/chatPanel/modeSwitchWidget.js';
+import type { SessionMode } from '../../../../../workbench/contrib/chipos/browser/chatPanel/chatSessionManager.js';
 
 const $ = dom.$;
 

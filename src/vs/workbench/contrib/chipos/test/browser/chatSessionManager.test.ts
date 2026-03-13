@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ChatSessionManager, type IChatSession, type IChatMessage } from 'vs/workbench/contrib/chipos/browser/chatPanel/chatSessionManager';
+import { ChatSessionManager, type IChatSession, type IChatMessage } from '../../../../../workbench/contrib/chipos/browser/chatPanel/chatSessionManager.js';
 
 function makeMessage(role: IChatMessage['role'] = 'user', content = 'hello'): IChatMessage {
 	return {

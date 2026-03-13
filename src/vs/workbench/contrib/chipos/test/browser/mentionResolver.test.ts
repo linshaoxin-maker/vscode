@@ -4,9 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { MentionResolver } from 'vs/workbench/contrib/chipos/browser/chatPanel/mentionResolver';
-import type { IMentionItem } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
-import type { IFileService, IFileContent, IFileStat } from 'vs/platform/files/common/files';
+import { MentionResolver } from '../../../../../workbench/contrib/chipos/browser/chatPanel/mentionResolver.js';
+import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import type { IFileService, IFileContent, IFileStat } from '../../../../../platform/files/common/files.js';
 
 class MockFileService {
 	private _files = new Map<string, string>();

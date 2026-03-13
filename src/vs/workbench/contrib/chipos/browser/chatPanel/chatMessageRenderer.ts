@@ -3,17 +3,17 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable, DisposableStore } from 'vs/base/common/lifecycle';
-import { Emitter, Event } from 'vs/base/common/event';
-import * as dom from 'vs/base/browser/dom';
-import { MarkdownString } from 'vs/base/common/htmlContent';
-import { MarkdownRenderer } from 'vs/editor/browser/widget/markdownRenderer/browser/markdownRenderer';
-import { DomScrollableElement } from 'vs/base/browser/ui/scrollbar/scrollableElement';
-import { ScrollbarVisibility } from 'vs/base/common/scrollable';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { IOpenerService } from 'vs/platform/opener/common/opener';
-import { generateUuid } from 'vs/base/common/uuid';
-import type { IToolCallPayload, IToolResultPayload, IMentionItem } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
+import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import * as dom from '../../../../../base/browser/dom.js';
+import { MarkdownString } from '../../../../../base/common/htmlContent.js';
+import { IMarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
+import { DomScrollableElement } from '../../../../../base/browser/ui/scrollbar/scrollableElement.js';
+import { ScrollbarVisibility } from '../../../../../base/common/scrollable.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
+import type { IToolCallPayload, IToolResultPayload, IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 
 const $ = dom.$;
 
@@ -62,7 +62,7 @@ export class ChatMessageRenderer extends Disposable {
 	private readonly _messageList: HTMLElement;
 	private readonly _scrollable: DomScrollableElement;
 	private readonly _scrollToBottomButton: HTMLElement;
-	private readonly _mdRenderer: MarkdownRenderer;
+	private readonly _mdRenderer: IMarkdownRendererService;
 
 	private _autoScrollEnabled = true;
 	private _handlesByMessageId = new Map<string, IStreamingMessageHandle>();
@@ -73,12 +73,13 @@ export class ChatMessageRenderer extends Disposable {
 
 	constructor(
 		private readonly _container: HTMLElement,
-		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IInstantiationService _instantiationService: IInstantiationService,
 		@IOpenerService _openerService: IOpenerService,
+		@IMarkdownRendererService mdRendererService: IMarkdownRendererService,
 	) {
 		super();
 
-		this._mdRenderer = this._register(this._instantiationService.createInstance(MarkdownRenderer, {}));
+		this._mdRenderer = mdRendererService;
 
 		this._messageList = $('.chipos-chat-message-list');
 

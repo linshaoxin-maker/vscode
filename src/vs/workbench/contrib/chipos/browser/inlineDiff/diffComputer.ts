@@ -3,8 +3,8 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { generateUuid } from 'vs/base/common/uuid';
-import type { IEditOperation } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
+import { generateUuid } from '../../../../../base/common/uuid.js';
+import type { IEditOperation } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 
 // ── IDiffHunk ───────────────────────────────────────────────────────────────
 

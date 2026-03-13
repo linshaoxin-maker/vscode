@@ -3,28 +3,41 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { KeyCode, KeyMod } from 'vs/base/common/keyCodes';
-import { localize, localize2 } from 'vs/nls';
-import { Registry } from 'vs/platform/registry/common/platform';
-import { registerWorkbenchContribution2, WorkbenchPhase } from 'vs/workbench/common/contributions';
-import { CommandsRegistry } from 'vs/platform/commands/common/commands';
-import { KeybindingsRegistry, KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
-import { ILifecycleService, LifecyclePhase } from 'vs/workbench/services/lifecycle/common/lifecycle';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { ILogService } from 'vs/platform/log/common/log';
-import { MenuId, MenuRegistry } from 'vs/platform/actions/common/actions';
-import { ContextKeyExpr } from 'vs/platform/contextkey/common/contextkey';
-import { ViewPaneContainer } from 'vs/workbench/browser/parts/views/viewPaneContainer';
-import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation } from 'vs/workbench/common/views';
-import { SyncDescriptor } from 'vs/platform/instantiation/common/descriptors';
-import { Codicon } from 'vs/base/common/codicons';
-import { registerIcon } from 'vs/platform/theme/common/iconRegistry';
-import { ChatPanelViewPane } from 'vs/workbench/contrib/chipos/browser/chatPanel/chatPanelViewPane';
+import { Disposable } from '../../../../base/common/lifecycle.js';
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { localize, localize2 } from '../../../../nls.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
+import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
+import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
+import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
+import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation } from '../../../../workbench/common/views.js';
+import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
+import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
+import { ChatPanelViewPane } from '../../../../workbench/contrib/chipos/browser/chatPanel/chatPanelViewPane.js';
+import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
+import { SidecarManagerBrowser } from '../../../../workbench/contrib/chipos/browser/sidecarManagerBrowser.js';
+
+import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
+
+// ── Service Registration ────────────────────────────────────────────────────
+// Uses browser-safe stub; node/ layer (child_process) cannot be loaded in renderer.
+
+registerSingleton(ISidecarManagerService, SidecarManagerBrowser, InstantiationType.Delayed);
 
 // ── Icons ──────────────────────────────────────────────────────────────────────
 
-const chiposViewIcon = registerIcon('chipos-view-icon', Codicon.chip, localize('chiposViewIcon', 'Icon for ChipOS sidebar'));
+const chiposViewIcon = registerIcon('chipos-view-icon', Codicon.chatSparkle, localize('chiposViewIcon', 'Icon for ChipOS Chat'));
 
 // ── View Container & Views ─────────────────────────────────────────────────────
 
@@ -37,28 +50,39 @@ const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
 const viewContainer = viewContainersRegistry.registerViewContainer(
 	{
 		id: VIEW_CONTAINER_ID,
-		title: localize2('chipos', 'ChipOS'),
+		title: localize2('chipos', 'ChipOS Chat'),
 		icon: chiposViewIcon,
-		order: 100,
+		order: 0,
 		ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [VIEW_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: true }]),
 		storageId: `${VIEW_CONTAINER_ID}.state`,
 		hideIfEmpty: false,
 	},
-	ViewContainerLocation.Sidebar,
-	{ isDefault: false }
+	ViewContainerLocation.AuxiliaryBar,
+	{ isDefault: true, doNotRegisterOpenCommand: true }
 );
 
 viewsRegistry.registerViews(
 	[
 		{
 			id: CHAT_VIEW_ID,
-			name: localize2('chiposChatView', 'ChipOS Chat'),
+			name: localize2('chiposChatView', 'Chat'),
 			containerIcon: chiposViewIcon,
-			canToggleVisibility: true,
+			canToggleVisibility: false,
 			canMoveView: true,
 			order: 0,
 			ctorDescriptor: new SyncDescriptor(ChatPanelViewPane),
-			when: ContextKeyExpr.true(),
+			openCommandActionDescriptor: {
+				id: VIEW_CONTAINER_ID,
+				title: localize2('chipos', 'ChipOS Chat'),
+				mnemonicTitle: localize({ key: 'miToggleChipOSChat', comment: ['&& denotes a mnemonic'] }, '&&ChipOS Chat'),
+				keybindings: {
+					primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyI,
+					mac: {
+						primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyI
+					}
+				},
+				order: 1
+			},
 		},
 	],
 	viewContainer
@@ -75,13 +99,14 @@ const enum ChipOSCommandId {
 	OpenSettings = 'chipos.openSettings',
 	AddToChat = 'chipos.addToChat',
 	Disconnect = 'chipos.disconnect',
+	RestartSidecar = 'chipos.restartSidecar',
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────────
 
 CommandsRegistry.registerCommand(ChipOSCommandId.OpenChat, accessor => {
-	const viewsService = accessor.get('IViewsService' as any);
-	viewsService?.openView(CHAT_VIEW_ID, true);
+	const viewsService = accessor.get(IViewsService);
+	viewsService.openView(CHAT_VIEW_ID, true);
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.StopTask, _accessor => {
@@ -101,25 +126,35 @@ CommandsRegistry.registerCommand(ChipOSCommandId.CloseAllSessions, _accessor => 
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.OpenSettings, accessor => {
-	const commandService = accessor.get('ICommandService' as any);
-	commandService?.executeCommand('workbench.action.openSettings', 'chipos');
+	const commandService = accessor.get(ICommandService);
+	commandService.executeCommand('workbench.action.openSettings', 'chipos');
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.AddToChat, _accessor => {
 	// Phase 2: read editor selection, inject into chat input
 });
 
-CommandsRegistry.registerCommand(ChipOSCommandId.Disconnect, _accessor => {
-	// Phase 2: wire to WebSocket close
+CommandsRegistry.registerCommand(ChipOSCommandId.Disconnect, accessor => {
+	const sidecar = accessor.get(ISidecarManagerService);
+	sidecar.kill();
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.RestartSidecar, async accessor => {
+	const sidecar = accessor.get(ISidecarManagerService);
+	const notifications = accessor.get(INotificationService);
+	await sidecar.kill();
+	notifications.info('ChipOS: Restarting Sidecar backend…');
+	await sidecar.spawn();
+	if (sidecar.state === SidecarState.Connected) {
+		notifications.info('ChipOS: Sidecar backend restarted successfully.');
+	} else {
+		notifications.error('ChipOS: Sidecar backend failed to restart.');
+	}
 });
 
 // ── Keybindings ────────────────────────────────────────────────────────────────
 
-KeybindingsRegistry.registerKeybindingRule({
-	id: ChipOSCommandId.OpenChat,
-	weight: KeybindingWeight.WorkbenchContrib,
-	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyH,
-});
+// OpenChat keybinding is now registered via openCommandActionDescriptor (Cmd+Ctrl+I)
 
 KeybindingsRegistry.registerKeybindingRule({
 	id: ChipOSCommandId.StopTask,
@@ -183,6 +218,15 @@ MenuRegistry.appendMenuItems([
 		},
 	},
 	{
+		id: MenuId.ViewTitle,
+		item: {
+			command: { id: ChipOSCommandId.RestartSidecar, title: localize('chipos.restartSidecar', 'Restart Backend') },
+			when: ContextKeyExpr.equals('view', CHAT_VIEW_ID),
+			group: '2_connection',
+			order: 2,
+		},
+	},
+	{
 		id: MenuId.EditorContext,
 		item: {
 			command: { id: ChipOSCommandId.AddToChat, title: localize('chipos.addToChat', 'ChipOS: Add to Chat'), icon: Codicon.commentDiscussion },
@@ -201,8 +245,11 @@ class ChipOSContribution extends Disposable {
 
 	constructor(
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
-		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IInstantiationService _instantiationService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super();
 
@@ -213,6 +260,30 @@ class ChipOSContribution extends Disposable {
 
 	private _initialize(): void {
 		this._logService.info('[ChipOS] Contribution initialized');
+
+		this._register(this._sidecarManager.onDidChangeState(state => {
+			this._logService.info('[ChipOS] Sidecar state changed:', state);
+			if (state === SidecarState.Error) {
+				this._notificationService.notify({
+					severity: Severity.Error,
+					message: 'ChipOS: Sidecar backend failed to start. Check output panel for details.',
+				});
+			}
+		}));
+
+		const autoStart = this._configurationService.getValue<boolean>('chipos.sidecar.autoStart');
+		const manualUrl = this._configurationService.getValue<string>('chipos.sidecar.manualUrl');
+
+		if (manualUrl) {
+			this._logService.info('[ChipOS] Using manual backend URL:', manualUrl);
+			this._sidecarManager.setManualUrl(manualUrl);
+			this._sidecarManager.spawn();
+		} else if (autoStart) {
+			this._logService.info('[ChipOS] Auto-starting Sidecar backend');
+			this._sidecarManager.spawn();
+		} else {
+			this._logService.info('[ChipOS] Sidecar auto-start disabled. Configure chipos.sidecar.manualUrl or enable chipos.sidecar.autoStart.');
+		}
 	}
 }
 

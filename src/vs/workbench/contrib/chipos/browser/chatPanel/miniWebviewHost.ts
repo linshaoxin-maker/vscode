@@ -3,14 +3,14 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { Emitter, Event } from 'vs/base/common/event';
-import * as dom from 'vs/base/browser/dom';
-import { IThemeService, IColorTheme } from 'vs/platform/theme/common/themeService';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import * as dom from '../../../../../base/browser/dom.js';
+import { IThemeService, IColorTheme } from '../../../../../platform/theme/common/themeService.js';
 import {
 	editorBackground,
 	editorForeground,
-} from 'vs/platform/theme/common/colorRegistry';
+} from '../../../../../platform/theme/common/colorRegistry.js';
 
 const $ = dom.$;
 

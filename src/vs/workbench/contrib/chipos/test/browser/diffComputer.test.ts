@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { DiffComputer, type IDiffHunk } from 'vs/workbench/contrib/chipos/browser/inlineDiff/diffComputer';
-import type { IEditOperation } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
+import { DiffComputer } from '../../../../../workbench/contrib/chipos/browser/inlineDiff/diffComputer.js';
+import type { IEditOperation } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 
 suite('DiffComputer', () => {
 

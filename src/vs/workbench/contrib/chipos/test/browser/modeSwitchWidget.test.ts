@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { ModeSwitchWidget } from 'vs/workbench/contrib/chipos/browser/chatPanel/modeSwitchWidget';
-import type { SessionMode } from 'vs/workbench/contrib/chipos/browser/chatPanel/chatSessionManager';
+import { ModeSwitchWidget } from '../../../../../workbench/contrib/chipos/browser/chatPanel/modeSwitchWidget.js';
+import type { SessionMode } from '../../../../../workbench/contrib/chipos/browser/chatPanel/chatSessionManager.js';
 
 suite('ModeSwitchWidget', () => {
 

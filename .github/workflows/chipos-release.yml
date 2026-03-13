@@ -1,0 +1,159 @@
+name: ChipOS Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+jobs:
+  release:
+    name: Release (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+            artifact_glob: "*.deb *.rpm *.tar.gz"
+          - os: darwin
+            runner: macos-14
+            artifact_glob: "*.dmg *.zip"
+          - os: win32
+            runner: windows-latest
+            artifact_glob: "*.exe"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python (for node-gyp)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbfile-dev pkg-config libsecret-1-dev libkrb5-dev libxss1 dbus xvfb libgtk-3-0 libgbm-dev rpm fakeroot dpkg
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Stamp product.json
+        shell: bash
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          node -e "
+            const fs = require('fs');
+            const p = JSON.parse(fs.readFileSync('product.json','utf8'));
+            p.commit = '${COMMIT_SHA}';
+            p.date = '${BUILD_DATE}';
+            p.quality = 'stable';
+            fs.writeFileSync('product.json', JSON.stringify(p, null, '\t') + '\n');
+          "
+          echo "Stamped product.json: commit=${COMMIT_SHA:0:8}, date=${BUILD_DATE}"
+
+      - name: Compile
+        run: yarn compile
+
+      - name: Build release
+        shell: bash
+        env:
+          VSCODE_QUALITY: stable
+          # Signing credentials — uncomment when real certs are provisioned:
+          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          # WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          case "${{ matrix.os }}" in
+            linux)
+              yarn run gulp vscode-linux-x64-min
+              yarn run gulp vscode-linux-x64-build-deb
+              yarn run gulp vscode-linux-x64-build-rpm
+              ;;
+            darwin)
+              yarn run gulp vscode-darwin-arm64-min
+              # TODO: enable notarization when Apple credentials are ready
+              # yarn run gulp vscode-darwin-arm64-dmg
+              echo "Skipping DMG + notarization (no certs provisioned)"
+              cd ../VSCode-darwin-arm64 && zip -r -y "../chipos-darwin-arm64.zip" "ChipOS.app"
+              ;;
+            win32)
+              yarn run gulp vscode-win32-x64-min
+              yarn run gulp vscode-win32-x64-inno-updater
+              yarn run gulp vscode-win32-x64-setup
+              ;;
+          esac
+
+      - name: Collect artifacts
+        id: collect
+        shell: bash
+        run: |
+          mkdir -p release-output
+          case "${{ matrix.os }}" in
+            linux)
+              cp ../*.deb ../*.rpm release-output/ 2>/dev/null || true
+              tar -czf release-output/chipos-linux-x64.tar.gz -C .. VSCode-linux-x64
+              ;;
+            darwin)
+              cp ../*.dmg ../*.zip release-output/ 2>/dev/null || true
+              ;;
+            win32)
+              cp ../*.exe release-output/ 2>/dev/null || true
+              ;;
+          esac
+          ls -lh release-output/ || echo "No artifacts collected"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: chipos-release-${{ matrix.os }}-${{ github.ref_name }}
+          path: release-output/*
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: chipos-release-*
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -lhR artifacts/ || echo "No artifacts"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: artifacts/*
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

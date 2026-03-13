@@ -3,19 +3,18 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { Emitter, Event } from 'vs/base/common/event';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import {
 	AgentEvent,
 	AgentEventType,
 	ConnectionState,
-	ITaskRequest,
 	type ITextDeltaEvent,
 	type IToolCallEvent,
 	type IToolResultEvent,
 	type IDoneEvent,
 	type IMentionItem,
-} from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
+} from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 
 // ── IEventStreamClient ─────────────────────────────────────────────────────
 

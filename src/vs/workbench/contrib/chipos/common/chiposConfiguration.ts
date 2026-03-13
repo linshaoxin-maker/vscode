@@ -3,13 +3,13 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { localize } from 'vs/nls';
-import { Registry } from 'vs/platform/registry/common/platform';
+import { localize } from '../../../../nls.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 import {
 	ConfigurationScope,
 	Extensions as ConfigurationExtensions,
 	IConfigurationRegistry,
-} from 'vs/platform/configuration/common/configurationRegistry';
+} from '../../../../platform/configuration/common/configurationRegistry.js';
 
 const configurationRegistry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
 
@@ -99,6 +99,34 @@ configurationRegistry.registerConfiguration({
 			type: 'boolean',
 			default: true,
 			description: localize('chipos.dynamicSkill.enabled.desc', 'Enable dynamic skills: the system automatically extracts coding rules from debug sessions to assist subsequent tasks. Disabling hides the skill panel and stops injecting skill indices into prompts.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.sidecar.autoStart': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.sidecar.autoStart.desc', 'Automatically start the Sidecar backend on IDE launch. When disabled, connect to a manually started backend using backendUrl.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.sidecar.port': {
+			type: 'number',
+			default: 8765,
+			description: localize('chipos.sidecar.port.desc', 'Starting port for the Sidecar backend (auto-increments if occupied).'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.sidecar.manualUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.sidecar.manualUrl.desc', 'Manual WebSocket URL for development mode. When set, Sidecar auto-start is bypassed and the IDE connects directly to this URL. Example: ws://127.0.0.1:8000/ws/agent'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.sidecar.autoRestart': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.sidecar.autoRestart.desc', 'Automatically restart the Sidecar backend if it crashes (up to 3 attempts).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 	},

@@ -1,0 +1,128 @@
+name: ChipOS CI
+
+on:
+  pull_request:
+    branches: [chipos/main]
+  push:
+    branches: [chipos/main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: darwin
+            runner: macos-14
+          - os: win32
+            runner: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python (for node-gyp)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbfile-dev pkg-config libsecret-1-dev libkrb5-dev libxss1 dbus xvfb libgtk-3-0 libgbm-dev
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Get yarn cache directory
+        id: yarn-cache
+        shell: bash
+        run: echo "dir=$(yarn cache dir 2>/dev/null || echo '')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache yarn packages
+        if: steps.yarn-cache.outputs.dir != ''
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.yarn-cache.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Compile
+        run: yarn compile
+
+      - name: Verify brand
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Brand Verification ==="
+
+          check_field() {
+            local field="$1" expected="$2"
+            actual=$(node -pe "JSON.parse(require('fs').readFileSync('product.json','utf8'))['${field}']")
+            if [[ "${actual}" == "${expected}" ]]; then
+              echo "  ✓ ${field} = ${actual}"
+            else
+              echo "  ✗ ${field}: expected '${expected}', got '${actual}'"
+              exit 1
+            fi
+          }
+
+          check_field nameShort "ChipOS"
+          check_field nameLong "ChipOS IDE"
+          check_field applicationName "chipos"
+          check_field dataFolderName ".chipos-ide"
+          check_field darwinBundleIdentifier "com.chipos.ide"
+          check_field urlProtocol "chipos"
+
+          echo ""
+          echo "All brand checks passed."
+
+      - name: Hygiene (lint)
+        if: matrix.os == 'linux'
+        run: yarn run gulp hygiene
+
+      - name: Build (no signing)
+        shell: bash
+        env:
+          VSCODE_QUALITY: stable
+          SKIP_SIGNING: "true"
+        run: |
+          case "${{ matrix.os }}" in
+            linux)   yarn run gulp vscode-linux-x64-min ;;
+            darwin)  yarn run gulp vscode-darwin-arm64-min ;;
+            win32)   yarn run gulp vscode-win32-x64-min ;;
+          esac
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chipos-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            ../VSCode-linux-x64
+            ../VSCode-darwin-arm64
+            ../VSCode-win32-x64
+          if-no-files-found: warn
+          retention-days: 3

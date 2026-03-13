@@ -3,29 +3,32 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import 'vs/css!./chatPanel';
+import './chatPanel.css';
 
-import { ViewPane, IViewPaneOptions } from 'vs/workbench/browser/parts/views/viewPane';
-import { IViewDescriptorService } from 'vs/workbench/common/views';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { IContextKeyService, RawContextKey, IContextKey } from 'vs/platform/contextkey/common/contextkey';
-import { IThemeService } from 'vs/platform/theme/common/themeService';
-import { IOpenerService } from 'vs/platform/opener/common/opener';
-import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
-import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
-import { IContextMenuService } from 'vs/platform/contextview/browser/contextView';
-import { IHoverService } from 'vs/platform/hover/browser/hover';
-import { INotificationService, Severity } from 'vs/platform/notification/common/notification';
-import { IDialogService } from 'vs/platform/dialogs/common/dialogs';
-import * as dom from 'vs/base/browser/dom';
-import { generateUuid } from 'vs/base/common/uuid';
+import { ViewPane, IViewPaneOptions } from '../../../../../workbench/browser/parts/views/viewPane.js';
+import { IViewDescriptorService } from '../../../../../workbench/common/views.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IContextKeyService, RawContextKey, IContextKey } from '../../../../../platform/contextkey/common/contextkey.js';
+import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
+import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
+import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
+import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
+import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
+import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
+import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import * as dom from '../../../../../base/browser/dom.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
 
-import { ChatMessageRenderer, IStreamingMessageHandle } from 'vs/workbench/contrib/chipos/browser/chatPanel/chatMessageRenderer';
-import { ChatInputWidget } from 'vs/workbench/contrib/chipos/browser/chatPanel/chatInputWidget';
-import { ChatSessionManager, IChatSession, IChatMessage } from 'vs/workbench/contrib/chipos/browser/chatPanel/chatSessionManager';
-import { MockEventStreamClient, IEventStreamClient } from 'vs/workbench/contrib/chipos/browser/eventStream/eventStreamClient';
-import { AgentEventType, ConnectionState, type IMentionItem } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+import { ChatMessageRenderer, IStreamingMessageHandle } from '../../../../../workbench/contrib/chipos/browser/chatPanel/chatMessageRenderer.js';
+import { ChatInputWidget } from '../../../../../workbench/contrib/chipos/browser/chatPanel/chatInputWidget.js';
+import { ChatSessionManager, IChatSession, IChatMessage } from '../../../../../workbench/contrib/chipos/browser/chatPanel/chatSessionManager.js';
+import { MockEventStreamClient, IEventStreamClient } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventStreamClient.js';
+import { WebSocketEventStreamClient } from '../../../../../workbench/contrib/chipos/browser/eventStream/webSocketEventStreamClient.js';
+import { AgentEventType, ConnectionState, type IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import { ISidecarManagerService, SidecarState } from '../../../../../workbench/contrib/chipos/common/sidecarService.js';
 
 const $ = dom.$;
 
@@ -47,7 +50,6 @@ export class ChatPanelViewPane extends ViewPane {
 
 	private _activeHandle: IStreamingMessageHandle | undefined;
 	private _streamingKey!: IContextKey<boolean>;
-	private _cachedRenderers = new Map<string, HTMLElement>();
 
 	constructor(
 		options: IViewPaneOptions,
@@ -63,16 +65,68 @@ export class ChatPanelViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IDialogService private readonly _dialogService: IDialogService,
+		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
+		@ILogService private readonly _logService: ILogService,
 	) {
-		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, _instantiationService, openerService, themeService, telemetryService, hoverService);
+		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, _instantiationService, openerService, themeService, hoverService);
 
 		this._streamingKey = ChipOSChatIsStreaming.bindTo(contextKeyService);
-
 		this._sessionManager = this._register(new ChatSessionManager());
-		this._eventStreamClient = this._register(this._instantiationService.createInstance(MockEventStreamClient));
+		this._eventStreamClient = this._createEventStreamClient();
 
 		this._registerEventStreamListeners();
 		this._registerSessionListeners();
+		this._connectEventStream();
+
+		this._register(this._sidecarManager.onDidChangeState(state => {
+			if (state === SidecarState.Connected) {
+				this._switchToWebSocketClient();
+			} else if (state === SidecarState.Disconnected || state === SidecarState.Error) {
+				this._logService.info('[ChipOS Chat] Sidecar disconnected, event stream client will reconnect when sidecar recovers');
+			}
+		}));
+	}
+
+	private _createEventStreamClient(): IEventStreamClient {
+		const manualUrl = this.configurationService.getValue<string>('chipos.sidecar.manualUrl');
+		const backendUrl = this.configurationService.getValue<string>('chipos.backendUrl');
+
+		if (this._sidecarManager.state === SidecarState.Connected) {
+			this._logService.info('[ChipOS Chat] Creating WebSocket client for', this._sidecarManager.wsUrl);
+			return this._register(this._instantiationService.createInstance(
+				WebSocketEventStreamClient, this._sidecarManager.wsUrl
+			));
+		}
+
+		if (manualUrl || backendUrl) {
+			const url = manualUrl || backendUrl;
+			this._logService.info('[ChipOS Chat] Creating WebSocket client for configured URL:', url);
+			return this._register(this._instantiationService.createInstance(
+				WebSocketEventStreamClient, url
+			));
+		}
+
+		this._logService.info('[ChipOS Chat] No backend configured, using MockEventStreamClient');
+		return this._register(this._instantiationService.createInstance(MockEventStreamClient));
+	}
+
+	private _switchToWebSocketClient(): void {
+		if (this._eventStreamClient instanceof WebSocketEventStreamClient) {
+			const wsClient = this._eventStreamClient;
+			wsClient.setUrl(this._sidecarManager.wsUrl);
+			if (wsClient.connectionState !== ConnectionState.Connected) {
+				wsClient.connect();
+			}
+			return;
+		}
+
+		this._logService.info('[ChipOS Chat] Switching to WebSocket client for', this._sidecarManager.wsUrl);
+		this._eventStreamClient.disconnect();
+
+		this._eventStreamClient = this._register(this._instantiationService.createInstance(
+			WebSocketEventStreamClient, this._sidecarManager.wsUrl
+		));
+		this._registerEventStreamListeners();
 		this._connectEventStream();
 	}
 
@@ -274,10 +328,31 @@ export class ChatPanelViewPane extends ViewPane {
 					break;
 				}
 
-				case AgentEventType.Confirm:
-				case AgentEventType.FileEdit:
-					// Routed to other handlers (FEAT-06, FEAT-09) in future
+			case AgentEventType.Status: {
+				const { level, text, tool_name } = event.payload;
+				if (tool_name) {
 					break;
+				}
+				this._renderer.renderSystemMessage(text, level === 'warning' ? 'warning' : 'info');
+				break;
+			}
+
+			case AgentEventType.TodoUpdate: {
+				break;
+			}
+
+			case AgentEventType.TaskComplete: {
+				this._finishCurrentStream(session.id);
+				if (event.payload.status === 'error' && event.payload.message) {
+					this._renderer.renderSystemMessage(`Task failed: ${event.payload.message}`, 'error');
+				}
+				break;
+			}
+
+			case AgentEventType.Confirm:
+			case AgentEventType.FileEdit:
+			case AgentEventType.SkillTree:
+				break;
 			}
 		}));
 

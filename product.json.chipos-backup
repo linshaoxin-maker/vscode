@@ -1,0 +1,78 @@
+{
+	"nameShort": "ChipOS",
+	"nameLong": "ChipOS IDE",
+	"applicationName": "chipos",
+	"dataFolderName": ".chipos-ide",
+	"win32MutexName": "chiposIDE",
+	"win32DirName": "ChipOS IDE",
+	"win32NameVersion": "ChipOS IDE",
+	"win32RegValueName": "ChipOSIDE",
+	"win32AppId": "{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}",
+	"win32x64AppId": "{{A1B2C3D4-E5F6-7890-ABCD-EF1234567891}",
+	"win32arm64AppId": "{{A1B2C3D4-E5F6-7890-ABCD-EF1234567892}",
+	"win32AppUserModelId": "ChipOS.IDE",
+	"win32ShellNameShort": "ChipOS IDE",
+	"darwinBundleIdentifier": "com.chipos.ide",
+	"linuxIconName": "chipos",
+	"urlProtocol": "chipos",
+	"licenseName": "MIT",
+	"licenseUrl": "https://github.com/chipos-ide/chipos/blob/main/LICENSE",
+	"serverLicenseUrl": "https://github.com/chipos-ide/chipos/blob/main/LICENSE",
+	"serverGreeting": [],
+	"serverApplicationName": "chipos-server",
+	"serverDataFolderName": ".chipos-server",
+	"tunnelApplicationName": "chipos-tunnel",
+	"quality": "stable",
+	"updateUrl": "",
+	"downloadUrl": "https://github.com/chipos-ide/chipos/releases",
+	"commit": "",
+	"date": "",
+	"checksumFailMoreInfoUrl": "https://github.com/chipos-ide/chipos/wiki/Checksum-Verification",
+	"reportIssueUrl": "https://github.com/chipos-ide/chipos/issues/new",
+	"documentationUrl": "https://chipos-ide.github.io/docs",
+	"releaseNotesUrl": "https://github.com/chipos-ide/chipos/releases",
+	"keyboardShortcutsUrlMac": "https://chipos-ide.github.io/docs/shortcuts/mac",
+	"keyboardShortcutsUrlLinux": "https://chipos-ide.github.io/docs/shortcuts/linux",
+	"keyboardShortcutsUrlWin": "https://chipos-ide.github.io/docs/shortcuts/win",
+	"introductoryVideosUrl": "https://chipos-ide.github.io/docs/getting-started",
+	"tipsAndTricksUrl": "https://chipos-ide.github.io/docs/tips",
+	"newsletterSignupUrl": "",
+	"extensionAllowedProposedApi": [],
+	"builtInExtensions": [],
+	"extensionsGallery": {
+		"serviceUrl": "https://open-vsx.org/vscode/gallery",
+		"itemUrl": "https://open-vsx.org/vscode/item",
+		"resourceUrlTemplate": "https://open-vsx.org/vscode/asset/{publisher}/{name}/{version}/Microsoft.VisualStudio.Code.WebResources/{path}",
+		"controlUrl": "",
+		"nlsBaseUrl": "",
+		"publisherUrl": ""
+	},
+	"linkProtectionTrustedDomains": [
+		"https://github.com/chipos-ide",
+		"https://chipos-ide.github.io"
+	],
+	"extensionEnabledApiProposals": {},
+	"extensionKind": {
+		"pub.name": [
+			"workspace"
+		]
+	},
+	"extensionPointExtensionKind": {
+		"typescriptServerPlugins": [
+			"workspace"
+		]
+	},
+	"extensionSyncedKeys": {},
+	"extensionVirtualWorkspacesSupport": {},
+	"crashReporter": {
+		"productName": "ChipOS IDE",
+		"companyName": "ChipOS"
+	},
+	"enableTelemetry": false,
+	"aiConfig": {},
+	"defaultChatAgent": {},
+	"sendASmile": {
+		"reportIssueUrl": "https://github.com/chipos-ide/chipos/issues/new"
+	},
+	"portable": "data"
+}

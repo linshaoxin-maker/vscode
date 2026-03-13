@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter, Event } from 'vs/base/common/event';
-import * as dom from 'vs/base/browser/dom';
-import type { IDiffHunk } from 'vs/workbench/contrib/chipos/browser/inlineDiff/diffComputer';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import * as dom from '../../../../../base/browser/dom.js';
+import type { IDiffHunk } from '../../../../../workbench/contrib/chipos/browser/inlineDiff/diffComputer.js';
 
 const $ = dom.$;
 

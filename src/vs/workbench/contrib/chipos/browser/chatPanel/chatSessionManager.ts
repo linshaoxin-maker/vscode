@@ -3,10 +3,10 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { Emitter, Event } from 'vs/base/common/event';
-import { generateUuid } from 'vs/base/common/uuid';
-import type { IMentionItem, IToolCallPayload } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
+import type { IMentionItem, IToolCallPayload } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 
 // ── Data models ─────────────────────────────────────────────────────────────
 

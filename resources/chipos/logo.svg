@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="chipGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00B4D8"/>
+      <stop offset="100%" stop-color="#0077B6"/>
+    </linearGradient>
+    <linearGradient id="pinGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#48CAE4"/>
+      <stop offset="100%" stop-color="#0096C7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Chip pins  top -->
+  <rect x="38" y="16" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="50" y="16" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="62" y="16" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="74" y="16" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="86" y="16" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+
+  <!-- Chip pins  bottom -->
+  <rect x="38" y="98" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="50" y="98" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="62" y="98" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="74" y="98" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+  <rect x="86" y="98" width="4" height="14" rx="1" fill="url(#pinGrad)"/>
+
+  <!-- Chip pins  left -->
+  <rect x="16" y="38" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="16" y="50" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="16" y="62" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="16" y="74" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="16" y="86" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+
+  <!-- Chip pins  right -->
+  <rect x="98" y="38" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="98" y="50" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="98" y="62" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="98" y="74" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+  <rect x="98" y="86" width="14" height="4" rx="1" fill="url(#pinGrad)"/>
+
+  <!-- Chip body -->
+  <rect x="28" y="28" width="72" height="72" rx="8" fill="url(#chipGrad)"/>
+
+  <!-- Inner die -->
+  <rect x="40" y="40" width="48" height="48" rx="4" fill="#023E8A" opacity="0.6"/>
+
+  <!-- Circuit traces on die -->
+  <path d="M48 52h10v8h10" stroke="#90E0EF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M48 64h16"       stroke="#90E0EF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M48 76h10v-8h10" stroke="#90E0EF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M72 56v16"       stroke="#90E0EF" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+
+  <!-- Core dot -->
+  <circle cx="76" cy="64" r="3" fill="#CAF0F8"/>
+
+  <!-- Corner dots -->
+  <circle cx="46" cy="46" r="2" fill="#48CAE4" opacity="0.7"/>
+  <circle cx="82" cy="46" r="2" fill="#48CAE4" opacity="0.7"/>
+  <circle cx="46" cy="82" r="2" fill="#48CAE4" opacity="0.7"/>
+  <circle cx="82" cy="82" r="2" fill="#48CAE4" opacity="0.7"/>
+</svg>

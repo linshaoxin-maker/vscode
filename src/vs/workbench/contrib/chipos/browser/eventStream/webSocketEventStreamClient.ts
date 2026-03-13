@@ -1,0 +1,642 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import {
+	AgentEvent,
+	AgentEventType,
+	ConnectionState,
+	type IMentionItem,
+	type ITextDeltaEvent,
+	type IToolCallEvent,
+	type IToolResultEvent,
+	type IFileEditEvent,
+	type IConfirmEvent,
+	type IErrorEvent,
+	type IDoneEvent,
+	type IStatusEvent,
+	type ITodoUpdateEvent,
+	type ITaskCompleteEvent,
+	type ISkillTreeEvent,
+} from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import { IEventStreamClient } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventStreamClient.js';
+
+const RECONNECT_DELAY_MS = 3_000;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const HEARTBEAT_TIMEOUT_MS = 45_000;
+
+let eventCounter = 0;
+function nextEventId(): string {
+	return `ws_evt_${++eventCounter}_${Date.now()}`;
+}
+
+/**
+ * Backend message shape. The actual backend (agent/data_model/agent_response.py)
+ * supports ~25 message types. The IServerMessage type covers all known types.
+ */
+interface IServerMessage {
+	readonly type:
+		| 'status' | 'todo' | 'chat' | 'heartbeat' | 'error'
+		| 'model_output' | 'tool_start' | 'tool_result'
+		| 'round_start' | 'plan' | 'timing_highlight'
+		| 'confirm_request' | 'parallel_progress' | 'diff_preview'
+		| 'sim_report' | 'negotiation_view' | 'coverage_report' | 'lint_report'
+		| 'task_complete' | 'task_summary' | 'subagent_event'
+		| 'model_turn_start' | 'model_turn_end'
+		| 'spec_review' | 'loop_progress' | 'worktree_files_applied'
+		| 'pre_review_report' | 'skill_tree'
+		| string;
+	readonly data: unknown;
+	readonly session_id: string | null;
+}
+
+/**
+ * Client request sent to the backend.
+ */
+interface IClientMessage {
+	type: string;
+	session_id: string;
+	[key: string]: unknown;
+}
+
+/**
+ * Real WebSocket client that connects to the ChipOS backend (Sidecar).
+ *
+ * Adapts the backend V1 protocol (status/todo/chat/heartbeat/error/task_complete)
+ * to the frontend AgentEvent type system, bridging the gap between the Python
+ * backend and the TypeScript IDE frontend.
+ */
+export class WebSocketEventStreamClient extends Disposable implements IEventStreamClient {
+
+	private readonly _onDidReceiveEvent = this._register(new Emitter<AgentEvent>());
+	readonly onDidReceiveEvent: Event<AgentEvent> = this._onDidReceiveEvent.event;
+
+	private readonly _onDidChangeConnectionState = this._register(new Emitter<ConnectionState>());
+	readonly onDidChangeConnectionState: Event<ConnectionState> = this._onDidChangeConnectionState.event;
+
+	private _connectionState = ConnectionState.Disconnected;
+	private _ws: WebSocket | undefined;
+	private _reconnectAttempts = 0;
+	private _reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+	private _heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+	private _disposed = false;
+	private _url: string;
+
+	get connectionState(): ConnectionState {
+		return this._connectionState;
+	}
+
+	constructor(
+		url: string,
+		@ILogService private readonly _logService: ILogService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+	) {
+		super();
+		this._url = url;
+	}
+
+	/**
+	 * Update the backend URL. Disconnects any existing connection.
+	 */
+	setUrl(url: string): void {
+		if (this._url !== url) {
+			this.disconnect();
+			this._url = url;
+		}
+	}
+
+	async connect(): Promise<void> {
+		if (this._disposed) {
+			return;
+		}
+
+		if (this._connectionState === ConnectionState.Connected) {
+			return;
+		}
+
+		this._setConnectionState(ConnectionState.Connecting);
+		this._logService.info('[ChipOS WS] Connecting to', this._url);
+
+		try {
+			await this._openWebSocket();
+		} catch (err) {
+			this._logService.error('[ChipOS WS] Connection failed:', String(err));
+			this._setConnectionState(ConnectionState.Error);
+			this._scheduleReconnect();
+		}
+	}
+
+	disconnect(): void {
+		this._clearReconnectTimer();
+		this._clearHeartbeatTimer();
+
+		if (this._ws) {
+			this._ws.onopen = null;
+			this._ws.onmessage = null;
+			this._ws.onerror = null;
+			this._ws.onclose = null;
+			if (this._ws.readyState === WebSocket.OPEN || this._ws.readyState === WebSocket.CONNECTING) {
+				this._ws.close(1000, 'Client disconnect');
+			}
+			this._ws = undefined;
+		}
+
+		this._reconnectAttempts = 0;
+		this._setConnectionState(ConnectionState.Disconnected);
+	}
+
+	sendTask(
+		sessionId: string,
+		query: string,
+		mentions: IMentionItem[],
+		mode: 'agent' | 'spec',
+		options: { thinking: boolean; autoApprove: boolean },
+	): void {
+		const apiKey = this._configurationService.getValue<string>('chipos.apiKey') || '';
+		const apiBaseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') || 'https://api.deepseek.com';
+		const model = this._configurationService.getValue<string>('chipos.model') || 'deepseek-chat';
+		const provider = this._configurationService.getValue<string>('chipos.provider') || 'auto';
+		const enableBuiltinTools = this._configurationService.getValue<boolean>('chipos.enableBuiltinTools') ?? true;
+
+		const contextFiles = mentions.map(m => ({
+			path: m.path,
+			type: m.type,
+			content: m.content ?? null,
+		}));
+
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		const workspacePath = folders.length > 0 ? folders[0].uri.fsPath : '';
+
+		this._send({
+			type: 'task',
+			session_id: sessionId,
+			user_id: 'ide_user',
+			user_query: query,
+			workspace_path: workspacePath,
+			mode,
+			context_files: contextFiles,
+			auto_approve_mode: options.autoApprove ? 'full_auto' : 'standard',
+			llm_config: {
+				api_key: apiKey,
+				base_url: apiBaseUrl,
+				model,
+				provider,
+				enable_builtin_tools: enableBuiltinTools,
+			},
+		});
+	}
+
+	sendStop(sessionId: string): void {
+		this._send({
+			type: 'stop',
+			session_id: sessionId,
+			user_id: 'ide_user',
+		});
+	}
+
+	sendConfirmResponse(requestId: string, action: string, comment?: string): void {
+		this._send({
+			type: 'confirm_response',
+			session_id: '',
+			request_id: requestId,
+			action,
+			comment: comment ?? '',
+		});
+	}
+
+	/**
+	 * Request the dynamic skill tree from the backend.
+	 */
+	requestSkillTree(): void {
+		this._send({
+			type: 'get_skill_tree',
+			session_id: '',
+		});
+	}
+
+	// ── WebSocket lifecycle ──────────────────────────────────────────────────
+
+	private _openWebSocket(): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			try {
+				this._ws = new WebSocket(this._url);
+			} catch (err) {
+				reject(err);
+				return;
+			}
+
+			const timeout = setTimeout(() => {
+				reject(new Error('WebSocket connection timeout'));
+				if (this._ws) {
+					this._ws.close();
+					this._ws = undefined;
+				}
+			}, 10_000);
+
+			this._ws.onopen = () => {
+				clearTimeout(timeout);
+				this._logService.info('[ChipOS WS] Connected');
+				this._reconnectAttempts = 0;
+				this._setConnectionState(ConnectionState.Connected);
+				this._resetHeartbeatTimer();
+				resolve();
+			};
+
+			this._ws.onmessage = (event) => {
+				this._handleRawMessage(event.data);
+			};
+
+			this._ws.onerror = (event) => {
+				clearTimeout(timeout);
+				this._logService.error('[ChipOS WS] Error:', String(event));
+				if (this._connectionState === ConnectionState.Connecting) {
+					reject(new Error('WebSocket error'));
+				}
+			};
+
+			this._ws.onclose = (event) => {
+				clearTimeout(timeout);
+				this._logService.info('[ChipOS WS] Closed: code=', event.code, 'reason=', event.reason);
+				this._ws = undefined;
+				this._clearHeartbeatTimer();
+
+				if (!this._disposed && this._connectionState !== ConnectionState.Disconnected) {
+					this._setConnectionState(ConnectionState.Disconnected);
+					this._scheduleReconnect();
+				}
+			};
+		});
+	}
+
+	// ── Message handling ─────────────────────────────────────────────────────
+
+	private _handleRawMessage(raw: unknown): void {
+		if (typeof raw !== 'string') {
+			return;
+		}
+
+		let msg: IServerMessage;
+		try {
+			msg = JSON.parse(raw);
+		} catch {
+			this._logService.error('[ChipOS WS] Invalid JSON:', String(raw).slice(0, 200));
+			return;
+		}
+
+		this._resetHeartbeatTimer();
+
+		switch (msg.type) {
+			// ── Streaming text from LLM (the actual delta chunks) ──
+			case 'model_output':
+				this._handleModelOutput(msg.data as { content?: string; is_delta?: boolean; thinking?: string; thinking_is_delta?: boolean });
+				break;
+
+			// ── Tool lifecycle ──
+			case 'tool_start':
+				this._handleToolStart(msg.data as { tool_name: string; args: unknown; tool_id: string });
+				break;
+			case 'tool_result':
+				this._handleToolResult(msg.data as { tool_name: string; content: string; content_type?: string; tool_id?: string });
+				break;
+
+			// ── Status / progress / informational ──
+			case 'status':
+				this._handleStatus(msg.data as { level: string; text: string; tool_name?: string });
+				break;
+			case 'todo':
+				this._handleTodo(msg.data as { todos: Array<{ task_id: string; task_des: string; task_status: string }> });
+				break;
+
+			// ── Final reply (accumulated, non-streaming) ──
+			case 'chat':
+				this._handleChat(msg.data as { content: string });
+				break;
+
+			// ── Task lifecycle ──
+			case 'task_complete':
+				this._handleTaskComplete(msg.data as { status: string; message?: string });
+				break;
+			case 'round_start':
+				break;
+
+			// ── Confirmations (Hook approval) ──
+			case 'confirm_request':
+				this._handleConfirmRequest(msg.data as Record<string, unknown>);
+				break;
+
+			// ── Code diff preview ──
+			case 'diff_preview':
+				this._handleDiffPreview(msg.data as { file_path: string; hunks: unknown[] });
+				break;
+
+			// ── Keep-alive ──
+			case 'heartbeat':
+				break;
+
+			// ── Errors ──
+			case 'error':
+				this._handleError(msg.data);
+				break;
+
+			// ── Skill tree ──
+			case 'skill_tree':
+				this._handleSkillTree(msg.data as { version: number; total_skills: number; children: unknown[] });
+				break;
+
+			// ── Report cards (FEAT-10/11/12 will consume these) ──
+			case 'sim_report':
+			case 'coverage_report':
+			case 'lint_report':
+			case 'negotiation_view':
+			case 'spec_review':
+			case 'pre_review_report':
+			case 'parallel_progress':
+			case 'loop_progress':
+			case 'plan':
+			case 'task_summary':
+			case 'subagent_event':
+			case 'model_turn_start':
+			case 'model_turn_end':
+			case 'timing_highlight':
+			case 'worktree_files_applied':
+				this._emit({
+					event_id: nextEventId(),
+					event_type: AgentEventType.Status,
+					timestamp: Date.now() / 1000,
+					payload: {
+						level: 'info' as const,
+						text: `[${msg.type}] ${typeof msg.data === 'object' ? JSON.stringify(msg.data).slice(0, 200) : String(msg.data)}`,
+					},
+				} as IStatusEvent);
+				break;
+
+			default:
+				this._logService.info('[ChipOS WS] Unhandled message type:', msg.type);
+		}
+	}
+
+	// ── model_output: LLM streaming text chunks ────────────────────────────
+
+	private _handleModelOutput(data: { content?: string; is_delta?: boolean; thinking?: string; thinking_is_delta?: boolean }): void {
+		if (data.content) {
+			this._emit({
+				event_id: nextEventId(),
+				event_type: AgentEventType.TextDelta,
+				timestamp: Date.now() / 1000,
+				payload: { content: data.content, role: 'assistant' },
+			} as ITextDeltaEvent);
+		}
+		if (data.thinking) {
+			this._emit({
+				event_id: nextEventId(),
+				event_type: AgentEventType.TextDelta,
+				timestamp: Date.now() / 1000,
+				payload: { content: data.thinking, role: 'thinking' },
+			} as ITextDeltaEvent);
+		}
+	}
+
+	// ── tool_start / tool_result ─────────────────────────────────────────────
+
+	private _handleToolStart(data: { tool_name: string; args: unknown; tool_id: string }): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.ToolCall,
+			timestamp: Date.now() / 1000,
+			payload: {
+				tool_name: data.tool_name,
+				arguments: (typeof data.args === 'object' && data.args !== null ? data.args : {}) as Record<string, unknown>,
+				call_id: data.tool_id || `tc_${Date.now()}`,
+			},
+		} as IToolCallEvent);
+	}
+
+	private _handleToolResult(data: { tool_name: string; content: string; content_type?: string; tool_id?: string }): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.ToolResult,
+			timestamp: Date.now() / 1000,
+			payload: {
+				call_id: data.tool_id || `tr_${Date.now()}`,
+				tool_name: data.tool_name,
+				result: data.content,
+				success: true,
+			},
+		} as IToolResultEvent);
+	}
+
+	// ── status ──────────────────────────────────────────────────────────────
+
+	private _handleStatus(data: { level: string; text: string; tool_name?: string }): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.Status,
+			timestamp: Date.now() / 1000,
+			payload: {
+				level: data.level as 'info' | 'success' | 'warning' | 'thinking',
+				text: data.text,
+				tool_name: data.tool_name,
+			},
+		} as IStatusEvent);
+	}
+
+	// ── todo ─────────────────────────────────────────────────────────────────
+
+	private _handleTodo(data: { todos: Array<{ task_id: string; task_des: string; task_status: string }> }): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.TodoUpdate,
+			timestamp: Date.now() / 1000,
+			payload: { todos: data.todos },
+		} as ITodoUpdateEvent);
+	}
+
+	// ── chat: final accumulated reply ────────────────────────────────────────
+
+	private _handleChat(data: { content: string }): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.TextDelta,
+			timestamp: Date.now() / 1000,
+			payload: { content: data.content, role: 'assistant' },
+		} as ITextDeltaEvent);
+	}
+
+	// ── error ────────────────────────────────────────────────────────────────
+
+	private _handleError(data: unknown): void {
+		const message = typeof data === 'string' ? data : JSON.stringify(data);
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.Error,
+			timestamp: Date.now() / 1000,
+			payload: {
+				error_code: 'SERVER_ERROR',
+				message,
+				retryable: false,
+			},
+		} as IErrorEvent);
+	}
+
+	// ── task_complete ────────────────────────────────────────────────────────
+
+	private _handleTaskComplete(data: { status: string; message?: string }): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.TaskComplete,
+			timestamp: Date.now() / 1000,
+			payload: {
+				status: data.status as 'success' | 'cancelled' | 'error',
+				message: data.message,
+			},
+		} as ITaskCompleteEvent);
+
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.Done,
+			timestamp: Date.now() / 1000,
+			payload: {
+				summary: data.message || `Task ${data.status}.`,
+				metrics: {},
+			},
+		} as IDoneEvent);
+	}
+
+	// ── confirm_request: Hook approval cards ─────────────────────────────────
+
+	private _handleConfirmRequest(data: Record<string, unknown>): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.Confirm,
+			timestamp: Date.now() / 1000,
+			payload: {
+				hook_id: String(data.hook_id ?? ''),
+				card_type: (data.card_type as 'simple' | 'diff_preview' | 'sim_report' | 'custom') ?? 'simple',
+				card_data: (data.card_data as Record<string, unknown>) ?? {},
+				skippable: Boolean(data.skippable),
+			},
+		} as IConfirmEvent);
+	}
+
+	// ── diff_preview ─────────────────────────────────────────────────────────
+
+	private _handleDiffPreview(data: { file_path: string; hunks: unknown[] }): void {
+		const edits = (data.hunks ?? []).map((hunk: any) => ({
+			range: {
+				startLine: hunk.old_start ?? hunk.new_start ?? 1,
+				startCol: 1,
+				endLine: (hunk.old_start ?? hunk.new_start ?? 1) + (hunk.lines?.length ?? 0),
+				endCol: 1,
+			},
+			newText: (hunk.lines ?? [])
+				.filter((l: string) => l.startsWith('+') || l.startsWith(' '))
+				.map((l: string) => l.slice(1))
+				.join('\n'),
+		}));
+
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.FileEdit,
+			timestamp: Date.now() / 1000,
+			payload: {
+				file_path: data.file_path,
+				edits,
+			},
+		} as IFileEditEvent);
+	}
+
+	// ── skill_tree ───────────────────────────────────────────────────────────
+
+	private _handleSkillTree(data: { version: number; total_skills: number; children: unknown[] }): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.SkillTree,
+			timestamp: Date.now() / 1000,
+			payload: data,
+		} as ISkillTreeEvent);
+	}
+
+	// ── Reconnection ─────────────────────────────────────────────────────────
+
+	private _scheduleReconnect(): void {
+		if (this._disposed || this._reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+			if (this._reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+				this._logService.error('[ChipOS WS] Max reconnect attempts exceeded');
+				this._setConnectionState(ConnectionState.Error);
+			}
+			return;
+		}
+
+		this._reconnectAttempts++;
+		const delay = RECONNECT_DELAY_MS * this._reconnectAttempts;
+		this._logService.info('[ChipOS WS] Reconnecting in', delay, 'ms (attempt', this._reconnectAttempts, ')');
+		this._setConnectionState(ConnectionState.Reconnecting);
+
+		this._reconnectTimer = setTimeout(() => {
+			if (!this._disposed) {
+				this.connect();
+			}
+		}, delay);
+	}
+
+	// ── Heartbeat watchdog ───────────────────────────────────────────────────
+
+	private _resetHeartbeatTimer(): void {
+		this._clearHeartbeatTimer();
+		this._heartbeatTimer = setTimeout(() => {
+			this._logService.warn('[ChipOS WS] Heartbeat timeout, server may be unresponsive');
+			if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+				this._ws.close(4000, 'Heartbeat timeout');
+			}
+		}, HEARTBEAT_TIMEOUT_MS);
+	}
+
+	// ── Helpers ──────────────────────────────────────────────────────────────
+
+	private _send(message: IClientMessage): void {
+		if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
+			this._logService.error('[ChipOS WS] Cannot send: WebSocket not open');
+			return;
+		}
+		this._ws.send(JSON.stringify(message));
+	}
+
+	private _emit(event: AgentEvent): void {
+		this._onDidReceiveEvent.fire(event);
+	}
+
+	private _setConnectionState(state: ConnectionState): void {
+		if (this._connectionState === state) {
+			return;
+		}
+		this._connectionState = state;
+		this._onDidChangeConnectionState.fire(state);
+	}
+
+	private _clearReconnectTimer(): void {
+		if (this._reconnectTimer !== undefined) {
+			clearTimeout(this._reconnectTimer);
+			this._reconnectTimer = undefined;
+		}
+	}
+
+	private _clearHeartbeatTimer(): void {
+		if (this._heartbeatTimer !== undefined) {
+			clearTimeout(this._heartbeatTimer);
+			this._heartbeatTimer = undefined;
+		}
+	}
+
+	override dispose(): void {
+		this._disposed = true;
+		this.disconnect();
+		super.dispose();
+	}
+}

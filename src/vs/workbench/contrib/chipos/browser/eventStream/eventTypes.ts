@@ -13,6 +13,10 @@ export const enum AgentEventType {
 	Confirm = 'confirm',
 	Error = 'error',
 	Done = 'done',
+	Status = 'status',
+	TodoUpdate = 'todo_update',
+	TaskComplete = 'task_complete',
+	SkillTree = 'skill_tree',
 }
 
 export interface IAgentEventBase {
@@ -107,6 +111,57 @@ export interface IDoneEvent extends IAgentEventBase {
 	readonly payload: IDonePayload;
 }
 
+// ── Backend protocol event types (V1 → AgentEvent adapter) ─────────────────
+
+export type StatusLevel = 'info' | 'success' | 'warning' | 'thinking';
+
+export interface IStatusPayload {
+	readonly level: StatusLevel;
+	readonly text: string;
+	readonly tool_name?: string;
+}
+
+export interface IStatusEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.Status;
+	readonly payload: IStatusPayload;
+}
+
+export interface ITodoItem {
+	readonly task_id: string;
+	readonly task_des: string;
+	readonly task_status: string;
+}
+
+export interface ITodoUpdatePayload {
+	readonly todos: ITodoItem[];
+}
+
+export interface ITodoUpdateEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.TodoUpdate;
+	readonly payload: ITodoUpdatePayload;
+}
+
+export interface ITaskCompletePayload {
+	readonly status: 'success' | 'cancelled' | 'error';
+	readonly message?: string;
+}
+
+export interface ITaskCompleteEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.TaskComplete;
+	readonly payload: ITaskCompletePayload;
+}
+
+export interface ISkillTreePayload {
+	readonly version: number;
+	readonly total_skills: number;
+	readonly children: unknown[];
+}
+
+export interface ISkillTreeEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.SkillTree;
+	readonly payload: ISkillTreePayload;
+}
+
 export type AgentEvent =
 	| ITextDeltaEvent
 	| IToolCallEvent
@@ -114,7 +169,11 @@ export type AgentEvent =
 	| IFileEditEvent
 	| IConfirmEvent
 	| IErrorEvent
-	| IDoneEvent;
+	| IDoneEvent
+	| IStatusEvent
+	| ITodoUpdateEvent
+	| ITaskCompleteEvent
+	| ISkillTreeEvent;
 
 // ── Task request payload ────────────────────────────────────────────────────
 

@@ -3,13 +3,13 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from 'vs/base/common/lifecycle';
-import { Emitter, Event } from 'vs/base/common/event';
-import { URI } from 'vs/base/common/uri';
-import type { IFileEditPayload } from 'vs/workbench/contrib/chipos/browser/eventStream/eventTypes';
-import { DiffComputer, type IDiffHunk } from 'vs/workbench/contrib/chipos/browser/inlineDiff/diffComputer';
-import { InlineDiffDecorator } from 'vs/workbench/contrib/chipos/browser/inlineDiff/inlineDiffDecorator';
-import { DiffSummaryWidget } from 'vs/workbench/contrib/chipos/browser/inlineDiff/diffSummaryWidget';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { URI } from '../../../../../base/common/uri.js';
+import type { IFileEditPayload } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import { DiffComputer } from '../../../../../workbench/contrib/chipos/browser/inlineDiff/diffComputer.js';
+import { InlineDiffDecorator } from '../../../../../workbench/contrib/chipos/browser/inlineDiff/inlineDiffDecorator.js';
+import { DiffSummaryWidget } from '../../../../../workbench/contrib/chipos/browser/inlineDiff/diffSummaryWidget.js';
 
 // ── Per-file state ──────────────────────────────────────────────────────────
 
@@ -29,7 +29,6 @@ interface IFileDiffState {
 export class InlineDiffController extends Disposable {
 
 	private readonly _editorService: any;   // IEditorService
-	private readonly _textFileService: any; // ITextFileService
 
 	private readonly _activeDecorators = new Map<string, IFileDiffState>();
 	private readonly _summaryWidget: DiffSummaryWidget;
@@ -39,11 +38,10 @@ export class InlineDiffController extends Disposable {
 
 	constructor(
 		editorService: any,
-		textFileService: any,
+		_textFileService: any,
 	) {
 		super();
 		this._editorService = editorService;
-		this._textFileService = textFileService;
 
 		this._summaryWidget = this._register(new DiffSummaryWidget());
 
