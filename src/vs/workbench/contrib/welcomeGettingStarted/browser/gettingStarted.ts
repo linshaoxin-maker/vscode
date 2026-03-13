@@ -495,6 +495,10 @@ export class GettingStartedPage extends EditorPane {
 				this.openerService.open(argument);
 				break;
 			}
+			case 'command': {
+				this.commandService.executeCommand(argument);
+				break;
+			}
 			default: {
 				console.error('Dispatch to', command, argument, 'not defined');
 				break;
@@ -892,88 +896,74 @@ export class GettingStartedPage extends EditorPane {
 	private async buildCategoriesSlide(preserveFocus?: boolean) {
 
 		this.categoriesSlideDisposables.clear();
-		const showOnStartupCheckbox = new Toggle({
-			icon: Codicon.check,
-			actionClassName: 'getting-started-checkbox',
-			isChecked: this.configurationService.getValue(configurationKey) === 'welcomePage',
-			title: localize('checkboxTitle', "When checked, this page will be shown on startup."),
-			...defaultToggleStyles
-		});
-		showOnStartupCheckbox.domNode.id = 'showOnStartup';
-		const showOnStartupLabel = $('label.caption', { for: 'showOnStartup' }, localize('welcomePage.showOnStartup', "Show welcome page on startup"));
-		const onShowOnStartupChanged = () => {
-			if (showOnStartupCheckbox.checked) {
-				this.telemetryService.publicLog2<GettingStartedActionEvent, GettingStartedActionClassification>('gettingStarted.ActionExecuted', { command: 'showOnStartupChecked', argument: undefined, walkthroughId: this.currentWalkthrough?.id });
-				this.configurationService.updateValue(configurationKey, 'welcomePage');
-			} else {
-				this.telemetryService.publicLog2<GettingStartedActionEvent, GettingStartedActionClassification>('gettingStarted.ActionExecuted', { command: 'showOnStartupUnchecked', argument: undefined, walkthroughId: this.currentWalkthrough?.id });
-				this.configurationService.updateValue(configurationKey, 'none');
-			}
-		};
-		this.categoriesSlideDisposables.add(showOnStartupCheckbox);
-		this.categoriesSlideDisposables.add(showOnStartupCheckbox.onChange(() => {
-			onShowOnStartupChanged();
-		}));
-		this.categoriesSlideDisposables.add(addDisposableListener(showOnStartupLabel, 'click', () => {
-			showOnStartupCheckbox.checked = !showOnStartupCheckbox.checked;
-			onShowOnStartupChanged();
-		}));
 
-		const header = $('.header', {},
-			$('h1.product-name.caption', {}, this.productService.nameLong),
-			$('p.subtitle.description', {}, localize({ key: 'gettingStarted.editingEvolved', comment: ['Shown as subtitle on the Welcome page.'] }, "Editing evolved"))
+		// ── ChipOS: Cursor-style centered welcome layout ──
+
+		const logoIcon = $('div.chipos-welcome-logo');
+		const svgNS = 'http://www.w3.org/2000/svg';
+		const svg = document.createElementNS(svgNS, 'svg');
+		svg.setAttribute('width', '40');
+		svg.setAttribute('height', '40');
+		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('fill', 'none');
+		const rect = document.createElementNS(svgNS, 'rect');
+		rect.setAttribute('x', '3'); rect.setAttribute('y', '5');
+		rect.setAttribute('width', '18'); rect.setAttribute('height', '14');
+		rect.setAttribute('rx', '2'); rect.setAttribute('stroke', 'currentColor');
+		rect.setAttribute('stroke-width', '1.5');
+		const path = document.createElementNS(svgNS, 'path');
+		path.setAttribute('d', 'M7 9h4M7 12h10M7 15h7');
+		path.setAttribute('stroke', 'currentColor');
+		path.setAttribute('stroke-width', '1.5');
+		path.setAttribute('stroke-linecap', 'round');
+		const circle = document.createElementNS(svgNS, 'circle');
+		circle.setAttribute('cx', '18'); circle.setAttribute('cy', '9');
+		circle.setAttribute('r', '1.5'); circle.setAttribute('fill', 'currentColor');
+		svg.append(rect, path, circle);
+		logoIcon.appendChild(svg);
+
+		const header = $('.chipos-welcome-header', {},
+			logoIcon,
+			$('h1.chipos-welcome-title', {}, 'ChipOS'),
+			$('p.chipos-welcome-subtitle', {},
+				$('a.chipos-welcome-settings-link', { 'x-dispatch': 'command:workbench.action.openSettings' },
+					localize('chiposWelcome.settings', "Settings")
+				)
+			)
 		);
 
-		const leftColumn = $('.categories-column.categories-column-left', {},);
-		const rightColumn = $('.categories-column.categories-column-right', {},);
+		const actionCards = $('.chipos-welcome-actions', {},
+			this._createActionCard(
+				Codicon.folderOpened,
+				localize('chiposWelcome.openProject', "Open project"),
+				'command:workbench.action.files.openFileFolder'
+			),
+			this._createActionCard(
+				Codicon.sourceControl,
+				localize('chiposWelcome.cloneRepo', "Clone repo"),
+				'command:git.clone'
+			),
+			this._createActionCard(
+				Codicon.remote,
+				localize('chiposWelcome.connectSSH', "Connect via SSH"),
+				'command:workbench.action.remote.showMenu'
+			),
+		);
 
-		const startList = this.buildStartList();
 		const recentList = this.buildRecentlyOpenedList();
-		const gettingStartedList = this.buildGettingStartedWalkthroughsList();
+		recentList.setLimit(8);
 
-		const footer = $('.footer', {},
-			$('p.showOnStartup', {},
-				showOnStartupCheckbox.domNode,
-				showOnStartupLabel,
-			));
+		const recentSection = $('.chipos-welcome-recent', {}, recentList.getDomElement());
 
-		const layoutLists = () => {
-			if (gettingStartedList.itemCount) {
-				this.container.classList.remove('noWalkthroughs');
-				reset(rightColumn, gettingStartedList.getDomElement());
-			}
-			else {
-				this.container.classList.add('noWalkthroughs');
-				reset(rightColumn);
-			}
-			setTimeout(() => this.categoriesPageScrollbar?.scanDomNode(), 50);
-			layoutRecentList();
-		};
+		const container = $('.chipos-welcome-container', {}, header, actionCards, recentSection);
 
-		const layoutRecentList = () => {
-			if (this.container.classList.contains('noWalkthroughs')) {
-				recentList.setLimit(10);
-				reset(leftColumn, startList.getDomElement());
-				reset(rightColumn, recentList.getDomElement());
-			} else {
-				recentList.setLimit(5);
-				reset(leftColumn, startList.getDomElement(), recentList.getDomElement());
-			}
-		};
-
-		gettingStartedList.onDidChange(layoutLists);
-		layoutLists();
-
-		reset(this.categoriesSlide, $('.gettingStartedCategoriesContainer', {}, header, leftColumn, rightColumn, footer,));
+		reset(this.categoriesSlide, container);
 		this.categoriesPageScrollbar?.scanDomNode();
-
-		this.updateCategoryProgress();
 		this.registerDispatchListeners();
 
 		const editorInput = this.editorInput;
 		if (editorInput?.selectedCategory) {
 			this.currentWalkthrough = this.gettingStartedCategories.find(category => category.id === editorInput.selectedCategory);
-
 			if (!this.currentWalkthrough) {
 				this.gettingStartedCategories = this.gettingStartedService.getWalkthroughs();
 				this.currentWalkthrough = this.gettingStartedCategories.find(category => category.id === editorInput.selectedCategory);
@@ -982,37 +972,23 @@ export class GettingStartedPage extends EditorPane {
 					this.setSlide('details');
 					return;
 				}
-			}
-			else {
+			} else {
 				this.buildCategorySlide(editorInput.selectedCategory, editorInput.selectedStep, preserveFocus);
 				this.setSlide('details');
 				return;
 			}
 		}
 
-		if (this.editorInput?.showTelemetryNotice && this.productService.openToWelcomeMainPage) {
-			const telemetryNotice = $('p.telemetry-notice');
-			this.buildTelemetryFooter(telemetryNotice);
-			footer.appendChild(telemetryNotice);
-		} else if (!this.productService.openToWelcomeMainPage && this.showFeaturedWalkthrough && this.storageService.isNew(StorageScope.APPLICATION)) {
-			const firstSessionDateString = this.storageService.get(firstSessionDateStorageKey, StorageScope.APPLICATION) || new Date().toUTCString();
-			const daysSinceFirstSession = ((+new Date()) - (+new Date(firstSessionDateString))) / 1000 / 60 / 60 / 24;
-			const fistContentBehaviour = daysSinceFirstSession < 1 ? 'openToFirstCategory' : 'index';
-
-			if (fistContentBehaviour === 'openToFirstCategory') {
-				const first = this.gettingStartedCategories.filter(c => !c.when || this.contextService.contextMatchesRules(c.when))[0];
-				if (first && this.editorInput) {
-					this.currentWalkthrough = first;
-					this.editorInput.selectedCategory = this.currentWalkthrough?.id;
-					this.editorInput.walkthroughPageTitle = this.currentWalkthrough.walkthroughPageTitle;
-					this.buildCategorySlide(this.editorInput.selectedCategory, undefined, preserveFocus);
-					this.setSlide('details', true /* firstLaunch */);
-					return;
-				}
-			}
-		}
-
 		this.setSlide('categories');
+	}
+
+	private _createActionCard(icon: ThemeIcon, label: string, command: string): HTMLElement {
+		const card = $('button.chipos-action-card', { 'x-dispatch': command });
+		const iconEl = $('span.chipos-action-icon');
+		iconEl.classList.add(...ThemeIcon.asClassNameArray(icon));
+		card.appendChild(iconEl);
+		card.appendChild($('span.chipos-action-label', {}, label));
+		return card;
 	}
 
 	private buildRecentlyOpenedList(): GettingStartedIndexList<RecentEntry> {

@@ -27,6 +27,10 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { ChatPanelViewPane } from '../../../../workbench/contrib/chipos/browser/chatPanel/chatPanelViewPane.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { SidecarManagerBrowser } from '../../../../workbench/contrib/chipos/browser/sidecarManagerBrowser.js';
+import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { GettingStartedInput } from '../../../../workbench/contrib/welcomeGettingStarted/browser/gettingStartedInput.js';
 
 import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 
@@ -250,6 +254,9 @@ class ChipOSContribution extends Disposable {
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IWorkspaceContextService private readonly _contextService: IWorkspaceContextService,
+		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@IEditorService private readonly _editorService: IEditorService,
 	) {
 		super();
 
@@ -260,6 +267,12 @@ class ChipOSContribution extends Disposable {
 
 	private _initialize(): void {
 		this._logService.info('[ChipOS] Contribution initialized');
+
+		this._applyEmptyWindowLayout();
+
+		this._register(this._contextService.onDidChangeWorkbenchState(() => {
+			this._applyEmptyWindowLayout();
+		}));
 
 		this._register(this._sidecarManager.onDidChangeState(state => {
 			this._logService.info('[ChipOS] Sidecar state changed:', state);
@@ -283,6 +296,29 @@ class ChipOSContribution extends Disposable {
 			this._sidecarManager.spawn();
 		} else {
 			this._logService.info('[ChipOS] Sidecar auto-start disabled. Configure chipos.sidecar.manualUrl or enable chipos.sidecar.autoStart.');
+		}
+	}
+
+	private _applyEmptyWindowLayout(): void {
+		const isEmpty = this._contextService.getWorkbenchState() === WorkbenchState.EMPTY;
+		if (isEmpty) {
+			this._layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
+			this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
+			this._layoutService.setPartHidden(true, Parts.ACTIVITYBAR_PART);
+			this._logService.info('[ChipOS] Empty workspace: hiding sidebar, activitybar, auxiliarybar');
+		} else {
+			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
+			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
+			this._layoutService.setPartHidden(false, Parts.ACTIVITYBAR_PART);
+			this._closeWelcomeEditor();
+		}
+	}
+
+	private _closeWelcomeEditor(): void {
+		for (const editor of this._editorService.editors) {
+			if (editor instanceof GettingStartedInput) {
+				editor.dispose();
+			}
 		}
 	}
 }

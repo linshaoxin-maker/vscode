@@ -1108,3 +1108,134 @@
 .monaco-workbench .part.editor > .content .gettingStartedContainer .gettingStartedSlide .getting-started-checkbox {
 	border-color: var(--vscode-checkbox-border) !important;
 }
+
+/* ── ChipOS: Cursor-style Welcome Page ─────────────────────────────────────── */
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-container {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	min-height: 100%;
+	padding: 60px 40px;
+	box-sizing: border-box;
+	gap: 32px;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-header {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-logo {
+	color: var(--vscode-foreground);
+	opacity: 0.9;
+	margin-bottom: 8px;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-title {
+	font-size: 32px !important;
+	font-weight: 300 !important;
+	letter-spacing: 4px;
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+	color: var(--vscode-foreground);
+	margin: 0 !important;
+	padding: 0 !important;
+	white-space: nowrap;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-subtitle {
+	font-size: 13px;
+	color: var(--vscode-descriptionForeground);
+	margin: 0;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-settings-link {
+	color: var(--vscode-textLink-foreground);
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-settings-link:hover {
+	text-decoration: underline;
+	color: var(--vscode-textLink-activeForeground);
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-actions {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+	justify-content: center;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-action-card {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px 20px;
+	border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.2));
+	border-radius: 6px;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	font-size: 13px;
+	font-family: inherit;
+	transition: background-color 0.15s, border-color 0.15s;
+	min-width: 140px;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-action-card:hover {
+	background: var(--vscode-list-hoverBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-action-icon {
+	font-size: 16px;
+	opacity: 0.7;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-action-label {
+	white-space: nowrap;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-recent {
+	width: 100%;
+	max-width: 520px;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-recent .index-list.recently-opened {
+	margin-top: 0;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-recent .index-list h2 {
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 1px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+	font-weight: 500;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-recent .index-list ul li {
+	display: flex;
+	align-items: baseline;
+	padding: 4px 0;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-recent .index-list ul li .button-link {
+	flex-shrink: 0;
+	font-weight: 500;
+}
+
+.monaco-workbench .part.editor > .content .gettingStartedContainer .chipos-welcome-recent .index-list ul li .path.detail {
+	margin-left: auto;
+	font-size: 12px;
+	opacity: 0.6;
+	text-align: right;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 260px;
+}
