@@ -36,6 +36,7 @@ import {
 	IChatContentReference,
 	ChatResponseReferencePartStatusKind,
 } from '../../../../contrib/chat/common/chatService/chatService.js';
+import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
 import { WebSocketEventStreamClient } from '../eventStream/webSocketEventStreamClient.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
 import { ChipOSEditorEffects } from './editorEffects.js';
@@ -83,13 +84,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private _editorEffects: ChipOSEditorEffects | undefined;
 	private _contextCollector: ContextCollector | undefined;
 	private _sessionCounter = 0;
-	private _toolStartTimes = new Map<string, number>();
-	private _subagentTimers = new Map<string, number>();
+	private _lastSessionId: string | undefined;
+	private readonly _toolStartTimes = new Map<string, number>();
+	private readonly _subagentTimers = new Map<string, number>();
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IChatTodoListService private readonly _todoListService: IChatTodoListService,
 	) {
 		super();
 	}
@@ -131,6 +134,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 
 		const sessionId = `native_chat_${++this._sessionCounter}_${Date.now()}`;
+		this._lastSessionId = sessionId;
 		const userMessage = request.message;
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
@@ -167,6 +171,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		this._logService.info('[ChipOS Agent] invoke:', userMessage.slice(0, 100), 'mode:', mode, 'mentions:', mentions.length);
 
+		this._toolStartTimes.clear();
+		this._subagentTimers.clear();
+
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
 			let firstProgressTime: number | undefined;
@@ -199,7 +206,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					return;
 				}
 
-				effects.handleEvent(event);
+				try {
+					effects.handleEvent(event);
+				} catch (e) {
+					this._logService.warn('[ChipOS Agent] Editor effect error:', String(e));
+				}
 
 				switch (event.event_type) {
 					// ── Streaming text ──
@@ -214,42 +225,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-				// ── FEAT-26: Tool lifecycle via IChatTask ──
-				case AgentEventType.ToolCall: {
-					const p = event.payload as IToolCallPayload;
-					const key = p.call_id || p.tool_name;
-					this._toolStartTimes.set(key, Date.now());
-					const desc = p.summary || this._describeToolCall(p.tool_name, p.arguments);
-					const toolTask = this._createToolTask(`$(tools~spin) ${this._friendlyToolName(p.tool_name)}: ${desc}`);
-					pendingToolTasks.set(key, toolTask);
-					progress([toolTask.task]);
-					break;
-				}
+					// ── Tool lifecycle via IChatTask (FEAT-48 enhanced) ──
+					case AgentEventType.ToolCall: {
+						const p = event.payload as IToolCallPayload;
+						const key = p.call_id || p.tool_name;
+						this._toolStartTimes.set(key, Date.now());
+						const friendly = this._friendlyToolName(p.tool_name);
+						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
+						const label = argDetail
+							? `$(tools~spin) **${friendly}** ${argDetail}`
+							: `$(tools~spin) **${friendly}**`;
+						const toolTask = this._createToolTask(label);
+						pendingToolTasks.set(key, toolTask);
+						progress([toolTask.task]);
+						break;
+					}
 
-				case AgentEventType.ToolResult: {
-					const p = event.payload as IToolResultPayload;
-					const key = p.call_id || p.tool_name;
-					const friendly = this._friendlyToolName(p.tool_name);
-					const pending = pendingToolTasks.get(key);
-					const icon = p.success ? '$(check)' : '$(error)';
-					const startTime = this._toolStartTimes.get(key);
-					const elapsed = startTime ? `${((Date.now() - startTime) / 1000).toFixed(1)}s` : '';
-					this._toolStartTimes.delete(key);
-					const timeSuffix = elapsed ? ` (${elapsed})` : '';
-					const resultSummary = p.summary
-						? `${icon} ${p.summary}${timeSuffix}`
-						: `${icon} ${friendly} 完成${timeSuffix}`;
-					if (pending) {
-						pending.deferred.complete(resultSummary);
-						pendingToolTasks.delete(key);
-					} else {
-						progress([this._progress(resultSummary)]);
+					case AgentEventType.ToolResult: {
+						const p = event.payload as IToolResultPayload;
+						const key = p.call_id || p.tool_name;
+						const friendly = this._friendlyToolName(p.tool_name);
+						const pending = pendingToolTasks.get(key);
+						const icon = p.success ? '$(check)' : '$(error)';
+						const startTs = this._toolStartTimes.get(key);
+						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
+						this._toolStartTimes.delete(key);
+						const timeSuffix = elapsed ? ` (${elapsed})` : '';
+						const resultSummary = p.summary
+							? `${icon} ${p.summary}${timeSuffix}`
+							: `${icon} ${friendly}${timeSuffix}`;
+						if (pending) {
+							pending.deferred.complete(resultSummary);
+							pendingToolTasks.delete(key);
+						} else {
+							progress([this._progress(resultSummary)]);
+						}
+						if (!p.success && typeof p.result === 'string') {
+							progress([this._warning(p.result)]);
+						}
+						break;
 					}
-					if (!p.success && typeof p.result === 'string') {
-						progress([this._warning(p.result)]);
-					}
-					break;
-				}
 
 					// ── Status / Progress ──
 					case AgentEventType.Status: {
@@ -294,18 +309,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-					// ── Todo update ──
+					// ── Todo update → native ChatTodoListService ──
 					case AgentEventType.TodoUpdate: {
 						const p = event.payload as ITodoUpdatePayload;
 						if (p.todos.length > 0) {
-							const done = p.todos.filter(t => t.task_status === 'done').length;
-							const total = p.todos.length;
-							const lines = p.todos.map(t => {
-								const icon = t.task_status === 'done' ? '- [x]' :
-									t.task_status === 'in_progress' ? '- [ ] *(in progress)*' : '- [ ]';
-								return `${icon} ${t.task_des}`;
-							});
-							progress([this._markdown(`**$(tasklist) Tasks** (${done}/${total}):\n${lines.join('\n')}`)]);
+							const sessionRes = request.sessionResource;
+							const statusMap: Record<string, IChatTodo['status']> = {
+								done: 'completed',
+								in_progress: 'in-progress',
+								pending: 'not-started',
+							};
+							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => ({
+								id: idx,
+								title: t.task_des,
+								status: statusMap[t.task_status] ?? 'not-started',
+							}));
+							this._todoListService.setTodos(sessionRes, nativeTodos);
 						}
 						break;
 					}
@@ -436,14 +455,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-				// ── Task summary → formatted card ──
-				case AgentEventType.TaskSummary: {
-					const p = event.payload as ITaskSummaryPayload;
-					trackFirstProgress();
-					progress([this._progress('$(output) Task Summary')]);
-					progress([this._markdown(ChipOSChatAgent._formatTaskSummary(p))]);
-					break;
-				}
+					// ── Task summary → formatted card ──
+					case AgentEventType.TaskSummary: {
+						const p = event.payload as ITaskSummaryPayload;
+						trackFirstProgress();
+						progress([this._progress('$(output) Task Summary')]);
+						progress([this._markdown(ChipOSChatAgent._formatTaskSummary(p))]);
+						break;
+					}
 
 					// ── FEAT-33: Subagent event — structured rendering ──
 					case AgentEventType.SubagentEvent: {
@@ -489,21 +508,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.WorktreeFilesApplied: {
 						const p = event.payload as IWorktreeFilesAppliedPayload;
 						if (p.files && p.files.length > 0) {
-						const added = p.files.filter(f => f.action === 'added').length;
-						const modified = p.files.filter(f => f.action === 'modified').length;
-						const deleted = p.files.filter(f => f.action === 'deleted').length;
-						const parts: string[] = [];
-						if (added) { parts.push(`+${added} added`); }
-							if (modified) { parts.push(`~${modified} modified`); }
-							if (deleted) { parts.push(`-${deleted} deleted`); }
-							progress([this._markdown(`**$(file-text) Files applied** (${p.files.length}): ${parts.join(', ')}`)]);
+							const grouped = { added: [] as string[], modified: [] as string[], deleted: [] as string[] };
 							for (const f of p.files) {
+								const bucket = f.action === 'added' ? grouped.added :
+									f.action === 'deleted' ? grouped.deleted : grouped.modified;
+								bucket.push(f.path);
+							}
+							const summary: string[] = [];
+							if (grouped.added.length) { summary.push(`+${grouped.added.length} added`); }
+							if (grouped.modified.length) { summary.push(`~${grouped.modified.length} modified`); }
+							if (grouped.deleted.length) { summary.push(`-${grouped.deleted.length} deleted`); }
+							progress([this._markdown(
+								`**$(file-text) Files applied** (${p.files.length}): ${summary.join(', ')}`
+							)]);
+							for (const f of p.files) {
+								const actionIcon = f.action === 'added' ? '$(diff-added)' :
+									f.action === 'deleted' ? '$(diff-removed)' : '$(diff-modified)';
 								const ref: IChatContentReference = {
 									kind: 'reference',
 									reference: URI.file(f.path),
 									options: {
 										status: {
-											description: f.action,
+											description: `${actionIcon} ${f.action}`,
 											kind: f.action === 'deleted'
 												? ChatResponseReferencePartStatusKind.Omitted
 												: ChatResponseReferencePartStatusKind.Complete,
@@ -590,7 +616,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			const listener = wsClient.onDidReceiveEvent((event: AgentEvent) => {
 				if (resolved) { return; }
-				effects.handleEvent(event);
+
+				try {
+					effects.handleEvent(event);
+				} catch (e) {
+					this._logService.warn('[ChipOS Agent] Editor effect error (continuation):', String(e));
+				}
 
 				switch (event.event_type) {
 					case AgentEventType.TextDelta: {
@@ -602,19 +633,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						}
 						break;
 					}
-				case AgentEventType.ToolCall: {
-					const p = event.payload as IToolCallPayload;
-					const desc = p.summary || this._describeToolCall(p.tool_name, p.arguments);
-					progress([this._progress(`$(tools~spin) ${desc}`, true)]);
-					break;
-				}
-				case AgentEventType.ToolResult: {
-					const p = event.payload as IToolResultPayload;
-					const icon = p.success ? '$(check)' : '$(error)';
-					const friendly = this._friendlyToolName(p.tool_name);
-					progress([this._progress(`${icon} ${p.summary || `${friendly} 完成`}`)]);
-					break;
-				}
+					case AgentEventType.ToolCall: {
+						const p = event.payload as IToolCallPayload;
+						const desc = p.summary || this._describeToolCall(p.tool_name, p.arguments);
+						progress([this._progress(`$(tools~spin) ${desc}`, true)]);
+						break;
+					}
+					case AgentEventType.ToolResult: {
+						const p = event.payload as IToolResultPayload;
+						const icon = p.success ? '$(check)' : '$(error)';
+						const friendly = this._friendlyToolName(p.tool_name);
+						progress([this._progress(`${icon} ${p.summary || friendly}`)]);
+						break;
+					}
 					case AgentEventType.Status: {
 						const p = event.payload as IStatusPayload;
 						if (p.text) { progress([this._progress(p.text)]); }
@@ -646,6 +677,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			token.onCancellationRequested(() => {
 				this._logService.info('[ChipOS Agent] Cancellation requested (continuation)');
+				if (this._lastSessionId) {
+					wsClient.sendStop(this._lastSessionId);
+				}
 				finish({});
 			});
 		});
@@ -1035,6 +1069,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	override dispose(): void {
+		this._toolStartTimes.clear();
+		this._subagentTimers.clear();
 		if (this._wsClient) {
 			this._wsClient.disconnect();
 		}
