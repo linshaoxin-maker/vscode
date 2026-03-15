@@ -84,7 +84,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 				`Failed to initialize settings: ${msg}. Try reloading the window.`
 			));
 		}
-		this._switchTab('models');
+		// Do NOT call _switchTab here — setInput() handles initial tab selection.
+		// Calling it here causes a race: setInput() runs after createEditor() and
+		// may reset display styles, leaving the panel blank until the user clicks a tab.
 	}
 
 	private _createTabInstances(): void {
@@ -113,9 +115,8 @@ export class ChipOSSettingsEditor extends EditorPane {
 	override async setInput(input: ChipOSSettingsEditorInput, options: (IEditorOptions & IChipOSSettingsEditorOptions) | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
 
-		if (options?.initialTab) {
-			this._switchTab(options.initialTab);
-		}
+		// Always activate a tab — use the requested one or fall back to 'models'
+		this._switchTab(options?.initialTab ?? 'models');
 	}
 
 	override layout(dimension: dom.Dimension): void {
