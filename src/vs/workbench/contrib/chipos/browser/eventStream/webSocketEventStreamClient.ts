@@ -196,6 +196,7 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 			mode,
 			context_files: contextFiles,
 			auto_approve_mode: options.autoApproveMode,
+			thinking: options.thinking,
 			llm_config: {
 				api_key: apiKey,
 				base_url: apiBaseUrl,
@@ -214,10 +215,10 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 		});
 	}
 
-	sendConfirmResponse(requestId: string, action: string, comment?: string): void {
+	sendConfirmResponse(requestId: string, action: string, comment?: string, sessionId?: string): void {
 		this._send({
 			type: 'confirm_response',
-			session_id: '',
+			session_id: sessionId ?? '',
 			request_id: requestId,
 			action,
 			comment: comment ?? '',

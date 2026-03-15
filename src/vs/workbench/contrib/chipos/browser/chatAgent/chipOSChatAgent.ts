@@ -120,15 +120,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const data = request.acceptedConfirmationData[0] as { requestId: string; options?: Array<{ label: string; action: string }> };
 			const action = data.options?.[0]?.action || 'approve';
 			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action);
-			wsClient.sendConfirmResponse(data.requestId, action);
+			wsClient.sendConfirmResponse(data.requestId, action, undefined, this._lastSessionId);
 			progress([this._progress('$(check) Confirmed')]);
-			return this._listenForContinuation(wsClient, progress, token);
+			return this._listenForContinuation(wsClient, progress, token, request);
 		}
 
 		if (request.rejectedConfirmationData?.length) {
 			const data = request.rejectedConfirmationData[0] as { requestId: string };
 			this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId);
-			wsClient.sendConfirmResponse(data.requestId, 'reject');
+			wsClient.sendConfirmResponse(data.requestId, 'reject', undefined, this._lastSessionId);
 			progress([this._progress('$(circle-slash) Rejected')]);
 			return {};
 		}
@@ -570,6 +570,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.Done:
 						finish({});
 						break;
+
+					default:
+						this._logService.trace('[ChipOS Agent] Unhandled event:', (event as AgentEvent).event_type);
+						break;
 				}
 			});
 
@@ -595,9 +599,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		wsClient: WebSocketEventStreamClient,
 		progress: (parts: IChatProgress[]) => void,
 		token: CancellationToken,
+		request?: IChatAgentRequest,
 	): Promise<IChatAgentResult> {
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
+		const pendingToolTasks = new Map<string, { task: IChatTask; deferred: DeferredPromise<string | void> }>();
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -635,20 +641,263 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 					case AgentEventType.ToolCall: {
 						const p = event.payload as IToolCallPayload;
-						const desc = p.summary || this._describeToolCall(p.tool_name, p.arguments);
-						progress([this._progress(`$(tools~spin) ${desc}`, true)]);
+						const key = p.call_id || p.tool_name;
+						this._toolStartTimes.set(key, Date.now());
+						const friendly = this._friendlyToolName(p.tool_name);
+						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
+						const label = argDetail
+							? `$(tools~spin) **${friendly}** ${argDetail}`
+							: `$(tools~spin) **${friendly}**`;
+						const toolTask = this._createToolTask(label);
+						pendingToolTasks.set(key, toolTask);
+						progress([toolTask.task]);
 						break;
 					}
 					case AgentEventType.ToolResult: {
 						const p = event.payload as IToolResultPayload;
-						const icon = p.success ? '$(check)' : '$(error)';
+						const key = p.call_id || p.tool_name;
 						const friendly = this._friendlyToolName(p.tool_name);
-						progress([this._progress(`${icon} ${p.summary || friendly}`)]);
+						const pending = pendingToolTasks.get(key);
+						const icon = p.success ? '$(check)' : '$(error)';
+						const startTs = this._toolStartTimes.get(key);
+						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
+						this._toolStartTimes.delete(key);
+						const timeSuffix = elapsed ? ` (${elapsed})` : '';
+						const resultSummary = p.summary
+							? `${icon} ${p.summary}${timeSuffix}`
+							: `${icon} ${friendly}${timeSuffix}`;
+						if (pending) {
+							pending.deferred.complete(resultSummary);
+							pendingToolTasks.delete(key);
+						} else {
+							progress([this._progress(resultSummary)]);
+						}
+						if (!p.success && typeof p.result === 'string') {
+							progress([this._warning(p.result)]);
+						}
 						break;
 					}
 					case AgentEventType.Status: {
 						const p = event.payload as IStatusPayload;
-						if (p.text) { progress([this._progress(p.text)]); }
+						if (p.text) {
+							const shimmer = p.level === 'thinking' || p.tool_name !== undefined;
+							progress([this._progress(p.text, shimmer)]);
+						}
+						break;
+					}
+					case AgentEventType.RoundStart: {
+						const p = event.payload as IRoundStartPayload;
+						progress([this._progress(`Step ${p.round}`, true)]);
+						break;
+					}
+					case AgentEventType.TodoUpdate: {
+						const p = event.payload as ITodoUpdatePayload;
+						if (p.todos.length > 0 && request) {
+							const sessionRes = request.sessionResource;
+							const statusMap: Record<string, IChatTodo['status']> = {
+								done: 'completed',
+								in_progress: 'in-progress',
+								pending: 'not-started',
+							};
+							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => ({
+								id: idx,
+								title: t.task_des,
+								status: statusMap[t.task_status] ?? 'not-started',
+							}));
+							this._todoListService.setTodos(sessionRes, nativeTodos);
+						}
+						break;
+					}
+					case AgentEventType.WorktreeFilesApplied: {
+						const p = event.payload as IWorktreeFilesAppliedPayload;
+						if (p.files && p.files.length > 0) {
+							const grouped = { added: [] as string[], modified: [] as string[], deleted: [] as string[] };
+							for (const f of p.files) {
+								const bucket = f.action === 'added' ? grouped.added :
+									f.action === 'deleted' ? grouped.deleted : grouped.modified;
+								bucket.push(f.path);
+							}
+							const summary: string[] = [];
+							if (grouped.added.length) { summary.push(`+${grouped.added.length} added`); }
+							if (grouped.modified.length) { summary.push(`~${grouped.modified.length} modified`); }
+							if (grouped.deleted.length) { summary.push(`-${grouped.deleted.length} deleted`); }
+							progress([this._markdown(
+								`**$(file-text) Files applied** (${p.files.length}): ${summary.join(', ')}`
+							)]);
+							for (const f of p.files) {
+								const actionIcon = f.action === 'added' ? '$(diff-added)' :
+									f.action === 'deleted' ? '$(diff-removed)' : '$(diff-modified)';
+								const ref: IChatContentReference = {
+									kind: 'reference',
+									reference: URI.file(f.path),
+									options: {
+										status: {
+											description: `${actionIcon} ${f.action}`,
+											kind: f.action === 'deleted'
+												? ChatResponseReferencePartStatusKind.Omitted
+												: ChatResponseReferencePartStatusKind.Complete,
+										},
+										isDeletion: f.action === 'deleted',
+									},
+								};
+								progress([ref]);
+							}
+						}
+						break;
+					}
+					case AgentEventType.SubagentEvent: {
+						const p = event.payload as ISubagentEventPayload;
+						if (!this._subagentTimers.has(p.task_id)) {
+							this._subagentTimers.set(p.task_id, Date.now());
+						}
+						const label = `Sub-agent \`${p.task_id.slice(0, 8)}\``;
+						if (p.kind === 'text' && p.content) {
+							progress([this._markdown(p.content)]);
+						} else if (p.kind === 'tool_start' && p.tool_name) {
+							const toolTask = this._createToolTask(`${label} $(tools) \`${p.tool_name}\``);
+							pendingToolTasks.set(`sub_${p.task_id}_${p.tool_name}`, toolTask);
+							progress([toolTask.task]);
+						} else if (p.kind === 'tool_end' && p.tool_name) {
+							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							const pending = pendingToolTasks.get(subKey);
+							if (pending) {
+								pending.deferred.complete(`$(check) \`${p.tool_name}\` done`);
+								pendingToolTasks.delete(subKey);
+							} else {
+								progress([this._progress(`${label} $(check) \`${p.tool_name}\` done`)]);
+							}
+						} else if (p.kind === 'error' && p.content) {
+							progress([this._warning(`${label}: ${p.content}`)]);
+						} else if (p.kind === 'status' && p.content) {
+							progress([this._progress(`${label}: ${p.content}`, true)]);
+						} else if (p.kind === 'complete') {
+							const subStart = this._subagentTimers.get(p.task_id);
+							const subElapsed = subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
+							this._subagentTimers.delete(p.task_id);
+							progress([this._progress(`${label} $(check) completed${subElapsed}`)]);
+						}
+						break;
+					}
+					case AgentEventType.ConfirmRequest: {
+						const p = event.payload as IConfirmRequestPayload;
+						const title = p.title || `Confirm: ${p.card_type}`;
+						const richMessage = this._renderConfirmMessage(p);
+						const buttons = p.options?.map(o => o.label) || ['Approve', 'Reject'];
+						const confirmation: IChatConfirmation = {
+							kind: 'confirmation',
+							title,
+							message: new MarkdownString(richMessage, { supportThemeIcons: true }),
+							data: { requestId: p.request_id, options: p.options },
+							buttons,
+						};
+						progress([confirmation]);
+						break;
+					}
+					case AgentEventType.Plan: {
+						const p = event.payload as IPlanPayload;
+						const lines = (p.milestones || []).map(m => {
+							const status = (m.status as string) === 'active' ? 'running' : m.status;
+							const icon = status === 'done' ? '- [x]' :
+								status === 'running' ? '- [ ] *(running)*' :
+									status === 'failed' ? '- [ ] *(failed)*' : '- [ ]';
+							return `${icon} ${m.title}`;
+						});
+						progress([this._markdown(`### Plan\n${lines.join('\n')}`)]);
+						break;
+					}
+					case AgentEventType.DiffPreview: {
+						const p = event.payload as IDiffPreviewPayload;
+						const hunks = (p.hunks || []).map(h => {
+							const hunkLines = h.lines.map(l => {
+								if (l.type === 'add') { return `+ ${l.content}`; }
+								if (l.type === 'del') { return `- ${l.content}`; }
+								return `  ${l.content}`;
+							}).join('\n');
+							return `${h.header}\n${hunkLines}`;
+						}).join('\n\n');
+						progress([this._markdown(`**Diff: \`${p.file_path}\`**\n\`\`\`diff\n${hunks}\n\`\`\``)]);
+						break;
+					}
+					case AgentEventType.SimReport: {
+						const p = event.payload as ISimReportPayload;
+						const summary = ChipOSChatAgent._normalizeSimSummary(p.summary, p.tests);
+						progress([{
+							kind: 'edaSimReport',
+							tests: p.tests ?? [],
+							summary,
+						} satisfies IChatEdaSimReport]);
+						break;
+					}
+					case AgentEventType.CoverageReport: {
+						const p = event.payload as ICoverageReportPayload;
+						progress([{
+							kind: 'edaCoverageReport',
+							line_cov: p.line_cov,
+							branch_cov: p.branch_cov,
+							gaps: p.gaps,
+						} satisfies IChatEdaCoverageReport]);
+						break;
+					}
+					case AgentEventType.LintReport: {
+						const p = event.payload as ILintReportPayload;
+						progress([{
+							kind: 'edaLintReport',
+							errors: p.errors ?? [],
+							auto_fixable: p.auto_fixable,
+							tool: p.tool,
+						} satisfies IChatEdaLintReport]);
+						break;
+					}
+					case AgentEventType.NegotiationView: {
+						const p = event.payload as INegotiationViewPayload;
+						const rawPerspectives = (p.perspectives ?? []) as unknown as Array<Record<string, string>>;
+						const perspectives = rawPerspectives.map(raw => ({
+							agent: raw.agent ?? raw.role ?? '',
+							position: raw.position ?? raw.claim ?? '',
+							reasoning: raw.reasoning ?? raw.confidence ?? '',
+						}));
+						progress([{
+							kind: 'edaNegotiationView',
+							issue: p.issue,
+							perspectives,
+							recommendation: p.recommendation,
+						} satisfies IChatEdaNegotiationView]);
+						break;
+					}
+					case AgentEventType.ParallelProgress: {
+						const p = event.payload as IParallelProgressPayload;
+						progress([{
+							kind: 'edaParallelProgress',
+							phase: p.phase,
+							tracks: p.tracks ?? [],
+							conflicts: p.conflicts,
+						} satisfies IChatEdaParallelProgress]);
+						break;
+					}
+					case AgentEventType.LoopProgress: {
+						const p = event.payload as ILoopProgressPayload;
+						const pct = p.max_rounds > 0 ? Math.round((p.round / p.max_rounds) * 100) : 0;
+						const statusIcon = p.status === 'running' ? '$(loading~spin)' :
+							p.status === 'done' ? '$(check)' :
+								p.status === 'failed' ? '$(error)' : '$(circle-outline)';
+						progress([this._progress(`${statusIcon} \`${p.tool}\` round ${p.round}/${p.max_rounds} (${pct}%) — ${p.phase}`, p.status === 'running')]);
+						break;
+					}
+					case AgentEventType.SpecReview: {
+						const p = event.payload as ISpecReviewPayload;
+						progress([{
+							kind: 'edaSpecReview',
+							spec_path: p.spec_path,
+							spec_name: p.spec_name,
+							summary: p.summary,
+							files: p.files,
+						} satisfies IChatEdaSpecReview]);
+						break;
+					}
+					case AgentEventType.TaskSummary: {
+						const p = event.payload as ITaskSummaryPayload;
+						progress([this._progress('$(output) Task Summary')]);
+						progress([this._markdown(ChipOSChatAgent._formatTaskSummary(p))]);
 						break;
 					}
 					case AgentEventType.Error: {
@@ -671,6 +920,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						finish({});
 						break;
 					default:
+						this._logService.trace('[ChipOS Agent] Unhandled event in continuation:', event.event_type);
 						break;
 				}
 			});
@@ -893,12 +1143,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		}
 		return parts.join(' · ');
-	}
-
-	private _describeToolCall(toolName: string, args?: Record<string, unknown>): string {
-		const friendly = this._friendlyToolName(toolName);
-		const detail = ChipOSChatAgent._formatToolArgs(args);
-		return detail ? `${friendly}: ${detail}` : friendly;
 	}
 
 	/**
