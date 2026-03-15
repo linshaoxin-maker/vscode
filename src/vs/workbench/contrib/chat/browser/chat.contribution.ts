@@ -79,7 +79,8 @@ import { registerChatCopyActions } from './actions/chatCopyActions.js';
 import { registerChatDeveloperActions } from './actions/chatDeveloperActions.js';
 import { registerChatExecuteActions } from './actions/chatExecuteActions.js';
 import { registerChatFileTreeActions } from './actions/chatFileTreeActions.js';
-import { ChatGettingStartedContribution } from './actions/chatGettingStarted.js';
+// ChipOS: Disabled Copilot onboarding
+// import { ChatGettingStartedContribution } from './actions/chatGettingStarted.js';
 import { registerChatForkActions } from './actions/chatForkActions.js';
 import { registerChatExportActions } from './actions/chatImportExport.js';
 import { registerLanguageModelActions } from './actions/chatLanguageModelActions.js';
@@ -129,13 +130,14 @@ import './aiCustomization/aiCustomizationWorkspaceService.js';
 import './aiCustomization/aiCustomizationManagement.contribution.js';
 
 import { ChatOutputRendererService, IChatOutputRendererService } from './chatOutputItemRenderer.js';
-import { ChatCompatibilityNotifier, ChatExtensionPointHandler } from './chatParticipant.contribution.js';
+import { ChatExtensionPointHandler } from './chatParticipant.contribution.js';
 import { ChatPasteProvidersFeature } from './widget/input/editor/chatPasteProviders.js';
 import { QuickChatService } from './widgetHosts/chatQuick.js';
 import { ChatResponseAccessibleView } from './accessibility/chatResponseAccessibleView.js';
 import { ChatTerminalOutputAccessibleView } from './accessibility/chatTerminalOutputAccessibleView.js';
-import { ChatSetupContribution, ChatTeardownContribution } from './chatSetup/chatSetupContributions.js';
-import { ChatStatusBarEntry } from './chatStatus/chatStatusEntry.js';
+// ChipOS: Disabled Copilot teardown and status bar
+// import { ChatTeardownContribution } from './chatSetup/chatSetupContributions.js';
+// import { ChatStatusBarEntry } from './chatStatus/chatStatusEntry.js';
 import { ChatVariablesService } from './attachments/chatVariables.js';
 import { ChatWidget } from './widget/chatWidget.js';
 import { ChatCodeBlockContextProviderService } from './codeBlockContextProviderService.js';
@@ -1763,14 +1765,18 @@ registerWorkbenchContribution2(ChatSlashCommandsContribution.ID, ChatSlashComman
 registerWorkbenchContribution2(ChatExtensionPointHandler.ID, ChatExtensionPointHandler, WorkbenchPhase.BlockStartup);
 registerWorkbenchContribution2(LanguageModelToolsExtensionPointHandler.ID, LanguageModelToolsExtensionPointHandler, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(ChatPromptFilesExtensionPointHandler.ID, ChatPromptFilesExtensionPointHandler, WorkbenchPhase.BlockRestore);
-registerWorkbenchContribution2(ChatCompatibilityNotifier.ID, ChatCompatibilityNotifier, WorkbenchPhase.Eventually);
+// ChipOS: Disabled Copilot compatibility notifier
+// registerWorkbenchContribution2(ChatCompatibilityNotifier.ID, ChatCompatibilityNotifier, WorkbenchPhase.Eventually);
 registerWorkbenchContribution2(CodeBlockActionRendering.ID, CodeBlockActionRendering, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(ChatImplicitContextContribution.ID, ChatImplicitContextContribution, WorkbenchPhase.Eventually);
 registerWorkbenchContribution2(ChatViewsWelcomeHandler.ID, ChatViewsWelcomeHandler, WorkbenchPhase.BlockStartup);
-registerWorkbenchContribution2(ChatGettingStartedContribution.ID, ChatGettingStartedContribution, WorkbenchPhase.Eventually);
-registerWorkbenchContribution2(ChatSetupContribution.ID, ChatSetupContribution, WorkbenchPhase.BlockRestore);
-registerWorkbenchContribution2(ChatTeardownContribution.ID, ChatTeardownContribution, WorkbenchPhase.AfterRestored);
-registerWorkbenchContribution2(ChatStatusBarEntry.ID, ChatStatusBarEntry, WorkbenchPhase.BlockRestore);
+// ChipOS: Disabled Copilot getting started
+// registerWorkbenchContribution2(ChatGettingStartedContribution.ID, ChatGettingStartedContribution, WorkbenchPhase.Eventually);
+// ChipOS: Disabled Copilot setup agents — ChipOS registers its own agent via chiposContribution.ts
+// registerWorkbenchContribution2(ChatSetupContribution.ID, ChatSetupContribution, WorkbenchPhase.BlockRestore);
+// ChipOS: Disabled Copilot teardown and status bar
+// registerWorkbenchContribution2(ChatTeardownContribution.ID, ChatTeardownContribution, WorkbenchPhase.AfterRestored);
+// registerWorkbenchContribution2(ChatStatusBarEntry.ID, ChatStatusBarEntry, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(BuiltinToolsContribution.ID, BuiltinToolsContribution, WorkbenchPhase.Eventually);
 registerWorkbenchContribution2(UsagesToolContribution.ID, UsagesToolContribution, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(RenameToolContribution.ID, RenameToolContribution, WorkbenchPhase.BlockRestore);

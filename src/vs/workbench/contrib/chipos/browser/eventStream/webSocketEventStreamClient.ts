@@ -16,14 +16,27 @@ import {
 	type ITextDeltaEvent,
 	type IToolCallEvent,
 	type IToolResultEvent,
-	type IFileEditEvent,
-	type IConfirmEvent,
 	type IErrorEvent,
 	type IDoneEvent,
 	type IStatusEvent,
 	type ITodoUpdateEvent,
 	type ITaskCompleteEvent,
 	type ISkillTreeEvent,
+	type IConfirmRequestEvent,
+	type IRoundStartEvent,
+	type IPlanEvent,
+	type IDiffPreviewEvent,
+	type ISimReportEvent,
+	type ICoverageReportEvent,
+	type ILintReportEvent,
+	type INegotiationViewEvent,
+	type IParallelProgressEvent,
+	type ILoopProgressEvent,
+	type ISpecReviewEvent,
+	type ITaskSummaryEvent,
+	type ISubagentEventEvent,
+	type IModelTurnEvent,
+	type IWorktreeFilesAppliedEvent,
 } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 import { IEventStreamClient } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventStreamClient.js';
 
@@ -157,12 +170,12 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 		query: string,
 		mentions: IMentionItem[],
 		mode: 'agent' | 'spec',
-		options: { thinking: boolean; autoApprove: boolean },
+		options: { thinking: boolean; autoApproveMode: string },
 	): void {
 		const apiKey = this._configurationService.getValue<string>('chipos.apiKey') || '';
-		const apiBaseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') || 'https://api.deepseek.com';
-		const model = this._configurationService.getValue<string>('chipos.model') || 'deepseek-chat';
-		const provider = this._configurationService.getValue<string>('chipos.provider') || 'auto';
+		const apiBaseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') || 'https://open.bigmodel.cn/api/paas/v4';
+		const model = this._configurationService.getValue<string>('chipos.model') || 'glm-5';
+		const provider = this._configurationService.getValue<string>('chipos.provider') || 'openai';
 		const enableBuiltinTools = this._configurationService.getValue<boolean>('chipos.enableBuiltinTools') ?? true;
 
 		const contextFiles = mentions.map(m => ({
@@ -182,7 +195,7 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 			workspace_path: workspacePath,
 			mode,
 			context_files: contextFiles,
-			auto_approve_mode: options.autoApprove ? 'full_auto' : 'standard',
+			auto_approve_mode: options.autoApproveMode,
 			llm_config: {
 				api_key: apiKey,
 				base_url: apiBaseUrl,
@@ -300,10 +313,10 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 
 			// ── Tool lifecycle ──
 			case 'tool_start':
-				this._handleToolStart(msg.data as { tool_name: string; args: unknown; tool_id: string });
+				this._handleToolStart(msg.data as { tool_name: string; args: unknown; tool_id: string; summary?: string });
 				break;
 			case 'tool_result':
-				this._handleToolResult(msg.data as { tool_name: string; content: string; content_type?: string; tool_id?: string });
+				this._handleToolResult(msg.data as { tool_name: string; content: string; content_type?: string; tool_id?: string; summary?: string; is_error?: boolean });
 				break;
 
 			// ── Status / progress / informational ──
@@ -320,66 +333,111 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 				break;
 
 			// ── Task lifecycle ──
-			case 'task_complete':
-				this._handleTaskComplete(msg.data as { status: string; message?: string });
-				break;
-			case 'round_start':
-				break;
+		case 'task_complete':
+			this._handleTaskComplete(msg.data as { status: string; message?: string });
+			break;
 
-			// ── Confirmations (Hook approval) ──
-			case 'confirm_request':
-				this._handleConfirmRequest(msg.data as Record<string, unknown>);
-				break;
+		// ── Confirmations (Hook approval) ──
+		case 'confirm_request':
+			this._handleConfirmRequest(msg.data as Record<string, unknown>);
+			break;
 
-			// ── Code diff preview ──
-			case 'diff_preview':
-				this._handleDiffPreview(msg.data as { file_path: string; hunks: unknown[] });
-				break;
+		// ── Code diff preview ──
+		case 'diff_preview':
+			this._handleDiffPreview(msg.data as { file_path: string; hunks: unknown[] });
+			break;
 
-			// ── Keep-alive ──
-			case 'heartbeat':
-				break;
+		// ── Keep-alive ──
+		case 'heartbeat':
+			break;
 
-			// ── Errors ──
-			case 'error':
-				this._handleError(msg.data);
-				break;
+		// ── Errors ──
+		case 'error':
+			this._handleError(msg.data);
+			break;
 
-			// ── Skill tree ──
-			case 'skill_tree':
-				this._handleSkillTree(msg.data as { version: number; total_skills: number; children: unknown[] });
-				break;
+		// ── Skill tree ──
+		case 'skill_tree':
+			this._handleSkillTree(msg.data as { version: number; total_skills: number; children: unknown[] });
+			break;
 
-			// ── Report cards (FEAT-10/11/12 will consume these) ──
-			case 'sim_report':
-			case 'coverage_report':
-			case 'lint_report':
-			case 'negotiation_view':
-			case 'spec_review':
-			case 'pre_review_report':
-			case 'parallel_progress':
-			case 'loop_progress':
-			case 'plan':
-			case 'task_summary':
-			case 'subagent_event':
-			case 'model_turn_start':
-			case 'model_turn_end':
-			case 'timing_highlight':
-			case 'worktree_files_applied':
-				this._emit({
-					event_id: nextEventId(),
-					event_type: AgentEventType.Status,
-					timestamp: Date.now() / 1000,
-					payload: {
-						level: 'info' as const,
-						text: `[${msg.type}] ${typeof msg.data === 'object' ? JSON.stringify(msg.data).slice(0, 200) : String(msg.data)}`,
-					},
-				} as IStatusEvent);
-				break;
+		// ── Round start ──
+		case 'round_start':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.RoundStart, timestamp: Date.now() / 1000, payload: msg.data as { round: number } } as IRoundStartEvent);
+			break;
 
-			default:
-				this._logService.info('[ChipOS WS] Unhandled message type:', msg.type);
-		}
+		// ── Plan ──
+		case 'plan':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.Plan, timestamp: Date.now() / 1000, payload: msg.data as { milestones: [] } } as IPlanEvent);
+			break;
+
+		// ── Simulation report ──
+		case 'sim_report':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.SimReport, timestamp: Date.now() / 1000, payload: msg.data } as ISimReportEvent);
+			break;
+
+		// ── Coverage report ──
+		case 'coverage_report':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.CoverageReport, timestamp: Date.now() / 1000, payload: msg.data } as ICoverageReportEvent);
+			break;
+
+		// ── Lint report ──
+		case 'lint_report':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.LintReport, timestamp: Date.now() / 1000, payload: msg.data } as ILintReportEvent);
+			break;
+
+		// ── Negotiation view ──
+		case 'negotiation_view':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.NegotiationView, timestamp: Date.now() / 1000, payload: msg.data } as INegotiationViewEvent);
+			break;
+
+		// ── Parallel progress ──
+		case 'parallel_progress':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.ParallelProgress, timestamp: Date.now() / 1000, payload: msg.data } as IParallelProgressEvent);
+			break;
+
+		// ── Loop progress ──
+		case 'loop_progress':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.LoopProgress, timestamp: Date.now() / 1000, payload: msg.data } as ILoopProgressEvent);
+			break;
+
+		// ── Spec review ──
+		case 'spec_review':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.SpecReview, timestamp: Date.now() / 1000, payload: msg.data } as ISpecReviewEvent);
+			break;
+
+		// ── Task summary ──
+		case 'task_summary':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.TaskSummary, timestamp: Date.now() / 1000, payload: msg.data } as ITaskSummaryEvent);
+			break;
+
+		// ── Subagent event ──
+		case 'subagent_event':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.SubagentEvent, timestamp: Date.now() / 1000, payload: msg.data } as ISubagentEventEvent);
+			break;
+
+		// ── Model turn boundaries ──
+		case 'model_turn_start':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.ModelTurnStart, timestamp: Date.now() / 1000, payload: {} } as IModelTurnEvent);
+			break;
+		case 'model_turn_end':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.ModelTurnEnd, timestamp: Date.now() / 1000, payload: {} } as IModelTurnEvent);
+			break;
+
+		// ── Worktree files applied ──
+		case 'worktree_files_applied':
+			this._emit({ event_id: nextEventId(), event_type: AgentEventType.WorktreeFilesApplied, timestamp: Date.now() / 1000, payload: msg.data } as IWorktreeFilesAppliedEvent);
+			break;
+
+		// ── Passthrough events that don't need special handling ──
+		case 'timing_highlight':
+		case 'pre_review_report':
+			this._logService.info('[ChipOS WS] Passthrough event:', msg.type);
+			break;
+
+		default:
+			this._logService.info('[ChipOS WS] Unhandled message type:', msg.type);
+	}
 	}
 
 	// ── model_output: LLM streaming text chunks ────────────────────────────
@@ -405,7 +463,7 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 
 	// ── tool_start / tool_result ─────────────────────────────────────────────
 
-	private _handleToolStart(data: { tool_name: string; args: unknown; tool_id: string }): void {
+	private _handleToolStart(data: { tool_name: string; args: unknown; tool_id: string; summary?: string }): void {
 		this._emit({
 			event_id: nextEventId(),
 			event_type: AgentEventType.ToolCall,
@@ -414,11 +472,12 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 				tool_name: data.tool_name,
 				arguments: (typeof data.args === 'object' && data.args !== null ? data.args : {}) as Record<string, unknown>,
 				call_id: data.tool_id || `tc_${Date.now()}`,
+				summary: data.summary,
 			},
 		} as IToolCallEvent);
 	}
 
-	private _handleToolResult(data: { tool_name: string; content: string; content_type?: string; tool_id?: string }): void {
+	private _handleToolResult(data: { tool_name: string; content: string; content_type?: string; tool_id?: string; summary?: string; is_error?: boolean }): void {
 		this._emit({
 			event_id: nextEventId(),
 			event_type: AgentEventType.ToolResult,
@@ -427,7 +486,8 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 				call_id: data.tool_id || `tr_${Date.now()}`,
 				tool_name: data.tool_name,
 				result: data.content,
-				success: true,
+				success: !data.is_error,
+				summary: data.summary,
 			},
 		} as IToolResultEvent);
 	}
@@ -514,42 +574,32 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 	private _handleConfirmRequest(data: Record<string, unknown>): void {
 		this._emit({
 			event_id: nextEventId(),
-			event_type: AgentEventType.Confirm,
+			event_type: AgentEventType.ConfirmRequest,
 			timestamp: Date.now() / 1000,
 			payload: {
-				hook_id: String(data.hook_id ?? ''),
-				card_type: (data.card_type as 'simple' | 'diff_preview' | 'sim_report' | 'custom') ?? 'simple',
+				request_id: String(data.request_id ?? data.hook_id ?? `cr_${Date.now()}`),
+				card_type: String(data.card_type ?? 'simple'),
 				card_data: (data.card_data as Record<string, unknown>) ?? {},
-				skippable: Boolean(data.skippable),
+				title: data.title as string | undefined,
+				message: data.message as string | undefined,
+				options: data.options as Array<{ label: string; action: string }> | undefined,
+				is_background: Boolean(data.is_background),
 			},
-		} as IConfirmEvent);
+		} as IConfirmRequestEvent);
 	}
 
 	// ── diff_preview ─────────────────────────────────────────────────────────
 
 	private _handleDiffPreview(data: { file_path: string; hunks: unknown[] }): void {
-		const edits = (data.hunks ?? []).map((hunk: any) => ({
-			range: {
-				startLine: hunk.old_start ?? hunk.new_start ?? 1,
-				startCol: 1,
-				endLine: (hunk.old_start ?? hunk.new_start ?? 1) + (hunk.lines?.length ?? 0),
-				endCol: 1,
-			},
-			newText: (hunk.lines ?? [])
-				.filter((l: string) => l.startsWith('+') || l.startsWith(' '))
-				.map((l: string) => l.slice(1))
-				.join('\n'),
-		}));
-
 		this._emit({
 			event_id: nextEventId(),
-			event_type: AgentEventType.FileEdit,
+			event_type: AgentEventType.DiffPreview,
 			timestamp: Date.now() / 1000,
 			payload: {
 				file_path: data.file_path,
-				edits,
+				hunks: (data.hunks ?? []) as Array<{ header: string; lines: Array<{ type: string; content: string; line_no?: number }> }>,
 			},
-		} as IFileEditEvent);
+		} as IDiffPreviewEvent);
 	}
 
 	// ── skill_tree ───────────────────────────────────────────────────────────

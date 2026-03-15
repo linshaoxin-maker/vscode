@@ -187,7 +187,7 @@ const supportsAllAttachments: Required<IChatAgentAttachmentCapabilities> = {
 	supportsHandOffs: true,
 };
 
-const DISCLAIMER = localize('chatDisclaimer', "AI responses may be inaccurate");
+const DISCLAIMER = localize('chatDisclaimer', "AI 驱动的芯片设计助手 — 从 Spec 分析到 RTL 编码、验证与调试，全程协作");
 
 export class ChatWidget extends Disposable implements IChatWidget {
 
@@ -986,10 +986,10 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			if (!numItems) {
 				const defaultAgent = this.chatAgentService.getDefaultAgent(this.location, this.input.currentModeKind);
 				let additionalMessage: string | IMarkdownString | undefined;
-				if (this.chatEntitlementService.anonymous && !this.chatEntitlementService.sentiment.installed) {
-					const providers = product.defaultChatAgent.provider;
-					additionalMessage = new MarkdownString(localize({ key: 'settings', comment: ['{Locked="]({2})"}', '{Locked="]({3})"}'] }, "By continuing with {0} Copilot, you agree to {1}'s [Terms]({2}) and [Privacy Statement]({3}).", providers.default.name, providers.default.name, product.defaultChatAgent.termsStatementUrl, product.defaultChatAgent.privacyStatementUrl), { isTrusted: true });
-				} else {
+			if (this.chatEntitlementService.anonymous && !this.chatEntitlementService.sentiment.installed && product.defaultChatAgent?.provider?.default) {
+				const providers = product.defaultChatAgent.provider;
+				additionalMessage = new MarkdownString(localize({ key: 'settings', comment: ['{Locked="]({2})"}', '{Locked="]({3})"}'] }, "By continuing with {0} Copilot, you agree to {1}'s [Terms]({2}) and [Privacy Statement]({3}).", providers.default.name, providers.default.name, product.defaultChatAgent.termsStatementUrl, product.defaultChatAgent.privacyStatementUrl), { isTrusted: true });
+			} else {
 					additionalMessage = defaultAgent?.metadata.additionalWelcomeMessage;
 				}
 				if (!additionalMessage && !this._lockedAgent) {
@@ -1136,11 +1136,11 @@ export class ChatWidget extends Disposable implements IChatWidget {
 
 		let title: string;
 		if (this.input.currentModeKind === ChatModeKind.Ask) {
-			title = localize('chatDescription', "Ask about your code");
+			title = localize('chatDescription', "Ask ChipOS about your code");
 		} else if (this.input.currentModeKind === ChatModeKind.Edit) {
-			title = localize('editsTitle', "Edit in context");
+			title = localize('editsTitle', "Edit with ChipOS");
 		} else {
-			title = localize('agentTitle', "Build with Agent");
+			title = localize('agentTitle', "Build with ChipOS");
 		}
 
 		return {

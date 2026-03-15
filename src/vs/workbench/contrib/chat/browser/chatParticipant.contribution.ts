@@ -8,7 +8,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Event } from '../../../../base/common/event.js';
 import { createCommandUri, MarkdownString } from '../../../../base/common/htmlContent.js';
-
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import * as strings from '../../../../base/common/strings.js';
 import { localize, localize2 } from '../../../../nls.js';
@@ -39,13 +39,13 @@ const chatViewIcon = registerIcon('chat-view-icon', Codicon.chatSparkle, localiz
 
 const chatViewContainer: ViewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
 	id: ChatViewContainerId,
-	title: localize2('chat.viewContainer.label', "Chat"),
+	title: localize2('chat.viewContainer.label', "ChipOS Chat"),
 	icon: chatViewIcon,
 	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [ChatViewContainerId, { mergeViewWithContainerWhenSingleView: true }]),
 	storageId: ChatViewContainerId,
 	hideIfEmpty: true,
 	order: 1,
-}, ViewContainerLocation.AuxiliaryBar, { isDefault: false, doNotRegisterOpenCommand: true });
+}, ViewContainerLocation.AuxiliaryBar, { isDefault: true, doNotRegisterOpenCommand: true });
 
 const chatViewDescriptor: IViewDescriptor = {
 	id: ChatViewId,
@@ -55,9 +55,27 @@ const chatViewDescriptor: IViewDescriptor = {
 	name: localize2('chat.viewContainer.label', "Chat"),
 	canToggleVisibility: false,
 	canMoveView: true,
-	// ChipOS: keybinding and view superseded by ChipOS Chat in AuxiliaryBar
+	openCommandActionDescriptor: {
+		id: ChatViewContainerId,
+		title: chatViewContainer.title,
+		mnemonicTitle: localize({ key: 'miToggleChat', comment: ['&& denotes a mnemonic'] }, "&&Chat"),
+		keybindings: {
+			primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyI,
+			mac: {
+				primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyI
+			}
+		},
+		order: 1
+	},
 	ctorDescriptor: new SyncDescriptor(ChatViewPane),
-	when: ContextKeyExpr.false()
+	when: ContextKeyExpr.or(
+		ContextKeyExpr.or(
+			ChatContextKeys.Setup.hidden,
+			ChatContextKeys.Setup.disabled
+		)?.negate(),
+		ChatContextKeys.panelParticipantRegistered,
+		ChatContextKeys.extensionInvalid
+	)
 };
 Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([chatViewDescriptor], chatViewContainer);
 

@@ -3,6 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+@keyframes chipos-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.3; }
+}
+
 .chat-viewpane {
 
 	.chat-view-title-container {
@@ -28,7 +33,16 @@
 
 				.chat-view-title-label-container {
 					display: flex;
-					gap: 4px;
+					align-items: center;
+					gap: 6px;
+					padding: 0 8px;
+					height: 22px;
+					border-radius: 4px;
+					cursor: pointer;
+				}
+
+				.chat-view-title-label-container:hover {
+					background: var(--vscode-toolbar-hoverBackground);
 				}
 			}
 		}
@@ -43,6 +57,43 @@
 			white-space: nowrap;
 			text-overflow: ellipsis;
 			min-width: 0;
+		}
+
+		.chat-view-title-connection-dot {
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			flex-shrink: 0;
+			margin-right: 4px;
+			transition: background-color 0.3s ease;
+		}
+
+		.chat-view-title-connection-dot.connected {
+			background-color: var(--vscode-testing-iconPassed);
+		}
+
+		.chat-view-title-connection-dot.disconnected {
+			background-color: var(--vscode-testing-iconFailed);
+		}
+
+		.chat-view-title-connection-dot.connecting {
+			background-color: var(--vscode-descriptionForeground);
+			animation: chipos-pulse 1.5s ease-in-out infinite;
+		}
+
+		.chat-view-title-status-indicator {
+			font-size: 11px;
+			line-height: 16px;
+			color: var(--vscode-descriptionForeground);
+			background-color: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			padding: 1px 6px;
+			border-radius: 10px;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			max-width: 160px;
+			flex-shrink: 1;
 		}
 
 		.chat-view-title-actions-toolbar {

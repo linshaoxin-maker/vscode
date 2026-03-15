@@ -265,7 +265,7 @@ export class ChatPanelViewPane extends ViewPane {
 			session.mode,
 			{
 				thinking: this._inputWidget.isThinkingEnabled(),
-				autoApprove: this._inputWidget.isAutoApproveEnabled(),
+				autoApproveMode: this._inputWidget.isAutoApproveEnabled() ? 'standard' : 'strict',
 			},
 		);
 	}

@@ -82,6 +82,12 @@ const responsePartSchema = Adapt.v<IChatProgressResponseContent, SerializedChatR
 				case 'treeData':
 				case 'workspaceEdit':
 				case 'disabledClaudeHooks':
+				case 'edaSimReport':
+				case 'edaCoverageReport':
+				case 'edaLintReport':
+				case 'edaParallelProgress':
+				case 'edaNegotiationView':
+				case 'edaSpecReview':
 					return a.kind === b.kind;
 
 				default: {

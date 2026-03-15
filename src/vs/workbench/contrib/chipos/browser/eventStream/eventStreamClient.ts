@@ -25,7 +25,7 @@ export interface IEventStreamClient {
 
 	connect(): Promise<void>;
 	disconnect(): void;
-	sendTask(sessionId: string, query: string, mentions: IMentionItem[], mode: 'agent' | 'spec', options: { thinking: boolean; autoApprove: boolean }): void;
+	sendTask(sessionId: string, query: string, mentions: IMentionItem[], mode: 'agent' | 'spec', options: { thinking: boolean; autoApproveMode: string }): void;
 	sendStop(sessionId: string): void;
 	sendConfirmResponse(requestId: string, action: string, comment?: string): void;
 }
@@ -70,7 +70,7 @@ export class MockEventStreamClient extends Disposable implements IEventStreamCli
 		this._setConnectionState(ConnectionState.Disconnected);
 	}
 
-	sendTask(sessionId: string, query: string, _mentions: IMentionItem[], _mode: 'agent' | 'spec', _options: { thinking: boolean; autoApprove: boolean }): void {
+	sendTask(sessionId: string, query: string, _mentions: IMentionItem[], _mode: 'agent' | 'spec', _options: { thinking: boolean; autoApproveMode: string }): void {
 		if (this._connectionState !== ConnectionState.Connected) {
 			return;
 		}

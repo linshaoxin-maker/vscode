@@ -44,10 +44,11 @@ import { IChatAgentService } from '../../../common/participants/chatAgents.js';
 import { ChatContextKeys } from '../../../common/actions/chatContextKeys.js';
 import { IChatModel, IChatModelInputState } from '../../../common/model/chatModel.js';
 import { CHAT_PROVIDER_ID } from '../../../common/participants/chatParticipantContribTypes.js';
-import { IChatModelReference, IChatService } from '../../../common/chatService/chatService.js';
+import { IChatConfirmation, IChatModelReference, IChatService } from '../../../common/chatService/chatService.js';
 import { IChatSessionsService, localChatSessionType } from '../../../common/chatSessionsService.js';
 import { LocalChatSessionUri, getChatSessionType } from '../../../common/model/chatUri.js';
 import { ChatAgentLocation, ChatConfiguration, ChatModeKind } from '../../../common/constants.js';
+import { isRequestVM, IChatRequestViewModel, IChatResponseViewModel } from '../../../common/model/chatViewModel.js';
 import { AgentSessionsControl } from '../../agentSessions/agentSessionsControl.js';
 import { ACTION_ID_NEW_CHAT } from '../../actions/chatActions.js';
 import { ChatWidget } from '../../widget/chatWidget.js';
@@ -95,6 +96,8 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	private readonly lastDimensionsPerOrientation: Map<AgentSessionsViewerOrientation, { height: number; width: number }> = new Map();
 
 	private welcomeController: ChatViewWelcomeController | undefined;
+	private stickyHeaderElement: HTMLElement | undefined;
+	private floatingConfirmBar: HTMLElement | undefined;
 
 	private restoringSession: Promise<void> | undefined;
 	private readonly modelRef = this._register(new MutableDisposable<IChatModelReference>());
@@ -514,6 +517,14 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 			this.createChatTitleControl(chatControlsContainer);
 		}
 
+		// FEAT-28: Sticky Header — shows last user message when scrolled
+		this.stickyHeaderElement = append(chatControlsContainer, $('.chat-sticky-header'));
+		this.stickyHeaderElement.style.display = 'none';
+
+		// FEAT-31: Floating Confirm Bar — shows when confirmation is pending but scrolled away
+		this.floatingConfirmBar = append(chatControlsContainer, $('.chat-floating-confirm-bar'));
+		this.floatingConfirmBar.style.display = 'none';
+
 		// Chat Widget
 		const scopedInstantiationService = this._register(this.instantiationService.createChild(new ServiceCollection([IContextKeyService, this.scopedContextKeyService])));
 		this._widget = this._register(scopedInstantiationService.createInstance(
@@ -551,6 +562,12 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 			}));
 		this._widget.render(chatControlsContainer);
 
+		// FEAT-28 + FEAT-31: Update sticky header and floating confirm bar on scroll
+		this._register(this._widget.onDidScroll(() => {
+			this.updateStickyHeader();
+			this.updateFloatingConfirmBar();
+		}));
+
 		const updateWidgetVisibility = (reader?: IReader) => this._widget.setVisible(this.isBodyVisible() && !this.welcomeController?.isShowingWelcome.read(reader));
 		this._register(this.onDidChangeBodyVisibility(() => updateWidgetVisibility()));
 		this._register(autorun(reader => updateWidgetVisibility(reader)));
@@ -569,6 +586,72 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		this._register(this.titleControl.onDidChangeHeight(() => {
 			this.relayout();
 		}));
+	}
+
+	// ── FEAT-28: Sticky Header ─────────────────────────────────────────────
+
+	private updateStickyHeader(): void {
+		if (!this.stickyHeaderElement || !this._widget?.viewModel) {
+			return;
+		}
+
+		const items = this._widget.viewModel.getItems();
+		const lastUserMsg = [...items].reverse().find(item => isRequestVM(item)) as IChatRequestViewModel | undefined;
+
+		if (!lastUserMsg) {
+			this.stickyHeaderElement.classList.remove('visible');
+			return;
+		}
+
+		const scrollTop = this._widget.scrollTop;
+		const showThreshold = 80;
+
+		if (scrollTop > showThreshold) {
+			const text = lastUserMsg.messageText;
+			const truncated = text.length > 80 ? text.slice(0, 77) + '...' : text;
+			this.stickyHeaderElement.textContent = `\u{1F4CC} ${truncated}`;
+			this.stickyHeaderElement.style.display = '';
+			this.stickyHeaderElement.classList.add('visible');
+			this.stickyHeaderElement.title = text;
+			this.stickyHeaderElement.onclick = () => {
+				this._widget.reveal(lastUserMsg);
+			};
+		} else {
+			this.stickyHeaderElement.classList.remove('visible');
+		}
+	}
+
+	// ── FEAT-31: Floating Confirm Bar ──────────────────────────────────────
+
+	private updateFloatingConfirmBar(): void {
+		if (!this.floatingConfirmBar || !this._widget?.viewModel) {
+			return;
+		}
+
+		const items = this._widget.viewModel.getItems();
+		const lastResponse = [...items].reverse().find(item => !isRequestVM(item));
+		if (!lastResponse || !('response' in lastResponse)) {
+			this.floatingConfirmBar.style.display = 'none';
+			return;
+		}
+
+		const responseVm = lastResponse as IChatResponseViewModel;
+		const content = responseVm.response?.value;
+		const confirmPart = content?.find(c => c.kind === 'confirmation' && !(c as IChatConfirmation).isUsed) as IChatConfirmation | undefined;
+		if (confirmPart && this._widget.scrollTop > 80) {
+			const title = confirmPart.title;
+			const truncated = typeof title === 'string'
+				? (title.length > 50 ? title.slice(0, 47) + '...' : title)
+				: title;
+			this.floatingConfirmBar.textContent = `\u26A0\uFE0F Action required: ${truncated}`;
+			this.floatingConfirmBar.style.display = '';
+			this.floatingConfirmBar.onclick = () => {
+				this._widget.reveal(lastResponse);
+			};
+			return;
+		}
+
+		this.floatingConfirmBar.style.display = 'none';
 	}
 
 	//#endregion

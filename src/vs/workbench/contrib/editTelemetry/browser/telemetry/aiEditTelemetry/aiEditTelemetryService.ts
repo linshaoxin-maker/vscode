@@ -56,6 +56,8 @@ export interface IEditTelemetryBaseData {
 	| 'custom'
 	/** Applying a previously suggested code block */
 	| 'applyCodeBlock'
+	/** Specification review mode for EDA designs */
+	| 'spec'
 	| undefined;
 	applyCodeBlockSuggestionId: EditSuggestionId | undefined; // Is set if modeId is applyCodeBlock
 

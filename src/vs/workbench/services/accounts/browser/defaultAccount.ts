@@ -86,6 +86,21 @@ interface IMcpRegistryResponse {
 }
 
 function toDefaultAccountConfig(defaultChatAgent: IDefaultChatAgent): IDefaultAccountConfig {
+	if (!defaultChatAgent?.provider?.default) {
+		return {
+			preferredExtensions: [],
+			authenticationProvider: {
+				default: { id: '', name: '' },
+				enterprise: { id: '', name: '' },
+				enterpriseProviderConfig: '',
+				enterpriseProviderUriSetting: '',
+				scopes: [],
+			},
+			entitlementUrl: '',
+			tokenEntitlementUrl: '',
+			mcpRegistryDataUrl: '',
+		};
+	}
 	return {
 		preferredExtensions: [
 			defaultChatAgent.chatExtensionId,

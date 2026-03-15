@@ -432,7 +432,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 	public get currentModeInfo(): IChatRequestModeInfo {
 		const mode = this._currentModeObservable.get();
-		const modeId: 'ask' | 'agent' | 'edit' | 'custom' | undefined = mode.isBuiltin ? this.currentModeKind : 'custom';
+		const modeId: 'ask' | 'agent' | 'edit' | 'spec' | 'custom' | undefined = mode.isBuiltin ? this.currentModeKind : 'custom';
 
 		const modeInstructions = mode.modeInstructions?.get();
 		return {

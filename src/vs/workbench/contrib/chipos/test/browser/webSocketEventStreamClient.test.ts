@@ -345,9 +345,9 @@ suite('WebSocketEventStreamClient — Client Message Format', () => {
 			auto_approve_mode: 'standard',
 			llm_config: {
 				api_key: 'sk-test',
-				base_url: 'https://api.deepseek.com',
-				model: 'deepseek-chat',
-				provider: 'auto',
+				base_url: 'https://open.bigmodel.cn/api/paas/v4',
+				model: 'glm-5',
+				provider: 'openai',
 				enable_builtin_tools: true,
 			},
 		};
@@ -355,7 +355,7 @@ suite('WebSocketEventStreamClient — Client Message Format', () => {
 		assert.strictEqual(msg.type, 'task');
 		assert.strictEqual(msg.session_id, 's1');
 		assert.ok(msg.llm_config);
-		assert.strictEqual(msg.llm_config.model, 'deepseek-chat');
+		assert.strictEqual(msg.llm_config.model, 'glm-5');
 		assert.strictEqual(msg.context_files.length, 1);
 	});
 

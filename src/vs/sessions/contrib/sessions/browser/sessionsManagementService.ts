@@ -294,7 +294,7 @@ export class SessionsManagementService extends Disposable implements ISessionsMa
 		// Resolve mode from session's modeId (falls back to Agent)
 		const modeKind = session.mode?.kind ?? ChatModeKind.Agent;
 		const modeIsBuiltin = session.mode ? isBuiltinChatMode(session.mode) : true;
-		const modeId: 'ask' | 'agent' | 'edit' | 'custom' | undefined = modeIsBuiltin ? modeKind : 'custom';
+		const modeId: 'ask' | 'agent' | 'edit' | 'spec' | 'custom' | undefined = modeIsBuiltin ? modeKind : 'custom';
 
 		const rawModeInstructions = session.mode?.modeInstructions?.get();
 		const modeInstructions = rawModeInstructions ? {

@@ -1,0 +1,327 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+.chipos-settings-editor {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+
+.chipos-settings-header {
+	display: flex;
+	align-items: stretch;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex-shrink: 0;
+	background: var(--vscode-editor-background);
+}
+
+.chipos-settings-customizations-link {
+	display: flex;
+	align-items: center;
+	padding: 0 16px;
+	font-size: 12px;
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+	white-space: nowrap;
+	margin-left: auto;
+	text-decoration: none;
+	opacity: 0.8;
+	transition: opacity 0.15s;
+}
+
+.chipos-settings-customizations-link:hover {
+	opacity: 1;
+	text-decoration: underline;
+}
+
+/* ── Tab bar ─────────────────────────────────────────────────── */
+
+.chipos-settings-tabs {
+	display: flex;
+	gap: 0;
+	padding: 0 16px;
+	flex-shrink: 0;
+}
+
+.chipos-settings-tab {
+	padding: 8px 16px;
+	cursor: pointer;
+	border: none;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 13px;
+	font-family: var(--vscode-font-family);
+	border-bottom: 2px solid transparent;
+	opacity: 0.7;
+	transition: opacity 0.15s, border-color 0.15s;
+}
+
+.chipos-settings-tab:hover {
+	opacity: 1;
+}
+
+.chipos-settings-tab.active {
+	opacity: 1;
+	border-bottom-color: var(--vscode-focusBorder);
+	font-weight: 600;
+}
+
+/* ── Tab content ─────────────────────────────────────────────── */
+
+.chipos-settings-content {
+	flex: 1;
+	overflow-y: auto;
+	padding: 20px 24px;
+}
+
+/* ── Sections ────────────────────────────────────────────────── */
+
+.chipos-settings-section {
+	margin-bottom: 24px;
+}
+
+.chipos-settings-section-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	margin-bottom: 12px;
+	padding-bottom: 4px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+/* ── Setting rows ────────────────────────────────────────────── */
+
+.chipos-setting-row {
+	display: flex;
+	flex-direction: column;
+	margin-bottom: 16px;
+	max-width: 600px;
+}
+
+.chipos-setting-row-horizontal {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 16px;
+	max-width: 600px;
+}
+
+.chipos-setting-label {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+	margin-bottom: 4px;
+}
+
+.chipos-setting-description {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 6px;
+}
+
+/* ── Input controls ──────────────────────────────────────────── */
+
+.chipos-setting-input {
+	width: 100%;
+	max-width: 400px;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-input-border);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 13px;
+	font-family: var(--vscode-font-family);
+	border-radius: 2px;
+	outline: none;
+}
+
+.chipos-setting-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.chipos-setting-input[type="password"] {
+	font-family: monospace;
+}
+
+.chipos-setting-select {
+	width: 100%;
+	max-width: 400px;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-input-border);
+	background: var(--vscode-dropdown-background);
+	color: var(--vscode-dropdown-foreground);
+	font-size: 13px;
+	font-family: var(--vscode-font-family);
+	border-radius: 2px;
+	outline: none;
+	cursor: pointer;
+}
+
+.chipos-setting-select:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+/* ── Toggle switch ───────────────────────────────────────────── */
+
+.chipos-toggle {
+	position: relative;
+	width: 36px;
+	height: 18px;
+	flex-shrink: 0;
+}
+
+.chipos-toggle input {
+	opacity: 0;
+	width: 0;
+	height: 0;
+}
+
+.chipos-toggle-slider {
+	position: absolute;
+	cursor: pointer;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: var(--vscode-input-border);
+	border-radius: 18px;
+	transition: background-color 0.2s;
+}
+
+.chipos-toggle-slider::before {
+	content: '';
+	position: absolute;
+	height: 14px;
+	width: 14px;
+	left: 2px;
+	bottom: 2px;
+	background: var(--vscode-editor-background);
+	border-radius: 50%;
+	transition: transform 0.2s;
+}
+
+.chipos-toggle input:checked + .chipos-toggle-slider {
+	background: var(--vscode-focusBorder);
+}
+
+.chipos-toggle input:checked + .chipos-toggle-slider::before {
+	transform: translateX(18px);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+
+.chipos-button {
+	padding: 4px 14px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-size: 13px;
+	font-family: var(--vscode-font-family);
+	border-radius: 2px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.chipos-button:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.chipos-button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.chipos-button-secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.chipos-button-secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* ── Verify status ───────────────────────────────────────────── */
+
+.chipos-verify-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 16px;
+	max-width: 600px;
+}
+
+.chipos-verify-status {
+	font-size: 13px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.chipos-verify-status.success {
+	color: var(--vscode-testing-iconPassed);
+}
+
+.chipos-verify-status.error {
+	color: var(--vscode-testing-iconFailed);
+}
+
+.chipos-verify-status.loading {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ── Connection status ───────────────────────────────────────── */
+
+.chipos-connection-status {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-radius: 4px;
+	font-size: 13px;
+	margin-bottom: 16px;
+	max-width: 600px;
+}
+
+.chipos-connection-status.connected {
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed) 15%, transparent);
+	color: var(--vscode-testing-iconPassed);
+}
+
+.chipos-connection-status.disconnected {
+	background: color-mix(in srgb, var(--vscode-testing-iconFailed) 15%, transparent);
+	color: var(--vscode-testing-iconFailed);
+}
+
+.chipos-connection-status.connecting {
+	background: color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent);
+	color: var(--vscode-descriptionForeground);
+}
+
+.chipos-status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.chipos-connection-status.connected .chipos-status-dot {
+	background: var(--vscode-testing-iconPassed);
+}
+
+.chipos-connection-status.disconnected .chipos-status-dot {
+	background: var(--vscode-testing-iconFailed);
+}
+
+.chipos-connection-status.connecting .chipos-status-dot {
+	background: var(--vscode-descriptionForeground);
+	animation: chipos-pulse 1.5s infinite;
+}
+
+@keyframes chipos-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.3; }
+}

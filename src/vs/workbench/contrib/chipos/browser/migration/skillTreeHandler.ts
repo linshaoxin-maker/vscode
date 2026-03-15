@@ -6,6 +6,9 @@
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { ThemeIcon } from '../../../../../base/common/themables.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
+import { ITreeItem, ITreeViewDataProvider, TreeItemCollapsibleState } from '../../../../common/views.js';
 
 // ── Data types ─────────────────────────────────────────────────────────────
 
@@ -146,4 +149,65 @@ export interface ISkillTreeDataProvider {
 	readonly onDidChangeTreeData: Event<void>;
 	getChildren(element?: ISkillTreeNode): ISkillTreeNode[];
 	getTreeItem(element: ISkillTreeNode): ISkillTreeItem;
+}
+
+// ── VS Code ITreeViewDataProvider adapter ──────────────────────────────────
+
+export class SkillTreeViewDataProvider implements ITreeViewDataProvider {
+
+	private readonly _handler: SkillTreeHandler;
+	private _isEmpty = true;
+	private readonly _onDidChangeEmpty = new Emitter<void>();
+	readonly onDidChangeEmpty: Event<void> = this._onDidChangeEmpty.event;
+
+	constructor(handler: SkillTreeHandler) {
+		this._handler = handler;
+		handler.onDidChangeTreeData(() => {
+			const wasEmpty = this._isEmpty;
+			this._isEmpty = handler.domains.length === 0;
+			if (wasEmpty !== this._isEmpty) {
+				this._onDidChangeEmpty.fire();
+			}
+		});
+	}
+
+	get isTreeEmpty(): boolean {
+		return this._isEmpty;
+	}
+
+	async getChildren(element?: ITreeItem): Promise<ITreeItem[] | undefined> {
+		if (!element) {
+			return this._handler.domains.map(d => this._domainToTreeItem(d));
+		}
+
+		const domain = this._handler.domains.find(d => d.id === element.handle);
+		if (domain) {
+			return domain.skills.map(s => this._skillToTreeItem(s, domain.id));
+		}
+
+		return [];
+	}
+
+	private _domainToTreeItem(domain: ISkillDomain): ITreeItem {
+		return {
+			handle: domain.id,
+			collapsibleState: domain.skills.length > 0 ? TreeItemCollapsibleState.Collapsed : TreeItemCollapsibleState.None,
+			label: { label: domain.label },
+			description: `${domain.skills.length} skills`,
+			themeIcon: Codicon.symbolNamespace,
+		};
+	}
+
+	private _skillToTreeItem(skill: ISkillItem, parentHandle: string): ITreeItem {
+		const modeIcon = TRIGGER_MODE_ICONS[skill.triggerMode] ?? '';
+		return {
+			handle: skill.id,
+			parentHandle,
+			collapsibleState: TreeItemCollapsibleState.None,
+			label: { label: `${skill.enabled ? '✓' : '○'} ${skill.name}` },
+			description: `${modeIcon} ${skill.triggerMode}`,
+			tooltip: skill.description,
+			themeIcon: skill.enabled ? Codicon.check : (Codicon.circle as ThemeIcon),
+		};
+	}
 }

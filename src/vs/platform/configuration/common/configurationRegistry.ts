@@ -1023,4 +1023,4 @@ export function parseScope(scope: string): ConfigurationScope {
 }
 
 // Used for extension unification. Should be removed when complete.
-export const EXTENSION_UNIFICATION_EXTENSION_IDS: Set<string> = new Set(product.defaultChatAgent ? [product.defaultChatAgent.extensionId, product.defaultChatAgent.chatExtensionId].map(id => id.toLowerCase()) : []);
+export const EXTENSION_UNIFICATION_EXTENSION_IDS: Set<string> = new Set(product.defaultChatAgent?.extensionId ? [product.defaultChatAgent.extensionId, product.defaultChatAgent.chatExtensionId].filter(Boolean).map(id => id!.toLowerCase()) : []);

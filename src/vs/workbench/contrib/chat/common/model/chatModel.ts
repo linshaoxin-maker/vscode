@@ -29,7 +29,7 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { CellUri, ICellEditOperation } from '../../../notebook/common/notebookCommon.js';
 import { ChatRequestToolReferenceEntry, IChatRequestVariableEntry, isImplicitVariableEntry, isStringImplicitContextValue, isStringVariableEntry } from '../attachments/chatVariableEntries.js';
 import { migrateLegacyTerminalToolSpecificData } from '../chat.js';
-import { ChatAgentVoteDirection, ChatAgentVoteDownReason, ChatRequestQueueKind, ChatResponseClearToPreviousToolInvocationReason, ElicitationState, IChatAgentMarkdownContentWithVulnerability, IChatClearToPreviousToolInvocation, IChatCodeCitation, IChatCommandButton, IChatConfirmation, IChatContentInlineReference, IChatContentReference, IChatDisabledClaudeHooksPart, IChatEditingSessionAction, IChatElicitationRequest, IChatElicitationRequestSerialized, IChatExternalToolInvocationUpdate, IChatExtensionsContent, IChatFollowup, IChatHookPart, IChatLocationData, IChatMarkdownContent, IChatMcpServersStarting, IChatMcpServersStartingSerialized, IChatModelReference, IChatMultiDiffData, IChatMultiDiffDataSerialized, IChatNotebookEdit, IChatProgress, IChatProgressMessage, IChatPullRequestContent, IChatQuestionCarousel, IChatResponseCodeblockUriPart, IChatResponseProgressFileTreeData, IChatSendRequestOptions, IChatService, IChatSessionContext, IChatSessionTiming, IChatTask, IChatTaskSerialized, IChatTextEdit, IChatThinkingPart, IChatToolInvocation, IChatToolInvocationSerialized, IChatTreeData, IChatUndoStop, IChatUsage, IChatUsedContext, IChatWarningMessage, IChatWorkspaceEdit, ResponseModelState, isIUsedContext } from '../chatService/chatService.js';
+import { ChatAgentVoteDirection, ChatAgentVoteDownReason, ChatRequestQueueKind, ChatResponseClearToPreviousToolInvocationReason, ElicitationState, IChatAgentMarkdownContentWithVulnerability, IChatClearToPreviousToolInvocation, IChatCodeCitation, IChatCommandButton, IChatConfirmation, IChatContentInlineReference, IChatContentReference, IChatDisabledClaudeHooksPart, IChatEditingSessionAction, IChatElicitationRequest, IChatElicitationRequestSerialized, IChatExternalToolInvocationUpdate, IChatExtensionsContent, IChatFollowup, IChatHookPart, IChatLocationData, IChatMarkdownContent, IChatMcpServersStarting, IChatMcpServersStartingSerialized, IChatModelReference, IChatMultiDiffData, IChatMultiDiffDataSerialized, IChatNotebookEdit, IChatProgress, IChatProgressMessage, IChatPullRequestContent, IChatQuestionCarousel, IChatResponseCodeblockUriPart, IChatResponseProgressFileTreeData, IChatSendRequestOptions, IChatService, IChatSessionContext, IChatSessionTiming, IChatTask, IChatTaskSerialized, IChatTextEdit, IChatThinkingPart, IChatToolInvocation, IChatToolInvocationSerialized, IChatTreeData, IChatUndoStop, IChatUsage, IChatUsedContext, IChatWarningMessage, IChatWorkspaceEdit, ResponseModelState, isIUsedContext, IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview } from '../chatService/chatService.js';
 import { ChatAgentLocation, ChatModeKind, ChatPermissionLevel } from '../constants.js';
 import { ChatToolInvocation } from './chatProgressTypes/chatToolInvocation.js';
 import { ToolDataSource, IToolData } from '../tools/languageModelToolsService.js';
@@ -192,7 +192,13 @@ export type IChatProgressHistoryResponseContent =
 	| IChatThinkingPart
 	| IChatHookPart
 	| IChatPullRequestContent
-	| IChatWorkspaceEdit;
+	| IChatWorkspaceEdit
+	| IChatEdaSimReport
+	| IChatEdaCoverageReport
+	| IChatEdaLintReport
+	| IChatEdaParallelProgress
+	| IChatEdaNegotiationView
+	| IChatEdaSpecReview;
 
 /**
  * "Normal" progress kinds that are rendered as parts of the stream of content.
@@ -312,7 +318,7 @@ export interface IChatRequestModeInfo {
 	kind: ChatModeKind | undefined; // is undefined in case of modeId == 'apply'
 	isBuiltin: boolean;
 	modeInstructions: IChatRequestModeInstructions | undefined;
-	modeId: 'ask' | 'agent' | 'edit' | 'custom' | 'applyCodeBlock' | undefined;
+	modeId: 'ask' | 'agent' | 'edit' | 'spec' | 'custom' | 'applyCodeBlock' | undefined;
 	modeName?: string;
 	applyCodeBlockSuggestionId: EditSuggestionId | undefined;
 	permissionLevel?: ChatPermissionLevel;
@@ -509,6 +515,12 @@ class AbstractResponse implements IResponse {
 				case 'mcpServersStarting':
 				case 'questionCarousel':
 				case 'disabledClaudeHooks':
+				case 'edaSimReport':
+				case 'edaCoverageReport':
+				case 'edaLintReport':
+				case 'edaParallelProgress':
+				case 'edaNegotiationView':
+				case 'edaSpecReview':
 					// Ignore
 					continue;
 				case 'toolInvocation':
@@ -786,7 +798,7 @@ export class Response extends AbstractResponse implements IDisposable {
 
 				// Replace the resolving part's content with the resolved response
 				if (typeof content === 'string') {
-					(this._responseParts[responsePosition] as IChatTask).content = new MarkdownString(content);
+					(this._responseParts[responsePosition] as IChatTask).content = new MarkdownString(content, { supportThemeIcons: true });
 				}
 				this._updateRepr(false);
 			});

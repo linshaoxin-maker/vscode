@@ -225,6 +225,7 @@ export class ChatModeService extends Disposable implements IChatModeService {
 			builtinModes.unshift(ChatMode.Agent);
 		}
 		builtinModes.push(ChatMode.Edit);
+		builtinModes.push(ChatMode.Spec);
 		return builtinModes;
 	}
 
@@ -544,12 +545,14 @@ export namespace ChatMode {
 	export const Ask = new BuiltinChatMode(ChatModeKind.Ask, 'Ask', localize('chatDescription', "Explore and understand your code"), Codicon.question);
 	export const Edit = new BuiltinChatMode(ChatModeKind.Edit, 'Edit', localize('editsDescription', "Edit or refactor selected code"), Codicon.edit);
 	export const Agent = new BuiltinChatMode(ChatModeKind.Agent, 'Agent', localize('agentDescription', "Describe what to build"), Codicon.agent);
+	export const Spec = new BuiltinChatMode(ChatModeKind.Spec, 'Spec', localize('specDescription', "Review and generate specifications for EDA designs"), Codicon.notebook);
 }
 
 export function isBuiltinChatMode(mode: IChatMode): boolean {
 	return mode.id === ChatMode.Ask.id ||
 		mode.id === ChatMode.Edit.id ||
-		mode.id === ChatMode.Agent.id;
+		mode.id === ChatMode.Agent.id ||
+		mode.id === ChatMode.Spec.id;
 }
 
 /**

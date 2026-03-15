@@ -26,6 +26,66 @@
 	}
 }
 
+/* FEAT-28: Sticky Header — last user message pinned on scroll */
+.chat-sticky-header {
+	padding: 0 16px;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 18px;
+	color: var(--vscode-descriptionForeground);
+	background-color: var(--vscode-sideBar-background);
+	border-bottom: 1px solid var(--vscode-panel-border);
+	cursor: pointer;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex-shrink: 0;
+	opacity: 0;
+	max-height: 0;
+	transition: opacity 0.2s ease, max-height 0.2s ease, padding 0.2s ease;
+	backdrop-filter: blur(8px);
+}
+
+.chat-sticky-header.visible {
+	opacity: 1;
+	max-height: 28px;
+	padding: 5px 16px;
+}
+
+.chat-sticky-header:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+/* FEAT-31: Floating Confirm Bar — pending action reminder */
+.chat-floating-confirm-bar {
+	padding: 8px 16px;
+	font-size: 12px;
+	line-height: 18px;
+	color: var(--vscode-editorWarning-foreground);
+	background-color: var(--vscode-inputValidation-warningBackground);
+	border: 1px solid var(--vscode-inputValidation-warningBorder);
+	border-radius: 6px;
+	cursor: pointer;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex-shrink: 0;
+	position: relative;
+	z-index: 1;
+	margin: 4px 12px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat-floating-confirm-bar:hover {
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+	background-color: var(--vscode-inputValidation-warningBackground);
+	opacity: 1;
+}
+
 /* Sessions control: either sidebar or stacked */
 .chat-viewpane.has-sessions-control .agent-sessions-container {
 	display: flex;
@@ -166,4 +226,100 @@
 			}
 		}
 	}
+}
+
+/* ── FEAT-41: Thinking display enhancement ────────────────────────────── */
+.chat-viewpane .interactive-item-container .chat-thinking-indicator {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chat-viewpane .interactive-item-container .chat-thinking-indicator::before {
+	content: '';
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--vscode-descriptionForeground);
+	animation: chipos-thinking-dot 1.2s ease-in-out infinite;
+}
+
+@keyframes chipos-thinking-dot {
+	0%, 100% { opacity: 0.3; transform: scale(0.8); }
+	50% { opacity: 1; transform: scale(1); }
+}
+
+.chat-viewpane .interactive-item-container .thinking-content {
+	font-style: italic;
+	opacity: 0.75;
+	max-height: 200px;
+	overflow-y: auto;
+	transition: max-height 0.3s ease;
+}
+
+/* ── FEAT-47: Sessions panel branding ──────────────────────────────── */
+.chat-viewpane .agent-sessions-workbench-control {
+	border-right: 1px solid var(--vscode-panel-border);
+}
+
+.chat-viewpane .agent-sessions-list-item {
+	padding: 6px 12px;
+	cursor: pointer;
+	border-left: 2px solid transparent;
+	transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-viewpane .agent-sessions-list-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.chat-viewpane .agent-sessions-list-item.selected {
+	border-left-color: var(--vscode-focusBorder);
+	background-color: var(--vscode-list-activeSelectionBackground);
+}
+
+.chat-viewpane .agent-sessions-list-item .session-title {
+	font-weight: 600;
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.chat-viewpane .agent-sessions-list-item .session-timestamp {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+.chat-viewpane .agent-sessions-list-item .session-message-count {
+	font-size: 10px;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	padding: 0 5px;
+	border-radius: 8px;
+	min-width: 16px;
+	text-align: center;
+}
+
+/* ── FEAT-40: Tool task card styling ──────────────────────────────── */
+.chat-viewpane .interactive-item-container .chat-progress-task {
+	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-panel-border));
+	border-radius: 6px;
+	padding: 6px 10px;
+	margin: 4px 0;
+	transition: border-color 0.2s ease;
+}
+
+.chat-viewpane .interactive-item-container .chat-progress-task:hover {
+	border-color: var(--vscode-focusBorder);
+}
+
+.chat-viewpane .interactive-item-container .chat-progress-task .chat-progress-task-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
 }

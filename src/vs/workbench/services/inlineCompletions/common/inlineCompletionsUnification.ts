@@ -69,8 +69,8 @@ export class InlineCompletionsUnificationImpl extends Disposable implements IInl
 		@IProductService productService: IProductService
 	) {
 		super();
-		this._completionsExtensionId = productService.defaultChatAgent?.extensionId.toLowerCase();
-		this._chatExtensionId = productService.defaultChatAgent?.chatExtensionId.toLowerCase();
+		this._completionsExtensionId = productService.defaultChatAgent?.extensionId?.toLowerCase();
+		this._chatExtensionId = productService.defaultChatAgent?.chatExtensionId?.toLowerCase();
 		const relevantExtensions = [this._completionsExtensionId, this._chatExtensionId].filter((id): id is string => !!id);
 
 		this.isRunningUnificationExperiment = isRunningUnificationExperiment.bindTo(this._contextKeyService);

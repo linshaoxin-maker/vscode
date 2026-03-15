@@ -10,7 +10,6 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { renderLabelWithIcons } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { DomScrollableElement } from '../../../../base/browser/ui/scrollbar/scrollableElement.js';
-import { Toggle } from '../../../../base/browser/ui/toggle/toggle.js';
 import { coalesce, equals } from '../../../../base/common/arrays.js';
 import { Delayer, Throttler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -45,9 +44,9 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IStorageService, StorageScope, StorageTarget, WillSaveStateReason } from '../../../../platform/storage/common/storage.js';
-import { firstSessionDateStorageKey, ITelemetryService, TelemetryLevel } from '../../../../platform/telemetry/common/telemetry.js';
+import { ITelemetryService, TelemetryLevel } from '../../../../platform/telemetry/common/telemetry.js';
 import { getTelemetryLevel } from '../../../../platform/telemetry/common/telemetryUtils.js';
-import { defaultButtonStyles, defaultKeybindingLabelStyles, defaultToggleStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { defaultButtonStyles, defaultKeybindingLabelStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IWindowOpenable } from '../../../../platform/window/common/window.js';
 import { IWorkspaceContextService, UNKNOWN_EMPTY_WINDOW_WORKSPACE } from '../../../../platform/workspace/common/workspace.js';
 import { IRecentFolder, IRecentWorkspace, IRecentlyOpened, IWorkspacesService, isRecentFolder, isRecentWorkspace } from '../../../../platform/workspaces/common/workspaces.js';
@@ -75,7 +74,6 @@ import { KeybindingLabel } from '../../../../base/browser/ui/keybindingLabel/key
 import { ScrollbarVisibility } from '../../../../base/common/scrollable.js';
 
 const SLIDE_TRANSITION_TIME_MS = 250;
-const configurationKey = 'workbench.startupEditor';
 
 export const allWalkthroughsHiddenContext = new RawContextKey<boolean>('allWalkthroughsHidden', false);
 export const inWelcomeContext = new RawContextKey<boolean>('inWelcome', false);
@@ -90,15 +88,7 @@ export interface IWelcomePageStartEntry {
 	when: ContextKeyExpression;
 }
 
-const parsedStartEntries: IWelcomePageStartEntry[] = startEntries.map((e, i) => ({
-	command: e.content.command,
-	description: e.description,
-	icon: { type: 'icon', icon: e.icon },
-	id: e.id,
-	order: i,
-	title: e.title,
-	when: ContextKeyExpr.deserialize(e.when) ?? ContextKeyExpr.true()
-}));
+// parsedStartEntries removed — no longer used after welcome page redesign
 
 type GettingStartedActionClassification = {
 	command: { classification: 'PublicNonPersonalData'; purpose: 'FeatureInsight'; comment: 'The command being executed on the getting started page.' };
@@ -162,8 +152,6 @@ export class GettingStartedPage extends EditorPane {
 	private detailsRenderer: GettingStartedDetailsRenderer;
 
 	private readonly categoriesSlideDisposables: DisposableStore;
-	private showFeaturedWalkthrough = true;
-
 	get editorInput(): GettingStartedInput | undefined {
 		return this._input as GettingStartedInput | undefined;
 	}
@@ -904,22 +892,35 @@ export class GettingStartedPage extends EditorPane {
 		const svg = document.createElementNS(svgNS, 'svg');
 		svg.setAttribute('width', '40');
 		svg.setAttribute('height', '40');
-		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('viewBox', '0 0 64 64');
 		svg.setAttribute('fill', 'none');
-		const rect = document.createElementNS(svgNS, 'rect');
-		rect.setAttribute('x', '3'); rect.setAttribute('y', '5');
-		rect.setAttribute('width', '18'); rect.setAttribute('height', '14');
-		rect.setAttribute('rx', '2'); rect.setAttribute('stroke', 'currentColor');
-		rect.setAttribute('stroke-width', '1.5');
-		const path = document.createElementNS(svgNS, 'path');
-		path.setAttribute('d', 'M7 9h4M7 12h10M7 15h7');
-		path.setAttribute('stroke', 'currentColor');
-		path.setAttribute('stroke-width', '1.5');
-		path.setAttribute('stroke-linecap', 'round');
-		const circle = document.createElementNS(svgNS, 'circle');
-		circle.setAttribute('cx', '18'); circle.setAttribute('cy', '9');
-		circle.setAttribute('r', '1.5'); circle.setAttribute('fill', 'currentColor');
-		svg.append(rect, path, circle);
+
+		const defs = document.createElementNS(svgNS, 'defs');
+		const grad = document.createElementNS(svgNS, 'linearGradient');
+		grad.setAttribute('id', 'chipos-logo-grad');
+		grad.setAttribute('x1', '0'); grad.setAttribute('y1', '0');
+		grad.setAttribute('x2', '1'); grad.setAttribute('y2', '1');
+		const stop1 = document.createElementNS(svgNS, 'stop');
+		stop1.setAttribute('offset', '0%'); stop1.setAttribute('stop-color', '#2979FF');
+		const stop2 = document.createElementNS(svgNS, 'stop');
+		stop2.setAttribute('offset', '100%'); stop2.setAttribute('stop-color', '#00E5FF');
+		grad.append(stop1, stop2);
+		defs.appendChild(grad);
+		svg.appendChild(defs);
+
+		const cPath = document.createElementNS(svgNS, 'path');
+		cPath.setAttribute('d', 'M44 12 L20 12 L20 52 L44 52 L44 44 L28 44 L28 20 L44 20 L44 12 Z');
+		cPath.setAttribute('fill', 'none');
+		cPath.setAttribute('stroke', 'url(#chipos-logo-grad)');
+		cPath.setAttribute('stroke-width', '4');
+		cPath.setAttribute('stroke-linejoin', 'miter');
+
+		const node = document.createElementNS(svgNS, 'rect');
+		node.setAttribute('x', '42'); node.setAttribute('y', '8');
+		node.setAttribute('width', '6'); node.setAttribute('height', '6');
+		node.setAttribute('fill', '#00E5FF');
+
+		svg.append(cPath, node);
 		logoIcon.appendChild(svg);
 
 		const header = $('.chipos-welcome-header', {},
@@ -1109,121 +1110,6 @@ export class GettingStartedPage extends EditorPane {
 		}).catch(onUnexpectedError);
 	}
 
-	private buildStartList(): GettingStartedIndexList<IWelcomePageStartEntry> {
-		const renderStartEntry = (entry: IWelcomePageStartEntry): HTMLElement =>
-			$('li',
-				{}, $('button.button-link',
-					{
-						'x-dispatch': 'selectStartEntry:' + entry.id,
-						title: entry.description + ' ' + this.getKeybindingLabel(entry.command),
-					},
-					this.iconWidgetFor(entry),
-					$('span', {}, entry.title)));
-
-		if (this.startList) { this.startList.dispose(); }
-
-		const startList = this.startList = new GettingStartedIndexList(
-			{
-				title: localize('start', "Start"),
-				klass: 'start-container',
-				limit: 10,
-				renderElement: renderStartEntry,
-				rankElement: e => -e.order,
-				contextService: this.contextService
-			});
-
-		startList.setEntries(parsedStartEntries);
-		startList.onDidChange(() => this.registerDispatchListeners());
-		return startList;
-	}
-
-	private buildGettingStartedWalkthroughsList(): GettingStartedIndexList<IResolvedWalkthrough> {
-
-		const renderGetttingStaredWalkthrough = (category: IResolvedWalkthrough): HTMLElement => {
-
-			const renderNewBadge = (category.newItems || category.newEntry) && !category.isFeatured;
-			const newBadge = $('.new-badge', {});
-			if (category.newEntry) {
-				reset(newBadge, $('.new-category', {}, localize('new', "New")));
-			} else if (category.newItems) {
-				reset(newBadge, $('.new-items', {}, localize({ key: 'newItems', comment: ['Shown when a list of items has changed based on an update from a remote source'] }, "Updated")));
-			}
-
-			const featuredBadge = $('.featured-badge', {});
-			const descriptionContent = $('.description-content', {},);
-
-			if (category.isFeatured && this.showFeaturedWalkthrough) {
-				reset(featuredBadge, $('.featured', {}, $('span.featured-icon.codicon.codicon-star-full')));
-				reset(descriptionContent, ...renderLabelWithIcons(category.description));
-			}
-
-			const titleContent = $('h3.category-title.max-lines-3', { 'x-category-title-for': category.id });
-			reset(titleContent, ...renderLabelWithIcons(category.title));
-
-			return $('button.getting-started-category' + (category.isFeatured && this.showFeaturedWalkthrough ? '.featured' : ''),
-				{
-					'x-dispatch': 'selectCategory:' + category.id,
-					'title': category.description
-				},
-				featuredBadge,
-				$('.main-content', {},
-					this.iconWidgetFor(category),
-					titleContent,
-					renderNewBadge ? newBadge : $('.no-badge'),
-					$('a.codicon.codicon-close.hide-category-button', {
-						'tabindex': 0,
-						'x-dispatch': 'hideCategory:' + category.id,
-						'title': localize('close', "Hide"),
-						'role': 'button',
-						'aria-label': localize('closeAriaLabel', "Hide"),
-					}),
-				),
-				descriptionContent,
-				$('.category-progress', { 'x-data-category-id': category.id, },
-					$('.progress-bar-outer', { 'role': 'progressbar' },
-						$('.progress-bar-inner'))));
-		};
-
-		if (this.gettingStartedList) { this.gettingStartedList.dispose(); }
-
-		const rankWalkthrough = (e: IResolvedWalkthrough) => {
-			let rank: number | null = e.order;
-
-			if (e.isFeatured) { rank += 7; }
-			if (e.newEntry) { rank += 3; }
-			if (e.newItems) { rank += 2; }
-			if (e.recencyBonus) { rank += 4 * e.recencyBonus; }
-
-			if (this.getHiddenCategories().has(e.id)) { rank = null; }
-			return rank;
-		};
-
-		const gettingStartedList = this.gettingStartedList = new GettingStartedIndexList(
-			{
-				title: localize('walkthroughs', "Walkthroughs"),
-				klass: 'getting-started',
-				limit: 5,
-				footer: $('span.button-link.see-all-walkthroughs', { 'x-dispatch': 'seeAllWalkthroughs', 'tabindex': 0 }, localize('showAll', "More...")),
-				renderElement: renderGetttingStaredWalkthrough,
-				rankElement: rankWalkthrough,
-				contextService: this.contextService,
-			});
-
-		gettingStartedList.onDidChange(() => {
-			const hidden = this.getHiddenCategories();
-			const someWalkthroughsHidden = hidden.size || gettingStartedList.itemCount < this.gettingStartedCategories.filter(c => this.contextService.contextMatchesRules(c.when)).length;
-			this.container.classList.toggle('someWalkthroughsHidden', !!someWalkthroughsHidden);
-			this.registerDispatchListeners();
-			allWalkthroughsHiddenContext.bindTo(this.contextService).set(gettingStartedList.itemCount === 0);
-			this.updateCategoryProgress();
-		});
-
-		gettingStartedList.setEntries(this.gettingStartedCategories);
-		allWalkthroughsHiddenContext.bindTo(this.contextService).set(gettingStartedList.itemCount === 0);
-
-		return gettingStartedList;
-	}
-
 	layout(size: Dimension) {
 		this.detailsScrollbar?.scanDomNode();
 
@@ -1302,12 +1188,6 @@ export class GettingStartedPage extends EditorPane {
 			this.buildCategorySlide(categoryID, stepId);
 			this.setSlide('details');
 		});
-	}
-
-	private iconWidgetFor(category: IResolvedWalkthrough | { icon: { type: 'icon'; icon: ThemeIcon } }) {
-		const widget = category.icon.type === 'icon' ? $(ThemeIcon.asCSSSelector(category.icon.icon)) : $('img.category-icon', { src: category.icon.path });
-		widget.classList.add('icon-widget');
-		return widget;
 	}
 
 	private focusSideEditorGroup() {

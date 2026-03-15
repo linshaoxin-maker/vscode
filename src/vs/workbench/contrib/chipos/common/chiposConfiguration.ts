@@ -30,34 +30,37 @@ configurationRegistry.registerConfiguration({
 		'chipos.apiKey': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.apiKey.desc', 'LLM API key (e.g. DeepSeek, OpenAI).'),
+			description: localize('chipos.apiKey.desc', 'LLM API key for the configured provider.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
 		'chipos.apiBaseUrl': {
 			type: 'string',
-			default: 'https://api.deepseek.com',
+			default: 'https://open.bigmodel.cn/api/paas/v4',
 			description: localize('chipos.apiBaseUrl.desc', 'LLM API base URL.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
 		'chipos.model': {
 			type: 'string',
-			default: 'deepseek-chat',
+			default: 'glm-5',
 			description: localize('chipos.model.desc', 'LLM model name.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
 		'chipos.provider': {
 			type: 'string',
-			enum: ['auto', 'openai', 'anthropic'],
+			enum: ['auto', 'openai', 'anthropic', 'zhipu', 'deepseek', 'custom'],
 			enumDescriptions: [
 				localize('chipos.provider.auto', 'Auto: detect provider from model name (recommended)'),
-				localize('chipos.provider.openai', 'OpenAI: OpenAI-compatible API (DeepSeek, GPT, etc.)'),
-				localize('chipos.provider.anthropic', 'Anthropic: Anthropic native API (Claude models, enables web_search/code_execution)'),
+				localize('chipos.provider.openai', 'OpenAI: OpenAI-compatible API (GPT, etc.)'),
+				localize('chipos.provider.anthropic', 'Anthropic: Anthropic native API (Claude models)'),
+				localize('chipos.provider.zhipu', 'ZhiPu: ZhiPu AI GLM models (OpenAI-compatible)'),
+				localize('chipos.provider.deepseek', 'DeepSeek: DeepSeek models (OpenAI-compatible)'),
+				localize('chipos.provider.custom', 'Custom: user-specified API base URL'),
 			],
-			default: 'auto',
-			description: localize('chipos.provider.desc', "LLM provider. 'auto' detects from model name."),
+			default: 'zhipu',
+			description: localize('chipos.provider.desc', "LLM provider. Use 'zhipu' for ZhiPu GLM, 'openai' for OpenAI, 'deepseek' for DeepSeek, or 'custom' for any OpenAI-compatible endpoint."),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
@@ -129,5 +132,45 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.sidecar.autoRestart.desc', 'Automatically restart the Sidecar backend if it crashes (up to 3 attempts).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+
+		'chipos.autoContext': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.autoContext.desc', 'Automatically collect IDE context (active file, selection, git diff, linter errors, etc.) and send to the backend with each task.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.autoContextTokenBudget': {
+			type: 'number',
+			default: 8000,
+			minimum: 1000,
+			maximum: 32000,
+			description: localize('chipos.autoContextTokenBudget.desc', 'Maximum token budget for auto-collected context (approximate).'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.chatMode': {
+			type: 'string',
+			enum: ['agent', 'spec'],
+			default: 'agent',
+			description: localize('chipos.chatMode.desc', "Chat mode: 'agent' for autonomous coding, 'spec' for specification review."),
+			scope: ConfigurationScope.APPLICATION,
+		},
 	},
 });
+
+// ── Native Chat Framework Defaults ─────────────────────────────────────────
+// Override defaults for built-in chat settings to provide Cursor-quality UX.
+configurationRegistry.registerDefaultConfigurations([{
+	overrides: {
+		'chat.viewSessions.enabled': true,
+		'chat.viewSessions.orientation': 'stacked',
+		'chat.viewProgressBadge.enabled': true,
+		'chat.agent.thinkingStyle': 'animated',
+		'chat.agent.thinking.generateTitles': true,
+		'chat.tools.autoExpandFailures': true,
+		'chat.notifyWindowOnConfirmation': true,
+		'chat.agent.codeBlockProgress': true,
+		'chat.agent.enabled': true,
+	},
+}]);

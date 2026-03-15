@@ -492,6 +492,14 @@ export class ChatService extends Disposable implements IChatService {
 			throw new ErrorNoTelemetry('No default agent contributed');
 		}
 
+		// If the agent already has an implementation registered (e.g. core
+		// contributions that call registerAgentImplementation directly),
+		// skip extension activation entirely.
+		const alreadyActivated = this.chatAgentService.getActivatedAgents().find(agent => agent.id === defaultAgentData.id);
+		if (alreadyActivated) {
+			return;
+		}
+
 		// Await activation of the extension provided agent
 		// Using `activateById` as workaround for the issue
 		// https://github.com/microsoft/vscode/issues/250590

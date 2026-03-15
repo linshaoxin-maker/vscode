@@ -1,0 +1,272 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── EDA Content Parts shared styles ──────────────────────────────────────── */
+
+.eda-section {
+	margin: 8px 0;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 6px;
+	padding: 12px;
+	background: var(--vscode-editor-background);
+}
+
+.eda-section-title {
+	margin: 0 0 8px 0;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+/* ── Table ──────────────────────────────────────────────────────────────────── */
+
+.eda-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+	margin: 4px 0;
+}
+
+.eda-table th {
+	text-align: left;
+	padding: 4px 8px;
+	font-weight: 600;
+	border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.eda-table td {
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, #2a2a2a);
+	color: var(--vscode-foreground);
+}
+
+.eda-table tbody tr:last-child td {
+	border-bottom: none;
+}
+
+.eda-table tbody tr:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+/* ── Badge ──────────────────────────────────────────────────────────────────── */
+
+.eda-badge {
+	display: inline-block;
+	padding: 1px 6px;
+	border-radius: 3px;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 16px;
+}
+
+.eda-badge-pass,
+.eda-badge-done {
+	background: var(--vscode-testing-iconPassed, #388a34);
+	color: #fff;
+}
+
+.eda-badge-fail {
+	background: var(--vscode-testing-iconFailed, #f14c4c);
+	color: #fff;
+}
+
+.eda-badge-error {
+	background: var(--vscode-testing-iconErrored, #f14c4c);
+	color: #fff;
+}
+
+.eda-badge-warning {
+	background: var(--vscode-editorWarning-foreground, #cca700);
+	color: #000;
+}
+
+.eda-badge-info {
+	background: var(--vscode-editorInfo-foreground, #3794ff);
+	color: #fff;
+}
+
+.eda-badge-skip,
+.eda-badge-pending {
+	background: var(--vscode-descriptionForeground, #888);
+	color: #fff;
+}
+
+.eda-badge-running {
+	background: var(--vscode-progressBar-background, #0e70c0);
+	color: #fff;
+}
+
+/* ── Summary ────────────────────────────────────────────────────────────────── */
+
+.eda-summary {
+	margin-top: 8px;
+}
+
+.eda-summary-row {
+	display: flex;
+	justify-content: space-between;
+	padding: 2px 0;
+}
+
+.eda-summary-label {
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.eda-summary-value {
+	font-weight: 600;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+}
+
+/* ── Progress bar ───────────────────────────────────────────────────────────── */
+
+.eda-progress-bar {
+	height: 4px;
+	background: var(--vscode-editorWidget-background, #333);
+	border-radius: 2px;
+	overflow: hidden;
+	margin: 4px 0;
+}
+
+.eda-progress-fill {
+	height: 100%;
+	background: var(--vscode-progressBar-background, #0e70c0);
+	border-radius: 2px;
+	transition: width 0.3s ease;
+}
+
+/* ── Coverage-specific ──────────────────────────────────────────────────────── */
+
+.eda-metric-row {
+	margin: 4px 0;
+}
+
+/* ── Parallel Progress ──────────────────────────────────────────────────────── */
+
+.eda-parallel-tracks {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.eda-parallel-track {
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-panel-border, #2a2a2a);
+	border-radius: 4px;
+}
+
+.eda-track-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.eda-track-name {
+	font-weight: 500;
+	font-size: 12px;
+}
+
+.eda-track-file {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--vscode-editor-font-family);
+}
+
+.eda-conflicts {
+	margin-top: 8px;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+}
+
+.eda-conflicts-title {
+	color: var(--vscode-editorWarning-foreground, #cca700);
+	font-weight: 600;
+	font-size: 12px;
+}
+
+.eda-conflict-item {
+	padding: 1px 6px;
+	background: var(--vscode-editorWarning-background, rgba(204, 167, 0, 0.1));
+	border-radius: 3px;
+	font-size: 11px;
+}
+
+/* ── Negotiation ────────────────────────────────────────────────────────────── */
+
+.eda-perspectives {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.eda-perspective-card {
+	padding: 8px;
+	border: 1px solid var(--vscode-panel-border, #2a2a2a);
+	border-radius: 4px;
+}
+
+.eda-perspective-agent {
+	font-weight: 600;
+	font-size: 12px;
+	margin-bottom: 4px;
+	color: var(--vscode-textLink-foreground, #3794ff);
+}
+
+.eda-perspective-position {
+	font-size: 12px;
+	margin-bottom: 4px;
+}
+
+.eda-perspective-reasoning {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin: 4px 0 0 0;
+	padding: 4px 8px;
+	border-left: 2px solid var(--vscode-panel-border, #3c3c3c);
+}
+
+.eda-recommendation {
+	margin-top: 8px;
+	padding: 6px 8px;
+	background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
+	border-radius: 4px;
+	font-size: 12px;
+}
+
+/* ── Spec Review ────────────────────────────────────────────────────────────── */
+
+.eda-spec-summary {
+	font-size: 12px;
+	line-height: 1.5;
+	margin-bottom: 8px;
+}
+
+.eda-spec-files {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+	margin-bottom: 4px;
+}
+
+.eda-spec-file {
+	padding: 1px 6px;
+	background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.1));
+	border-radius: 3px;
+	font-size: 11px;
+}
+
+.eda-spec-path {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--vscode-editor-font-family);
+}

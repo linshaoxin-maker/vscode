@@ -17,11 +17,13 @@ const CONNECTION_LABELS: Record<string, string> = {
 
 const STATUSBAR_CONNECTION_ID = 'chipos.statusbar.connection';
 const STATUSBAR_AGENT_ID = 'chipos.statusbar.agent';
+const STATUSBAR_FILES_ID = 'chipos.statusbar.files';
 
 export class StatusBarHandler extends Disposable {
 
 	private _connectionEntry: IStatusbarEntryAccessor | undefined;
 	private _agentEntry: IStatusbarEntryAccessor | undefined;
+	private _filesEntry: IStatusbarEntryAccessor | undefined;
 
 	constructor(
 		@IStatusbarService private readonly _statusbarService: IStatusbarService,
@@ -90,11 +92,49 @@ export class StatusBarHandler extends Disposable {
 		}
 	}
 
+	updateFileChangeCount(count: number): void {
+		if (count === 0) {
+			if (this._filesEntry) {
+				this._filesEntry.dispose();
+				this._filesEntry = undefined;
+			}
+			return;
+		}
+
+		const text = `$(file-text) ${count} file${count > 1 ? 's' : ''} changed`;
+
+		if (this._filesEntry) {
+			this._filesEntry.update({
+				name: 'ChipOS Files',
+				text,
+				ariaLabel: text,
+				command: 'chipos.clearFileChanges',
+				tooltip: 'Click to clear file change tracking',
+			});
+		} else {
+			this._filesEntry = this._statusbarService.addEntry(
+				{
+					name: 'ChipOS Files',
+					text,
+					ariaLabel: text,
+					command: 'chipos.clearFileChanges',
+					tooltip: 'Click to clear file change tracking',
+				},
+				STATUSBAR_FILES_ID,
+				StatusbarAlignment.LEFT,
+				{ location: { id: STATUSBAR_CONNECTION_ID, priority: 99 }, alignment: StatusbarAlignment.LEFT, compact: true },
+			);
+			this._register(this._filesEntry);
+		}
+	}
+
 	override dispose(): void {
 		this._connectionEntry?.dispose();
 		this._connectionEntry = undefined;
 		this._agentEntry?.dispose();
 		this._agentEntry = undefined;
+		this._filesEntry?.dispose();
+		this._filesEntry = undefined;
 		super.dispose();
 	}
 

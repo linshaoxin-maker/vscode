@@ -99,8 +99,8 @@ export class ExtensionEnablementService extends Disposable implements IWorkbench
 		this._register(allowedExtensionsService.onDidChangeAllowedExtensionsConfigValue(() => this._onDidChangeExtensions([], [], false)));
 
 		// Extension unification
-		this._completionsExtensionId = productService.defaultChatAgent?.extensionId.toLowerCase();
-		this._chatExtensionId = productService.defaultChatAgent?.chatExtensionId.toLowerCase();
+		this._completionsExtensionId = productService.defaultChatAgent?.extensionId?.toLowerCase();
+		this._chatExtensionId = productService.defaultChatAgent?.chatExtensionId?.toLowerCase();
 		const unificationExtensions = [this._completionsExtensionId, this._chatExtensionId].filter(id => !!id);
 
 		// Disabling extension unification should immediately disable the unified extension flow

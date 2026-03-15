@@ -15,6 +15,8 @@ import { localize } from '../../../../../../nls.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../../../../platform/actions/browser/toolbar.js';
 import { Action2, MenuId, registerAction2 } from '../../../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../../platform/instantiation/common/instantiation.js';
+import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { ISidecarManagerService, SidecarState } from '../../../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { IChatViewTitleActionContext } from '../../../common/actions/chatActions.js';
 import { IChatModel } from '../../../common/model/chatModel.js';
 import { ActionViewItem, IActionViewItemOptions } from '../../../../../../base/browser/ui/actionbar/actionViewItems.js';
@@ -46,16 +48,31 @@ export class ChatViewTitleControl extends Disposable {
 
 	private lastKnownHeight = 0;
 
+	private statusIndicatorElement: HTMLElement | undefined;
+	private connectionDotElement: HTMLElement | undefined;
+
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly delegate: IChatViewTitleDelegate,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@ISidecarManagerService private readonly sidecarService: ISidecarManagerService,
 	) {
 		super();
 
 		this.render(this.container);
 
 		this.registerActions();
+
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('chipos.model') || e.affectsConfiguration('chipos.provider')) {
+				this.updateStatusIndicator();
+			}
+		}));
+
+		this._register(this.sidecarService.onDidChangeState(() => {
+			this.updateConnectionDot();
+		}));
 	}
 
 	private registerActions(): void {
@@ -84,13 +101,57 @@ export class ChatViewTitleControl extends Disposable {
 		}));
 	}
 
+	private updateStatusIndicator(): void {
+		if (!this.statusIndicatorElement) {
+			return;
+		}
+
+		const model = this.configurationService.getValue<string>('chipos.model') || '';
+		const provider = this.configurationService.getValue<string>('chipos.provider') || '';
+
+		if (model) {
+			const label = provider ? `${provider}/${model}` : model;
+			this.statusIndicatorElement.textContent = label;
+			this.statusIndicatorElement.style.display = '';
+		} else {
+			this.statusIndicatorElement.style.display = 'none';
+		}
+	}
+
+	private updateConnectionDot(): void {
+		if (!this.connectionDotElement) {
+			return;
+		}
+
+		const state = this.sidecarService.state;
+		this.connectionDotElement.classList.remove('connected', 'disconnected', 'connecting');
+
+		if (state === SidecarState.Connected) {
+			this.connectionDotElement.classList.add('connected');
+			this.connectionDotElement.title = 'Backend connected';
+		} else if (state === SidecarState.Spawning || state === SidecarState.HealthChecking) {
+			this.connectionDotElement.classList.add('connecting');
+			this.connectionDotElement.title = 'Connecting to backend...';
+		} else {
+			this.connectionDotElement.classList.add('disconnected');
+			this.connectionDotElement.title = 'Backend disconnected';
+		}
+	}
+
 	private render(parent: HTMLElement): void {
 		const elements = h('div.chat-view-title-container', [
 			h('div.chat-view-title-inner', [
 				h('div.chat-view-title-navigation-toolbar@navigationToolbar'),
+				h('span.chat-view-title-connection-dot@connectionDot'),
+				h('span.chat-view-title-status-indicator@statusIndicator'),
 				h('div.chat-view-title-actions-toolbar@actionsToolbar'),
 			]),
 		]);
+
+		this.statusIndicatorElement = elements.statusIndicator;
+		this.connectionDotElement = elements.connectionDot;
+		this.updateConnectionDot();
+		this.updateStatusIndicator();
 
 		// Toolbar on the left
 		this.navigationToolbar = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, elements.navigationToolbar, MenuId.ChatViewSessionTitleNavigationToolbar, {
