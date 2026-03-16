@@ -5,8 +5,6 @@
 
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { Emitter } from '../../../../../base/common/event.js';
-import { DeferredPromise } from '../../../../../base/common/async.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -23,8 +21,6 @@ import {
 	IChatMarkdownContent,
 	IChatConfirmation,
 	IChatProgressMessage,
-	IChatTask,
-	IChatTaskSerialized,
 	IChatThinkingPart,
 	IChatWarningMessage,
 	IChatEdaSimReport,
@@ -35,7 +31,10 @@ import {
 	IChatEdaSpecReview,
 	IChatContentReference,
 	ChatResponseReferencePartStatusKind,
+	IChatExternalToolInvocationUpdate,
+	IChatToolInputInvocationData,
 } from '../../../../contrib/chat/common/chatService/chatService.js';
+import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/common/tools/languageModelToolsService.js';
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
 import { WebSocketEventStreamClient } from '../eventStream/webSocketEventStreamClient.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
@@ -178,7 +177,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			let resolved = false;
 			let firstProgressTime: number | undefined;
 			const pendingConfirmations = new Map<string, IChatConfirmation>();
-			const pendingToolTasks = new Map<string, { task: IChatTask; deferred: DeferredPromise<string | void> }>();
 
 			const trackFirstProgress = () => {
 				if (firstProgressTime === undefined) {
@@ -225,19 +223,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-					// ── Tool lifecycle via IChatTask (FEAT-48 enhanced) ──
+					// ── Tool lifecycle via IChatExternalToolInvocationUpdate ──
 					case AgentEventType.ToolCall: {
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
 						this._toolStartTimes.set(key, Date.now());
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
-						const label = argDetail
-							? `$(tools~spin) **${friendly}** ${argDetail}`
-							: `$(tools~spin) **${friendly}**`;
-						const toolTask = this._createToolTask(label);
-						pendingToolTasks.set(key, toolTask);
-						progress([toolTask.task]);
+						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
+						const toolUpdate: IChatExternalToolInvocationUpdate = {
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: key,
+							toolName: p.tool_name,
+							isComplete: false,
+							invocationMessage: invocationMsg,
+							toolSpecificData: {
+								kind: 'input',
+								rawInput: p.arguments ?? {},
+							} satisfies IChatToolInputInvocationData,
+						};
+						progress([toolUpdate]);
 						break;
 					}
 
@@ -245,24 +250,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IToolResultPayload;
 						const key = p.call_id || p.tool_name;
 						const friendly = this._friendlyToolName(p.tool_name);
-						const pending = pendingToolTasks.get(key);
-						const icon = p.success ? '$(check)' : '$(error)';
 						const startTs = this._toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
 						this._toolStartTimes.delete(key);
 						const timeSuffix = elapsed ? ` (${elapsed})` : '';
-						const resultSummary = p.summary
-							? `${icon} ${p.summary}${timeSuffix}`
-							: `${icon} ${friendly}${timeSuffix}`;
-						if (pending) {
-							pending.deferred.complete(resultSummary);
-							pendingToolTasks.delete(key);
-						} else {
-							progress([this._progress(resultSummary)]);
-						}
-						if (!p.success && typeof p.result === 'string') {
-							progress([this._warning(p.result)]);
-						}
+						const pastMsg = p.summary
+							? `${p.summary}${timeSuffix}`
+							: `${friendly}${timeSuffix}`;
+						const toolComplete: IChatExternalToolInvocationUpdate = {
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: key,
+							toolName: p.tool_name,
+							isComplete: true,
+							pastTenseMessage: pastMsg,
+							errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
+							resultDetails: typeof p.result === 'string' ? {
+								input: p.tool_name,
+								output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
+								isError: !p.success,
+							} satisfies IToolResultInputOutputDetails : undefined,
+						};
+						progress([toolComplete]);
 						break;
 					}
 
@@ -474,18 +482,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						if (p.kind === 'text' && p.content) {
 							progress([this._markdown(p.content)]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
-							const toolTask = this._createToolTask(`${label} $(tools) \`${p.tool_name}\``);
-							pendingToolTasks.set(`sub_${p.task_id}_${p.tool_name}`, toolTask);
-							progress([toolTask.task]);
+							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							this._toolStartTimes.set(subKey, Date.now());
+							const toolUpdate: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: subKey,
+								toolName: p.tool_name,
+								isComplete: false,
+								invocationMessage: `${label} ${p.tool_name}`,
+								subagentInvocationId: p.task_id,
+							};
+							progress([toolUpdate]);
 						} else if (p.kind === 'tool_end' && p.tool_name) {
-							const key = `sub_${p.task_id}_${p.tool_name}`;
-							const pending = pendingToolTasks.get(key);
-							if (pending) {
-								pending.deferred.complete(`$(check) \`${p.tool_name}\` done`);
-								pendingToolTasks.delete(key);
-							} else {
-								progress([this._progress(`${label} $(check) \`${p.tool_name}\` done`)]);
-							}
+							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							const startTs = this._toolStartTimes.get(subKey);
+							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
+							this._toolStartTimes.delete(subKey);
+							const toolComplete: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: subKey,
+								toolName: p.tool_name,
+								isComplete: true,
+								pastTenseMessage: `${p.tool_name} done${elapsed}`,
+								subagentInvocationId: p.task_id,
+							};
+							progress([toolComplete]);
 						} else if (p.kind === 'error' && p.content) {
 							progress([this._warning(`${label}: ${p.content}`)]);
 						} else if (p.kind === 'status' && p.content) {
@@ -603,7 +624,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	): Promise<IChatAgentResult> {
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
-		const pendingToolTasks = new Map<string, { task: IChatTask; deferred: DeferredPromise<string | void> }>();
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -645,36 +665,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						this._toolStartTimes.set(key, Date.now());
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
-						const label = argDetail
-							? `$(tools~spin) **${friendly}** ${argDetail}`
-							: `$(tools~spin) **${friendly}**`;
-						const toolTask = this._createToolTask(label);
-						pendingToolTasks.set(key, toolTask);
-						progress([toolTask.task]);
+						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
+						const toolUpdate: IChatExternalToolInvocationUpdate = {
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: key,
+							toolName: p.tool_name,
+							isComplete: false,
+							invocationMessage: invocationMsg,
+							toolSpecificData: {
+								kind: 'input',
+								rawInput: p.arguments ?? {},
+							} satisfies IChatToolInputInvocationData,
+						};
+						progress([toolUpdate]);
 						break;
 					}
 					case AgentEventType.ToolResult: {
 						const p = event.payload as IToolResultPayload;
 						const key = p.call_id || p.tool_name;
 						const friendly = this._friendlyToolName(p.tool_name);
-						const pending = pendingToolTasks.get(key);
-						const icon = p.success ? '$(check)' : '$(error)';
 						const startTs = this._toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
 						this._toolStartTimes.delete(key);
 						const timeSuffix = elapsed ? ` (${elapsed})` : '';
-						const resultSummary = p.summary
-							? `${icon} ${p.summary}${timeSuffix}`
-							: `${icon} ${friendly}${timeSuffix}`;
-						if (pending) {
-							pending.deferred.complete(resultSummary);
-							pendingToolTasks.delete(key);
-						} else {
-							progress([this._progress(resultSummary)]);
-						}
-						if (!p.success && typeof p.result === 'string') {
-							progress([this._warning(p.result)]);
-						}
+						const pastMsg = p.summary
+							? `${p.summary}${timeSuffix}`
+							: `${friendly}${timeSuffix}`;
+						const toolComplete: IChatExternalToolInvocationUpdate = {
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: key,
+							toolName: p.tool_name,
+							isComplete: true,
+							pastTenseMessage: pastMsg,
+							errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
+							resultDetails: typeof p.result === 'string' ? {
+								input: p.tool_name,
+								output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
+								isError: !p.success,
+							} satisfies IToolResultInputOutputDetails : undefined,
+						};
+						progress([toolComplete]);
 						break;
 					}
 					case AgentEventType.Status: {
@@ -754,18 +784,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						if (p.kind === 'text' && p.content) {
 							progress([this._markdown(p.content)]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
-							const toolTask = this._createToolTask(`${label} $(tools) \`${p.tool_name}\``);
-							pendingToolTasks.set(`sub_${p.task_id}_${p.tool_name}`, toolTask);
-							progress([toolTask.task]);
+							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							this._toolStartTimes.set(subKey, Date.now());
+							const toolUpdate: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: subKey,
+								toolName: p.tool_name,
+								isComplete: false,
+								invocationMessage: `${label} ${p.tool_name}`,
+								subagentInvocationId: p.task_id,
+							};
+							progress([toolUpdate]);
 						} else if (p.kind === 'tool_end' && p.tool_name) {
 							const subKey = `sub_${p.task_id}_${p.tool_name}`;
-							const pending = pendingToolTasks.get(subKey);
-							if (pending) {
-								pending.deferred.complete(`$(check) \`${p.tool_name}\` done`);
-								pendingToolTasks.delete(subKey);
-							} else {
-								progress([this._progress(`${label} $(check) \`${p.tool_name}\` done`)]);
-							}
+							const startTs = this._toolStartTimes.get(subKey);
+							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
+							this._toolStartTimes.delete(subKey);
+							const toolComplete: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: subKey,
+								toolName: p.tool_name,
+								isComplete: true,
+								pastTenseMessage: `${p.tool_name} done${elapsed}`,
+								subagentInvocationId: p.task_id,
+							};
+							progress([toolComplete]);
 						} else if (p.kind === 'error' && p.content) {
 							progress([this._warning(`${label}: ${p.content}`)]);
 						} else if (p.kind === 'status' && p.content) {
@@ -1039,41 +1082,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 	}
 
-	// ── FEAT-26: Create IChatTask for native tool tracking ──
-
-	private _createToolTask(label: string): { task: IChatTask; deferred: DeferredPromise<string | void> } {
-		const deferred = new DeferredPromise<string | void>();
-		const progressEmitter = new Emitter<IChatWarningMessage | IChatContentReference>();
-		const progressItems: (IChatWarningMessage | IChatContentReference)[] = [];
-
-		const task: IChatTask = {
-			content: new MarkdownString(label, { supportThemeIcons: true }),
-			kind: 'progressTask',
-			deferred,
-			progress: progressItems,
-			onDidAddProgress: progressEmitter.event,
-			add(item: IChatWarningMessage | IChatContentReference) {
-				progressItems.push(item);
-				progressEmitter.fire(item);
-			},
-			complete(result: string | void) {
-				deferred.complete(result);
-			},
-			task: () => deferred.p,
-			isSettled: () => deferred.isSettled,
-			toJSON(): IChatTaskSerialized {
-				return {
-					content: task.content,
-					progress: progressItems,
-					kind: 'progressTaskSerialized',
-				};
-			},
-		};
-
-		return { task, deferred };
-	}
-
-	// ── FEAT-26: Friendly tool name mapping ─────────────────────────────────
+	// ── FEAT-26: Friendly tool name mapping (used by IChatExternalToolInvocationUpdate) ──
 
 	private static readonly _toolNameMap: Record<string, string> = {
 		run_simulation: '执行仿真',
