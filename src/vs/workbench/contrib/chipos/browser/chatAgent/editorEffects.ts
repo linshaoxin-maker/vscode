@@ -20,10 +20,7 @@ import {
 	type IDiffPreviewPayload,
 	type ISkillTreePayload,
 } from '../eventStream/eventTypes.js';
-import { InlineDiffController } from '../inlineDiff/inlineDiffController.js';
 import { SkillTreeHandler, type ISkillTreeData, type ISkillDomain, type ISkillItem } from '../../browser/migration/skillTreeHandler.js';
-
-import '../inlineDiff/inlineDiff.css';
 
 export interface IFileChangeInfo {
 	path: string;
@@ -42,7 +39,6 @@ export class ChipOSEditorEffects extends Disposable {
 
 	private readonly _trackedFiles = new Set<string>();
 	private readonly _fileChanges = new Map<string, IFileChangeInfo>();
-	private readonly _inlineDiffController: InlineDiffController;
 	private readonly _skillTreeHandler: SkillTreeHandler;
 
 	private readonly _onDidChangeFileChanges = this._register(new Emitter<IFileChangeInfo[]>());
@@ -55,11 +51,9 @@ export class ChipOSEditorEffects extends Disposable {
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
-		this._inlineDiffController = this._register(new InlineDiffController(this._editorService, null));
 		this._skillTreeHandler = this._register(new SkillTreeHandler(this._logService));
 	}
 
-	get inlineDiffController(): InlineDiffController { return this._inlineDiffController; }
 	get skillTreeHandler(): SkillTreeHandler { return this._skillTreeHandler; }
 	get fileChanges(): IFileChangeInfo[] { return Array.from(this._fileChanges.values()); }
 	get fileChangeCount(): number { return this._fileChanges.size; }
@@ -90,14 +84,11 @@ export class ChipOSEditorEffects extends Disposable {
 		}
 	}
 
-	// ── FileEdit → InlineDiffController ─────────────────────────────────────
+	// ── FileEdit → track file changes (inline diff now handled by framework IChatTextEdit) ──
 
 	private _handleFileEdit(payload: IFileEditPayload): void {
 		this._logService.info(`[ChipOS Effects] FileEdit: ${payload.file_path}, ${payload.edits.length} edits`);
 		this._trackedFiles.add(payload.file_path);
-		this._inlineDiffController.handleFileEdit(payload).catch(err => {
-			this._logService.warn('[ChipOS Effects] InlineDiff failed:', String(err));
-		});
 	}
 
 	// ── SkillTree → SkillTreeHandler ────────────────────────────────────────

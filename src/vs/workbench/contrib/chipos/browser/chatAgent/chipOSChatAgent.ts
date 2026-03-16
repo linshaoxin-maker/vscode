@@ -8,6 +8,7 @@ import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import {
 	IChatAgentImplementation,
@@ -16,6 +17,8 @@ import {
 	IChatAgentHistoryEntry,
 } from '../../../../contrib/chat/common/participants/chatAgents.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { Range } from '../../../../../editor/common/core/range.js';
+import { TextEdit } from '../../../../../editor/common/languages.js';
 import {
 	IChatProgress,
 	IChatMarkdownContent,
@@ -33,6 +36,7 @@ import {
 	ChatResponseReferencePartStatusKind,
 	IChatExternalToolInvocationUpdate,
 	IChatToolInputInvocationData,
+	IChatTextEdit,
 } from '../../../../contrib/chat/common/chatService/chatService.js';
 import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/common/tools/languageModelToolsService.js';
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
@@ -63,6 +67,7 @@ import {
 	type ITaskSummaryPayload,
 	type ISubagentEventPayload,
 	type IWorktreeFilesAppliedPayload,
+	type IFileEditPayload,
 	type IMentionItem,
 } from '../eventStream/eventTypes.js';
 
@@ -92,6 +97,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IChatTodoListService private readonly _todoListService: IChatTodoListService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 	}
@@ -576,9 +582,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-					// ── File edit (legacy, handled by editor effects) ──
-					case AgentEventType.FileEdit:
+					// ── File edit → push IChatTextEdit to framework inline diff ──
+					case AgentEventType.FileEdit: {
+						const p = event.payload as IFileEditPayload;
+						const workspaceRoot = this._getWorkspaceRoot();
+						if (workspaceRoot && p.file_path && p.edits?.length) {
+							const fileUri = URI.file(
+								p.file_path.startsWith('/') ? p.file_path : `${workspaceRoot}/${p.file_path}`
+							);
+							const textEdits: TextEdit[] = p.edits.map(edit => ({
+								range: new Range(
+									edit.range.startLine,
+									edit.range.startCol,
+									edit.range.endLine,
+									edit.range.endCol
+								),
+								text: edit.newText,
+							}));
+							progress([{
+								uri: fileUri,
+								edits: textEdits,
+								kind: 'textEdit',
+								done: true,
+							} satisfies IChatTextEdit]);
+						}
 						break;
+					}
 
 					// ── Confirm (legacy hook card) ──
 					case AgentEventType.Confirm:
@@ -962,6 +991,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.Done:
 						finish({});
 						break;
+					case AgentEventType.FileEdit: {
+						const p = event.payload as IFileEditPayload;
+						const workspaceRoot = this._getWorkspaceRoot();
+						if (workspaceRoot && p.file_path && p.edits?.length) {
+							const fileUri = URI.file(
+								p.file_path.startsWith('/') ? p.file_path : `${workspaceRoot}/${p.file_path}`
+							);
+							const textEdits: TextEdit[] = p.edits.map(edit => ({
+								range: new Range(
+									edit.range.startLine,
+									edit.range.startCol,
+									edit.range.endLine,
+									edit.range.endCol
+								),
+								text: edit.newText,
+							}));
+							progress([{
+								uri: fileUri,
+								edits: textEdits,
+								kind: 'textEdit',
+								done: true,
+							} satisfies IChatTextEdit]);
+						}
+						break;
+					}
 					default:
 						this._logService.trace('[ChipOS Agent] Unhandled event in continuation:', event.event_type);
 						break;
@@ -1233,6 +1287,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	// ── Helper factories ────────────────────────────────────────────────────
 
+	private _getWorkspaceRoot(): string | undefined {
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		return folders.length > 0 ? folders[0].uri.fsPath : undefined;
+	}
+
 	private _markdown(content: string): IChatMarkdownContent {
 		return { kind: 'markdownContent', content: new MarkdownString(content, { supportThemeIcons: true }) };
 	}
@@ -1257,17 +1316,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	// ── InlineDiff / SkillTree public surface ───────────────────────────────
+	// Note: acceptAllDiffs/rejectAllDiffs are now handled by the framework's
+	// IChatEditingService via the native Accept/Reject UI in the chat widget.
 
 	acceptAllDiffs(): void {
-		this._editorEffects?.inlineDiffController.acceptAllFiles();
+		this._logService.info('[ChipOS Agent] acceptAllDiffs: now handled by framework IChatEditingService');
 	}
 
 	rejectAllDiffs(): void {
-		this._editorEffects?.inlineDiffController.rejectAllFiles();
+		this._logService.info('[ChipOS Agent] rejectAllDiffs: now handled by framework IChatEditingService');
 	}
 
 	getActiveDiffFiles(): string[] {
-		return this._editorEffects?.inlineDiffController.getActiveDiffFiles() ?? [];
+		return [];
 	}
 
 	get skillTreeHandler() {
