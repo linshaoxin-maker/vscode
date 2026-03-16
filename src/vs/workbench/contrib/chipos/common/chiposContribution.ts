@@ -538,10 +538,12 @@ class ChipOSContribution extends Disposable {
 	private _applyEmptyWindowLayout(): void {
 		const isEmpty = this._contextService.getWorkbenchState() === WorkbenchState.EMPTY;
 		if (isEmpty) {
+			// Cursor-style: keep ActivityBar + AuxiliaryBar (Chat) visible even in empty window
+			// Only hide the primary sidebar (Explorer) since there's no workspace to explore
 			this._layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
-			this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
-			this._layoutService.setPartHidden(true, Parts.ACTIVITYBAR_PART);
-			this._logService.info('[ChipOS] Empty workspace: hiding sidebar, activitybar, auxiliarybar');
+			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
+			this._layoutService.setPartHidden(false, Parts.ACTIVITYBAR_PART);
+			this._logService.info('[ChipOS] Empty workspace: hiding sidebar, keeping activitybar + chat visible');
 		} else {
 			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
 			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
