@@ -342,12 +342,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IConfirmRequestPayload;
 						const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
 						const richMessage = this._renderConfirmMessage(p);
-						const buttons = p.options?.map(o => o.label) || ['Approve', 'Reject'];
+						// Extract buttons from p.options or card_data.options
+						const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
+						const buttons = p.options?.map(o => o.label)
+							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean)
+							?? ['Approve', 'Reject'];
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
 							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-							data: { requestId: p.request_id, options: p.options },
+							data: { requestId: p.request_id, options: p.options ?? cardOpts },
 							buttons,
 						};
 						pendingConfirmations.set(p.request_id, confirmation);
@@ -937,12 +941,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IConfirmRequestPayload;
 						const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
 						const richMessage = this._renderConfirmMessage(p);
-						const buttons = p.options?.map(o => o.label) || ['Approve', 'Reject'];
+						const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
+						const buttons = p.options?.map(o => o.label)
+							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean)
+							?? ['Approve', 'Reject'];
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
 							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-							data: { requestId: p.request_id, options: p.options },
+							data: { requestId: p.request_id, options: p.options ?? cardOpts },
 							buttons,
 						};
 						progress([confirmation]);
@@ -1203,6 +1210,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'arch_confirm': return '$(symbol-structure) Architecture Review';
 			case 'design_confirm': return '$(symbol-class) Design Review';
 			case 'code_confirm': return '$(code) Code Review';
+			case 'agent_ask': return '$(comment-discussion) Decision Required';
 			default: return `$(question) Confirm: ${cardType}`;
 		}
 	}
@@ -1271,6 +1279,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					sections.push(`\`\`\`diff\n${diffPreview}\n\`\`\``);
 				}
 				return sections.length > 0 ? sections.join('\n\n') : JSON.stringify(data, null, 2).slice(0, 500);
+			}
+
+			case 'agent_ask': {
+				// Agent is asking the user a question with context + options
+				const context = (data.context as string) ?? '';
+				// Truncate long context, strip tables
+				const cleaned = context.replace(/^\|.*\|$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+				const preview = cleaned.length > 400 ? cleaned.slice(0, 400) + '…' : cleaned;
+				return preview || 'Please select an option below.';
 			}
 
 			default:
