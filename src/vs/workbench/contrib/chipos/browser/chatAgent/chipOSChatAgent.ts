@@ -356,6 +356,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						};
 						pendingConfirmations.set(p.request_id, confirmation);
 						progress([confirmation]);
+						// Finish the current request so the framework can accept
+						// the next invoke() when the user clicks a confirmation button.
+						finish({});
 						break;
 					}
 
@@ -956,6 +959,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							buttons,
 						};
 						progress([confirmation]);
+						finish({});
 						break;
 					}
 					case AgentEventType.Plan: {
