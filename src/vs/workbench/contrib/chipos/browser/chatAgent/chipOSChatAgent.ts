@@ -310,7 +310,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
-							message: new MarkdownString(richMessage, { supportThemeIcons: true }),
+							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
 							data: { requestId: p.request_id, options: p.options },
 							buttons,
 						};
@@ -905,7 +905,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
-							message: new MarkdownString(richMessage, { supportThemeIcons: true }),
+							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
 							data: { requestId: p.request_id, options: p.options },
 							buttons,
 						};
@@ -1173,8 +1173,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// ── 兼容后端实际格式: { spec_result: "长文本" } ──
 				const specText = data.spec_result ?? data.analysis ?? data.result;
 				if (typeof specText === 'string') {
-					// 截取前 800 字符作为摘要，避免卡片过长
-					const preview = specText.length > 800 ? specText.slice(0, 800) + '\n\n...(truncated)' : specText;
+					// 截取前 500 字符，保持卡片紧凑
+					const preview = specText.length > 500 ? specText.slice(0, 500) + '\n\n*(... click Approve to continue)*' : specText;
 					sections.push(preview);
 				}
 				// ── 也兼容结构化格式: { summary, file_path, changes, risks } ──
@@ -1182,29 +1182,39 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (data.file_path) { sections.push(`**File:** \`${data.file_path}\``); }
 				if (data.changes && Array.isArray(data.changes)) {
 					sections.push('**Changes:**');
-					for (const c of data.changes as Array<{ file?: string; description?: string }>) {
+					const changes = data.changes as Array<{ file?: string; description?: string }>;
+					const shown = changes.slice(0, 10);
+					for (const c of shown) {
 						sections.push(`- \`${c.file || 'unknown'}\` — ${c.description || ''}`);
+					}
+					if (changes.length > 10) {
+						sections.push(`- *(+${changes.length - 10} more)*`);
 					}
 				}
 				if (data.risks && Array.isArray(data.risks)) {
 					sections.push('**$(warning) Risks:**');
-					for (const r of data.risks as string[]) {
+					const risks = data.risks as string[];
+					const shown = risks.slice(0, 5);
+					for (const r of shown) {
 						sections.push(`- ${r}`);
 					}
+					if (risks.length > 5) {
+						sections.push(`- *(+${risks.length - 5} more)*`);
+					}
 				}
-				return sections.length > 0 ? sections.join('\n\n') : JSON.stringify(data, null, 2).slice(0, 500);
+				return sections.length > 0 ? sections.join('\n\n') : JSON.stringify(data, null, 2).slice(0, 300);
 			}
 
 			case 'arch_confirm': {
 				const sections: string[] = [];
 				const archText = data.arch_result ?? data.analysis ?? data.result;
 				if (typeof archText === 'string') {
-					const preview = archText.length > 800 ? archText.slice(0, 800) + '\n\n...(truncated)' : archText;
+					const preview = archText.length > 500 ? archText.slice(0, 500) + '\n\n*(... click Approve to continue)*' : archText;
 					sections.push(preview);
 				}
 				if (data.summary) { sections.push(`**Summary:** ${data.summary}`); }
 				if (data.module) { sections.push(`**Module:** \`${data.module}\``); }
-				return sections.length > 0 ? sections.join('\n\n') : JSON.stringify(data, null, 2).slice(0, 500);
+				return sections.length > 0 ? sections.join('\n\n') : JSON.stringify(data, null, 2).slice(0, 300);
 			}
 
 			case 'hook_confirm': {

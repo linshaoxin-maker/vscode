@@ -123,6 +123,11 @@
 	}
 }
 
+.chat-confirmation-widget .chat-confirmation-widget-message {
+	max-height: 300px;
+	overflow-y: auto;
+}
+
 .chat-confirmation-widget .chat-confirmation-widget-message-container {
 	border: 1px solid var(--vscode-chat-requestBorder);
 	border-radius: var(--vscode-cornerRadius-medium);
@@ -255,6 +260,8 @@
 	background: var(--vscode-chat-requestBackground);
 	border-bottom: 1px solid var(--vscode-chat-requestBorder);
 	padding: 6px 9px 0 9px;
+	max-height: 300px;
+	overflow-y: auto;
 
 	.tool-postconfirm-display {
 		padding-bottom: 6px;
