@@ -275,21 +275,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						};
 						progress([toolUpdate]);
 
-						// For file-writing tools, emit IChatTextEdit so the editing session widget shows changed files
+						// For file-writing tools, register the file in the editing session
+						// with empty edits (backend writes directly to disk).
+						// This makes the file appear in the "N Files" widget above TODO.
 						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							const fileContent = (args.file_content ?? args.content ?? args.new_content) as string | undefined;
-							if (filePath && fileContent) {
+							if (filePath) {
 								const workspaceRoot = this._getWorkspaceRoot();
 								const fileUri = filePath.startsWith('/')
 									? URI.file(filePath)
 									: workspaceRoot
 										? URI.joinPath(workspaceRoot, filePath)
 										: URI.file(filePath);
-								const lines = fileContent.split('\n');
+								// Empty edits — just registers the file entry without applying changes
 								progress([{
 									uri: fileUri,
-									edits: [{ range: new Range(1, 1, lines.length + 1, 1), text: fileContent }],
+									edits: [],
 									kind: 'textEdit',
 									done: false,
 								} satisfies IChatTextEdit]);
@@ -326,12 +327,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 						// ── Emit file reference for file-modifying tools ──
 						if (p.success) {
-							const filePath = this._toolFileArgs.get(key);
+							let filePath = this._toolFileArgs.get(key);
 							this._toolFileArgs.delete(key);
+							// Fallback: try to extract path from tool result JSON
+							if (!filePath && typeof p.result === 'string') {
+								try {
+									const resultObj = JSON.parse(p.result);
+									filePath = resultObj.path ?? resultObj.file_path ?? resultObj.file_name;
+								} catch { /* not JSON, ignore */ }
+							}
 							if (filePath) {
 								const workspaceRoot = this._getWorkspaceRoot();
 								const absPath = filePath.startsWith('/') ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
-								const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file']);
+								const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file', 'str_replace']);
 								if (fileTools.has(p.tool_name)) {
 									const isDelete = p.tool_name === 'delete_file';
 									const fileUri = URI.file(absPath);
@@ -848,18 +856,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							const fileContent = (args.file_content ?? args.content ?? args.new_content) as string | undefined;
-							if (filePath && fileContent) {
+							if (filePath) {
 								const workspaceRoot = this._getWorkspaceRoot();
 								const fileUri = filePath.startsWith('/')
 									? URI.file(filePath)
 									: workspaceRoot
 										? URI.joinPath(workspaceRoot, filePath)
 										: URI.file(filePath);
-								const lines = fileContent.split('\n');
 								progress([{
 									uri: fileUri,
-									edits: [{ range: new Range(1, 1, lines.length + 1, 1), text: fileContent }],
+									edits: [],
 									kind: 'textEdit',
 									done: false,
 								} satisfies IChatTextEdit]);
@@ -892,6 +898,49 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							} satisfies IToolResultInputOutputDetails : undefined,
 						};
 						progress([toolComplete]);
+
+						// ── Emit file reference + editing session entry for file-modifying tools ──
+						if (p.success) {
+							let filePath = this._toolFileArgs.get(key);
+							this._toolFileArgs.delete(key);
+							if (!filePath && typeof p.result === 'string') {
+								try {
+									const resultObj = JSON.parse(p.result);
+									filePath = resultObj.path ?? resultObj.file_path ?? resultObj.file_name;
+								} catch { /* not JSON */ }
+							}
+							if (filePath) {
+								const workspaceRoot = this._getWorkspaceRoot();
+								const absPath = filePath.startsWith('/') ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
+								const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file', 'str_replace']);
+								if (fileTools.has(p.tool_name)) {
+									const isDelete = p.tool_name === 'delete_file';
+									const fileUri = URI.file(absPath);
+									const ref: IChatContentReference = {
+										kind: 'reference',
+										reference: fileUri,
+										options: {
+											status: {
+												description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
+												kind: isDelete
+													? ChatResponseReferencePartStatusKind.Omitted
+													: ChatResponseReferencePartStatusKind.Complete,
+											},
+											isDeletion: isDelete,
+										},
+									};
+									progress([ref]);
+									if (!isDelete) {
+										progress([{
+											uri: fileUri,
+											edits: [],
+											kind: 'textEdit',
+											done: true,
+										} satisfies IChatTextEdit]);
+									}
+								}
+							}
+						}
 						break;
 					}
 					case AgentEventType.Status: {
