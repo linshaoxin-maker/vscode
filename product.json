@@ -89,11 +89,15 @@
 	"updateUrl": "",
 	"downloadUrl": "",
 	"configurationDefaults": {
+		"workbench.colorTheme": "Default Light Modern",
+		"workbench.preferredLightColorTheme": "Default Light Modern",
+		"workbench.preferredDarkColorTheme": "Default Dark Modern",
 		"workbench.activityBar.location": "hidden",
 		"workbench.sideBar.location": "right",
 		"workbench.auxiliaryBar.visible": true,
 		"window.titleBarStyle": "custom",
 		"window.commandCenter": true,
+		"window.autoDetectColorScheme": true,
 		"workbench.startupEditor": "none",
 		"chat.agent.enabled": true,
 		"chat.mcp.enabled": true

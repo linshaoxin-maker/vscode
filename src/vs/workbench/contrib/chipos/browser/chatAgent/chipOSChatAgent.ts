@@ -94,6 +94,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private _sessionCounter = 0;
 	private _lastSessionId: string | undefined;
 	private readonly _toolStartTimes = new Map<string, number>();
+	private readonly _toolFileArgs = new Map<string, string>();
 	private readonly _subagentTimers = new Map<string, number>();
 
 	constructor(
@@ -181,6 +182,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		this._logService.info('[ChipOS Agent] invoke:', userMessage.slice(0, 100), 'mode:', mode, 'mentions:', mentions.length);
 
 		this._toolStartTimes.clear();
+		this._toolFileArgs.clear();
 		this._subagentTimers.clear();
 
 		return new Promise<IChatAgentResult>((resolve) => {
@@ -238,6 +240,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
 						this._toolStartTimes.set(key, Date.now());
+						// Save file_path from arguments for later reference emission
+						const args = p.arguments as Record<string, unknown> | undefined;
+						if (args) {
+							const fp = (args.file_path ?? args.path ?? args.file) as string | undefined;
+							if (fp) { this._toolFileArgs.set(key, fp); }
+						}
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
 						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
@@ -281,6 +289,34 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							} satisfies IToolResultInputOutputDetails : undefined,
 						};
 						progress([toolComplete]);
+
+						// ── Emit file reference for file-modifying tools ──
+						if (p.success) {
+							const filePath = this._toolFileArgs.get(key);
+							this._toolFileArgs.delete(key);
+							if (filePath) {
+								const workspaceRoot = this._getWorkspaceRoot();
+								const absPath = filePath.startsWith('/') ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
+								const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file']);
+								if (fileTools.has(p.tool_name)) {
+									const isDelete = p.tool_name === 'delete_file';
+									const ref: IChatContentReference = {
+										kind: 'reference',
+										reference: URI.file(absPath),
+										options: {
+											status: {
+												description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
+												kind: isDelete
+													? ChatResponseReferencePartStatusKind.Omitted
+													: ChatResponseReferencePartStatusKind.Complete,
+											},
+											isDeletion: isDelete,
+										},
+									};
+									progress([ref]);
+								}
+							}
+						}
 						break;
 					}
 
@@ -304,7 +340,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// ── FEAT-29: Rich confirm cards based on card_type ──
 					case AgentEventType.ConfirmRequest: {
 						const p = event.payload as IConfirmRequestPayload;
-						const title = p.title || `Confirm: ${p.card_type}`;
+						const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
 						const richMessage = this._renderConfirmMessage(p);
 						const buttons = p.options?.map(o => o.label) || ['Approve', 'Reject'];
 						const confirmation: IChatConfirmation = {
@@ -899,7 +935,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 					case AgentEventType.ConfirmRequest: {
 						const p = event.payload as IConfirmRequestPayload;
-						const title = p.title || `Confirm: ${p.card_type}`;
+						const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
 						const richMessage = this._renderConfirmMessage(p);
 						const buttons = p.options?.map(o => o.label) || ['Approve', 'Reject'];
 						const confirmation: IChatConfirmation = {
@@ -1157,6 +1193,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._logService.info('[ChipOS Agent] Extracted mentions:', mentions.map(m => `${m.type}:${m.path}`).join(', '));
 		}
 		return mentions;
+	}
+
+	// ── FEAT-29: Friendly titles for confirm card types ──
+	private static _confirmTitle(cardType: string, fallbackTitle?: string): string {
+		if (fallbackTitle) { return fallbackTitle; }
+		switch (cardType) {
+			case 'spec_confirm': return '$(checklist) Spec Review';
+			case 'arch_confirm': return '$(symbol-structure) Architecture Review';
+			case 'design_confirm': return '$(symbol-class) Design Review';
+			case 'code_confirm': return '$(code) Code Review';
+			default: return `$(question) Confirm: ${cardType}`;
+		}
 	}
 
 	// ── FEAT-29: Render rich confirm message based on card_type ──

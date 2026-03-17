@@ -8,11 +8,14 @@ import { Disposable } from '../../../../../../../base/common/lifecycle.js';
 import { IChatEdaParallelProgress } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
-import { edaSection, edaBadge, edaProgressBar } from './edaContentPartUtils.js';
 import '../media/edaParts.css';
 
 const $ = dom.$;
 
+/**
+ * Renders parallel progress tracks in Cursor-native style:
+ * each track is a progress-container row with spinner/check icon + text.
+ */
 export class ChatEdaParallelProgressContentPart extends Disposable implements IChatContentPart {
 	public readonly domNode: HTMLElement;
 
@@ -21,47 +24,53 @@ export class ChatEdaParallelProgressContentPart extends Disposable implements IC
 	) {
 		super();
 
-		const tracksContainer = $('div.eda-parallel-tracks');
+		const wrapper = $('div.eda-parallel-wrapper');
+
+		// Phase header (small, muted)
+		const phaseLabel = $('div.eda-parallel-phase');
+		phaseLabel.textContent = content.phase ?? 'checking';
+		wrapper.appendChild(phaseLabel);
 
 		for (const track of content.tracks ?? []) {
-			const trackEl = $('div.eda-parallel-track');
+			const row = $('div.progress-container');
 
-			const header = $('div.eda-track-header');
-			header.appendChild(edaBadge(track.status, track.status === 'done' ? 'done' : track.status === 'running' ? 'running' : track.status === 'failed' ? 'fail' : 'pending'));
-			const name = $('span.eda-track-name');
-			name.textContent = track.name;
-			header.appendChild(name);
-			if (track.file) {
-				const file = $('span.eda-track-file');
-				file.textContent = track.file;
-				header.appendChild(file);
+			// Icon: spinner for running, check for done, error for failed
+			let iconClass: string;
+			if (track.status === 'done') {
+				iconClass = 'codicon codicon-check';
+				row.classList.add('show-checkmarks');
+			} else if (track.status === 'failed') {
+				iconClass = 'codicon codicon-error';
+			} else if (track.status === 'running') {
+				iconClass = 'codicon codicon-loading codicon-modifier-spin';
+			} else {
+				iconClass = 'codicon codicon-circle-outline';
 			}
-			trackEl.appendChild(header);
+			const icon = $(`div.${iconClass.split(' ').join('.')}`);
+			row.appendChild(icon);
 
-			if (track.progress !== undefined) {
-				trackEl.appendChild(edaProgressBar(track.progress));
-			}
+			// Text
+			const textEl = $('div.rendered-markdown.progress-step');
+			const p = $('p');
+			p.textContent = track.name + (track.file ? ` — ${track.file}` : '');
+			textEl.appendChild(p);
+			row.appendChild(textEl);
 
-			tracksContainer.appendChild(trackEl);
+			wrapper.appendChild(row);
 		}
 
-		const children: HTMLElement[] = [tracksContainer];
-
+		// Conflicts (if any)
 		if (content.conflicts && content.conflicts.length > 0) {
-			const conflictsEl = $('div.eda-conflicts');
-			const conflictsTitle = $('span.eda-conflicts-title');
-			conflictsTitle.textContent = 'Conflicts:';
-			conflictsEl.appendChild(conflictsTitle);
-			for (const conflict of content.conflicts) {
-				const item = $('span.eda-conflict-item');
-				item.textContent = conflict;
-				conflictsEl.appendChild(item);
-			}
-			children.push(conflictsEl);
+			const conflictsRow = $('div.eda-parallel-conflicts');
+			const icon = $('div.codicon.codicon-warning');
+			conflictsRow.appendChild(icon);
+			const text = $('span');
+			text.textContent = `${content.conflicts.length} conflict(s) detected`;
+			conflictsRow.appendChild(text);
+			wrapper.appendChild(conflictsRow);
 		}
 
-		this.domNode = edaSection(`Parallel: ${content.phase}`, ...children);
-		this.domNode.classList.add('eda-parallel-progress');
+		this.domNode = wrapper;
 	}
 
 	hasSameContent(other: IChatRendererContent): boolean {
