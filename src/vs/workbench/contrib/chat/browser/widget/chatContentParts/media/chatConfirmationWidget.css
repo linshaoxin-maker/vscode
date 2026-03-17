@@ -124,7 +124,7 @@
 }
 
 .chat-confirmation-widget .chat-confirmation-widget-message {
-	max-height: 400px;
+	max-height: 240px;
 	overflow-y: auto !important;
 	overflow-x: hidden;
 }
@@ -137,7 +137,7 @@
 
 /* ChipOS: scrollable message area so buttons stay visible below */
 .chat-confirmation-widget:has(.chat-buttons-container) .chat-confirmation-widget-message {
-	max-height: 400px;
+	max-height: 240px;
 	overflow-y: auto !important;
 }
 
