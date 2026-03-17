@@ -249,6 +249,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
 						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
+						// Format rawInput as readable text for certain tools
+						const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
 						const toolUpdate: IChatExternalToolInvocationUpdate = {
 							kind: 'externalToolInvocationUpdate',
 							toolCallId: key,
@@ -257,7 +259,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							invocationMessage: invocationMsg,
 							toolSpecificData: {
 								kind: 'input',
-								rawInput: p.arguments ?? {},
+								rawInput,
 							} satisfies IChatToolInputInvocationData,
 						};
 						progress([toolUpdate]);
@@ -782,6 +784,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
 						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
+						const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
 						const toolUpdate: IChatExternalToolInvocationUpdate = {
 							kind: 'externalToolInvocationUpdate',
 							toolCallId: key,
@@ -790,7 +793,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							invocationMessage: invocationMsg,
 							toolSpecificData: {
 								kind: 'input',
-								rawInput: p.arguments ?? {},
+								rawInput,
 							} satisfies IChatToolInputInvocationData,
 						};
 						progress([toolUpdate]);
@@ -1354,6 +1357,40 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private _friendlyToolName(toolName: string): string {
 		return ChipOSChatAgent._toolNameMap[toolName] || toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+	}
+
+	/**
+	 * Format rawInput for tool call display.
+	 * For tools like 'task' (subagent), convert JSON to readable text.
+	 * For others, pass through as-is.
+	 */
+	private static _formatRawInput(toolName: string, args: unknown): unknown {
+		if (!args || typeof args !== 'object') { return args ?? {}; }
+		const obj = args as Record<string, unknown>;
+
+		// Subagent / task tools — show readable text instead of raw JSON
+		if (toolName === 'task' || toolName === 'run_subagent' || toolName === 'transfer_to_agent') {
+			const parts: string[] = [];
+			if (obj.description) { parts.push(`Description: ${obj.description}`); }
+			if (obj.subagent_type) { parts.push(`Type: ${obj.subagent_type}`); }
+			if (obj.prompt) {
+				const prompt = String(obj.prompt);
+				parts.push(`Prompt:\n${prompt.length > 500 ? prompt.slice(0, 500) + '…' : prompt}`);
+			}
+			if (obj.model) { parts.push(`Model: ${obj.model}`); }
+			return parts.length > 0 ? parts.join('\n\n') : args;
+		}
+
+		// File tools — show path prominently
+		if (obj.file_path || obj.path || obj.file) {
+			const fp = String(obj.file_path ?? obj.path ?? obj.file);
+			if (obj.content && typeof obj.content === 'string') {
+				return `File: ${fp}\n\n${obj.content}`;
+			}
+			return `File: ${fp}`;
+		}
+
+		return args;
 	}
 
 	private static _truncStr(s: string, max: number): string {
