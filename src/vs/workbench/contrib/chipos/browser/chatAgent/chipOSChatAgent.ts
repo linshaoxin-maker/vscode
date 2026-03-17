@@ -639,6 +639,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							const subStart = this._subagentTimers.get(p.task_id);
 							const subElapsed = subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
 							this._subagentTimers.delete(p.task_id);
+							// Close any dangling tool calls belonging to this subagent
+							const prefix = `sub_${p.task_id}_`;
+							for (const [k] of this._toolStartTimes) {
+								if (k.startsWith(prefix)) {
+									const toolName = k.slice(prefix.length);
+									progress([{
+										kind: 'externalToolInvocationUpdate',
+										toolCallId: k,
+										toolName,
+										isComplete: true,
+										pastTenseMessage: `${toolName} done`,
+										subagentInvocationId: p.task_id,
+									} satisfies IChatExternalToolInvocationUpdate]);
+									this._toolStartTimes.delete(k);
+								}
+							}
 							progress([this._progress(`${label} $(check) completed${subElapsed}`)]);
 						}
 						break;
@@ -736,6 +752,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 
 					case AgentEventType.Done:
+						// Close any dangling tool calls before finishing
+						for (const [k] of this._toolStartTimes) {
+							const toolName = k.includes('_') ? k.split('_').pop()! : k;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: k,
+								toolName,
+								isComplete: true,
+								pastTenseMessage: `${toolName} done`,
+							} satisfies IChatExternalToolInvocationUpdate]);
+						}
+						this._toolStartTimes.clear();
 						finish({});
 						break;
 
@@ -1059,6 +1087,21 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							const subStart = this._subagentTimers.get(p.task_id);
 							const subElapsed = subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
 							this._subagentTimers.delete(p.task_id);
+							const prefix = `sub_${p.task_id}_`;
+							for (const [k] of this._toolStartTimes) {
+								if (k.startsWith(prefix)) {
+									const toolName = k.slice(prefix.length);
+									progress([{
+										kind: 'externalToolInvocationUpdate',
+										toolCallId: k,
+										toolName,
+										isComplete: true,
+										pastTenseMessage: `${toolName} done`,
+										subagentInvocationId: p.task_id,
+									} satisfies IChatExternalToolInvocationUpdate]);
+									this._toolStartTimes.delete(k);
+								}
+							}
 							progress([this._progress(`${label} $(check) completed${subElapsed}`)]);
 						}
 						break;
@@ -1215,6 +1258,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 					case AgentEventType.Done:
+						for (const [k] of this._toolStartTimes) {
+							const toolName = k.includes('_') ? k.split('_').pop()! : k;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: k,
+								toolName,
+								isComplete: true,
+								pastTenseMessage: `${toolName} done`,
+							} satisfies IChatExternalToolInvocationUpdate]);
+						}
+						this._toolStartTimes.clear();
 						finish({});
 						break;
 					case AgentEventType.FileEdit: {
