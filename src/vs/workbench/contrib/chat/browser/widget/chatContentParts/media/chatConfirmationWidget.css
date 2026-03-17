@@ -135,7 +135,8 @@
 	font-size: var(--vscode-chat-font-size-body-s);
 }
 
-.chat-confirmation-widget {
+/* ChipOS: only limit height on confirmation cards with buttons, not tool-call collapsibles */
+.chat-confirmation-widget:has(.chat-buttons-container) {
 	max-height: 280px;
 	overflow-y: auto !important;
 }

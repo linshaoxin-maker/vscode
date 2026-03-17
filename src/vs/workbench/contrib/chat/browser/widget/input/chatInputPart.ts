@@ -2031,6 +2031,14 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		}
 		this.chatEditingSessionWidgetContainer = elements.chatEditingSessionWidgetContainer;
 		this.chatInputTodoListWidgetContainer = elements.chatInputTodoListWidgetContainer;
+
+		// Watch todo list container for size changes to keep input height in sync
+		const todoResizeObserver = this._register(new dom.DisposableResizeObserver(() => {
+			const newHeight = this.container.offsetHeight;
+			this.height.set(newHeight, undefined);
+		}));
+		this._register(todoResizeObserver.observe(this.chatInputTodoListWidgetContainer));
+
 		this.chatGettingStartedTipContainer = elements.chatGettingStartedTipContainer;
 		this.chatGettingStartedTipContainer.style.display = 'none';
 		this.chatQuestionCarouselContainer = elements.chatQuestionCarouselContainer;

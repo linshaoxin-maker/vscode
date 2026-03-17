@@ -546,7 +546,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						}
 						const label = `Sub-agent \`${p.task_id.slice(0, 8)}\``;
 						if (p.kind === 'text' && p.content) {
-							progress([this._markdown(p.content)]);
+							// If content looks like JSON, try to extract readable fields
+							const rendered = ChipOSChatAgent._renderSubagentText(p.content);
+							progress([this._markdown(rendered)]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
 							const subKey = `sub_${p.task_id}_${p.tool_name}`;
 							this._toolStartTimes.set(subKey, Date.now());
@@ -898,7 +900,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						}
 						const label = `Sub-agent \`${p.task_id.slice(0, 8)}\``;
 						if (p.kind === 'text' && p.content) {
-							progress([this._markdown(p.content)]);
+							const rendered = ChipOSChatAgent._renderSubagentText(p.content);
+							progress([this._markdown(rendered)]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
 							const subKey = `sub_${p.task_id}_${p.tool_name}`;
 							this._toolStartTimes.set(subKey, Date.now());
@@ -1203,6 +1206,30 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	// ── FEAT-29: Friendly titles for confirm card types ──
+	/**
+	 * If subagent text content looks like raw JSON, extract readable fields.
+	 * Otherwise return as-is.
+	 */
+	private static _renderSubagentText(content: string): string {
+		const trimmed = content.trim();
+		if (!(trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+			return content;
+		}
+		try {
+			const obj = JSON.parse(trimmed);
+			const parts: string[] = [];
+			if (obj.description) { parts.push(String(obj.description)); }
+			if (obj.subagent_type) { parts.push(`Type: ${obj.subagent_type}`); }
+			if (obj.prompt) {
+				const prompt = String(obj.prompt);
+				parts.push(prompt.length > 200 ? prompt.slice(0, 200) + '…' : prompt);
+			}
+			return parts.length > 0 ? parts.join('\n\n') : content;
+		} catch {
+			return content;
+		}
+	}
+
 	private static _confirmTitle(cardType: string, _fallbackTitle?: string): string {
 		switch (cardType) {
 			case 'spec_confirm': return 'Spec Review';
