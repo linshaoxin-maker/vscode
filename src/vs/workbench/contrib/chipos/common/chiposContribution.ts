@@ -548,8 +548,10 @@ class ChipOSContribution extends Disposable {
 			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
 			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
 			this._layoutService.setPartHidden(false, Parts.ACTIVITYBAR_PART);
-			this._closeWelcomeEditor();
 		}
+		// Cursor-style: always close the Welcome/Getting Started editor
+		// Chat panel replaces the Welcome editor as the primary onboarding surface
+		this._closeWelcomeEditor();
 	}
 
 	private _closeWelcomeEditor(): void {
