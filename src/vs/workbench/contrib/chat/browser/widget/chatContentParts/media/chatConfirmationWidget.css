@@ -135,11 +135,15 @@
 	border: 1px solid var(--vscode-chat-requestBorder);
 	border-radius: var(--vscode-cornerRadius-medium);
 	font-size: var(--vscode-chat-font-size-body-s);
+	display: flex;
+	flex-direction: column;
+	flex-basis: 100%;
+	max-height: 320px;
+	overflow: hidden;
 }
 
 /* ChipOS: scrollable message area so buttons stay visible below */
 .chat-confirmation-widget:has(.chat-buttons-container) .chat-confirmation-widget-message {
-	max-height: 240px;
 	overflow-y: auto !important;
 }
 
@@ -148,7 +152,8 @@
 	justify-content: space-between;
 	align-items: center;
 	gap: 8px;
-	padding-top: 4px;
+	padding: 4px 8px 8px;
+	flex-shrink: 0;
 	z-index: 1;
 }
 
