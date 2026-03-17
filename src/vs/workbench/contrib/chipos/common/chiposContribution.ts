@@ -21,7 +21,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { SidecarManagerBrowser } from '../../../../workbench/contrib/chipos/browser/sidecarManagerBrowser.js';
-import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { GettingStartedInput } from '../../../../workbench/contrib/welcomeGettingStarted/browser/gettingStartedInput.js';
@@ -427,7 +427,7 @@ class ChipOSContribution extends Disposable {
 		@IEditorService private readonly _editorService: IEditorService,
 		@IChatAgentService private readonly _chatAgentService: IChatAgentService,
 		@IStatusbarService _statusbarService: IStatusbarService,
-		@IViewsService _viewsService: IViewsService,
+		@IViewsService private readonly _viewsService: IViewsService,
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
 	) {
 		super();
@@ -642,22 +642,25 @@ class ChipOSContribution extends Disposable {
 	}
 
 	private _applyEmptyWindowLayout(): void {
-		const isEmpty = this._contextService.getWorkbenchState() === WorkbenchState.EMPTY;
-		if (isEmpty) {
-			// Cursor-style: show Sessions sidebar, hide AuxiliaryBar, open Chat Editor
-			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
-			this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
-			this._logService.info('[ChipOS] Empty workspace: showing sessions sidebar, opening chat editor');
-		} else {
-			// Workspace open: show Sessions sidebar + Explorer, hide AuxiliaryBar
-			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
-			this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
-		}
-		// Cursor-style: always close the Welcome/Getting Started editor
-		// Chat Editor replaces the Welcome editor as the primary onboarding surface
+		// Cursor-style: always hide AuxiliaryBar, show Sidebar
+		this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
+		this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
+
+		// Close Welcome editor
 		this._closeWelcomeEditor();
-		// Open a Chat Editor tab if no editors are open
+		// Open Chat Editor tab if no editors are open
 		this._openChatEditorIfEmpty();
+		// Open Sessions sidebar
+		this._openSessionsSidebar();
+	}
+
+	private async _openSessionsSidebar(): Promise<void> {
+		try {
+			await this._viewsService.openViewContainer('chipos.sessions');
+			this._logService.info('[ChipOS] Sessions sidebar opened');
+		} catch (err) {
+			this._logService.warn('[ChipOS] Failed to open Sessions sidebar:', err);
+		}
 	}
 
 	private async _openChatEditorIfEmpty(): Promise<void> {
