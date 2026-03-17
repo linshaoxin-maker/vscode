@@ -1508,8 +1508,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'spec_confirm': {
 				const specText = data.spec_result ?? data.analysis ?? data.result;
 				if (typeof specText === 'string') {
-					// Show full content — CSS max-height + overflow-y handles scrolling
-					return specText;
+					// Only show a brief summary in the confirmation card
+					const lines = specText.split('\n').filter((l: string) => l.trim());
+					const summaryLines = lines.slice(0, 8);
+					const summary = summaryLines.join('\n');
+					const truncated = lines.length > 8 ? `\n\n*(${lines.length - 8} more lines — full content shown above)*` : '';
+					return summary + truncated;
 				}
 				if (data.summary) { return String(data.summary); }
 				return 'Spec analysis complete. Review and approve to continue.';
@@ -1518,7 +1522,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'arch_confirm': {
 				const archText = data.arch_result ?? data.analysis ?? data.result;
 				if (typeof archText === 'string') {
-					return archText;
+					const lines = archText.split('\n').filter((l: string) => l.trim());
+					const summaryLines = lines.slice(0, 8);
+					const summary = summaryLines.join('\n');
+					const truncated = lines.length > 8 ? `\n\n*(${lines.length - 8} more lines — full content shown above)*` : '';
+					return summary + truncated;
 				}
 				if (data.summary) { return String(data.summary); }
 				return 'Architecture analysis complete. Review and approve to continue.';

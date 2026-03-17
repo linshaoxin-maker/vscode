@@ -138,13 +138,16 @@
 	display: flex;
 	flex-direction: column;
 	flex-basis: 100%;
-	max-height: 320px;
+	max-height: 280px;
 	overflow: hidden;
 }
 
 /* ChipOS: scrollable message area so buttons stay visible below */
-.chat-confirmation-widget:has(.chat-buttons-container) .chat-confirmation-widget-message {
+.chat-confirmation-widget .chat-confirmation-widget-message-container .chat-confirmation-widget-message {
+	flex: 1 1 auto;
+	min-height: 0;
 	overflow-y: auto !important;
+	overflow-x: hidden;
 }
 
 .chat-confirmation-widget .chat-buttons-container {
@@ -154,7 +157,10 @@
 	gap: 8px;
 	padding: 4px 8px 8px;
 	flex-shrink: 0;
+	flex-basis: auto;
 	z-index: 1;
+	border-top: 1px solid var(--vscode-chat-requestBorder);
+	background: var(--vscode-editor-background);
 }
 
 .chat-confirmation-widget .chat-buttons {
