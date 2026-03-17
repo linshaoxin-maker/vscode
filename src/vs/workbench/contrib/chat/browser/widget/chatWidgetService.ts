@@ -76,12 +76,7 @@ export class ChatWidgetService extends Disposable implements IChatWidgetService 
 			return last;
 		}
 
-		// ChipOS: Default to opening chat as Editor Tab (Cursor-style)
-		const pane = await this.editorService.openEditor({
-			resource: ChatEditorInput.getNewEditorUri(),
-			options: { pinned: true, preserveFocus }
-		}, ACTIVE_GROUP);
-		return pane instanceof ChatEditor ? pane.widget : undefined;
+		return (await this.viewsService.openView<ChatViewPane>(ChatViewId, !preserveFocus))?.widget;
 	}
 
 	async reveal(widget: IChatWidget, preserveFocus?: boolean): Promise<boolean> {
@@ -119,8 +114,8 @@ export class ChatWidgetService extends Disposable implements IChatWidgetService 
 			await this.prepareSessionForMove(sessionResource, target);
 		}
 
-		// Load this session in chat view (only if explicitly requested)
-		if (target === ChatViewPaneTarget) {
+		// Load this session in chat view (preferred)
+		if (target === ChatViewPaneTarget || typeof target === 'undefined') {
 			const chatView = await this.viewsService.openView<ChatViewPane>(ChatViewId, !options?.preserveFocus);
 			if (chatView) {
 				await chatView.loadSession(sessionResource);
@@ -131,16 +126,14 @@ export class ChatWidgetService extends Disposable implements IChatWidgetService 
 			return chatView?.widget;
 		}
 
-		// ChipOS: Default to opening session as Editor Tab (Cursor-style)
-		const group = isEditorGroup(target) ? target : ACTIVE_GROUP;
+		// Open in chat editor
 		const pane = await this.editorService.openEditor({
 			resource: sessionResource,
 			options: {
-				pinned: true,
 				...options,
-				revealIfOpened: options?.revealIfOpened ?? true
+				revealIfOpened: options?.revealIfOpened ?? true // always try to reveal if already opened unless explicitly told not to
 			}
-		}, group);
+		}, target);
 		return pane instanceof ChatEditor ? pane.widget : undefined;
 	}
 

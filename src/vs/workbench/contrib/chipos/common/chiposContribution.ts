@@ -21,7 +21,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { SidecarManagerBrowser } from '../../../../workbench/contrib/chipos/browser/sidecarManagerBrowser.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { GettingStartedInput } from '../../../../workbench/contrib/welcomeGettingStarted/browser/gettingStartedInput.js';
@@ -108,36 +108,6 @@ viewsRegistry.registerViews([{
 	order: 1,
 	hideByDefault: false,
 }], chiposViewContainer);
-
-// ── Sessions Sidebar Registration (Cursor-style) ───────────────────────────
-import { ChipOSSessionsSidebarView } from '../../../../workbench/contrib/chipos/browser/sessionsSidebar/chiposSessionsSidebarView.js';
-
-const SESSIONS_SIDEBAR_VIEW_ID = 'chipos.sessionsSidebar';
-
-const sessionsViewContainer = viewContainersRegistry.registerViewContainer(
-	{
-		id: 'chipos.sessions',
-		title: { value: localize('chiposSessions', 'Sessions'), original: 'Sessions' },
-		icon: Codicon.commentDiscussion,
-		order: 0,
-		ctorDescriptor: new SyncDescriptor(ViewPaneContainer, ['chipos.sessions', { mergeViewWithContainerWhenSingleView: true }]),
-		storageId: 'chipos.sessions.state',
-		hideIfEmpty: false,
-	},
-	ViewContainerLocation.Sidebar,
-	{ isDefault: false }
-);
-
-viewsRegistry.registerViews([{
-	id: SESSIONS_SIDEBAR_VIEW_ID,
-	name: { value: localize('chiposSessionsSidebar', 'Chat Sessions'), original: 'Chat Sessions' },
-	ctorDescriptor: new SyncDescriptor(ChipOSSessionsSidebarView),
-	canToggleVisibility: true,
-	canMoveView: true,
-	collapsed: false,
-	order: 0,
-	hideByDefault: false,
-}], sessionsViewContainer);
 
 // ── Command IDs ────────────────────────────────────────────────────────────────
 
@@ -427,7 +397,7 @@ class ChipOSContribution extends Disposable {
 		@IEditorService private readonly _editorService: IEditorService,
 		@IChatAgentService private readonly _chatAgentService: IChatAgentService,
 		@IStatusbarService _statusbarService: IStatusbarService,
-		@IViewsService private readonly _viewsService: IViewsService,
+		@IViewsService _viewsService: IViewsService,
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
 	) {
 		super();
@@ -642,42 +612,20 @@ class ChipOSContribution extends Disposable {
 	}
 
 	private _applyEmptyWindowLayout(): void {
-		// Cursor-style: always hide AuxiliaryBar, show Sidebar
-		this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
-		this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
-
-		// Close Welcome editor
+		const isEmpty = this._contextService.getWorkbenchState() === WorkbenchState.EMPTY;
+		if (isEmpty) {
+			// Cursor-style: hide sidebar (no workspace to explore), keep AuxiliaryBar (Chat) visible
+			// Activity Bar is hidden by default (product.json configurationDefaults) — don't override
+			this._layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
+			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
+			this._logService.info('[ChipOS] Empty workspace: hiding sidebar, keeping chat visible');
+		} else {
+			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
+			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
+		}
+		// Cursor-style: always close the Welcome/Getting Started editor
+		// Chat panel replaces the Welcome editor as the primary onboarding surface
 		this._closeWelcomeEditor();
-		// Open Chat Editor tab if no editors are open
-		this._openChatEditorIfEmpty();
-		// Open Sessions sidebar
-		this._openSessionsSidebar();
-	}
-
-	private async _openSessionsSidebar(): Promise<void> {
-		try {
-			await this._viewsService.openViewContainer('chipos.sessions');
-			this._logService.info('[ChipOS] Sessions sidebar opened');
-		} catch (err) {
-			this._logService.warn('[ChipOS] Failed to open Sessions sidebar:', err);
-		}
-	}
-
-	private async _openChatEditorIfEmpty(): Promise<void> {
-		// Only open if there are no active editors
-		if (this._editorService.activeEditor) {
-			return;
-		}
-		try {
-			const { ChatEditorInput } = await import('../../../../workbench/contrib/chat/browser/widgetHosts/editor/chatEditorInput.js');
-			await this._editorService.openEditor({
-				resource: ChatEditorInput.getNewEditorUri(),
-				options: { pinned: true }
-			});
-			this._logService.info('[ChipOS] Opened Chat Editor as default tab');
-		} catch (err) {
-			this._logService.warn('[ChipOS] Failed to open Chat Editor:', err);
-		}
 	}
 
 	private _closeWelcomeEditor(): void {
