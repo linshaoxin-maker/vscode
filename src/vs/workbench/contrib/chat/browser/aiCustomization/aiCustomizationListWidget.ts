@@ -606,7 +606,7 @@ export class AICustomizationListWidget extends Disposable {
 				learnMoreLabel = localize('learnMoreAgents', "Learn more about custom agents");
 				break;
 			case AICustomizationManagementSection.Skills:
-				description = localize('skillsDescription', "Folders of instructions, scripts, and resources that Copilot loads when relevant to perform specialized tasks.");
+				description = localize('skillsDescription', "Folders of instructions, scripts, and resources that the AI agent loads when relevant to perform specialized tasks.");
 				docsUrl = 'https://code.visualstudio.com/docs/copilot/customization/agent-skills';
 				learnMoreLabel = localize('learnMoreSkills', "Learn more about agent skills");
 				break;
@@ -1167,7 +1167,7 @@ export class AICustomizationListWidget extends Disposable {
 			case AICustomizationManagementSection.Instructions:
 				return {
 					title: localize('noInstructions', "No instructions yet"),
-					description: localize('createFirstInstructions', "Add instructions to teach Copilot about your codebase"),
+					description: localize('createFirstInstructions', "Add instructions to teach the AI about your codebase"),
 				};
 			case AICustomizationManagementSection.Hooks:
 				return {

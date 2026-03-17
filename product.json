@@ -89,7 +89,7 @@
 	"updateUrl": "",
 	"downloadUrl": "",
 	"configurationDefaults": {
-		"workbench.activityBar.location": "side",
+		"workbench.activityBar.location": "hidden",
 		"workbench.sideBar.location": "left",
 		"workbench.auxiliaryBar.visible": true,
 		"window.titleBarStyle": "custom",

@@ -603,16 +603,14 @@ class ChipOSContribution extends Disposable {
 	private _applyEmptyWindowLayout(): void {
 		const isEmpty = this._contextService.getWorkbenchState() === WorkbenchState.EMPTY;
 		if (isEmpty) {
-			// Cursor-style: keep ActivityBar + AuxiliaryBar (Chat) visible even in empty window
-			// Only hide the primary sidebar (Explorer) since there's no workspace to explore
+			// Cursor-style: hide sidebar (no workspace to explore), keep AuxiliaryBar (Chat) visible
+			// Activity Bar is hidden by default (product.json configurationDefaults) — don't override
 			this._layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
 			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
-			this._layoutService.setPartHidden(false, Parts.ACTIVITYBAR_PART);
-			this._logService.info('[ChipOS] Empty workspace: hiding sidebar, keeping activitybar + chat visible');
+			this._logService.info('[ChipOS] Empty workspace: hiding sidebar, keeping chat visible');
 		} else {
 			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
 			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
-			this._layoutService.setPartHidden(false, Parts.ACTIVITYBAR_PART);
 		}
 		// Cursor-style: always close the Welcome/Getting Started editor
 		// Chat panel replaces the Welcome editor as the primary onboarding surface
