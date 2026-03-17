@@ -89,9 +89,10 @@
 	"updateUrl": "",
 	"downloadUrl": "",
 	"configurationDefaults": {
-		"workbench.colorTheme": "Default Light Modern",
-		"workbench.preferredLightColorTheme": "Default Light Modern",
-		"workbench.preferredDarkColorTheme": "Default Dark Modern",
+		"workbench.colorTheme": "Default Light+",
+		"workbench.preferredLightColorTheme": "Default Light+",
+		"workbench.preferredDarkColorTheme": "Default Light+",
+		"window.autoDetectColorScheme": false,
 		"workbench.activityBar.location": "hidden",
 		"workbench.sideBar.location": "right",
 		"workbench.auxiliaryBar.visible": true,
