@@ -621,11 +621,18 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 
 		for (const session of sessions) {
 
+			// Cancel any in-progress request before clearing
+			chatService.cancelCurrentRequestForSession(session.resource);
+
 			// Clear chat widget
 			await widgetService.getWidgetBySessionResource(session.resource)?.clear();
 
 			// Remove from storage
-			await chatService.removeHistoryEntry(session.resource);
+			try {
+				await chatService.removeHistoryEntry(session.resource);
+			} catch (e) {
+				// Session may not be a local session — ignore
+			}
 		}
 	}
 }
