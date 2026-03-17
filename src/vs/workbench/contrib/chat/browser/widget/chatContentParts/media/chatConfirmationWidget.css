@@ -124,8 +124,9 @@
 }
 
 .chat-confirmation-widget .chat-confirmation-widget-message {
-	max-height: 300px;
-	overflow-y: auto;
+	max-height: 200px;
+	overflow-y: auto !important;
+	overflow-x: hidden;
 }
 
 .chat-confirmation-widget .chat-confirmation-widget-message-container {
@@ -262,8 +263,8 @@
 	background: var(--vscode-chat-requestBackground);
 	border-bottom: 1px solid var(--vscode-chat-requestBorder);
 	padding: 6px 9px 0 9px;
-	max-height: 300px;
-	overflow-y: auto;
+	max-height: 200px;
+	overflow-y: auto !important;
 
 	.tool-postconfirm-display {
 		padding-bottom: 6px;

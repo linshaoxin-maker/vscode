@@ -1206,12 +1206,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private static _confirmTitle(cardType: string, fallbackTitle?: string): string {
 		if (fallbackTitle) { return fallbackTitle; }
 		switch (cardType) {
-			case 'spec_confirm': return '$(checklist) Spec Review';
-			case 'arch_confirm': return '$(symbol-structure) Architecture Review';
-			case 'design_confirm': return '$(symbol-class) Design Review';
-			case 'code_confirm': return '$(code) Code Review';
-			case 'agent_ask': return '$(comment-discussion) Decision Required';
-			default: return `$(question) Confirm: ${cardType}`;
+			case 'spec_confirm': return 'Spec Review';
+			case 'arch_confirm': return 'Architecture Review';
+			case 'design_confirm': return 'Design Review';
+			case 'code_confirm': return 'Code Review';
+			case 'agent_ask': return 'Decision Required';
+			default: return cardType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 		}
 	}
 
@@ -1225,40 +1225,34 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const data = p.card_data;
 		switch (p.card_type) {
 			case 'spec_confirm': {
-				const sections: string[] = [];
-				// ── 兼容后端实际格式: { spec_result: "长文本" } ──
 				const specText = data.spec_result ?? data.analysis ?? data.result;
 				if (typeof specText === 'string') {
-					// Strip markdown tables (|...|) to keep the card compact
-					const noTables = specText.replace(/^\|.*\|$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
-					const preview = noTables.length > 200 ? noTables.slice(0, 200) + '…' : noTables;
-					if (preview) {
-						sections.push(preview);
-					}
+					// Strip tables, headers, and excessive whitespace
+					const cleaned = specText
+						.replace(/^\|.*\|$/gm, '')     // tables
+						.replace(/^#{1,6}\s+.*$/gm, '') // headers
+						.replace(/\n{2,}/g, '\n')       // collapse blank lines
+						.trim();
+					const firstLine = cleaned.split('\n').filter(l => l.trim()).slice(0, 3).join(' · ');
+					return firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
 				}
-				if (data.summary) { sections.push(`**Summary:** ${data.summary}`); }
-				if (data.file_path) { sections.push(`**File:** \`${data.file_path}\``); }
-				// Skip detailed changes/risks in card — keep it short
-				return sections.length > 0
-					? sections.join('\n\n') + '\n\n*(Approve to continue, Reject to abort)*'
-					: JSON.stringify(data, null, 2).slice(0, 200);
+				if (data.summary) { return String(data.summary).slice(0, 120); }
+				return 'Spec analysis complete. Review and approve to continue.';
 			}
 
 			case 'arch_confirm': {
-				const sections: string[] = [];
 				const archText = data.arch_result ?? data.analysis ?? data.result;
 				if (typeof archText === 'string') {
-					const noTables = archText.replace(/^\|.*\|$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
-					const preview = noTables.length > 200 ? noTables.slice(0, 200) + '…' : noTables;
-					if (preview) {
-						sections.push(preview);
-					}
+					const cleaned = archText
+						.replace(/^\|.*\|$/gm, '')
+						.replace(/^#{1,6}\s+.*$/gm, '')
+						.replace(/\n{2,}/g, '\n')
+						.trim();
+					const firstLine = cleaned.split('\n').filter(l => l.trim()).slice(0, 3).join(' · ');
+					return firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
 				}
-				if (data.summary) { sections.push(`**Summary:** ${data.summary}`); }
-				if (data.module) { sections.push(`**Module:** \`${data.module}\``); }
-				return sections.length > 0
-					? sections.join('\n\n') + '\n\n*(Approve to continue, Reject to abort)*'
-					: JSON.stringify(data, null, 2).slice(0, 200);
+				if (data.summary) { return String(data.summary).slice(0, 120); }
+				return 'Architecture analysis complete. Review and approve to continue.';
 			}
 
 			case 'hook_confirm': {
@@ -1282,12 +1276,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			case 'agent_ask': {
-				// Agent is asking the user a question with context + options
 				const context = (data.context as string) ?? '';
-				// Truncate long context, strip tables
-				const cleaned = context.replace(/^\|.*\|$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
-				const preview = cleaned.length > 400 ? cleaned.slice(0, 400) + '…' : cleaned;
-				return preview || 'Please select an option below.';
+				const cleaned = context.replace(/^\|.*\|$/gm, '').replace(/^#{1,6}\s+.*$/gm, '').replace(/\n{2,}/g, '\n').trim();
+				const lines = cleaned.split('\n').filter(l => l.trim()).slice(0, 4).join('\n');
+				return lines.length > 300 ? lines.slice(0, 300) + '…' : (lines || 'Please select an option.');
 			}
 
 			default:
