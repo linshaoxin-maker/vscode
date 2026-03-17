@@ -119,6 +119,7 @@ import { AccessibilityWorkbenchSettingId } from '../../../accessibility/browser/
 const $ = dom.$;
 
 const COPILOT_USERNAME = 'GitHub Copilot';
+const CHIPOS_USERNAME = 'ChipOS';
 
 export interface IChatListItemTemplate {
 	currentElement?: ChatTreeItem;
@@ -755,8 +756,8 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		}
 
 		templateData.username.textContent = element.username;
-		templateData.username.classList.toggle('hidden', element.username === COPILOT_USERNAME || this.environmentService.isSessionsWindow);
-		templateData.avatarContainer.classList.toggle('hidden', element.username === COPILOT_USERNAME || this.environmentService.isSessionsWindow);
+		templateData.username.classList.toggle('hidden', element.username === COPILOT_USERNAME || element.username === CHIPOS_USERNAME || this.environmentService.isSessionsWindow);
+		templateData.avatarContainer.classList.toggle('hidden', element.username === COPILOT_USERNAME || element.username === CHIPOS_USERNAME || this.environmentService.isSessionsWindow);
 
 		this.hoverHidden(templateData.requestHover);
 		dom.clearNode(templateData.detail);

@@ -84,5 +84,14 @@
 		}
 	],
 	"defaultChatAgent": {},
-	"trustedExtensionAuthAccess": {}
+	"trustedExtensionAuthAccess": {},
+	"configurationDefaults": {
+		"workbench.activityBar.location": "side",
+		"workbench.sideBar.location": "left",
+		"workbench.auxiliaryBar.visible": true,
+		"window.titleBarStyle": "custom",
+		"window.commandCenter": true,
+		"chat.agent.enabled": true,
+		"chat.mcp.enabled": true
+	}
 }
