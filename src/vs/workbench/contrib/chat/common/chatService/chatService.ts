@@ -1041,79 +1041,26 @@ export type IChatProgress =
 	| IChatEdaNegotiationView
 	| IChatEdaSpecReview;
 
-// ── EDA-specific content parts ──────────────────────────────────────────────
+// ── EDA-specific content parts (extracted to chatEdaTypes.ts) ────────────────
+// Re-exported for backward compatibility — all consumers can still import from chatService.ts
+export {
+	type IChatEdaSimTestResult,
+	type IChatEdaSimReport,
+	type IChatEdaCoverageReport,
+	type IChatEdaLintError,
+	type IChatEdaLintReport,
+	type IChatEdaParallelTrack,
+	type IChatEdaParallelProgress,
+	type IChatEdaNegotiationPerspective,
+	type IChatEdaNegotiationView,
+	type IChatEdaSpecReview,
+	type IChatEdaProgress,
+	type EdaContentKind,
+	EDA_CONTENT_KINDS,
+	isEdaContentKind,
+} from '../chatEdaTypes.js';
 
-export interface IChatEdaSimTestResult {
-	name: string;
-	status: 'pass' | 'fail' | 'error' | 'skip';
-	message?: string;
-	duration_ms?: number;
-}
-
-export interface IChatEdaSimReport {
-	kind: 'edaSimReport';
-	tests: IChatEdaSimTestResult[];
-	summary: { total: number; passed: number; failed: number; errors?: number };
-}
-
-export interface IChatEdaCoverageReport {
-	kind: 'edaCoverageReport';
-	line_cov: number;
-	branch_cov: number;
-	gaps?: Array<{ file: string; lines: string; type?: string }>;
-}
-
-export interface IChatEdaLintError {
-	file: string;
-	line: number;
-	col?: number;
-	severity: 'error' | 'warning' | 'info';
-	message: string;
-	rule?: string;
-	auto_fixable?: boolean;
-}
-
-export interface IChatEdaLintReport {
-	kind: 'edaLintReport';
-	errors: IChatEdaLintError[];
-	auto_fixable?: number;
-	tool?: string;
-}
-
-export interface IChatEdaParallelTrack {
-	name: string;
-	status: 'pending' | 'running' | 'done' | 'failed';
-	progress?: number;
-	file?: string;
-}
-
-export interface IChatEdaParallelProgress {
-	kind: 'edaParallelProgress';
-	phase: string;
-	tracks: IChatEdaParallelTrack[];
-	conflicts?: string[];
-}
-
-export interface IChatEdaNegotiationPerspective {
-	agent: string;
-	position: string;
-	reasoning: string;
-}
-
-export interface IChatEdaNegotiationView {
-	kind: 'edaNegotiationView';
-	issue: string;
-	perspectives: IChatEdaNegotiationPerspective[];
-	recommendation: string;
-}
-
-export interface IChatEdaSpecReview {
-	kind: 'edaSpecReview';
-	spec_path: string;
-	spec_name: string;
-	summary: string;
-	files?: string[];
-}
+import type { IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview } from '../chatEdaTypes.js';
 
 export interface IChatFollowup {
 	kind: 'reply';
