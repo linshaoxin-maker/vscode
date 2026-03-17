@@ -9,6 +9,7 @@ import { IChatEdaCoverageReport } from '../../../../common/chatService/chatServi
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
 import { edaSection, edaSummaryRow, edaProgressBar, edaTable } from './edaContentPartUtils.js';
+import '../media/edaParts.css';
 
 const $ = dom.$;
 

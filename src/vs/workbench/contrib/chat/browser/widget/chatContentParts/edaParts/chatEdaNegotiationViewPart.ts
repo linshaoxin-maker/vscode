@@ -9,6 +9,7 @@ import { IChatEdaNegotiationView } from '../../../../common/chatService/chatServ
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
 import { edaSection } from './edaContentPartUtils.js';
+import '../media/edaParts.css';
 
 const $ = dom.$;
 

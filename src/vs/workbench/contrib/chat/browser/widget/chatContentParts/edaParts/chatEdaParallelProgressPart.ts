@@ -9,6 +9,7 @@ import { IChatEdaParallelProgress } from '../../../../common/chatService/chatSer
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
 import { edaSection, edaBadge, edaProgressBar } from './edaContentPartUtils.js';
+import '../media/edaParts.css';
 
 const $ = dom.$;
 
