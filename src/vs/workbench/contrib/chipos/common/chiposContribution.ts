@@ -223,6 +223,39 @@ KeybindingsRegistry.registerKeybindingRule({
 	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyH,
 });
 
+// ── Additional Cursor-style keybindings ──
+KeybindingsRegistry.registerKeybindingRule({
+	id: ChipOSCommandId.NewSession,
+	weight: KeybindingWeight.WorkbenchContrib,
+	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyN,
+});
+
+KeybindingsRegistry.registerKeybindingRule({
+	id: ChipOSCommandId.Disconnect,
+	weight: KeybindingWeight.WorkbenchContrib,
+	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyD,
+});
+
+KeybindingsRegistry.registerKeybindingRule({
+	id: ChipOSCommandId.RestartSidecar,
+	weight: KeybindingWeight.WorkbenchContrib,
+	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyR,
+});
+
+KeybindingsRegistry.registerKeybindingRule({
+	id: ChipOSCommandId.AcceptAllDiffs,
+	weight: KeybindingWeight.WorkbenchContrib,
+	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyY,
+	when: ContextKeyExpr.has('chatIsVisible'),
+});
+
+KeybindingsRegistry.registerKeybindingRule({
+	id: ChipOSCommandId.RejectAllDiffs,
+	weight: KeybindingWeight.WorkbenchContrib,
+	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.Backspace,
+	when: ContextKeyExpr.has('chatIsVisible'),
+});
+
 // ── Menu Contributions ─────────────────────────────────────────────────────────
 
 MenuRegistry.appendMenuItems([
