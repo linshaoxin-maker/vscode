@@ -23,12 +23,19 @@ jobs:
         include:
           - os: linux
             runner: ubuntu-latest
+            platform: linux-x64
             artifact_glob: "*.deb *.rpm *.tar.gz"
           - os: darwin
             runner: macos-14
+            platform: darwin-arm64
+            artifact_glob: "*.dmg *.zip"
+          - os: darwin-x64
+            runner: macos-13
+            platform: darwin-x64
             artifact_glob: "*.dmg *.zip"
           - os: win32
             runner: windows-latest
+            platform: win32-x64
             artifact_glob: "*.exe"
 
     steps:
@@ -94,10 +101,17 @@ jobs:
               ;;
             darwin)
               yarn run gulp vscode-darwin-arm64-min
-              # TODO: enable notarization when Apple credentials are ready
+              # TODO: enable DMG + notarization when Apple credentials are ready
               # yarn run gulp vscode-darwin-arm64-dmg
               echo "Skipping DMG + notarization (no certs provisioned)"
               cd ../VSCode-darwin-arm64 && zip -r -y "../chipos-darwin-arm64.zip" "ChipOS.app"
+              ;;
+            darwin-x64)
+              yarn run gulp vscode-darwin-x64-min
+              # TODO: enable DMG + notarization when Apple credentials are ready
+              # yarn run gulp vscode-darwin-x64-dmg
+              echo "Skipping DMG + notarization (no certs provisioned)"
+              cd ../VSCode-darwin-x64 && zip -r -y "../chipos-darwin-x64.zip" "ChipOS.app"
               ;;
             win32)
               yarn run gulp vscode-win32-x64-min
@@ -119,6 +133,9 @@ jobs:
             darwin)
               cp ../*.dmg ../*.zip release-output/ 2>/dev/null || true
               ;;
+            darwin-x64)
+              cp ../*.dmg ../*.zip release-output/ 2>/dev/null || true
+              ;;
             win32)
               cp ../*.exe release-output/ 2>/dev/null || true
               ;;
@@ -128,7 +145,7 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: chipos-release-${{ matrix.os }}-${{ github.ref_name }}
+          name: chipos-release-${{ matrix.platform }}-${{ github.ref_name }}
           path: release-output/*
           if-no-files-found: warn
           retention-days: 30

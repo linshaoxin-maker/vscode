@@ -85,6 +85,9 @@
 	],
 	"defaultChatAgent": {},
 	"trustedExtensionAuthAccess": {},
+	"quality": "stable",
+	"updateUrl": "",
+	"downloadUrl": "",
 	"configurationDefaults": {
 		"workbench.activityBar.location": "side",
 		"workbench.sideBar.location": "left",

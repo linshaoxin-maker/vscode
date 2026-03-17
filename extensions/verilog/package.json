@@ -1,0 +1,59 @@
+{
+	"name": "verilog",
+	"displayName": "Verilog / SystemVerilog Language Support",
+	"description": "Syntax highlighting for Verilog, SystemVerilog, and related EDA file types",
+	"version": "1.0.0",
+	"publisher": "chipos",
+	"license": "MIT",
+	"engines": {
+		"vscode": "*"
+	},
+	"contributes": {
+		"languages": [
+			{
+				"id": "verilog",
+				"aliases": ["Verilog", "verilog"],
+				"extensions": [".v", ".vh"],
+				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "systemverilog",
+				"aliases": ["SystemVerilog", "systemverilog", "sv"],
+				"extensions": [".sv", ".svh", ".svi"],
+				"configuration": "./language-configuration.json"
+			},
+			{
+				"id": "vhdl",
+				"aliases": ["VHDL", "vhdl"],
+				"extensions": [".vhd", ".vhdl"]
+			},
+			{
+				"id": "tcl",
+				"aliases": ["TCL", "Tcl"],
+				"extensions": [".tcl", ".sdc", ".xdc", ".do"]
+			},
+			{
+				"id": "ucf",
+				"aliases": ["UCF Constraints"],
+				"extensions": [".ucf"]
+			},
+			{
+				"id": "verilog-filelist",
+				"aliases": ["Verilog Filelist"],
+				"extensions": [".f", ".fl"]
+			}
+		],
+		"grammars": [
+			{
+				"language": "verilog",
+				"scopeName": "source.verilog",
+				"path": "./syntaxes/verilog.tmLanguage.json"
+			},
+			{
+				"language": "systemverilog",
+				"scopeName": "source.systemverilog",
+				"path": "./syntaxes/systemverilog.tmLanguage.json"
+			}
+		]
+	}
+}
