@@ -254,7 +254,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						// Save file_path from arguments for later reference emission
 						const args = p.arguments as Record<string, unknown> | undefined;
 						if (args) {
-							const fp = (args.file_path ?? args.path ?? args.file) as string | undefined;
+							const fp = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
 							if (fp) { this._toolFileArgs.set(key, fp); }
 						}
 						const friendly = this._friendlyToolName(p.tool_name);
@@ -274,6 +274,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							} satisfies IChatToolInputInvocationData,
 						};
 						progress([toolUpdate]);
+
+						// For file-writing tools, emit IChatTextEdit so the editing session widget shows changed files
+						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
+							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
+							const fileContent = (args.file_content ?? args.content ?? args.new_content) as string | undefined;
+							if (filePath && fileContent) {
+								const workspaceRoot = this._getWorkspaceRoot();
+								const fileUri = filePath.startsWith('/')
+									? URI.file(filePath)
+									: workspaceRoot
+										? URI.joinPath(workspaceRoot, filePath)
+										: URI.file(filePath);
+								const lines = fileContent.split('\n');
+								progress([{
+									uri: fileUri,
+									edits: [{ range: new Range(1, 1, lines.length + 1, 1), text: fileContent }],
+									kind: 'textEdit',
+									done: false,
+								} satisfies IChatTextEdit]);
+							}
+						}
 						break;
 					}
 
@@ -313,9 +334,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file']);
 								if (fileTools.has(p.tool_name)) {
 									const isDelete = p.tool_name === 'delete_file';
+									const fileUri = URI.file(absPath);
 									const ref: IChatContentReference = {
 										kind: 'reference',
-										reference: URI.file(absPath),
+										reference: fileUri,
 										options: {
 											status: {
 												description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
@@ -327,6 +349,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										},
 									};
 									progress([ref]);
+
+									// Mark the textEdit as done so the editing session widget updates
+									if (!isDelete) {
+										progress([{
+											uri: fileUri,
+											edits: [],
+											kind: 'textEdit',
+											done: true,
+										} satisfies IChatTextEdit]);
+									}
 								}
 							}
 						}
@@ -792,6 +824,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
 						this._toolStartTimes.set(key, Date.now());
+						const args = p.arguments as Record<string, unknown> | undefined;
+						if (args) {
+							const fp = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
+							if (fp) { this._toolFileArgs.set(key, fp); }
+						}
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
 						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
@@ -808,6 +845,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							} satisfies IChatToolInputInvocationData,
 						};
 						progress([toolUpdate]);
+
+						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
+							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
+							const fileContent = (args.file_content ?? args.content ?? args.new_content) as string | undefined;
+							if (filePath && fileContent) {
+								const workspaceRoot = this._getWorkspaceRoot();
+								const fileUri = filePath.startsWith('/')
+									? URI.file(filePath)
+									: workspaceRoot
+										? URI.joinPath(workspaceRoot, filePath)
+										: URI.file(filePath);
+								const lines = fileContent.split('\n');
+								progress([{
+									uri: fileUri,
+									edits: [{ range: new Range(1, 1, lines.length + 1, 1), text: fileContent }],
+									kind: 'textEdit',
+									done: false,
+								} satisfies IChatTextEdit]);
+							}
+						}
 						break;
 					}
 					case AgentEventType.ToolResult: {
@@ -1375,6 +1432,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * For tools like 'task' (subagent), convert JSON to readable text.
 	 * For others, pass through as-is.
 	 */
+	private static readonly _fileWriteTools = new Set([
+		'write_file', 'create_file', 'edit_file', 'str_replace', 'apply_diff',
+	]);
+
+	private static _isFileWriteTool(toolName: string): boolean {
+		return ChipOSChatAgent._fileWriteTools.has(toolName);
+	}
+
 	private static _formatRawInput(toolName: string, args: unknown): unknown {
 		if (!args || typeof args !== 'object') { return args ?? {}; }
 		const obj = args as Record<string, unknown>;
