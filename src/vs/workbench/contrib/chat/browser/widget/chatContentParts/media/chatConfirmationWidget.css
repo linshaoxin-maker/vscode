@@ -113,7 +113,6 @@
 
 .chat-confirmation-widget .chat-buttons-container,
 .chat-confirmation-widget .chat-confirmation-widget-message {
-	flex-basis: 100%;
 	padding: 0 8px;
 	margin: 8px 0;
 
@@ -124,11 +123,7 @@
 }
 
 .chat-confirmation-widget .chat-confirmation-widget-message {
-	max-height: 240px;
-	overflow-y: auto !important;
 	overflow-x: hidden;
-	flex-shrink: 1;
-	min-height: 0;
 }
 
 .chat-confirmation-widget .chat-confirmation-widget-message-container {
@@ -138,19 +133,20 @@
 	display: flex;
 	flex-direction: column;
 	flex-basis: 100%;
-	max-height: 280px;
+	max-height: 320px;
 	overflow: hidden;
 }
 
-/* ChipOS: scrollable message area so buttons stay visible below */
-.chat-confirmation-widget .chat-confirmation-widget-message-container .chat-confirmation-widget-message {
+/* Message area scrolls, buttons stay fixed at bottom */
+.chat-confirmation-widget .chat-confirmation-widget-message-container > .chat-confirmation-widget-message {
 	flex: 1 1 auto;
 	min-height: 0;
 	overflow-y: auto !important;
 	overflow-x: hidden;
+	max-height: none;
 }
 
-.chat-confirmation-widget .chat-buttons-container {
+.chat-confirmation-widget .chat-confirmation-widget-message-container > .chat-buttons-container {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
