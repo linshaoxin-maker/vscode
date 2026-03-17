@@ -97,7 +97,6 @@
 		"workbench.auxiliaryBar.visible": true,
 		"window.titleBarStyle": "custom",
 		"window.commandCenter": true,
-		"window.autoDetectColorScheme": true,
 		"workbench.startupEditor": "none",
 		"chat.agent.enabled": true,
 		"chat.mcp.enabled": true

@@ -604,20 +604,7 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 		}
 
 		const chatService = accessor.get(IChatService);
-		const dialogService = accessor.get(IDialogService);
 		const widgetService = accessor.get(IChatWidgetService);
-
-		const confirmed = await dialogService.confirm({
-			message: sessions.length === 1
-				? localize('deleteSession.confirm', "Are you sure you want to delete this chat session?")
-				: localize('deleteSessions.confirm', "Are you sure you want to delete {0} chat sessions?", sessions.length),
-			detail: localize('deleteSession.detail', "This action cannot be undone."),
-			primaryButton: localize('deleteSession.delete', "Delete")
-		});
-
-		if (!confirmed.confirmed) {
-			return;
-		}
 
 		for (const session of sessions) {
 
