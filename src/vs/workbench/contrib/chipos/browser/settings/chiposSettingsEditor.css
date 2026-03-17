@@ -141,6 +141,25 @@
 	line-height: 1.4;
 }
 
+.chipos-setting-input-container {
+	max-width: 400px;
+}
+
+.chipos-setting-input-container .monaco-inputbox {
+	width: 100%;
+}
+
+.chipos-setting-row-horizontal {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin-bottom: 16px;
+}
+
+.chipos-setting-row-horizontal .monaco-custom-toggle {
+	margin-top: 2px;
+}
+
 .chipos-setting-input,
 .chipos-setting-select {
 	padding: 6px 10px;

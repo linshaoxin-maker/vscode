@@ -8,6 +8,10 @@ import { IConfigurationService, ConfigurationTarget } from '../../../../../../pl
 import { ISidecarManagerService, SidecarState } from '../../../common/sidecarService.js';
 import { localize } from '../../../../../../nls.js';
 import * as dom from '../../../../../../base/browser/dom.js';
+import { InputBox } from '../../../../../../base/browser/ui/inputbox/inputBox.js';
+import { Checkbox } from '../../../../../../base/browser/ui/toggle/toggle.js';
+import { defaultCheckboxStyles, defaultInputBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
+import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
 
 export class ConnectionTab extends Disposable {
 
@@ -18,6 +22,7 @@ export class ConnectionTab extends Disposable {
 		private readonly _container: HTMLElement,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
+		@IContextViewService private readonly _contextViewService: IContextViewService,
 	) {
 		super();
 		this._render();
@@ -82,18 +87,20 @@ export class ConnectionTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.manualUrl', 'Manual Backend URL')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.manualUrl.desc', 'Set a manual WebSocket URL for development mode. When set, Sidecar auto-start is bypassed. Example: ws://127.0.0.1:8000/ws/agent')));
 
-		const input = dom.append(row, dom.$<HTMLInputElement>('input.chipos-setting-input'));
-		input.type = 'text';
-		input.placeholder = 'ws://127.0.0.1:8000/ws/agent';
-		input.value = this._configurationService.getValue<string>('chipos.sidecar.manualUrl') || '';
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewService, {
+			placeholder: 'ws://127.0.0.1:8000/ws/agent',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.sidecar.manualUrl') || '';
 
-		this._disposables.add(dom.addDisposableListener(input, 'change', () => {
-			this._configurationService.updateValue('chipos.sidecar.manualUrl', input.value, ConfigurationTarget.USER);
+		this._disposables.add(inputBox.onDidChange(value => {
+			this._configurationService.updateValue('chipos.sidecar.manualUrl', value, ConfigurationTarget.USER);
 		}));
 
 		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('chipos.sidecar.manualUrl')) {
-				input.value = this._configurationService.getValue<string>('chipos.sidecar.manualUrl') || '';
+				inputBox.value = this._configurationService.getValue<string>('chipos.sidecar.manualUrl') || '';
 			}
 		}));
 	}
@@ -103,15 +110,16 @@ export class ConnectionTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.sidecarPort', 'Sidecar Port')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.sidecarPort.desc', 'Starting port for the Sidecar backend (auto-increments if occupied).')));
 
-		const input = dom.append(row, dom.$<HTMLInputElement>('input.chipos-setting-input'));
-		input.type = 'number';
-		input.min = '1024';
-		input.max = '65535';
-		input.value = String(this._configurationService.getValue<number>('chipos.sidecar.port') ?? 8765);
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewService, {
+			placeholder: '8765',
+			type: 'number',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = String(this._configurationService.getValue<number>('chipos.sidecar.port') ?? 8765);
 
-		this._disposables.add(dom.addDisposableListener(input, 'change', () => {
-			const val = Math.max(1024, Math.min(65535, parseInt(input.value) || 8765));
-			input.value = String(val);
+		this._disposables.add(inputBox.onDidChange(value => {
+			const val = Math.max(1024, Math.min(65535, parseInt(value) || 8765));
 			this._configurationService.updateValue('chipos.sidecar.port', val, ConfigurationTarget.USER);
 		}));
 	}
@@ -119,36 +127,36 @@ export class ConnectionTab extends Disposable {
 	private _renderAutoStart(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
 
-		const toggle = dom.append(row, dom.$('.chipos-toggle'));
-		const input = dom.append(toggle, dom.$<HTMLInputElement>('input'));
-		input.type = 'checkbox';
-		input.checked = this._configurationService.getValue<boolean>('chipos.sidecar.autoStart') ?? false;
-		dom.append(toggle, dom.$('.chipos-toggle-slider'));
+		const checkbox = this._disposables.add(new Checkbox(
+			localize('chipos.settings.autoStart', 'Auto-Start Sidecar'),
+			this._configurationService.getValue<boolean>('chipos.sidecar.autoStart') ?? false,
+			defaultCheckboxStyles,
+		));
+		dom.append(row, checkbox.domNode);
 
 		const textContainer = dom.append(row, dom.$('div'));
-		dom.append(textContainer, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.autoStart', 'Auto-Start Sidecar')));
 		dom.append(textContainer, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.autoStart.desc', 'Automatically start the Sidecar backend when the IDE launches.')));
 
-		this._disposables.add(dom.addDisposableListener(input, 'change', () => {
-			this._configurationService.updateValue('chipos.sidecar.autoStart', input.checked, ConfigurationTarget.USER);
+		this._disposables.add(checkbox.onChange(() => {
+			this._configurationService.updateValue('chipos.sidecar.autoStart', checkbox.checked, ConfigurationTarget.USER);
 		}));
 	}
 
 	private _renderAutoRestart(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
 
-		const toggle = dom.append(row, dom.$('.chipos-toggle'));
-		const input = dom.append(toggle, dom.$<HTMLInputElement>('input'));
-		input.type = 'checkbox';
-		input.checked = this._configurationService.getValue<boolean>('chipos.sidecar.autoRestart') ?? true;
-		dom.append(toggle, dom.$('.chipos-toggle-slider'));
+		const checkbox = this._disposables.add(new Checkbox(
+			localize('chipos.settings.autoRestart', 'Auto-Restart on Crash'),
+			this._configurationService.getValue<boolean>('chipos.sidecar.autoRestart') ?? true,
+			defaultCheckboxStyles,
+		));
+		dom.append(row, checkbox.domNode);
 
 		const textContainer = dom.append(row, dom.$('div'));
-		dom.append(textContainer, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.autoRestart', 'Auto-Restart on Crash')));
 		dom.append(textContainer, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.autoRestart.desc', 'Automatically restart the Sidecar backend if it crashes (up to 3 attempts).')));
 
-		this._disposables.add(dom.addDisposableListener(input, 'change', () => {
-			this._configurationService.updateValue('chipos.sidecar.autoRestart', input.checked, ConfigurationTarget.USER);
+		this._disposables.add(checkbox.onChange(() => {
+			this._configurationService.updateValue('chipos.sidecar.autoRestart', checkbox.checked, ConfigurationTarget.USER);
 		}));
 	}
 }
