@@ -109,6 +109,36 @@ viewsRegistry.registerViews([{
 	hideByDefault: false,
 }], chiposViewContainer);
 
+// ── Sessions Sidebar Registration (Cursor-style) ───────────────────────────
+import { ChipOSSessionsSidebarView } from '../../../../workbench/contrib/chipos/browser/sessionsSidebar/chiposSessionsSidebarView.js';
+
+const SESSIONS_SIDEBAR_VIEW_ID = 'chipos.sessionsSidebar';
+
+const sessionsViewContainer = viewContainersRegistry.registerViewContainer(
+	{
+		id: 'chipos.sessions',
+		title: { value: localize('chiposSessions', 'Sessions'), original: 'Sessions' },
+		icon: Codicon.commentDiscussion,
+		order: 0,
+		ctorDescriptor: new SyncDescriptor(ViewPaneContainer, ['chipos.sessions', { mergeViewWithContainerWhenSingleView: true }]),
+		storageId: 'chipos.sessions.state',
+		hideIfEmpty: false,
+	},
+	ViewContainerLocation.Sidebar,
+	{ isDefault: false }
+);
+
+viewsRegistry.registerViews([{
+	id: SESSIONS_SIDEBAR_VIEW_ID,
+	name: { value: localize('chiposSessionsSidebar', 'Chat Sessions'), original: 'Chat Sessions' },
+	ctorDescriptor: new SyncDescriptor(ChipOSSessionsSidebarView),
+	canToggleVisibility: true,
+	canMoveView: true,
+	collapsed: false,
+	order: 0,
+	hideByDefault: false,
+}], sessionsViewContainer);
+
 // ── Command IDs ────────────────────────────────────────────────────────────────
 
 const enum ChipOSCommandId {
@@ -614,18 +644,37 @@ class ChipOSContribution extends Disposable {
 	private _applyEmptyWindowLayout(): void {
 		const isEmpty = this._contextService.getWorkbenchState() === WorkbenchState.EMPTY;
 		if (isEmpty) {
-			// Cursor-style: hide sidebar (no workspace to explore), keep AuxiliaryBar (Chat) visible
-			// Activity Bar is hidden by default (product.json configurationDefaults) — don't override
-			this._layoutService.setPartHidden(true, Parts.SIDEBAR_PART);
-			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
-			this._logService.info('[ChipOS] Empty workspace: hiding sidebar, keeping chat visible');
-		} else {
+			// Cursor-style: show Sessions sidebar, hide AuxiliaryBar, open Chat Editor
 			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
-			this._layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
+			this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
+			this._logService.info('[ChipOS] Empty workspace: showing sessions sidebar, opening chat editor');
+		} else {
+			// Workspace open: show Sessions sidebar + Explorer, hide AuxiliaryBar
+			this._layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
+			this._layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
 		}
 		// Cursor-style: always close the Welcome/Getting Started editor
-		// Chat panel replaces the Welcome editor as the primary onboarding surface
+		// Chat Editor replaces the Welcome editor as the primary onboarding surface
 		this._closeWelcomeEditor();
+		// Open a Chat Editor tab if no editors are open
+		this._openChatEditorIfEmpty();
+	}
+
+	private async _openChatEditorIfEmpty(): Promise<void> {
+		// Only open if there are no active editors
+		if (this._editorService.activeEditor) {
+			return;
+		}
+		try {
+			const { ChatEditorInput } = await import('../../../../workbench/contrib/chat/browser/widgetHosts/editor/chatEditorInput.js');
+			await this._editorService.openEditor({
+				resource: ChatEditorInput.getNewEditorUri(),
+				options: { pinned: true }
+			});
+			this._logService.info('[ChipOS] Opened Chat Editor as default tab');
+		} catch (err) {
+			this._logService.warn('[ChipOS] Failed to open Chat Editor:', err);
+		}
 	}
 
 	private _closeWelcomeEditor(): void {

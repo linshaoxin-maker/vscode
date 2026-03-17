@@ -91,7 +91,7 @@
 	"configurationDefaults": {
 		"workbench.activityBar.location": "hidden",
 		"workbench.sideBar.location": "left",
-		"workbench.auxiliaryBar.visible": true,
+		"workbench.auxiliaryBar.visible": false,
 		"window.titleBarStyle": "custom",
 		"window.commandCenter": true,
 		"workbench.startupEditor": "none",

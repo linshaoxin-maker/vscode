@@ -346,11 +346,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								'in-progress': 'in-progress',
 								pending: 'not-started',
 							};
-							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => ({
-								id: idx,
-								title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
-								status: statusMap[t.task_status ?? t.status] ?? 'not-started',
-							}));
+							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
+								const key = t.task_status || t.status || 'pending';
+								return {
+									id: idx,
+									title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
+									status: statusMap[key] ?? 'not-started',
+								};
+							});
 							this._todoListService.setTodos(sessionRes, nativeTodos);
 						}
 						break;
@@ -799,11 +802,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								'in-progress': 'in-progress',
 								pending: 'not-started',
 							};
-							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => ({
-								id: idx,
-								title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
-								status: statusMap[t.task_status ?? t.status] ?? 'not-started',
-							}));
+							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
+								const key = t.task_status || t.status || 'pending';
+								return {
+									id: idx,
+									title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
+									status: statusMap[key] ?? 'not-started',
+								};
+							});
 							this._todoListService.setTodos(sessionRes, nativeTodos);
 						}
 						break;
