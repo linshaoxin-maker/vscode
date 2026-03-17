@@ -341,13 +341,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							const sessionRes = request.sessionResource;
 							const statusMap: Record<string, IChatTodo['status']> = {
 								done: 'completed',
+								completed: 'completed',
 								in_progress: 'in-progress',
+								'in-progress': 'in-progress',
 								pending: 'not-started',
 							};
 							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => ({
 								id: idx,
-								title: t.task_des,
-								status: statusMap[t.task_status] ?? 'not-started',
+								title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
+								status: statusMap[t.task_status ?? t.status] ?? 'not-started',
 							}));
 							this._todoListService.setTodos(sessionRes, nativeTodos);
 						}
@@ -792,13 +794,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							const sessionRes = request.sessionResource;
 							const statusMap: Record<string, IChatTodo['status']> = {
 								done: 'completed',
+								completed: 'completed',
 								in_progress: 'in-progress',
+								'in-progress': 'in-progress',
 								pending: 'not-started',
 							};
 							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => ({
 								id: idx,
-								title: t.task_des,
-								status: statusMap[t.task_status] ?? 'not-started',
+								title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
+								status: statusMap[t.task_status ?? t.status] ?? 'not-started',
 							}));
 							this._todoListService.setTodos(sessionRes, nativeTodos);
 						}
@@ -1160,6 +1164,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		switch (p.card_type) {
 			case 'spec_confirm': {
 				const sections: string[] = [];
+				// ── 兼容后端实际格式: { spec_result: "长文本" } ──
+				const specText = data.spec_result ?? data.analysis ?? data.result;
+				if (typeof specText === 'string') {
+					// 截取前 800 字符作为摘要，避免卡片过长
+					const preview = specText.length > 800 ? specText.slice(0, 800) + '\n\n...(truncated)' : specText;
+					sections.push(preview);
+				}
+				// ── 也兼容结构化格式: { summary, file_path, changes, risks } ──
 				if (data.summary) { sections.push(`**Summary:** ${data.summary}`); }
 				if (data.file_path) { sections.push(`**File:** \`${data.file_path}\``); }
 				if (data.changes && Array.isArray(data.changes)) {
@@ -1174,6 +1186,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						sections.push(`- ${r}`);
 					}
 				}
+				return sections.length > 0 ? sections.join('\n\n') : JSON.stringify(data, null, 2).slice(0, 500);
+			}
+
+			case 'arch_confirm': {
+				const sections: string[] = [];
+				const archText = data.arch_result ?? data.analysis ?? data.result;
+				if (typeof archText === 'string') {
+					const preview = archText.length > 800 ? archText.slice(0, 800) + '\n\n...(truncated)' : archText;
+					sections.push(preview);
+				}
+				if (data.summary) { sections.push(`**Summary:** ${data.summary}`); }
+				if (data.module) { sections.push(`**Module:** \`${data.module}\``); }
 				return sections.length > 0 ? sections.join('\n\n') : JSON.stringify(data, null, 2).slice(0, 500);
 			}
 

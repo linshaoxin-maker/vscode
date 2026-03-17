@@ -15,7 +15,7 @@ export const enum AgentEventType {
 	Error = 'error',
 	Done = 'done',
 	Status = 'status',
-	TodoUpdate = 'todo_update',
+	TodoUpdate = 'todo',
 	TaskComplete = 'task_complete',
 	SkillTree = 'skill_tree',
 	RoundStart = 'round_start',
@@ -108,9 +108,13 @@ export interface IStatusPayload {
 }
 
 export interface ITodoItem {
-	readonly task_id: string;
-	readonly task_des: string;
-	readonly task_status: string;
+	readonly task_id?: string;
+	readonly task_des?: string;
+	readonly task_status?: string;
+	// ── 兼容后端实际格式 ──
+	readonly id?: string;
+	readonly content?: string;
+	readonly status?: string;
 }
 
 export interface ITodoUpdatePayload {
