@@ -1257,31 +1257,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'spec_confirm': {
 				const specText = data.spec_result ?? data.analysis ?? data.result;
 				if (typeof specText === 'string') {
-					// Strip tables, headers, and excessive whitespace
-					const cleaned = specText
-						.replace(/^\|.*\|$/gm, '')     // tables
-						.replace(/^#{1,6}\s+.*$/gm, '') // headers
-						.replace(/\n{2,}/g, '\n')       // collapse blank lines
-						.trim();
-					const firstLine = cleaned.split('\n').filter(l => l.trim()).slice(0, 3).join(' · ');
-					return firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
+					// Keep full content — CSS max-height + overflow handles scrolling
+					return specText;
 				}
-				if (data.summary) { return String(data.summary).slice(0, 120); }
+				if (data.summary) { return String(data.summary); }
 				return 'Spec analysis complete. Review and approve to continue.';
 			}
 
 			case 'arch_confirm': {
 				const archText = data.arch_result ?? data.analysis ?? data.result;
 				if (typeof archText === 'string') {
-					const cleaned = archText
-						.replace(/^\|.*\|$/gm, '')
-						.replace(/^#{1,6}\s+.*$/gm, '')
-						.replace(/\n{2,}/g, '\n')
-						.trim();
-					const firstLine = cleaned.split('\n').filter(l => l.trim()).slice(0, 3).join(' · ');
-					return firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
+					return archText;
 				}
-				if (data.summary) { return String(data.summary).slice(0, 120); }
+				if (data.summary) { return String(data.summary); }
 				return 'Architecture analysis complete. Review and approve to continue.';
 			}
 
@@ -1307,9 +1295,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			case 'agent_ask': {
 				const context = (data.context as string) ?? '';
-				const cleaned = context.replace(/^\|.*\|$/gm, '').replace(/^#{1,6}\s+.*$/gm, '').replace(/\n{2,}/g, '\n').trim();
-				const lines = cleaned.split('\n').filter(l => l.trim()).slice(0, 4).join('\n');
-				return lines.length > 300 ? lines.slice(0, 300) + '…' : (lines || 'Please select an option.');
+				return context || 'Please select an option.';
 			}
 
 			default:
