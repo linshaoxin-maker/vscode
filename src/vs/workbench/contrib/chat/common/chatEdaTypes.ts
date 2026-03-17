@@ -91,6 +91,25 @@ export interface IChatEdaSpecReview {
 	files?: string[];
 }
 
+// ── Agent Round Progress ────────────────────────────────────────────────────
+
+export interface IChatRoundProgress {
+	kind: 'roundProgress';
+	current_round: number;
+	max_rounds: number;
+	phase?: string;
+}
+
+// ── Agent Error Card ────────────────────────────────────────────────────────
+
+export interface IChatAgentError {
+	kind: 'agentError';
+	error_code: string;
+	message: string;
+	retryable: boolean;
+	suggestion?: string;
+}
+
 // ── Union type for all EDA content parts ────────────────────────────────────
 
 export type IChatEdaProgress =
@@ -99,7 +118,9 @@ export type IChatEdaProgress =
 	| IChatEdaLintReport
 	| IChatEdaParallelProgress
 	| IChatEdaNegotiationView
-	| IChatEdaSpecReview;
+	| IChatEdaSpecReview
+	| IChatRoundProgress
+	| IChatAgentError;
 
 // ── EDA kind constants ──────────────────────────────────────────────────────
 
@@ -110,6 +131,8 @@ export const EDA_CONTENT_KINDS = [
 	'edaParallelProgress',
 	'edaNegotiationView',
 	'edaSpecReview',
+	'roundProgress',
+	'agentError',
 ] as const;
 
 export type EdaContentKind = typeof EDA_CONTENT_KINDS[number];
