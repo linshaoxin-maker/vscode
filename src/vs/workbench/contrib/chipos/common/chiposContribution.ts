@@ -47,6 +47,8 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ChipOSSettingsEditor } from '../../../../workbench/contrib/chipos/browser/settings/chiposSettingsEditor.js';
 import { ChipOSSettingsEditorInput, ChipOSSettingsTab } from '../../../../workbench/contrib/chipos/browser/settings/chiposSettingsEditorInput.js';
 import { IChatContentPartRegistry } from '../../../../workbench/contrib/chat/browser/chatContentPartRegistry.js';
+import { chatViewsWelcomeRegistry } from '../../../../workbench/contrib/chat/browser/viewsWelcome/chatViewsWelcome.js';
+import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { ChatEdaSimReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaSimReportPart.js';
 import { ChatEdaCoverageReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaCoverageReportPart.js';
 import { ChatEdaLintReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaLintReportPart.js';
@@ -420,6 +422,9 @@ class ChipOSContribution extends Disposable {
 		this._contextKeyService.createKey('chatEntitlementSignedOut', false);
 		this._logService.info('[ChipOS] Entitlement context keys set (Pro bypass)');
 
+		// ── Register ChipOS Welcome View ──
+		this._registerWelcomeView();
+
 		this._statusBarHandler = this._register(
 			this._instantiationService.createInstance(StatusBarHandler)
 		);
@@ -634,6 +639,22 @@ class ChipOSContribution extends Disposable {
 				editor.dispose();
 			}
 		}
+	}
+
+	private _registerWelcomeView(): void {
+		chatViewsWelcomeRegistry.register({
+			icon: Codicon.chip,
+			title: localize('chiposWelcome.title', 'ChipOS AI Assistant'),
+			content: new MarkdownString(
+				localize(
+					'chiposWelcome.content',
+					'I can help you with EDA design, Verilog/SystemVerilog coding, simulation, and verification.\n\nType a message below to get started, or use `#file:` to reference project files.'
+				),
+				{ isTrusted: true }
+			),
+			when: ContextKeyExpr.true()!,
+		});
+		this._logService.info('[ChipOS] Welcome view registered');
 	}
 }
 
