@@ -36,6 +36,7 @@ import {
 	ChatResponseReferencePartStatusKind,
 	IChatExternalToolInvocationUpdate,
 	IChatToolInputInvocationData,
+	IChatSubagentToolInvocationData,
 	IChatTextEdit,
 	IChatRoundProgress,
 	IChatAgentError,
@@ -96,6 +97,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _toolStartTimes = new Map<string, number>();
 	private readonly _toolFileArgs = new Map<string, string>();
 	private readonly _subagentTimers = new Map<string, number>();
+	/** Maps subagent task_id → parent ToolCall toolCallId for grouping */
+	private readonly _subagentParentMap = new Map<string, string>();
+	/** Most recent subagent-type toolCallId, used to link SubagentEvent → parent */
+	private _lastSubagentToolCallId: string | undefined;
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,
@@ -267,20 +272,43 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
 						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
-						// Format rawInput as readable text for certain tools
-						const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
-						const toolUpdate: IChatExternalToolInvocationUpdate = {
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: key,
-							toolName: p.tool_name,
-							isComplete: false,
-							invocationMessage: invocationMsg,
-							toolSpecificData: {
-								kind: 'input',
-								rawInput,
-							} satisfies IChatToolInputInvocationData,
-						};
-						progress([toolUpdate]);
+
+						// Subagent tools get special rendering — Cursor-style collapsible card
+						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
+						if (isSubagent && args) {
+							this._lastSubagentToolCallId = key;
+							const desc = (args.description ?? args.prompt ?? '') as string;
+							const agentType = (args.subagent_type ?? args.agent_type ?? '') as string;
+							const toolUpdate: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: false,
+								invocationMessage: invocationMsg,
+								toolSpecificData: {
+									kind: 'subagent',
+									description: desc.slice(0, 200),
+									agentName: agentType || 'sub-agent',
+									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : undefined,
+								} satisfies IChatSubagentToolInvocationData,
+							};
+							progress([toolUpdate]);
+						} else {
+							// Regular tools — show input data
+							const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
+							const toolUpdate: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: false,
+								invocationMessage: invocationMsg,
+								toolSpecificData: {
+									kind: 'input',
+									rawInput,
+								} satisfies IChatToolInputInvocationData,
+							};
+							progress([toolUpdate]);
+						}
 
 						// For file-writing tools, register the file in the editing session
 						// with empty edits (backend writes directly to disk).
@@ -606,7 +634,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as ISubagentEventPayload;
 						if (!this._subagentTimers.has(p.task_id)) {
 							this._subagentTimers.set(p.task_id, Date.now());
+							// Link task_id to the most recent subagent ToolCall
+							if (this._lastSubagentToolCallId) {
+								this._subagentParentMap.set(p.task_id, this._lastSubagentToolCallId);
+							}
 						}
+						const parentId = this._subagentParentMap.get(p.task_id) ?? p.task_id;
 						const label = `Sub-agent \`${p.task_id.slice(0, 8)}\``;
 						if (p.kind === 'text' && p.content) {
 							// If content looks like JSON, try to extract readable fields
@@ -620,8 +653,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								toolCallId: subKey,
 								toolName: p.tool_name,
 								isComplete: false,
-								invocationMessage: `${label} ${p.tool_name}`,
-								subagentInvocationId: p.task_id,
+								invocationMessage: `${p.tool_name}`,
+								subagentInvocationId: parentId,
 							};
 							progress([toolUpdate]);
 						} else if (p.kind === 'tool_end' && p.tool_name) {
@@ -635,7 +668,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								toolName: p.tool_name,
 								isComplete: true,
 								pastTenseMessage: `${p.tool_name} done${elapsed}`,
-								subagentInvocationId: p.task_id,
+								subagentInvocationId: parentId,
 							};
 							progress([toolComplete]);
 						} else if (p.kind === 'error' && p.content) {
@@ -657,11 +690,25 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										toolName,
 										isComplete: true,
 										pastTenseMessage: `${toolName} done`,
-										subagentInvocationId: p.task_id,
+										subagentInvocationId: parentId,
 									} satisfies IChatExternalToolInvocationUpdate]);
 									this._toolStartTimes.delete(k);
 								}
 							}
+							// Mark the parent subagent tool call as complete
+							if (parentId && this._toolStartTimes.has(parentId)) {
+								const parentStart = this._toolStartTimes.get(parentId);
+								const parentElapsed = parentStart ? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)` : '';
+								this._toolStartTimes.delete(parentId);
+								progress([{
+									kind: 'externalToolInvocationUpdate',
+									toolCallId: parentId,
+									toolName: 'task',
+									isComplete: true,
+									pastTenseMessage: `Sub-agent completed${parentElapsed}`,
+								} satisfies IChatExternalToolInvocationUpdate]);
+							}
+							this._subagentParentMap.delete(p.task_id);
 							progress([this._progress(`${label} $(check) completed${subElapsed}`)]);
 						}
 						break;
@@ -1060,7 +1107,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as ISubagentEventPayload;
 						if (!this._subagentTimers.has(p.task_id)) {
 							this._subagentTimers.set(p.task_id, Date.now());
+							if (this._lastSubagentToolCallId) {
+								this._subagentParentMap.set(p.task_id, this._lastSubagentToolCallId);
+							}
 						}
+						const parentId = this._subagentParentMap.get(p.task_id) ?? p.task_id;
 						const label = `Sub-agent \`${p.task_id.slice(0, 8)}\``;
 						if (p.kind === 'text' && p.content) {
 							const rendered = ChipOSChatAgent._renderSubagentText(p.content);
@@ -1073,8 +1124,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								toolCallId: subKey,
 								toolName: p.tool_name,
 								isComplete: false,
-								invocationMessage: `${label} ${p.tool_name}`,
-								subagentInvocationId: p.task_id,
+								invocationMessage: `${p.tool_name}`,
+								subagentInvocationId: parentId,
 							};
 							progress([toolUpdate]);
 						} else if (p.kind === 'tool_end' && p.tool_name) {
@@ -1088,7 +1139,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								toolName: p.tool_name,
 								isComplete: true,
 								pastTenseMessage: `${p.tool_name} done${elapsed}`,
-								subagentInvocationId: p.task_id,
+								subagentInvocationId: parentId,
 							};
 							progress([toolComplete]);
 						} else if (p.kind === 'error' && p.content) {
@@ -1109,11 +1160,25 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										toolName,
 										isComplete: true,
 										pastTenseMessage: `${toolName} done`,
-										subagentInvocationId: p.task_id,
+										subagentInvocationId: parentId,
 									} satisfies IChatExternalToolInvocationUpdate]);
 									this._toolStartTimes.delete(k);
 								}
 							}
+							// Mark the parent subagent tool call as complete
+							if (parentId && this._toolStartTimes.has(parentId)) {
+								const parentStart = this._toolStartTimes.get(parentId);
+								const parentElapsed = parentStart ? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)` : '';
+								this._toolStartTimes.delete(parentId);
+								progress([{
+									kind: 'externalToolInvocationUpdate',
+									toolCallId: parentId,
+									toolName: 'task',
+									isComplete: true,
+									pastTenseMessage: `Sub-agent completed${parentElapsed}`,
+								} satisfies IChatExternalToolInvocationUpdate]);
+							}
+							this._subagentParentMap.delete(p.task_id);
 							progress([this._progress(`${label} $(check) completed${subElapsed}`)]);
 						}
 						break;
