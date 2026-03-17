@@ -127,6 +127,8 @@
 	max-height: 240px;
 	overflow-y: auto !important;
 	overflow-x: hidden;
+	flex-shrink: 1;
+	min-height: 0;
 }
 
 .chat-confirmation-widget .chat-confirmation-widget-message-container {
