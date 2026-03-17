@@ -18,25 +18,40 @@ import { ChipOSSettingsEditorInput, ChipOSSettingsTab, IChipOSSettingsEditorOpti
 import { ModelsTab } from './tabs/modelsTab.js';
 import { FeaturesTab } from './tabs/featuresTab.js';
 import { ConnectionTab } from './tabs/connectionTab.js';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { RulesTab } from './tabs/rulesTab.js';
+import { BetaTab } from './tabs/betaTab.js';
+import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import * as dom from '../../../../../base/browser/dom.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../../../base/common/themables.js';
 
-const TAB_DEFINITIONS: { id: ChipOSSettingsTab; label: string }[] = [
-	{ id: 'models', label: localize('chipos.tab.models', 'Models') },
-	{ id: 'features', label: localize('chipos.tab.features', 'Features') },
-	{ id: 'connection', label: localize('chipos.tab.connection', 'Connection') },
+interface ICategoryDef {
+	readonly id: ChipOSSettingsTab;
+	readonly label: string;
+	readonly icon: ThemeIcon;
+}
+
+const CATEGORIES: ICategoryDef[] = [
+	{ id: 'models', label: localize('chipos.cat.models', 'Models'), icon: Codicon.hubot },
+	{ id: 'features', label: localize('chipos.cat.features', 'Features'), icon: Codicon.extensions },
+	{ id: 'connection', label: localize('chipos.cat.connection', 'Connection'), icon: Codicon.plug },
+	{ id: 'rules', label: localize('chipos.cat.rules', 'Rules'), icon: Codicon.law },
+	{ id: 'beta', label: localize('chipos.cat.beta', 'Beta'), icon: Codicon.beaker },
 ];
 
 export class ChipOSSettingsEditor extends EditorPane {
 
 	static readonly ID = 'workbench.editor.chiposSettings';
 
-	private _rootElement!: HTMLElement;
-	private _tabButtons: Map<ChipOSSettingsTab, HTMLButtonElement> = new Map();
-	private _tabContents: Map<ChipOSSettingsTab, HTMLElement> = new Map();
+	private _rootElement: HTMLElement | undefined;
+	private _navList: HTMLElement | undefined;
+	private _contentArea: HTMLElement | undefined;
+	private _activeTab: ChipOSSettingsTab = 'models';
+	private _navItems = new Map<ChipOSSettingsTab, HTMLElement>();
 	private _tabInstances = new DisposableStore();
+	private _activeTabDisposable: IDisposable | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -51,75 +66,95 @@ export class ChipOSSettingsEditor extends EditorPane {
 
 	protected createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.chipos-settings-editor'));
-		this._rootElement.tabIndex = 0;
 
+		// ── Header ──
 		const header = dom.append(this._rootElement, dom.$('.chipos-settings-header'));
-		const tabBar = dom.append(header, dom.$('.chipos-settings-tabs'));
-		for (const tabDef of TAB_DEFINITIONS) {
-			const button = dom.append(tabBar, dom.$<HTMLButtonElement>('button.chipos-settings-tab', undefined, tabDef.label));
-			button.addEventListener('click', () => this._switchTab(tabDef.id));
-			this._tabButtons.set(tabDef.id, button);
-		}
-
-		const customizationsLink = dom.append(header, dom.$('a.chipos-settings-customizations-link'));
-		customizationsLink.textContent = localize('chipos.openCustomizations', 'AI Customizations');
-		customizationsLink.title = localize('chipos.openCustomizations.tooltip', 'Open AI Customizations (Agents, Skills, Prompts, Hooks, MCP)');
-		customizationsLink.addEventListener('click', (e) => {
-			e.preventDefault();
-			this._commandService.executeCommand('aiCustomization.openManagementEditor');
+		dom.append(header, dom.$('.chipos-settings-title', undefined, localize('chipos.settings.title', 'ChipOS Settings')));
+		const customLink = dom.append(header, dom.$('.chipos-settings-customizations-link'));
+		customLink.textContent = localize('chipos.settings.openJson', 'Open JSON Settings');
+		customLink.addEventListener('click', () => {
+			this._commandService.executeCommand('workbench.action.openSettingsJson');
 		});
 
-		for (const tabDef of TAB_DEFINITIONS) {
-			const content = dom.append(this._rootElement, dom.$('.chipos-settings-content'));
-			content.style.display = 'none';
-			this._tabContents.set(tabDef.id, content);
+		// ── SplitView body ──
+		const body = dom.append(this._rootElement, dom.$('.chipos-settings-body'));
+
+		// Left: navigation list
+		this._navList = dom.append(body, dom.$('.chipos-settings-nav'));
+		for (const cat of CATEGORIES) {
+			const item = dom.append(this._navList, dom.$('.chipos-settings-nav-item'));
+			item.dataset.category = cat.id;
+
+			const iconEl = dom.append(item, dom.$('.chipos-settings-nav-icon'));
+			iconEl.classList.add(...ThemeIcon.asClassNameArray(cat.icon));
+
+			dom.append(item, dom.$('.chipos-settings-nav-label', undefined, cat.label));
+
+			item.addEventListener('click', () => this._switchTab(cat.id));
+			this._navItems.set(cat.id, item);
 		}
 
-		try {
-			this._createTabInstances();
-		} catch (err) {
-			const errorContainer = this._tabContents.get('models')!;
-			const msg = err instanceof Error ? err.message : String(err);
-			dom.append(errorContainer, dom.$('.chipos-settings-section', undefined,
-				`Failed to initialize settings: ${msg}. Try reloading the window.`
-			));
-		}
-		// Do NOT call _switchTab here — setInput() handles initial tab selection.
-		// Calling it here causes a race: setInput() runs after createEditor() and
-		// may reset display styles, leaving the panel blank until the user clicks a tab.
+		// Right: content area
+		this._contentArea = dom.append(body, dom.$('.chipos-settings-content'));
 	}
 
-	private _createTabInstances(): void {
-		this._tabInstances.clear();
-
-		const modelsContainer = this._tabContents.get('models')!;
-		this._tabInstances.add(this._instantiationService.createInstance(ModelsTab, modelsContainer));
-
-		const featuresContainer = this._tabContents.get('features')!;
-		this._tabInstances.add(this._instantiationService.createInstance(FeaturesTab, featuresContainer));
-
-		const connectionContainer = this._tabContents.get('connection')!;
-		this._tabInstances.add(this._instantiationService.createInstance(ConnectionTab, connectionContainer));
-	}
-
-	private _switchTab(tabId: ChipOSSettingsTab): void {
-		for (const [id, button] of this._tabButtons) {
-			button.classList.toggle('active', id === tabId);
-		}
-
-		for (const [id, content] of this._tabContents) {
-			content.style.display = id === tabId ? '' : 'none';
-		}
-	}
-
-	override async setInput(input: ChipOSSettingsEditorInput, options: (IEditorOptions & IChipOSSettingsEditorOptions) | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+	override async setInput(
+		input: ChipOSSettingsEditorInput,
+		options: IEditorOptions | undefined,
+		context: IEditorOpenContext,
+		token: CancellationToken,
+	): Promise<void> {
 		await super.setInput(input, options, context, token);
-
-		// Always activate a tab — use the requested one or fall back to 'models'
-		this._switchTab(options?.initialTab ?? 'models');
+		const tab = (options as IChipOSSettingsEditorOptions | undefined)?.initialTab ?? 'models';
+		this._switchTab(tab);
 	}
 
-	override layout(dimension: dom.Dimension): void {
+	private _switchTab(tab: ChipOSSettingsTab): void {
+		if (this._activeTab === tab && this._activeTabDisposable) {
+			return; // already showing
+		}
+		this._activeTab = tab;
+
+		// Update nav selection
+		for (const [id, el] of this._navItems) {
+			el.classList.toggle('active', id === tab);
+		}
+
+		// Clear content
+		if (this._contentArea) {
+			dom.clearNode(this._contentArea);
+		}
+		this._activeTabDisposable?.dispose();
+
+		// Create tab content
+		if (!this._contentArea) {
+			return;
+		}
+
+		const store = new DisposableStore();
+		this._activeTabDisposable = store;
+		this._tabInstances.add(store);
+
+		switch (tab) {
+			case 'models':
+				store.add(this._instantiationService.createInstance(ModelsTab, this._contentArea));
+				break;
+			case 'features':
+				store.add(this._instantiationService.createInstance(FeaturesTab, this._contentArea));
+				break;
+			case 'connection':
+				store.add(this._instantiationService.createInstance(ConnectionTab, this._contentArea));
+				break;
+			case 'rules':
+				store.add(this._instantiationService.createInstance(RulesTab, this._contentArea));
+				break;
+			case 'beta':
+				store.add(this._instantiationService.createInstance(BetaTab, this._contentArea));
+				break;
+		}
+	}
+
+	layout(dimension: dom.Dimension): void {
 		if (this._rootElement) {
 			this._rootElement.style.width = `${dimension.width}px`;
 			this._rootElement.style.height = `${dimension.height}px`;
@@ -132,6 +167,7 @@ export class ChipOSSettingsEditor extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._activeTabDisposable?.dispose();
 		this._tabInstances.dispose();
 		super.dispose();
 	}

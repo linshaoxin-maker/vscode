@@ -156,6 +156,29 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.chatMode.desc', "Chat mode: 'agent' for autonomous coding, 'spec' for specification review."),
 			scope: ConfigurationScope.APPLICATION,
 		},
+
+		// ── Rules ──
+		'chipos.rules.globalFile': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.rules.globalFile.desc', 'Path to a global rules file that applies to all projects.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		// ── Beta Features ──
+		'chipos.beta.terminalAgent': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.beta.terminalAgent.desc', 'Allow the AI agent to execute commands in the integrated terminal.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.beta.specMode': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.beta.specMode.desc', 'Enable Spec Review mode for hardware specification analysis.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 	},
 });
 

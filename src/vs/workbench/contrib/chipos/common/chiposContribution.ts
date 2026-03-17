@@ -322,6 +322,15 @@ MenuRegistry.appendMenuItems([
 			order: 4,
 		},
 	},
+	// ── Preferences Menu (File > Preferences > ChipOS Settings) ──────────
+	{
+		id: MenuId.MenubarPreferencesMenu,
+		item: {
+			command: { id: ChipOSCommandId.OpenSettings, title: localize('chipos.prefMenu', 'ChipOS Settings'), icon: Codicon.gear },
+			group: '2_configuration',
+			order: 5,
+		},
+	},
 ]);
 
 // ── Workbench Contribution ─────────────────────────────────────────────────────
