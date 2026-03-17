@@ -133,8 +133,11 @@
 	border: 1px solid var(--vscode-chat-requestBorder);
 	border-radius: var(--vscode-cornerRadius-medium);
 	font-size: var(--vscode-chat-font-size-body-s);
-	max-height: 250px;
-	overflow-y: auto;
+}
+
+.chat-confirmation-widget {
+	max-height: 280px;
+	overflow-y: auto !important;
 }
 
 .chat-confirmation-widget .chat-buttons-container {
@@ -142,6 +145,11 @@
 	justify-content: space-between;
 	align-items: center;
 	gap: 8px;
+	position: sticky;
+	bottom: 0;
+	background: var(--vscode-editor-background);
+	padding-top: 4px;
+	z-index: 1;
 }
 
 .chat-confirmation-widget .chat-buttons {

@@ -1203,8 +1203,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	// ── FEAT-29: Friendly titles for confirm card types ──
-	private static _confirmTitle(cardType: string, fallbackTitle?: string): string {
-		if (fallbackTitle) { return fallbackTitle; }
+	private static _confirmTitle(cardType: string, _fallbackTitle?: string): string {
 		switch (cardType) {
 			case 'spec_confirm': return 'Spec Review';
 			case 'arch_confirm': return 'Architecture Review';
