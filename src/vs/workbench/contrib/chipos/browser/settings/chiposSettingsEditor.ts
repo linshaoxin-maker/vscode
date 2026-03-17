@@ -66,6 +66,7 @@ export class ChipOSSettingsEditor extends EditorPane {
 
 	protected createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.chipos-settings-editor'));
+		this._rootElement.tabIndex = 0;
 
 		// ── Header ──
 		const header = dom.append(this._rootElement, dom.$('.chipos-settings-header'));
@@ -96,6 +97,7 @@ export class ChipOSSettingsEditor extends EditorPane {
 
 		// Right: content area
 		this._contentArea = dom.append(body, dom.$('.chipos-settings-content'));
+		this._contentArea.tabIndex = 0; // Ensure content area can receive focus for input interaction
 	}
 
 	override async setInput(

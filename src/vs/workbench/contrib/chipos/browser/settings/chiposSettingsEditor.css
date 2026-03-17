@@ -143,7 +143,7 @@
 
 .chipos-setting-input,
 .chipos-setting-select {
-	padding: 4px 8px;
+	padding: 6px 10px;
 	font-size: 13px;
 	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
 	background: var(--vscode-input-background);
@@ -151,6 +151,17 @@
 	border-radius: 4px;
 	outline: none;
 	max-width: 400px;
+	width: 100%;
+	cursor: text;
+}
+
+.chipos-setting-input::placeholder {
+	color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+
+.chipos-setting-input:hover,
+.chipos-setting-select:hover {
+	border-color: var(--vscode-focusBorder);
 }
 
 .chipos-setting-input:focus,
