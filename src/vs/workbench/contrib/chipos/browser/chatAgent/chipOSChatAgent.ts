@@ -194,6 +194,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (!resolved) {
 					resolved = true;
 					listener.dispose();
+					// FEAT-57: Push undo stop (basic checkpoint) before resolving
+					progress([{ kind: 'undoStop', id: `chipos_${sessionId}` }]);
 					result = {
 						...result,
 						timings: {
@@ -661,6 +663,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (!resolved) {
 					resolved = true;
 					listener.dispose();
+					// FEAT-57: Push undo stop (basic checkpoint) before resolving
+					progress([{ kind: 'undoStop', id: `chipos_cont_${Date.now()}` }]);
 					result = {
 						...result,
 						timings: { totalElapsed: Date.now() - startTime },
