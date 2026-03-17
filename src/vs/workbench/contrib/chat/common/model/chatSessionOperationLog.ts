@@ -10,6 +10,7 @@ import { isEqual as _urisEqual } from '../../../../../base/common/resources.js';
 import { hasKey } from '../../../../../base/common/types.js';
 import { URI, UriComponents } from '../../../../../base/common/uri.js';
 import { IChatMarkdownContent, ResponseModelState } from '../chatService/chatService.js';
+import { isEdaContentKind } from '../chatEdaTypes.js';
 import { ModifiedFileEntryState } from '../editing/chatEditingService.js';
 import { IParsedChatRequest } from '../requestParser/chatParserTypes.js';
 import { IChatAgentEditedFileEvent, IChatDataSerializerLog, IChatModel, IChatPendingRequest, IChatProgressResponseContent, IChatRequestModel, IChatRequestVariableData, ISerializableChatData, ISerializableChatModelInputState, ISerializableChatRequestData, ISerializablePendingRequestData, SerializedChatResponsePart, serializeSendOptions } from './chatModel.js';
@@ -82,21 +83,19 @@ const responsePartSchema = Adapt.v<IChatProgressResponseContent, SerializedChatR
 				case 'treeData':
 				case 'workspaceEdit':
 				case 'disabledClaudeHooks':
-				case 'edaSimReport':
-				case 'edaCoverageReport':
-				case 'edaLintReport':
-				case 'edaParallelProgress':
-				case 'edaNegotiationView':
-				case 'edaSpecReview':
 					return a.kind === b.kind;
 
 				default: {
+					// EDA content parts — treat as static (same kind = same content)
+					if (isEdaContentKind(a.kind)) {
+						return a.kind === b.kind;
+					}
 					// Hello developer! You are probably here because you added a new chat response type.
 					// This logic controls when we'll update chat parts stored on disk as part of the session.
 					// If it's a 'static' type that is not expected to change, add it to the 'return true'
 					// block above. However it's a type that is going to change, add it to the 'objectsEqual'
 					// block or make something more tailored.
-					softAssertNever(a);
+					softAssertNever(a as never);
 
 					return objectsEqual(a, b);
 				}

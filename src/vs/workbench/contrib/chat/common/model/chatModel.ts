@@ -31,6 +31,7 @@ import { ChatRequestToolReferenceEntry, IChatRequestVariableEntry, isImplicitVar
 import { migrateLegacyTerminalToolSpecificData } from '../chat.js';
 import { ChatAgentVoteDirection, ChatAgentVoteDownReason, ChatRequestQueueKind, ChatResponseClearToPreviousToolInvocationReason, ElicitationState, IChatAgentMarkdownContentWithVulnerability, IChatClearToPreviousToolInvocation, IChatCodeCitation, IChatCommandButton, IChatConfirmation, IChatContentInlineReference, IChatContentReference, IChatDisabledClaudeHooksPart, IChatEditingSessionAction, IChatElicitationRequest, IChatElicitationRequestSerialized, IChatExternalToolInvocationUpdate, IChatExtensionsContent, IChatFollowup, IChatHookPart, IChatLocationData, IChatMarkdownContent, IChatMcpServersStarting, IChatMcpServersStartingSerialized, IChatModelReference, IChatMultiDiffData, IChatMultiDiffDataSerialized, IChatNotebookEdit, IChatProgress, IChatProgressMessage, IChatPullRequestContent, IChatQuestionCarousel, IChatResponseCodeblockUriPart, IChatResponseProgressFileTreeData, IChatSendRequestOptions, IChatService, IChatSessionContext, IChatSessionTiming, IChatTask, IChatTaskSerialized, IChatTextEdit, IChatThinkingPart, IChatToolInvocation, IChatToolInvocationSerialized, IChatTreeData, IChatUndoStop, IChatUsage, IChatUsedContext, IChatWarningMessage, IChatWorkspaceEdit, ResponseModelState, isIUsedContext, IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview } from '../chatService/chatService.js';
 import { ChatAgentLocation, ChatModeKind, ChatPermissionLevel } from '../constants.js';
+import { isEdaContentKind } from '../chatEdaTypes.js';
 import { ChatToolInvocation } from './chatProgressTypes/chatToolInvocation.js';
 import { ToolDataSource, IToolData } from '../tools/languageModelToolsService.js';
 import { IChatEditingService, IChatEditingSession, ModifiedFileEntryState } from '../editing/chatEditingService.js';
@@ -515,12 +516,6 @@ class AbstractResponse implements IResponse {
 				case 'mcpServersStarting':
 				case 'questionCarousel':
 				case 'disabledClaudeHooks':
-				case 'edaSimReport':
-				case 'edaCoverageReport':
-				case 'edaLintReport':
-				case 'edaParallelProgress':
-				case 'edaNegotiationView':
-				case 'edaSpecReview':
 					// Ignore
 					continue;
 				case 'toolInvocation':
@@ -555,8 +550,12 @@ class AbstractResponse implements IResponse {
 					segment = { text: part.content.value };
 					break;
 				default:
+					// EDA content parts are handled by the content part registry — skip in text repr
+					if (isEdaContentKind(part.kind)) {
+						continue;
+					}
 					// Ignore any unknown/obsolete parts, but assert that all are handled:
-					softAssertNever(part);
+					softAssertNever(part as never);
 					continue;
 			}
 
