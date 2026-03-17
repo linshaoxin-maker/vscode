@@ -19,3 +19,34 @@
 		display: revert;
 	}
 }
+
+/* Collapsible <details> inside confirmation cards */
+.chat-confirmation-widget details {
+	margin: 6px 0;
+	border: 1px solid var(--vscode-chat-requestBorder);
+	border-radius: 4px;
+	overflow: hidden;
+}
+
+.chat-confirmation-widget details summary {
+	cursor: pointer;
+	padding: 6px 10px;
+	font-weight: 500;
+	font-size: var(--vscode-font-size);
+	color: var(--vscode-textLink-foreground);
+	user-select: none;
+}
+
+.chat-confirmation-widget details summary:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.chat-confirmation-widget details[open] > summary {
+	border-bottom: 1px solid var(--vscode-chat-requestBorder);
+}
+
+.chat-confirmation-widget details > :not(summary) {
+	padding: 8px 10px;
+	max-height: 400px;
+	overflow-y: auto;
+}

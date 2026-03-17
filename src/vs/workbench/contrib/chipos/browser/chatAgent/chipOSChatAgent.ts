@@ -350,7 +350,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
-							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
+							message: new MarkdownString(richMessage, { supportThemeIcons: true, supportHtml: true, isTrusted: true }),
 							data: { requestId: p.request_id, options: p.options ?? cardOpts },
 							buttons,
 						};
@@ -954,7 +954,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
-							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
+							message: new MarkdownString(richMessage, { supportThemeIcons: true, supportHtml: true, isTrusted: true }),
 							data: { requestId: p.request_id, options: p.options ?? cardOpts },
 							buttons,
 						};
@@ -1257,8 +1257,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'spec_confirm': {
 				const specText = data.spec_result ?? data.analysis ?? data.result;
 				if (typeof specText === 'string') {
-					// Keep full content — CSS max-height + overflow handles scrolling
-					return specText;
+					// Summary line for the card, full content in collapsible <details>
+					const lines = specText.split('\n').filter(l => l.trim());
+					const summary = lines.slice(0, 2).join(' · ');
+					const summaryText = summary.length > 100 ? summary.slice(0, 100) + '…' : summary;
+					return `${summaryText}\n\n<details><summary>View full Spec document</summary>\n\n${specText}\n\n</details>`;
 				}
 				if (data.summary) { return String(data.summary); }
 				return 'Spec analysis complete. Review and approve to continue.';
@@ -1267,7 +1270,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'arch_confirm': {
 				const archText = data.arch_result ?? data.analysis ?? data.result;
 				if (typeof archText === 'string') {
-					return archText;
+					const lines = archText.split('\n').filter(l => l.trim());
+					const summary = lines.slice(0, 2).join(' · ');
+					const summaryText = summary.length > 100 ? summary.slice(0, 100) + '…' : summary;
+					return `${summaryText}\n\n<details><summary>View full Architecture document</summary>\n\n${archText}\n\n</details>`;
 				}
 				if (data.summary) { return String(data.summary); }
 				return 'Architecture analysis complete. Review and approve to continue.';
@@ -1295,7 +1301,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			case 'agent_ask': {
 				const context = (data.context as string) ?? '';
-				return context || 'Please select an option.';
+				if (!context) { return 'Please select an option.'; }
+				const lines = context.split('\n').filter(l => l.trim());
+				const summary = lines.slice(0, 2).join(' · ');
+				const summaryText = summary.length > 100 ? summary.slice(0, 100) + '…' : summary;
+				return `${summaryText}\n\n<details><summary>View details</summary>\n\n${context}\n\n</details>`;
 			}
 
 			default:
