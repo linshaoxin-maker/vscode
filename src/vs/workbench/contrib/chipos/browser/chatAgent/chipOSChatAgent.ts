@@ -127,9 +127,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		// ── FEAT-23: Route confirmation responses instead of starting a new task ──
 		if (request.acceptedConfirmationData?.length) {
-			const data = request.acceptedConfirmationData[0] as { requestId: string; options?: Array<{ label: string; action: string }> };
-			const action = data.options?.[0]?.action || 'approve';
-			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action);
+			const data = request.acceptedConfirmationData[0] as { requestId: string; options?: Array<{ label: string; action: string; action_id?: string }> };
+			// The framework sends the clicked button label in request.message as: "ButtonLabel: \"CardTitle\""
+			// Match it against options to find the correct action
+			let action = 'approve';
+			if (data.options?.length) {
+				const msgLabel = request.message.split(':')[0]?.trim();
+				const matched = data.options.find(o => o.label === msgLabel);
+				if (matched) {
+					action = matched.action ?? matched.action_id ?? 'approve';
+				} else {
+					action = data.options[0]?.action ?? data.options[0]?.action_id ?? 'approve';
+				}
+			}
+			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'label:', request.message);
 			wsClient.sendConfirmResponse(data.requestId, action, undefined, this._lastSessionId);
 			progress([this._progress('$(check) Confirmed')]);
 			return this._listenForContinuation(wsClient, progress, token, request);
