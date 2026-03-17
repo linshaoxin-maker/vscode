@@ -98,6 +98,8 @@ export interface IChatRoundProgress {
 	current_round: number;
 	max_rounds: number;
 	phase?: string;
+	status?: 'running' | 'done' | 'failed';
+	tool?: string;
 }
 
 // ── Agent Error Card ────────────────────────────────────────────────────────

@@ -37,6 +37,8 @@ import {
 	IChatExternalToolInvocationUpdate,
 	IChatToolInputInvocationData,
 	IChatTextEdit,
+	IChatRoundProgress,
+	IChatAgentError,
 } from '../../../../contrib/chat/common/chatService/chatService.js';
 import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/common/tools/languageModelToolsService.js';
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
@@ -317,11 +319,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-					// ── Error ──
+					// ── Error → IChatAgentError content part ──
 					case AgentEventType.Error: {
-						const errorMsg = (event.payload as { message: string }).message;
-						progress([this._warning(errorMsg)]);
-						finish({ errorDetails: { message: errorMsg } });
+						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string };
+						trackFirstProgress();
+						progress([{
+							kind: 'agentError',
+							error_code: p.error_code ?? 'AGENT_ERROR',
+							message: p.message,
+							retryable: p.retryable ?? true,
+							suggestion: p.suggestion,
+						} satisfies IChatAgentError]);
+						finish({ errorDetails: { message: p.message } });
 						break;
 					}
 
@@ -446,14 +455,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-					// ── FEAT-33: Loop progress — enhanced indicators ──
+					// ── FEAT-62: Loop progress → IChatRoundProgress content part ──
 					case AgentEventType.LoopProgress: {
 						const p = event.payload as ILoopProgressPayload;
-						const pct = p.max_rounds > 0 ? Math.round((p.round / p.max_rounds) * 100) : 0;
-						const statusIcon = p.status === 'running' ? '$(loading~spin)' :
-							p.status === 'done' ? '$(check)' :
-								p.status === 'failed' ? '$(error)' : '$(circle-outline)';
-						progress([this._progress(`${statusIcon} \`${p.tool}\` round ${p.round}/${p.max_rounds} (${pct}%) — ${p.phase}`, p.status === 'running')]);
+						trackFirstProgress();
+						progress([{
+							kind: 'roundProgress',
+							current_round: p.round,
+							max_rounds: p.max_rounds,
+							phase: p.phase,
+							status: p.status as IChatRoundProgress['status'],
+							tool: p.tool,
+						} satisfies IChatRoundProgress]);
 						break;
 					}
 
@@ -622,6 +635,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.Done:
 						finish({});
 						break;
+
+					// ── FEAT-61: Queue position update ──
+					case AgentEventType.QueueUpdate: {
+						const p = event.payload as IQueueUpdatePayload;
+						const waitInfo = p.estimated_wait_seconds ? ` — est. ${p.estimated_wait_seconds}s` : '';
+						progress([this._progress(
+							`$(clock) Queue position: ${p.position}${waitInfo}`,
+							true
+						)]);
+						break;
+					}
+
+					// ── FEAT-65: Context window usage warning ──
+					case AgentEventType.ContextWarning: {
+						const p = event.payload as IContextWarningPayload;
+						const pct = p.tokens_max > 0 ? Math.round((p.tokens_used / p.tokens_max) * 100) : 0;
+						const suggestion = p.suggestion ? ` ${p.suggestion}` : '';
+						progress([this._warning(
+							`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
+						)]);
+						break;
+					}
 
 					default:
 						this._logService.trace('[ChipOS Agent] Unhandled event:', (event as AgentEvent).event_type);
@@ -950,11 +985,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 					case AgentEventType.LoopProgress: {
 						const p = event.payload as ILoopProgressPayload;
-						const pct = p.max_rounds > 0 ? Math.round((p.round / p.max_rounds) * 100) : 0;
-						const statusIcon = p.status === 'running' ? '$(loading~spin)' :
-							p.status === 'done' ? '$(check)' :
-								p.status === 'failed' ? '$(error)' : '$(circle-outline)';
-						progress([this._progress(`${statusIcon} \`${p.tool}\` round ${p.round}/${p.max_rounds} (${pct}%) — ${p.phase}`, p.status === 'running')]);
+						progress([{
+							kind: 'roundProgress',
+							current_round: p.round,
+							max_rounds: p.max_rounds,
+							phase: p.phase,
+							status: p.status as IChatRoundProgress['status'],
+							tool: p.tool,
+						} satisfies IChatRoundProgress]);
 						break;
 					}
 					case AgentEventType.SpecReview: {
@@ -975,9 +1013,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 					case AgentEventType.Error: {
-						const msg = (event.payload as { message: string }).message;
-						progress([this._warning(msg)]);
-						finish({ errorDetails: { message: msg } });
+						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string };
+						progress([{
+							kind: 'agentError',
+							error_code: p.error_code ?? 'AGENT_ERROR',
+							message: p.message,
+							retryable: p.retryable ?? true,
+							suggestion: p.suggestion,
+						} satisfies IChatAgentError]);
+						finish({ errorDetails: { message: p.message } });
 						break;
 					}
 					case AgentEventType.TaskComplete: {

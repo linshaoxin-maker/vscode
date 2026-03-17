@@ -16,7 +16,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
-import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
@@ -398,6 +398,7 @@ class ChipOSContribution extends Disposable {
 		@IChatAgentService private readonly _chatAgentService: IChatAgentService,
 		@IStatusbarService _statusbarService: IStatusbarService,
 		@IViewsService _viewsService: IViewsService,
+		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
 	) {
 		super();
 
@@ -408,6 +409,16 @@ class ChipOSContribution extends Disposable {
 
 	private _initialize(): void {
 		this._logService.info('[ChipOS] Contribution initialized');
+
+		// ── Bypass Copilot entitlement gates ──
+		// ChipOS doesn't use GitHub Copilot auth. Set context keys so all
+		// framework features (footer toolbar, model picker, etc.) are unlocked.
+		this._contextKeyService.createKey('chatPlanPro', true);
+		this._contextKeyService.createKey('chatSetupInstalled', true);
+		this._contextKeyService.createKey('chatSetupRegistered', true);
+		this._contextKeyService.createKey('chatSetupHidden', true);
+		this._contextKeyService.createKey('chatEntitlementSignedOut', false);
+		this._logService.info('[ChipOS] Entitlement context keys set (Pro bypass)');
 
 		this._statusBarHandler = this._register(
 			this._instantiationService.createInstance(StatusBarHandler)
