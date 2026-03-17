@@ -68,6 +68,8 @@ import {
 	type ISubagentEventPayload,
 	type IWorktreeFilesAppliedPayload,
 	type IFileEditPayload,
+	type IQueueUpdatePayload,
+	type IContextWarningPayload,
 	type IMentionItem,
 } from '../eventStream/eventTypes.js';
 
@@ -194,8 +196,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (!resolved) {
 					resolved = true;
 					listener.dispose();
-					// FEAT-57: Push undo stop (basic checkpoint) before resolving
-					progress([{ kind: 'undoStop', id: `chipos_${sessionId}` }]);
 					result = {
 						...result,
 						timings: {
@@ -663,8 +663,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (!resolved) {
 					resolved = true;
 					listener.dispose();
-					// FEAT-57: Push undo stop (basic checkpoint) before resolving
-					progress([{ kind: 'undoStop', id: `chipos_cont_${Date.now()}` }]);
 					result = {
 						...result,
 						timings: { totalElapsed: Date.now() - startTime },
@@ -1018,6 +1016,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								done: true,
 							} satisfies IChatTextEdit]);
 						}
+						break;
+					}
+					// ── FEAT-61: Queue position update ──
+					case AgentEventType.QueueUpdate: {
+						const p = event.payload as IQueueUpdatePayload;
+						const waitInfo = p.estimated_wait_seconds
+							? ` (~${Math.ceil(p.estimated_wait_seconds)}s)`
+							: '';
+						progress([this._progress(`$(clock) Queue position: ${p.position}${waitInfo}`, true)]);
+						break;
+					}
+
+					// ── FEAT-65: Context window warning ──
+					case AgentEventType.ContextWarning: {
+						const p = event.payload as IContextWarningPayload;
+						const pct = Math.round(p.usage_percent);
+						const suggestion = p.suggestion ? ` ${p.suggestion}` : '';
+						progress([this._warning(
+							`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
+						)]);
 						break;
 					}
 					default:

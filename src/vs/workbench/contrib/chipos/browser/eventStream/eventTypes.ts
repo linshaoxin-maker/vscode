@@ -33,6 +33,10 @@ export const enum AgentEventType {
 	ModelTurnStart = 'model_turn_start',
 	ModelTurnEnd = 'model_turn_end',
 	WorktreeFilesApplied = 'worktree_files_applied',
+	// FEAT-61: Queue position update
+	QueueUpdate = 'queue_update',
+	// FEAT-65: Context window usage warning
+	ContextWarning = 'context_warning',
 }
 
 export interface IAgentEventBase {
@@ -388,6 +392,16 @@ export interface IWorktreeFilesAppliedEvent extends IAgentEventBase {
 	readonly payload: IWorktreeFilesAppliedPayload;
 }
 
+export interface IQueueUpdateEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.QueueUpdate;
+	readonly payload: IQueueUpdatePayload;
+}
+
+export interface IContextWarningEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.ContextWarning;
+	readonly payload: IContextWarningPayload;
+}
+
 export type AgentEvent =
 	| ITextDeltaEvent
 	| IToolCallEvent
@@ -414,7 +428,9 @@ export type AgentEvent =
 	| ITaskSummaryEvent
 	| ISubagentEventEvent
 	| IModelTurnEvent
-	| IWorktreeFilesAppliedEvent;
+	| IWorktreeFilesAppliedEvent
+	| IQueueUpdateEvent
+	| IContextWarningEvent;
 
 // ── Task request payload ────────────────────────────────────────────────────
 
@@ -450,6 +466,22 @@ export interface IMentionItem {
 	readonly content?: string;
 	readonly startLine?: number;
 	readonly endLine?: number;
+}
+
+// ── FEAT-61: Queue update payload ───────────────────────────────────────────
+
+export interface IQueueUpdatePayload {
+	readonly position: number;
+	readonly estimated_wait_seconds?: number;
+}
+
+// ── FEAT-65: Context window warning payload ─────────────────────────────────
+
+export interface IContextWarningPayload {
+	readonly usage_percent: number;
+	readonly tokens_used: number;
+	readonly tokens_max: number;
+	readonly suggestion?: string;
 }
 
 // ── Connection state ────────────────────────────────────────────────────────
