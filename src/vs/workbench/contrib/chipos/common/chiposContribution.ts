@@ -495,7 +495,7 @@ class ChipOSContribution extends Disposable {
 			fullName: 'ChipOS AI Assistant',
 			description: 'ChipOS AI-powered coding assistant for EDA development',
 			isDefault: true,
-			isCore: false,
+			isCore: true,
 			modes: [ChatModeKind.Ask, ChatModeKind.Edit, ChatModeKind.Agent, ChatModeKind.Spec],
 			slashCommands: [],
 			disambiguation: [],
