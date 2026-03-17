@@ -148,49 +148,47 @@
 	margin: 4px 0;
 }
 
-/* ── Parallel Progress (Cursor-native style) ──────────────────────────────── */
+/* ── Parallel Progress (Cursor tool-progress style) ───────────────────────── */
 
 .eda-parallel-wrapper {
 	margin: 4px 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
 }
 
-.eda-parallel-phase {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	margin-bottom: 4px;
-	text-transform: uppercase;
-	letter-spacing: 0.5px;
-	font-weight: 600;
-}
-
-.eda-parallel-wrapper > .progress-container {
+.eda-parallel-row {
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	padding: 2px 0;
+	padding: 3px 0;
 	font-size: var(--vscode-font-size);
 	color: var(--vscode-descriptionForeground);
 }
 
-.eda-parallel-wrapper > .progress-container .progress-step p {
-	margin: 0;
+.eda-parallel-icon {
+	flex-shrink: 0;
+	font-size: 14px;
+	width: 16px;
+	text-align: center;
 }
 
-.eda-parallel-wrapper > .progress-container.show-checkmarks .codicon-check {
+.eda-parallel-icon.eda-icon-done {
 	color: var(--vscode-testing-iconPassed, #73c991);
 }
 
-.eda-parallel-wrapper > .progress-container .codicon-error {
+.eda-parallel-icon.eda-icon-error {
 	color: var(--vscode-testing-iconFailed, #f14c4c);
 }
 
-.eda-parallel-conflicts {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	padding: 4px 0;
-	font-size: 12px;
-	color: var(--vscode-editorWarning-foreground, #cca700);
+.eda-parallel-icon.eda-icon-running {
+	color: var(--vscode-progressBar-background, #0e70c0);
+}
+
+.eda-parallel-label {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* ── Negotiation ────────────────────────────────────────────────────────────── */

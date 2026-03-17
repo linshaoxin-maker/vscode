@@ -2669,10 +2669,23 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		}
 
 		this._chatInputTodoListWidget.value.render(chatSessionResource);
+
+		// Force height recalculation after todo widget renders
+		// to prevent content overlap in the chat list
+		dom.scheduleAtNextAnimationFrame(dom.getWindow(this.container), () => {
+			const newHeight = this.container.offsetHeight;
+			this.height.set(newHeight, undefined);
+		});
 	}
 
 	clearTodoListWidget(sessionResource: URI | undefined, force: boolean): void {
 		this._chatInputTodoListWidget.value?.clear(sessionResource, force);
+
+		// Force height recalculation after todo widget clears
+		dom.scheduleAtNextAnimationFrame(dom.getWindow(this.container), () => {
+			const newHeight = this.container.offsetHeight;
+			this.height.set(newHeight, undefined);
+		});
 	}
 
 	renderQuestionCarousel(carousel: IChatQuestionCarousel, context: IChatContentPartRenderContext, options: IChatQuestionCarouselOptions): ChatQuestionCarouselPart {

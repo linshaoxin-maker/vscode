@@ -5,6 +5,7 @@
 
 import * as dom from '../../../../../../../base/browser/dom.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
+import { ThemeIcon } from '../../../../../../../base/common/themables.js';
 import { IChatEdaParallelProgress } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
@@ -13,8 +14,9 @@ import '../media/edaParts.css';
 const $ = dom.$;
 
 /**
- * Renders parallel progress tracks in Cursor-native style:
- * each track is a progress-container row with spinner/check icon + text.
+ * Renders parallel progress tracks using Cursor-native tool-progress style:
+ * each track is a single row with a codicon (spinner/check/error) + label text.
+ * No badges, no boxes — just clean inline rows like Cursor's tool invocations.
  */
 export class ChatEdaParallelProgressContentPart extends Disposable implements IChatContentPart {
 	public readonly domNode: HTMLElement;
@@ -26,48 +28,32 @@ export class ChatEdaParallelProgressContentPart extends Disposable implements IC
 
 		const wrapper = $('div.eda-parallel-wrapper');
 
-		// Phase header (small, muted)
-		const phaseLabel = $('div.eda-parallel-phase');
-		phaseLabel.textContent = content.phase ?? 'checking';
-		wrapper.appendChild(phaseLabel);
-
 		for (const track of content.tracks ?? []) {
-			const row = $('div.progress-container');
+			const row = $('div.eda-parallel-row');
 
-			// Icon: spinner for running, check for done, error for failed
-			let iconClass: string;
+			// Codicon icon based on status
+			const iconEl = $('span.eda-parallel-icon');
 			if (track.status === 'done') {
-				iconClass = 'codicon codicon-check';
-				row.classList.add('show-checkmarks');
+				iconEl.classList.add(...ThemeIcon.asClassNameArray({ id: 'check' }));
+				iconEl.classList.add('eda-icon-done');
 			} else if (track.status === 'failed') {
-				iconClass = 'codicon codicon-error';
+				iconEl.classList.add(...ThemeIcon.asClassNameArray({ id: 'error' }));
+				iconEl.classList.add('eda-icon-error');
 			} else if (track.status === 'running') {
-				iconClass = 'codicon codicon-loading codicon-modifier-spin';
+				iconEl.classList.add(...ThemeIcon.asClassNameArray({ id: 'loading~spin' }));
+				iconEl.classList.add('eda-icon-running');
 			} else {
-				iconClass = 'codicon codicon-circle-outline';
+				// pending / unknown
+				iconEl.classList.add(...ThemeIcon.asClassNameArray({ id: 'circle-outline' }));
 			}
-			const icon = $(`div.${iconClass.split(' ').join('.')}`);
-			row.appendChild(icon);
+			row.appendChild(iconEl);
 
-			// Text
-			const textEl = $('div.rendered-markdown.progress-step');
-			const p = $('p');
-			p.textContent = track.name + (track.file ? ` — ${track.file}` : '');
-			textEl.appendChild(p);
-			row.appendChild(textEl);
+			// Label text
+			const label = $('span.eda-parallel-label');
+			label.textContent = track.name + (track.file ? ` — ${track.file}` : '');
+			row.appendChild(label);
 
 			wrapper.appendChild(row);
-		}
-
-		// Conflicts (if any)
-		if (content.conflicts && content.conflicts.length > 0) {
-			const conflictsRow = $('div.eda-parallel-conflicts');
-			const icon = $('div.codicon.codicon-warning');
-			conflictsRow.appendChild(icon);
-			const text = $('span');
-			text.textContent = `${content.conflicts.length} conflict(s) detected`;
-			conflictsRow.appendChild(text);
-			wrapper.appendChild(conflictsRow);
 		}
 
 		this.domNode = wrapper;
