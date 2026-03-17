@@ -1,0 +1,21 @@
+/*---------------------------------------------------------------------------------------------
+ *  ChipOS CSS Overrides
+ *  Fixes for Cursor-framework CSS rules that conflict with ChipOS behavior.
+ *--------------------------------------------------------------------------------------------*/
+
+/*
+ * The framework hides welcome content when `chat-view-getting-started-disabled`
+ * is set (i.e. chatSetupInstalled === true). ChipOS sets that context key to
+ * bypass Copilot entitlement gates, but we still want our own welcome message
+ * to be visible. Override the framework rule to keep welcome content shown.
+ */
+.interactive-session.chat-view-getting-started-disabled {
+
+	.chat-welcome-view .chat-welcome-view-icon,
+	.chat-welcome-view .chat-welcome-view-title,
+	.chat-welcome-view .chat-welcome-view-message,
+	.chat-welcome-view .chat-welcome-view-disclaimer,
+	.chat-welcome-view .chat-welcome-view-tips {
+		display: revert;
+	}
+}

@@ -63,6 +63,7 @@ import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos
 import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryService.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
+import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 
 // ── Chat Quick Toggles Registration ────────────────────────────────────────
 registerChipOSQuickToggles();
