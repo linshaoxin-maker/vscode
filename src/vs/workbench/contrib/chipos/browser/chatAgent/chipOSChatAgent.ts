@@ -200,6 +200,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			let resolved = false;
 			let firstProgressTime: number | undefined;
 			const pendingConfirmations = new Map<string, IChatConfirmation>();
+			let stepCount = 0; // Track steps for thinking title
 
 			const trackFirstProgress = () => {
 				if (firstProgressTime === undefined) {
@@ -207,8 +208,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 			};
 
-			const finish = (result: IChatAgentResult) => {
+			const finish = (result: IChatAgentResult, thinkingTitle?: string) => {
 				if (!resolved) {
+					// Set a meaningful thinking title so the framework doesn't fallback to "Finished with N steps"
+					if (thinkingTitle || stepCount > 0) {
+						const title = thinkingTitle ?? `Completed ${stepCount} step${stepCount === 1 ? '' : 's'}`;
+						progress([{ kind: 'thinking', value: '', generatedTitle: title } satisfies IChatThinkingPart]);
+					}
 					resolved = true;
 					listener.dispose();
 					result = {
@@ -250,6 +256,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.ToolCall: {
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
+						stepCount++;
 						this._toolStartTimes.set(key, Date.now());
 						// Save file_path from arguments for later reference emission
 						const args = p.arguments as Record<string, unknown> | undefined;
@@ -411,7 +418,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						progress([confirmation]);
 						// Finish the current request so the framework can accept
 						// the next invoke() when the user clicks a confirmation button.
-						finish({});
+						finish({}, 'Awaiting confirmation');
 						break;
 					}
 
@@ -824,9 +831,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
+			let contStepCount = 0;
 
-			const finish = (result: IChatAgentResult) => {
+			const finish = (result: IChatAgentResult, thinkingTitle?: string) => {
 				if (!resolved) {
+					if (thinkingTitle || contStepCount > 0) {
+						const title = thinkingTitle ?? `Completed ${contStepCount} step${contStepCount === 1 ? '' : 's'}`;
+						progress([{ kind: 'thinking', value: '', generatedTitle: title } satisfies IChatThinkingPart]);
+					}
 					resolved = true;
 					listener.dispose();
 					result = {
@@ -1122,7 +1134,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							buttons,
 						};
 						progress([confirmation]);
-						finish({});
+						finish({}, 'Awaiting confirmation');
 						break;
 					}
 					case AgentEventType.Plan: {
