@@ -97,12 +97,7 @@ import { ChatThinkingContentPart } from './chatContentParts/chatThinkingContentP
 import { ChatSubagentContentPart } from './chatContentParts/chatSubagentContentPart.js';
 import { ChatTreeContentPart, TreePool } from './chatContentParts/chatTreeContentPart.js';
 import { ChatWorkspaceEditContentPart } from './chatContentParts/chatWorkspaceEditContentPart.js';
-import { ChatEdaSimReportContentPart } from './chatContentParts/edaParts/chatEdaSimReportPart.js';
-import { ChatEdaCoverageReportContentPart } from './chatContentParts/edaParts/chatEdaCoverageReportPart.js';
-import { ChatEdaLintReportContentPart } from './chatContentParts/edaParts/chatEdaLintReportPart.js';
-import { ChatEdaParallelProgressContentPart } from './chatContentParts/edaParts/chatEdaParallelProgressPart.js';
-import { ChatEdaNegotiationViewContentPart } from './chatContentParts/edaParts/chatEdaNegotiationViewPart.js';
-import { ChatEdaSpecReviewContentPart } from './chatContentParts/edaParts/chatEdaSpecReviewPart.js';
+import { IChatContentPartRegistry } from '../chatContentPartRegistry.js';
 import { ChatToolInvocationPart } from './chatContentParts/toolInvocationParts/chatToolInvocationPart.js';
 import { ChatMarkdownDecorationsRenderer } from './chatContentParts/chatMarkdownDecorationsRenderer.js';
 import { ChatEditorOptions } from './chatOptions.js';
@@ -273,6 +268,7 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		@IAccessibilitySignalService private readonly accessibilitySignalService: IAccessibilitySignalService,
 		@IAccessibilityService private readonly accessibilityService: IAccessibilityService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IChatContentPartRegistry private readonly contentPartRegistry: IChatContentPartRegistry,
 	) {
 		super();
 
@@ -1824,18 +1820,12 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 				return this.renderThinkingPart(content, context, templateData);
 			} else if (content.kind === 'workspaceEdit') {
 				return this.instantiationService.createInstance(ChatWorkspaceEditContentPart, content, context, this.chatContentMarkdownRenderer);
-			} else if (content.kind === 'edaSimReport') {
-				return this.instantiationService.createInstance(ChatEdaSimReportContentPart, content);
-			} else if (content.kind === 'edaCoverageReport') {
-				return this.instantiationService.createInstance(ChatEdaCoverageReportContentPart, content);
-			} else if (content.kind === 'edaLintReport') {
-				return this.instantiationService.createInstance(ChatEdaLintReportContentPart, content);
-			} else if (content.kind === 'edaParallelProgress') {
-				return this.instantiationService.createInstance(ChatEdaParallelProgressContentPart, content);
-			} else if (content.kind === 'edaNegotiationView') {
-				return this.instantiationService.createInstance(ChatEdaNegotiationViewContentPart, content);
-			} else if (content.kind === 'edaSpecReview') {
-				return this.instantiationService.createInstance(ChatEdaSpecReviewContentPart, content);
+			} else {
+				// Try custom content part registry (EDA parts, etc.)
+				const customPart = this.contentPartRegistry.tryCreateContentPart(content, this.instantiationService);
+				if (customPart) {
+					return customPart;
+				}
 			}
 
 			return this.renderNoContent(other => content.kind === other.kind);

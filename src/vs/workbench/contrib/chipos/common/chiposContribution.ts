@@ -46,6 +46,13 @@ import { EditorExtensions } from '../../../../workbench/common/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ChipOSSettingsEditor } from '../../../../workbench/contrib/chipos/browser/settings/chiposSettingsEditor.js';
 import { ChipOSSettingsEditorInput, ChipOSSettingsTab } from '../../../../workbench/contrib/chipos/browser/settings/chiposSettingsEditorInput.js';
+import { IChatContentPartRegistry } from '../../../../workbench/contrib/chat/browser/chatContentPartRegistry.js';
+import { ChatEdaSimReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaSimReportPart.js';
+import { ChatEdaCoverageReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaCoverageReportPart.js';
+import { ChatEdaLintReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaLintReportPart.js';
+import { ChatEdaParallelProgressContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaParallelProgressPart.js';
+import { ChatEdaNegotiationViewContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaNegotiationViewPart.js';
+import { ChatEdaSpecReviewContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaSpecReviewPart.js';
 
 import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos/browser/settings/chiposQuickToggles.js';
 
@@ -413,6 +420,7 @@ class ChipOSContribution extends Disposable {
 		}
 
 		this._registerChatAgent();
+		this._registerEdaContentParts();
 	}
 
 	private _mapSidecarToConnectionState(state: SidecarState): ConnectionState {
@@ -495,6 +503,17 @@ class ChipOSContribution extends Disposable {
 			agent.rejectAllDiffs();
 			this._logService.info('[ChipOS] Reject all diffs');
 		}));
+	}
+
+	private _registerEdaContentParts(): void {
+		const registry = this._instantiationService.invokeFunction(accessor => accessor.get(IChatContentPartRegistry));
+		registry.registerContentPart('edaSimReport', (content, inst) => inst.createInstance(ChatEdaSimReportContentPart, content as any));
+		registry.registerContentPart('edaCoverageReport', (content, inst) => inst.createInstance(ChatEdaCoverageReportContentPart, content as any));
+		registry.registerContentPart('edaLintReport', (content, inst) => inst.createInstance(ChatEdaLintReportContentPart, content as any));
+		registry.registerContentPart('edaParallelProgress', (content, inst) => inst.createInstance(ChatEdaParallelProgressContentPart, content as any));
+		registry.registerContentPart('edaNegotiationView', (content, inst) => inst.createInstance(ChatEdaNegotiationViewContentPart, content as any));
+		registry.registerContentPart('edaSpecReview', (content, inst) => inst.createInstance(ChatEdaSpecReviewContentPart, content as any));
+		this._logService.info('[ChipOS] Registered 6 EDA content part renderers');
 	}
 
 	private _registerFileChangeCommands(agent: ChipOSChatAgent): void {
