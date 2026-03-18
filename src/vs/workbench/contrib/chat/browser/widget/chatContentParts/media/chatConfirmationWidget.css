@@ -236,13 +236,17 @@
 	margin-bottom: 8px;
 	border: 1px solid var(--vscode-chat-requestBorder);
 	border-radius: var(--vscode-cornerRadius-medium);
+	overflow: hidden;
+}
+
+.chat-confirmation-widget2:hover {
+	border-color: var(--vscode-focusBorder);
 }
 
 .chat-confirmation-widget2 .chat-confirmation-widget-title {
-	border-bottom: 1px solid var(--vscode-chat-requestBorder);
-	padding: 4px 8px;
+	padding: 6px 10px;
 	display: flex;
-	justify-content: space-between;
+	align-items: center;
 	column-gap: 10px;
 
 	.rendered-markdown {
@@ -250,6 +254,7 @@
 
 		p {
 			margin: 0 !important;
+			font-weight: 600;
 		}
 
 		.codicon {
@@ -260,6 +265,38 @@
 	p,
 	.rendered-markdown {
 		display: inline;
+	}
+}
+
+.chat-confirmation-widget2 .chat-confirmation-widget-preview {
+	padding: 6px 10px;
+	font-size: var(--vscode-chat-font-size-body-s, 12px);
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.5;
+	border-top: 1px solid var(--vscode-chat-requestBorder);
+	max-height: 60px;
+	overflow: hidden;
+
+	.rendered-markdown p {
+		margin: 0 0 4px 0;
+	}
+
+	.rendered-markdown p:last-child {
+		margin-bottom: 0;
+	}
+
+	.rendered-markdown em {
+		opacity: 0.7;
+	}
+
+	/* Prevent markdown headings from blowing up the preview */
+	.rendered-markdown h1,
+	.rendered-markdown h2,
+	.rendered-markdown h3,
+	.rendered-markdown h4 {
+		font-size: inherit;
+		font-weight: normal;
+		margin: 0;
 	}
 }
 
@@ -455,16 +492,13 @@
 
 .chat-confirmation-widget2 .chat-confirmation-widget-buttons {
 	display: flex;
-	padding: 4px 8px;
-	position: sticky;
-	bottom: 0;
-	background: var(--vscode-chat-list-background, var(--vscode-sideBar-background));
-	z-index: 10;
+	padding: 6px 10px;
 	border-top: 1px solid var(--vscode-chat-requestBorder);
+	background: var(--vscode-chat-list-background, var(--vscode-sideBar-background));
 
 	.chat-buttons {
 		display: flex;
-		column-gap: 4px;
+		column-gap: 6px;
 		align-items: center;
 
 		.monaco-button {

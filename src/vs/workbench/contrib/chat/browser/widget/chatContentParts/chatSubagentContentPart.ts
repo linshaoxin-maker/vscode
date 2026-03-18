@@ -626,6 +626,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	 * unless it's actively streaming (not initially complete), in which case render immediately.
 	 */
 	public appendToolInvocation(toolInvocation: IChatToolInvocation | IChatToolInvocationSerialized, codeBlockStartIndex: number): void {
+		console.log(`[ChatSubagentContentPart] appendToolInvocation: toolCallId=${toolInvocation.toolCallId}, toolId=${toolInvocation.toolId}, isExpanded=${this.isExpanded()}, hasExpandedOnce=${this.hasExpandedOnce}, lazyItems=${this.lazyItems.length}`);
 		// Show the container when first tool item is added
 		if (!this.hasToolItems) {
 			this.hasToolItems = true;
@@ -876,6 +877,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	 * This is called when first expanded, but the wrapper must exist (created by base class initContent).
 	 */
 	private materializePendingContent(): void {
+		console.log(`[ChatSubagentContentPart] materializePendingContent: wrapper=${!!this.wrapper}, lazyItems=${this.lazyItems.length}, pendingPrompt=${this.pendingPromptRender}, pendingResult=${!!this.pendingResultText}`);
 		// Wrapper may not be created yet if this autorun runs before the base class autorun
 		// that calls initContent(). In that case, initContent() will call this logic.
 		if (!this.wrapper) {

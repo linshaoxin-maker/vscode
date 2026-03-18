@@ -40,10 +40,10 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 
 		const element = context.element;
 
-		// ── DOM ──
+		// ── DOM: Cursor-style compact card ──
 		const elements = dom.h('.chat-confirmation-widget2@root', [
 			dom.h('.chat-confirmation-widget-title@title'),
-			dom.h('.chat-confirmation-widget-message@messageArea'),
+			dom.h('.chat-confirmation-widget-preview@preview'),
 			dom.h('.chat-confirmation-widget-buttons@buttonsArea', [
 				dom.h('.chat-buttons@buttons'),
 			]),
@@ -52,22 +52,8 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		this.domNode = elements.root;
 
 		const widget = isResponseVM(element) ? chatWidgetService.getWidgetBySessionResource(element.sessionResource) : undefined;
-		const revealConfirmationActions = () => {
-			if (confirmation.isUsed) {
-				return;
-			}
-			// Scroll the chat list so the buttons row is visible at the bottom of the viewport.
-			const buttonsRect = elements.buttonsArea.getBoundingClientRect();
-			const listNode = (widget as any)?.listWidget?.domNode as HTMLElement | undefined;
-			const listRect = listNode?.getBoundingClientRect();
-			console.log('[ConfirmReveal] buttonsRect:', JSON.stringify({ top: buttonsRect.top, bottom: buttonsRect.bottom, height: buttonsRect.height }));
-			console.log('[ConfirmReveal] listRect:', listRect ? JSON.stringify({ top: listRect.top, bottom: listRect.bottom, height: listRect.height }) : 'N/A');
-			console.log('[ConfirmReveal] buttonsArea offsetParent:', elements.buttonsArea.offsetParent?.className);
-			console.log('[ConfirmReveal] buttonsArea offsetTop:', elements.buttonsArea.offsetTop, 'offsetHeight:', elements.buttonsArea.offsetHeight);
-			widget?.revealElement(elements.buttonsArea);
-		};
 
-		// ── Title ──
+		// ── Title: ⚠ confirmation.title ──
 		const titleMd = new MarkdownString(
 			`$(${Codicon.warning.id}) ${confirmation.title}`,
 			{ supportThemeIcons: true },
@@ -75,33 +61,30 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		const renderedTitle = this._register(markdownRendererService.render(titleMd));
 		elements.title.appendChild(renderedTitle.element);
 
-		// ── Message: "View full content in editor" link ──
+		// ── Preview: 2-3 line summary, clickable to open full content ──
 		const messageContent = typeof confirmation.message === 'string'
 			? confirmation.message
 			: (confirmation.message as IMarkdownString).value;
 
-		const link = document.createElement('a');
-		link.textContent = localize('viewFullContent', "📄 View full content in editor");
-		link.style.cursor = 'pointer';
-		link.style.color = 'var(--vscode-textLink-foreground)';
-		link.style.textDecoration = 'underline';
-		link.style.display = 'inline-block';
-		link.style.padding = '2px 0';
-		link.style.fontSize = '12px';
+		const previewText = this._getPreview(messageContent, 3);
+		const previewMd = new MarkdownString(previewText, { supportThemeIcons: true });
+		const renderedPreview = this._register(markdownRendererService.render(previewMd));
+		elements.preview.appendChild(renderedPreview.element);
 
-		this._register(dom.addDisposableListener(link, 'click', async () => {
+		// Click anywhere on the card (except buttons) to open full content in editor
+		elements.root.style.cursor = 'pointer';
+		this._register(dom.addDisposableListener(elements.root, 'click', async (e) => {
+			// Don't trigger if clicking on buttons
+			if (dom.isAncestor(e.target as HTMLElement, elements.buttonsArea)) {
+				return;
+			}
 			if (!this._tempFileUri) {
 				this._tempFileUri = await this._writeTempFile(confirmation.title, messageContent);
 			}
 			if (this._tempFileUri) {
 				await this.editorService.openEditor({ resource: this._tempFileUri });
-				// After editor opens, chat panel may resize — reveal the current confirmation again.
-				setTimeout(() => {
-					revealConfirmationActions();
-				}, 300);
 			}
 		}));
-		elements.messageArea.appendChild(link);
 
 		// ── Buttons ──
 		const buttonLabels = confirmation.buttons ?? [localize('accept', "Accept"), localize('dismiss', "Dismiss")];
@@ -142,19 +125,33 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			elements.buttonsArea.style.display = 'none';
 		}
 
-		// After the card is attached to the DOM, reveal the current response and
-		// then align the action row to the bottom of the viewport so the buttons stay visible.
+		// Reveal buttons after card is attached to DOM
 		if (!confirmation.isUsed) {
+			const revealButtons = () => {
+				if (confirmation.isUsed) {
+					return;
+				}
+				widget?.revealElement(elements.buttonsArea);
+			};
 			requestAnimationFrame(() => {
-				requestAnimationFrame(() => {
-					revealConfirmationActions();
-				});
+				requestAnimationFrame(() => revealButtons());
 			});
-
-			setTimeout(() => {
-				revealConfirmationActions();
-			}, 180);
+			setTimeout(() => revealButtons(), 200);
 		}
+	}
+
+	/**
+	 * Extract first N non-heading lines as preview text.
+	 */
+	private _getPreview(content: string, maxLines: number): string {
+		const lines = content.split('\n')
+			.filter(l => l.trim().length > 0)
+			.filter(l => !l.startsWith('#')); // skip markdown headings
+		const preview = lines.slice(0, maxLines).join('\n');
+		if (lines.length > maxLines) {
+			return preview + '\n\n*Click to view full content...*';
+		}
+		return preview || '*Click to view full content...*';
 	}
 
 	private async _writeTempFile(title: string, content: string): Promise<URI | undefined> {

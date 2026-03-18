@@ -843,20 +843,10 @@ export class ChatListWidget extends Disposable {
 					item => isResponseVM(item) && item.model?.isPendingConfirmation.get()
 				);
 				if (pendingItem) {
-					// Prefer revealing the exact buttons element for precision.
+					// Use native scrollIntoView for the buttons element.
 					const buttonsEl = this._container.querySelector<HTMLElement>('.chat-confirmation-widget-buttons');
 					if (buttonsEl) {
-						// Manually scroll so buttonsEl bottom is at viewport bottom.
-						const containerRect = this._container.getBoundingClientRect();
-						const elRect = buttonsEl.getBoundingClientRect();
-						const visibleHeight = containerRect.height;
-						const elBottomInList = elRect.bottom - containerRect.top + this.scrollTop;
-						const target = elBottomInList - visibleHeight + 8;
-						if (target !== this.scrollTop) {
-							this.scrollTop = target;
-						}
-							this.scrollTop = target;
-						}
+						buttonsEl.scrollIntoView({ block: 'nearest', behavior: 'instant' });
 					} else {
 						this.reveal(pendingItem as ChatTreeItem, 1);
 					}

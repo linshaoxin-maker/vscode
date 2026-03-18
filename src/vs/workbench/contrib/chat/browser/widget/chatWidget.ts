@@ -2081,28 +2081,10 @@ export class ChatWidget extends Disposable implements IChatWidget {
 	}
 
 	revealElement(element: HTMLElement): void {
-		// Calculate the position of the element relative to the chat list container
-		// and scroll so the element's bottom is visible at the bottom of the viewport.
-		const listContainer = this.listWidget.domNode;
-		const containerRect = listContainer.getBoundingClientRect();
-		const elementRect = element.getBoundingClientRect();
-
-		// Use the actual visible viewport height, not renderHeight which may include
-		// areas hidden behind headers or other overlapping UI.
-		const visibleHeight = containerRect.height;
-
-		// elementBottom relative to the list container top, accounting for current scroll
-		const elementBottomInList = elementRect.bottom - containerRect.top + this.listWidget.scrollTop;
-		const targetScrollTop = elementBottomInList - visibleHeight + 8; // 8px padding
-
-		console.log('[revealElement] containerRect:', JSON.stringify({ top: containerRect.top, bottom: containerRect.bottom, height: containerRect.height }));
-		console.log('[revealElement] elementRect:', JSON.stringify({ top: elementRect.top, bottom: elementRect.bottom, height: elementRect.height }));
-		console.log('[revealElement] scrollTop:', this.listWidget.scrollTop, 'visibleHeight:', visibleHeight, 'renderHeight:', this.listWidget.renderHeight);
-		console.log('[revealElement] elementBottomInList:', elementBottomInList, 'targetScrollTop:', targetScrollTop, 'willScroll:', targetScrollTop !== this.listWidget.scrollTop);
-
-		if (targetScrollTop !== this.listWidget.scrollTop) {
-			this.listWidget.scrollTop = targetScrollTop;
-		}
+		// Use native scrollIntoView to ensure the element is visible.
+		// The virtual list's scrollTop setter may be constrained by internal state,
+		// so we bypass it entirely and let the browser handle scrolling.
+		element.scrollIntoView({ block: 'nearest', behavior: 'instant' });
 	}
 
 	focus(item: ChatTreeItem): void {
