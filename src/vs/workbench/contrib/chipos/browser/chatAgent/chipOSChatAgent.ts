@@ -104,6 +104,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _subagentParentMap = new Map<string, string>();
 	/** Most recent subagent-type toolCallId, used to link SubagentEvent → parent */
 	private _lastSubagentToolCallId: string | undefined;
+	/** Counter for generating unique subagent tool call keys (avoids collision when same tool is called multiple times) */
+	private _subagentToolCounter = 0;
 	/** Maps tool call id → operationId for external edits tracking */
 	private readonly _externalEditOps = new Map<string, number>();
 	/** Counter for generating unique external edit operation IDs */
@@ -644,13 +646,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							}
 						}
 						const parentId = this._subagentParentMap.get(p.task_id) ?? p.task_id;
-						const label = `Sub-agent \`${p.task_id.slice(0, 8)}\``;
 						if (p.kind === 'text' && p.content) {
-							// If content looks like JSON, try to extract readable fields
-							const rendered = ChipOSChatAgent._renderSubagentText(p.content);
-							progress([this._markdown(rendered)]);
+							// Route text as a virtual tool inside the subagent card
+							const textKey = `sub_${p.task_id}_text_${this._subagentToolCounter++}`;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: textKey,
+								toolName: 'output',
+								isComplete: true,
+								invocationMessage: ChipOSChatAgent._renderSubagentText(p.content),
+								pastTenseMessage: ChipOSChatAgent._renderSubagentText(p.content),
+								subagentInvocationId: parentId,
+							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
-							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							const subKey = `sub_${p.task_id}_${p.tool_name}_${this._subagentToolCounter++}`;
 							this._toolStartTimes.set(subKey, Date.now());
 							const toolUpdate: IChatExternalToolInvocationUpdate = {
 								kind: 'externalToolInvocationUpdate',
@@ -661,8 +670,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								subagentInvocationId: parentId,
 							};
 							progress([toolUpdate]);
+
+							// Start external edit tracking for file-writing tools in subagent
+							if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
+								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
+								if (filePath && request) {
+									const workspaceRoot = this._getWorkspaceRoot();
+									const fileUri = filePath.startsWith('/')
+										? URI.file(filePath)
+										: workspaceRoot
+											? URI.joinPath(URI.file(workspaceRoot), filePath)
+											: URI.file(filePath);
+									this._toolFileArgs.set(subKey, filePath);
+									this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId);
+								}
+							}
 						} else if (p.kind === 'tool_end' && p.tool_name) {
-							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							// Find the matching tool_start key for this tool_name (with counter suffix)
+							const matchPrefix = `sub_${p.task_id}_${p.tool_name}_`;
+							let subKey: string | undefined;
+							for (const [k] of this._toolStartTimes) {
+								if (k.startsWith(matchPrefix)) {
+									subKey = k;
+									break;
+								}
+							}
+							if (!subKey) { break; }
 							const startTs = this._toolStartTimes.get(subKey);
 							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
 							this._toolStartTimes.delete(subKey);
@@ -675,19 +708,65 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								subagentInvocationId: parentId,
 							};
 							progress([toolComplete]);
+
+							// Stop external edit tracking for file-writing tools in subagent
+							if (this._externalEditOps.has(subKey) && request) {
+								this._stopExternalEdit(subKey, request.sessionResource).then(editProgress => {
+									if (editProgress.length > 0) {
+										progress(editProgress);
+									}
+								});
+								this._toolFileArgs.delete(subKey);
+							} else if (p.file_path && request) {
+								// Fallback: tool_end has file_path but no external edit was started
+								const fileUri = URI.file(p.file_path);
+								const opId = ++this._externalEditOpCounter;
+								const editingSession = this._getEditingSession(request.sessionResource);
+								const responseModel = this._getResponseModel(request.sessionResource);
+								if (editingSession && responseModel) {
+									editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
+										return editingSession.stopExternalEdits(responseModel, opId);
+									}).then(editProgress => {
+										if (editProgress.length > 0) {
+											progress(editProgress);
+										}
+									}).catch(err => {
+										this._logService.error(`[ChipOS Agent] Subagent tool_end external edit failed for ${p.file_path}`, err);
+									});
+								}
+							}
 						} else if (p.kind === 'error' && p.content) {
-							progress([this._warning(`${label}: ${p.content}`)]);
+							// Route error inside the subagent card
+							const errKey = `sub_${p.task_id}_error_${this._subagentToolCounter++}`;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: errKey,
+								toolName: 'error',
+								isComplete: true,
+								invocationMessage: p.content,
+								pastTenseMessage: p.content,
+								subagentInvocationId: parentId,
+							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'status' && p.content) {
-							progress([this._progress(`${label}: ${p.content}`, true)]);
+							// Route status inside the subagent card
+							const statusKey = `sub_${p.task_id}_status_${this._subagentToolCounter++}`;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: statusKey,
+								toolName: 'status',
+								isComplete: true,
+								invocationMessage: p.content,
+								pastTenseMessage: p.content,
+								subagentInvocationId: parentId,
+							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'complete') {
 							const subStart = this._subagentTimers.get(p.task_id);
-							const subElapsed = subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
 							this._subagentTimers.delete(p.task_id);
 							// Close any dangling tool calls belonging to this subagent
 							const prefix = `sub_${p.task_id}_`;
 							for (const [k] of this._toolStartTimes) {
 								if (k.startsWith(prefix)) {
-									const toolName = k.slice(prefix.length);
+									const toolName = k.slice(prefix.length).replace(/_\d+$/, '');
 									progress([{
 										kind: 'externalToolInvocationUpdate',
 										toolCallId: k,
@@ -702,18 +781,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							// Mark the parent subagent tool call as complete
 							if (parentId && this._toolStartTimes.has(parentId)) {
 								const parentStart = this._toolStartTimes.get(parentId);
-								const parentElapsed = parentStart ? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)` : '';
+								const elapsed = parentStart
+									? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)`
+									: subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
 								this._toolStartTimes.delete(parentId);
 								progress([{
 									kind: 'externalToolInvocationUpdate',
 									toolCallId: parentId,
 									toolName: 'task',
 									isComplete: true,
-									pastTenseMessage: `Sub-agent completed${parentElapsed}`,
+									pastTenseMessage: `Sub-agent completed${elapsed}`,
 								} satisfies IChatExternalToolInvocationUpdate]);
 							}
 							this._subagentParentMap.delete(p.task_id);
-							progress([this._progress(`${label} $(check) completed${subElapsed}`)]);
 						}
 						break;
 					}
@@ -1104,12 +1184,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							}
 						}
 						const parentId = this._subagentParentMap.get(p.task_id) ?? p.task_id;
-						const label = `Sub-agent \`${p.task_id.slice(0, 8)}\``;
 						if (p.kind === 'text' && p.content) {
-							const rendered = ChipOSChatAgent._renderSubagentText(p.content);
-							progress([this._markdown(rendered)]);
+							// Route text as a virtual tool inside the subagent card
+							const textKey = `sub_${p.task_id}_text_${this._subagentToolCounter++}`;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: textKey,
+								toolName: 'output',
+								isComplete: true,
+								invocationMessage: ChipOSChatAgent._renderSubagentText(p.content),
+								pastTenseMessage: ChipOSChatAgent._renderSubagentText(p.content),
+								subagentInvocationId: parentId,
+							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
-							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							const subKey = `sub_${p.task_id}_${p.tool_name}_${this._subagentToolCounter++}`;
 							this._toolStartTimes.set(subKey, Date.now());
 							const toolUpdate: IChatExternalToolInvocationUpdate = {
 								kind: 'externalToolInvocationUpdate',
@@ -1120,8 +1208,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								subagentInvocationId: parentId,
 							};
 							progress([toolUpdate]);
+
+							// Start external edit tracking for file-writing tools in subagent
+							if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
+								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
+								if (filePath && request) {
+									const workspaceRoot = this._getWorkspaceRoot();
+									const fileUri = filePath.startsWith('/')
+										? URI.file(filePath)
+										: workspaceRoot
+											? URI.joinPath(URI.file(workspaceRoot), filePath)
+											: URI.file(filePath);
+									this._toolFileArgs.set(subKey, filePath);
+									this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId);
+								}
+							}
 						} else if (p.kind === 'tool_end' && p.tool_name) {
-							const subKey = `sub_${p.task_id}_${p.tool_name}`;
+							// Find the matching tool_start key for this tool_name (with counter suffix)
+							const matchPrefix = `sub_${p.task_id}_${p.tool_name}_`;
+							let subKey: string | undefined;
+							for (const [k] of this._toolStartTimes) {
+								if (k.startsWith(matchPrefix)) {
+									subKey = k;
+									break;
+								}
+							}
+							if (!subKey) { break; }
 							const startTs = this._toolStartTimes.get(subKey);
 							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
 							this._toolStartTimes.delete(subKey);
@@ -1134,18 +1246,64 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								subagentInvocationId: parentId,
 							};
 							progress([toolComplete]);
+
+							// Stop external edit tracking for file-writing tools in subagent
+							if (this._externalEditOps.has(subKey) && request) {
+								this._stopExternalEdit(subKey, request.sessionResource).then(editProgress => {
+									if (editProgress.length > 0) {
+										progress(editProgress);
+									}
+								});
+								this._toolFileArgs.delete(subKey);
+							} else if (p.file_path && request) {
+								// Fallback: tool_end has file_path but no external edit was started
+								const fileUri = URI.file(p.file_path);
+								const opId = ++this._externalEditOpCounter;
+								const editingSession = this._getEditingSession(request.sessionResource);
+								const responseModel = this._getResponseModel(request.sessionResource);
+								if (editingSession && responseModel) {
+									editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
+										return editingSession.stopExternalEdits(responseModel, opId);
+									}).then(editProgress => {
+										if (editProgress.length > 0) {
+											progress(editProgress);
+										}
+									}).catch(err => {
+										this._logService.error(`[ChipOS Agent] Subagent tool_end external edit failed for ${p.file_path}`, err);
+									});
+								}
+							}
 						} else if (p.kind === 'error' && p.content) {
-							progress([this._warning(`${label}: ${p.content}`)]);
+							// Route error inside the subagent card
+							const errKey = `sub_${p.task_id}_error_${this._subagentToolCounter++}`;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: errKey,
+								toolName: 'error',
+								isComplete: true,
+								invocationMessage: p.content,
+								pastTenseMessage: p.content,
+								subagentInvocationId: parentId,
+							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'status' && p.content) {
-							progress([this._progress(`${label}: ${p.content}`, true)]);
+							// Route status inside the subagent card
+							const statusKey = `sub_${p.task_id}_status_${this._subagentToolCounter++}`;
+							progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: statusKey,
+								toolName: 'status',
+								isComplete: true,
+								invocationMessage: p.content,
+								pastTenseMessage: p.content,
+								subagentInvocationId: parentId,
+							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'complete') {
 							const subStart = this._subagentTimers.get(p.task_id);
-							const subElapsed = subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
 							this._subagentTimers.delete(p.task_id);
 							const prefix = `sub_${p.task_id}_`;
 							for (const [k] of this._toolStartTimes) {
 								if (k.startsWith(prefix)) {
-									const toolName = k.slice(prefix.length);
+									const toolName = k.slice(prefix.length).replace(/_\d+$/, '');
 									progress([{
 										kind: 'externalToolInvocationUpdate',
 										toolCallId: k,
@@ -1160,18 +1318,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							// Mark the parent subagent tool call as complete
 							if (parentId && this._toolStartTimes.has(parentId)) {
 								const parentStart = this._toolStartTimes.get(parentId);
-								const parentElapsed = parentStart ? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)` : '';
+								const elapsed = parentStart
+									? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)`
+									: subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
 								this._toolStartTimes.delete(parentId);
 								progress([{
 									kind: 'externalToolInvocationUpdate',
 									toolCallId: parentId,
 									toolName: 'task',
 									isComplete: true,
-									pastTenseMessage: `Sub-agent completed${parentElapsed}`,
+									pastTenseMessage: `Sub-agent completed${elapsed}`,
 								} satisfies IChatExternalToolInvocationUpdate]);
 							}
 							this._subagentParentMap.delete(p.task_id);
-							progress([this._progress(`${label} $(check) completed${subElapsed}`)]);
 						}
 						break;
 					}
@@ -1188,7 +1347,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							kind: 'confirmation',
 							title,
 							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-							data: { requestId: p.request_id, sessionId: contSessionId, options: p.options ?? cardOpts },
+							data: { requestId: p.request_id, sessionId: this._lastSessionId, options: p.options ?? cardOpts },
 							buttons: buttons2,
 						};
 						progress([confirmation]);
