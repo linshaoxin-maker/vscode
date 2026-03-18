@@ -6,6 +6,18 @@
 /* Subagent-specific styles */
 .interactive-session .interactive-response .value .chat-thinking-fixed-mode.chat-subagent-part {
 
+	/* ── Title bar: background + rounded corners (Cursor-style card header) ── */
+	> .chat-used-context-label {
+		background: var(--vscode-chat-requestBorder);
+		border-radius: var(--vscode-cornerRadius-medium);
+		padding: 2px 4px;
+	}
+
+	/* When expanded, only round the top corners (content area has its own border) */
+	&:not(.chat-used-context-collapsed) > .chat-used-context-label {
+		border-radius: var(--vscode-cornerRadius-medium) var(--vscode-cornerRadius-medium) 0 0;
+	}
+
 	/* Always show the leading icon (● active / ✓ completed) on subagent title bar */
 	> .chat-used-context-label .monaco-icon-button > .codicon:first-child:not(.chat-collapsible-hover-chevron) {
 		display: inline-block !important;

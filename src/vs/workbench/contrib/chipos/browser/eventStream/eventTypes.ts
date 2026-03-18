@@ -262,6 +262,8 @@ export interface ISubagentEventPayload {
 	readonly args?: Record<string, unknown>;
 	/** File path — present on tool_end for file-writing tools */
 	readonly file_path?: string;
+	/** File content snapshot taken BEFORE the tool writes — present on tool_start */
+	readonly snapshot_content?: string;
 }
 
 export interface IWorktreeFilesAppliedPayload {
