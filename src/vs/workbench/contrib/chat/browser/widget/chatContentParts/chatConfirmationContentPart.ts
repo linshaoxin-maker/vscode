@@ -38,6 +38,13 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			];
 		const confirmationWidget = this._register(this.instantiationService.createInstance(SimpleChatConfirmationWidget, context, { title: confirmation.title, buttons, message: confirmation.message }));
 		confirmationWidget.setShowButtons(!confirmation.isUsed);
+		console.log('[ChipOS] Confirmation card rendered:', {
+			title: confirmation.title,
+			isUsed: confirmation.isUsed,
+			showButtons: !confirmation.isUsed,
+			buttonsCount: buttons.length,
+			buttonLabels: buttons.map(b => b.label),
+		});
 
 		this._register(confirmationWidget.onDidClick(async e => {
 			if (isResponseVM(element)) {
