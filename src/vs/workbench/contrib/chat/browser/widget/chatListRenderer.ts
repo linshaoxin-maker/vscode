@@ -1700,12 +1700,10 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 	}
 
 	private handleSubagentToolGrouping(toolInvocation: IChatToolInvocation | IChatToolInvocationSerialized, subagentId: string, context: IChatContentPartRenderContext, templateData: IChatListItemTemplate, codeBlockStartIndex: number): ChatSubagentContentPart {
-		this.logService.info(`[ChatListRenderer] handleSubagentToolGrouping: subagentId=${subagentId}, isParent=${isParentSubagentTool(toolInvocation)}, toolCallId=${toolInvocation.toolCallId}`);
 		// Finalize any active thinking part since subagent tools have their own grouping
 		this.finalizeCurrentThinkingPart(context, templateData);
 
 		const lastSubagent = this.getSubagentPart(templateData.renderedParts, subagentId);
-		this.logService.info(`[ChatListRenderer] handleSubagentToolGrouping: found existing part=${!!lastSubagent}, isParent=${isParentSubagentTool(toolInvocation)}, renderedParts.length=${templateData.renderedParts.length}`);
 		if (lastSubagent) {
 			// Append to existing subagent part with matching ID
 			// But skip the parent subagent tool itself - we only want child tools
@@ -2037,7 +2035,6 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 		// Check for subagent grouping before creating tool part - subagent part handles lazy creation
 		const subagentId = getSubagentId(toolInvocation);
-		this.logService.info(`[ChatListRenderer] renderToolInvocation: tool=${toolInvocation.toolId}, toolCallId=${toolInvocation.toolCallId}, subagentId=${subagentId ?? 'none'}, toolSpecificData.kind=${toolInvocation.toolSpecificData?.kind ?? 'none'}, subAgentInvocationId=${toolInvocation.subAgentInvocationId ?? 'none'}`);
 		if (subagentId && isResponseVM(context.element) && toolInvocation.presentation !== 'hidden') {
 			return this.handleSubagentToolGrouping(toolInvocation, subagentId, context, templateData, codeBlockStartIndex);
 		}

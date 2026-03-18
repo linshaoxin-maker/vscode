@@ -465,7 +465,6 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 	// ── tool_start / tool_result ─────────────────────────────────────────────
 
 	private _handleToolStart(data: { tool_name: string; args: unknown; tool_id: string; summary?: string }): void {
-		this._logService.info(`[ChipOS WS] tool_start received: tool_name=${data.tool_name}, tool_id=${data.tool_id}`);
 		this._emit({
 			event_id: nextEventId(),
 			event_type: AgentEventType.ToolCall,
