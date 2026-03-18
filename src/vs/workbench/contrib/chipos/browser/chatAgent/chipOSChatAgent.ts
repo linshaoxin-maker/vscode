@@ -274,6 +274,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
 						stepCount++;
+						this._logService.info(`[ChipOS Agent] ToolCall(streaming): tool=${p.tool_name}, key=${key}, args_keys=${Object.keys(p.arguments ?? {}).join(',')}`);
 						this._toolStartTimes.set(key, Date.now());
 						// Save file_path from arguments for later reference emission
 						const args = p.arguments as Record<string, unknown> | undefined;
@@ -287,6 +288,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 						// Subagent tools get special rendering — Cursor-style collapsible card
 						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
+						this._logService.info(`[ChipOS Agent] ToolCall(streaming): isSubagent=${isSubagent}, kind=${isSubagent ? 'subagent' : 'input'}`);
 						if (isSubagent && args) {
 							this._lastSubagentToolCallId = key;
 							const desc = (args.description ?? args.prompt ?? '') as string;
@@ -638,6 +640,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// ── FEAT-33: Subagent event — structured rendering ──
 					case AgentEventType.SubagentEvent: {
 						const p = event.payload as ISubagentEventPayload;
+						this._logService.info(`[ChipOS Agent] SubagentEvent(streaming): task_id=${p.task_id}, kind=${p.kind}, tool=${p.tool_name ?? ''}, parentId=${this._subagentParentMap.get(p.task_id) ?? 'none'}`);
 						if (!this._subagentTimers.has(p.task_id)) {
 							this._subagentTimers.set(p.task_id, Date.now());
 							// Link task_id to the most recent subagent ToolCall
@@ -999,6 +1002,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.ToolCall: {
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
+						this._logService.info(`[ChipOS Agent] ToolCall(non-streaming): tool=${p.tool_name}, key=${key}, args_keys=${Object.keys(p.arguments ?? {}).join(',')}`);
 						this._toolStartTimes.set(key, Date.now());
 						const args = p.arguments as Record<string, unknown> | undefined;
 						if (args) {
@@ -1011,6 +1015,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 						// Subagent tools get special rendering — Cursor-style collapsible card
 						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
+						this._logService.info(`[ChipOS Agent] ToolCall(non-streaming): isSubagent=${isSubagent}, kind=${isSubagent ? 'subagent' : 'input'}`);
 						if (isSubagent && args) {
 							this._lastSubagentToolCallId = key;
 							const desc = (args.description ?? args.prompt ?? '') as string;

@@ -2076,6 +2076,26 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		this.listWidget.reveal(item, relativeTop);
 	}
 
+	scrollToEnd(): void {
+		this.listWidget.scrollToEnd();
+	}
+
+	revealElement(element: HTMLElement): void {
+		// Calculate the position of the element relative to the chat list container
+		// and scroll so the element's bottom is visible at the bottom of the viewport.
+		const listContainer = this.listWidget.domNode;
+		const containerRect = listContainer.getBoundingClientRect();
+		const elementRect = element.getBoundingClientRect();
+
+		// elementBottom relative to the list container top, accounting for current scroll
+		const elementBottomInList = elementRect.bottom - containerRect.top + this.listWidget.scrollTop;
+		const targetScrollTop = elementBottomInList - this.listWidget.renderHeight + 8; // 8px padding
+
+		if (targetScrollTop > this.listWidget.scrollTop) {
+			this.listWidget.scrollTop = targetScrollTop;
+		}
+	}
+
 	focus(item: ChatTreeItem): void {
 		if (!this.listWidget.hasElement(item)) {
 			return;
@@ -2524,7 +2544,21 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		this.welcomeMessageContainer.style.height = `${contentHeight}px`;
 
 		const lastResponseIsRendering = isResponseVM(lastItem) && lastItem.renderData;
-		if (lastElementVisible && (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll))) {
+
+		// If there's a pending confirmation, always reveal it so the action buttons stay visible,
+		// regardless of current scroll position or whether we're at the bottom.
+		const pendingConfirmationItem = this.viewModel?.getItems().find(
+			item => isResponseVM(item) && item.model?.isPendingConfirmation.get()
+		);
+		if (pendingConfirmationItem) {
+			// Try to reveal the exact buttons DOM node for precision; fall back to item-level reveal.
+			const buttonsEl = this.listWidget.domNode.querySelector<HTMLElement>('.chat-confirmation-widget-buttons');
+			if (buttonsEl) {
+				this.revealElement(buttonsEl);
+			} else {
+				this.listWidget.reveal(pendingConfirmationItem as ChatTreeItem, 1);
+			}
+		} else if (lastElementVisible && (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll))) {
 			this.listWidget.scrollToEnd();
 		}
 		this.listContainer.style.height = `${contentHeight}px`;

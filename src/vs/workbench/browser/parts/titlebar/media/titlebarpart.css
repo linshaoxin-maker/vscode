@@ -241,6 +241,23 @@
 	margin-left: 4px;
 }
 
+/* Toggle AuxiliaryBar (Chat) button in titlebar */
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .toggle-auxiliarybar-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	padding: 0 8px;
+	font-size: 16px;
+	opacity: 0.8;
+	-webkit-app-region: no-drag;
+	z-index: 2500;
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .toggle-auxiliarybar-button:hover {
+	opacity: 1;
+}
+
 .monaco-workbench .part.titlebar > .titlebar-container.counter-zoom .menubar .menubar-menu-button > .menubar-menu-items-holder.monaco-menu-container,
 .monaco-workbench .part.titlebar > .titlebar-container.counter-zoom .monaco-toolbar .dropdown-action-container {
 	zoom: var(--zoom-factor); /* helps to position the menu properly when counter zooming */

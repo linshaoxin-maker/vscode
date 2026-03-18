@@ -97,7 +97,7 @@
 		"workbench.sideBar.location": "right",
 		"workbench.auxiliaryBar.visible": true,
 		"window.titleBarStyle": "custom",
-		"window.commandCenter": true,
+		"window.commandCenter": false,
 		"workbench.startupEditor": "none",
 		"chat.agent.enabled": true,
 		"chat.mcp.enabled": true

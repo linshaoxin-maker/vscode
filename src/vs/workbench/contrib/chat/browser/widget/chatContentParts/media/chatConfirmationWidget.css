@@ -277,8 +277,6 @@
 	background: var(--vscode-chat-requestBackground);
 	border-bottom: 1px solid var(--vscode-chat-requestBorder);
 	padding: 6px 9px 0 9px;
-	max-height: 200px;
-	overflow-y: auto !important;
 
 	.tool-postconfirm-display {
 		padding-bottom: 6px;
@@ -287,6 +285,21 @@
 	p {
 		margin-top: 0;
 		margin-bottom: 9px;
+	}
+
+	details {
+		margin-bottom: 6px;
+	}
+
+	details > summary {
+		cursor: pointer;
+		color: var(--vscode-textLink-foreground);
+		user-select: none;
+		margin-bottom: 6px;
+	}
+
+	details > summary:hover {
+		text-decoration: underline;
 	}
 }
 
@@ -443,6 +456,11 @@
 .chat-confirmation-widget2 .chat-confirmation-widget-buttons {
 	display: flex;
 	padding: 4px 8px;
+	position: sticky;
+	bottom: 0;
+	background: var(--vscode-chat-list-background, var(--vscode-sideBar-background));
+	z-index: 10;
+	border-top: 1px solid var(--vscode-chat-requestBorder);
 
 	.chat-buttons {
 		display: flex;

@@ -332,6 +332,13 @@ export class ChatListWidget extends Disposable {
 				this.updateLastItemMinHeight();
 			}
 
+			// If the element contains a pending confirmation card, reveal it so the
+			// action buttons are visible. relativeTop=1 aligns the element's bottom
+			// to the viewport bottom.
+			if (isResponseVM(e.element) && e.element.model?.isPendingConfirmation.get()) {
+				this.reveal(e.element, 1);
+			}
+
 			this._onDidChangeItemHeight.fire(e);
 		}));
 
@@ -820,10 +827,41 @@ export class ChatListWidget extends Disposable {
 	 * Layout the list.
 	 */
 	layout(height: number, width: number): void {
+		const previousWidth = this._bodyDimension?.width;
+		const previousHeight = this._bodyDimension?.height;
 		this._bodyDimension = new dom.Dimension(width ?? this._container.clientWidth, height);
 		this.updateLastItemMinHeight();
 		this._tree.layout(height, width);
 		this._renderer.layout(width ?? this._container.clientWidth);
+
+		// When width or height changes, re-reveal any pending confirmation so
+		// the action buttons stay visible after resize.
+		if (previousWidth !== undefined && (previousWidth !== width || previousHeight !== height)) {
+			setTimeout(() => {
+				// If there's a pending confirmation, reveal it so buttons stay visible.
+				const pendingItem = this._viewModel?.getItems().find(
+					item => isResponseVM(item) && item.model?.isPendingConfirmation.get()
+				);
+				if (pendingItem) {
+					// Prefer revealing the exact buttons element for precision.
+					const buttonsEl = this._container.querySelector<HTMLElement>('.chat-confirmation-widget-buttons');
+					if (buttonsEl) {
+						// Manually scroll so buttonsEl bottom is at viewport bottom.
+						const containerRect = this._container.getBoundingClientRect();
+						const elRect = buttonsEl.getBoundingClientRect();
+						const elBottomInList = elRect.bottom - containerRect.top + this.scrollTop;
+						const target = elBottomInList - this.renderHeight + 8;
+						if (target > this.scrollTop) {
+							this.scrollTop = target;
+						}
+					} else {
+						this.reveal(pendingItem as ChatTreeItem, 1);
+					}
+				} else if (this.isScrolledToBottom) {
+					this.scrollToEnd();
+				}
+			}, 150);
+		}
 	}
 
 	private _bodyDimension: dom.Dimension | null = null;

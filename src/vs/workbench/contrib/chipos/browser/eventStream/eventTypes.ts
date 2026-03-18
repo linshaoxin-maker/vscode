@@ -258,6 +258,10 @@ export interface ISubagentEventPayload {
 	readonly kind: 'text' | 'tool_start' | 'tool_end' | 'status' | 'error' | 'complete';
 	readonly content?: string;
 	readonly tool_name?: string;
+	/** Tool arguments — present on tool_start for file-writing tools */
+	readonly args?: Record<string, unknown>;
+	/** File path — present on tool_end for file-writing tools */
+	readonly file_path?: string;
 }
 
 export interface IWorktreeFilesAppliedPayload {

@@ -370,7 +370,10 @@ export interface IChatWidget {
 	readonly supportsChangingModes: boolean;
 
 	getContrib<T extends IChatWidgetContrib>(id: string): T | undefined;
-	reveal(item: ChatTreeItem): void;
+	reveal(item: ChatTreeItem, relativeTop?: number): void;
+	scrollToEnd(): void;
+	/** Scroll the chat list so that the given DOM element is visible at the bottom of the viewport. */
+	revealElement(element: HTMLElement): void;
 	focus(item: ChatTreeItem): void;
 	getSibling(item: ChatTreeItem, type: 'next' | 'previous'): ChatTreeItem | undefined;
 	getFocus(): ChatTreeItem | undefined;

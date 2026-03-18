@@ -103,6 +103,7 @@ export class ChatService extends Disposable implements IChatService {
 	private readonly _pendingRequests = this._register(new DisposableResourceMap<CancellableRequest>());
 	private readonly _queuedRequestDeferreds = new Map<string, DeferredPromise<ChatSendResult>>();
 	private _saveModelsEnabled = true;
+	private readonly _deletedSessionIds = new Set<string>();
 
 	private _transferredSessionResource: URI | undefined;
 	public get transferredSessionResource(): URI | undefined {
@@ -174,6 +175,11 @@ export class ChatService extends Disposable implements IChatService {
 			createModel: (props: IStartSessionProps) => this._startSession(props),
 			willDisposeModel: async (model: ChatModel) => {
 				const localSessionId = LocalChatSessionUri.parseLocalSessionId(model.sessionResource);
+				// Skip persisting sessions that have been explicitly deleted
+				if (localSessionId && this._deletedSessionIds.has(localSessionId)) {
+					this._deletedSessionIds.delete(localSessionId);
+					return;
+				}
 				if (localSessionId && this.shouldStoreSession(model)) {
 					// Always preserve sessions that have custom titles, even if empty
 					if (model.getRequests().length === 0 && !model.customTitle) {
@@ -242,7 +248,11 @@ export class ChatService extends Disposable implements IChatService {
 		}
 
 		const liveLocalChats = Array.from(this._sessionModels.values())
-			.filter(session => this.shouldStoreSession(session));
+			.filter(session => this.shouldStoreSession(session))
+			.filter(session => {
+				const localId = LocalChatSessionUri.parseLocalSessionId(session.sessionResource);
+				return !localId || !this._deletedSessionIds.has(localId);
+			});
 
 		this._chatSessionStore.storeSessions(liveLocalChats);
 
@@ -393,6 +403,10 @@ export class ChatService extends Disposable implements IChatService {
 	async getLiveSessionItems(): Promise<IChatDetail[]> {
 		return await Promise.all(Array.from(this._sessionModels.values())
 			.filter(session => this.shouldBeInHistory(session))
+			.filter(session => {
+				const localId = LocalChatSessionUri.parseLocalSessionId(session.sessionResource);
+				return !localId || !this._deletedSessionIds.has(localId);
+			})
 			.map(async (session): Promise<IChatDetail> => {
 				const title = session.title || localize('newChat', "New Chat");
 				return {
@@ -444,7 +458,10 @@ export class ChatService extends Disposable implements IChatService {
 	}
 
 	async removeHistoryEntry(sessionResource: URI): Promise<void> {
-		await this._chatSessionStore.deleteSession(this.toLocalSessionId(sessionResource));
+		// Mark session as deleted so willDisposeModel won't re-persist it
+		const localSessionId = this.toLocalSessionId(sessionResource);
+		this._deletedSessionIds.add(localSessionId);
+		await this._chatSessionStore.deleteSession(localSessionId);
 		this._onDidDisposeSession.fire({ sessionResource: [sessionResource], reason: 'cleared' });
 	}
 

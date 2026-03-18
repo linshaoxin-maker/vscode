@@ -7,7 +7,7 @@ import './media/titlebarpart.css';
 import { localize, localize2 } from '../../../../nls.js';
 import { MultiWindowParts, Part } from '../../part.js';
 import { ITitleService } from '../../../services/title/browser/titleService.js';
-import { getWCOTitlebarAreaRect, getZoomFactor, isWCOEnabled } from '../../../../base/browser/browser.js';
+import { getWCOTitlebarAreaRect, getZoomFactor, isWCOEnabled, isFullscreen, onDidChangeFullscreen } from '../../../../base/browser/browser.js';
 import { MenuBarVisibility, getTitleBarStyle, getMenuBarVisibility, hasCustomTitlebar, hasNativeTitlebar, DEFAULT_CUSTOM_TITLEBAR_HEIGHT, getWindowControlsStyle, WindowControlsStyle, TitlebarStyle, MenuSettings, hasNativeMenu } from '../../../../platform/window/common/window.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
@@ -53,6 +53,7 @@ import { createInstantHoverDelegate } from '../../../../base/browser/ui/hover/ho
 import { IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { IHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { safeIntl } from '../../../../base/common/date.js';
 import { IsCompactTitleBarContext, TitleBarVisibleContext } from '../../../common/contextkeys.js';
 
@@ -472,6 +473,38 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 			this.installMenubar();
 		}
 
+		// macOS: spacer for traffic lights + Toggle AuxiliaryBar button
+		if (!this.isAuxiliary && hasCustomTitlebar(this.configurationService, this.titleBarStyle)) {
+			if (isMacintosh && isNative) {
+				// Traffic lights spacer (same approach as Sessions window titlebar)
+				const spacer = append(this.leftContent, $('div.traffic-lights-spacer'));
+				spacer.style.width = '70px';
+				spacer.style.flexShrink = '0';
+				const updateSpacerVisibility = () => {
+					spacer.style.display = isFullscreen(mainWindow) ? 'none' : '';
+				};
+				updateSpacerVisibility();
+				this._register(onDidChangeFullscreen(windowId => {
+					if (windowId === getWindowId(mainWindow)) {
+						updateSpacerVisibility();
+					}
+				}));
+			}
+
+			// Toggle AuxiliaryBar (Chat panel) button
+			const toggleButton = append(this.leftContent, $('div.toggle-auxiliarybar-button'));
+			toggleButton.classList.add('codicon', 'codicon-layout-sidebar-left');
+			toggleButton.setAttribute('role', 'button');
+			toggleButton.setAttribute('aria-label', localize('toggleChatSidebar', "Toggle Chat Sidebar"));
+			toggleButton.tabIndex = 0;
+			this._register(addDisposableListener(toggleButton, EventType.CLICK, () => {
+				this.layoutService.setPartHidden(
+					this.layoutService.isVisible(Parts.AUXILIARYBAR_PART),
+					Parts.AUXILIARYBAR_PART
+				);
+			}));
+		}
+
 		// Title
 		this.title = append(this.centerContent, $('div.window-title'));
 		this.createTitle();
@@ -563,6 +596,12 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 		if (!this.isCommandCenterVisible) {
 			if (!isShowingTitleInNativeTitlebar) {
 				this.title.textContent = this.windowTitle.value;
+				this.title.style.cursor = 'pointer';
+				this.titleDisposables.add(addDisposableListener(this.title, EventType.CLICK, () => {
+					this.instantiationService.invokeFunction(accessor => {
+						accessor.get(IQuickInputService).quickAccess.show();
+					});
+				}));
 				this.titleDisposables.add(this.windowTitle.onDidChange(() => {
 					this.title.textContent = this.windowTitle.value;
 					if (this.lastLayoutDimensions) {

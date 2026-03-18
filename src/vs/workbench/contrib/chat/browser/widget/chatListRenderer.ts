@@ -1141,7 +1141,17 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		const parts: IChatContentPart[] = [];
 
 		let inlineSlashCommandRendered = false;
+		let hasPendingConfirmation = false;
 		content.forEach((data, contentIndex) => {
+			// Don't render parts after a pending confirmation — they would push the
+			// action buttons out of the viewport. Once the user confirms/dismisses,
+			// the confirmation is marked as used and the remaining parts will render.
+			if (hasPendingConfirmation) {
+				return;
+			}
+			if (data.kind === 'confirmation' && !data.isUsed) {
+				hasPendingConfirmation = true;
+			}
 			const context: IChatContentPartRenderContext = {
 				element,
 				elementIndex: index,
@@ -1526,6 +1536,11 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 		// should not finalize thinking
 		if (part.kind === 'undoStop') {
+			return true;
+		}
+
+		// confirmation cards need to be pinned so the action buttons are always visible
+		if (part.kind === 'confirmation') {
 			return true;
 		}
 
