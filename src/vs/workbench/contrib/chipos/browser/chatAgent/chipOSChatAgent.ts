@@ -1008,19 +1008,42 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
 						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
-						const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
-						const toolUpdate: IChatExternalToolInvocationUpdate = {
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: key,
-							toolName: p.tool_name,
-							isComplete: false,
-							invocationMessage: invocationMsg,
-							toolSpecificData: {
-								kind: 'input',
-								rawInput,
-							} satisfies IChatToolInputInvocationData,
-						};
-						progress([toolUpdate]);
+
+						// Subagent tools get special rendering — Cursor-style collapsible card
+						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
+						if (isSubagent && args) {
+							this._lastSubagentToolCallId = key;
+							const desc = (args.description ?? args.prompt ?? '') as string;
+							const agentType = (args.subagent_type ?? args.agent_type ?? '') as string;
+							const toolUpdate: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: false,
+								invocationMessage: invocationMsg,
+								toolSpecificData: {
+									kind: 'subagent',
+									description: desc.slice(0, 200),
+									agentName: agentType || 'sub-agent',
+									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : undefined,
+								} satisfies IChatSubagentToolInvocationData,
+							};
+							progress([toolUpdate]);
+						} else {
+							const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
+							const toolUpdate: IChatExternalToolInvocationUpdate = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: false,
+								invocationMessage: invocationMsg,
+								toolSpecificData: {
+									kind: 'input',
+									rawInput,
+								} satisfies IChatToolInputInvocationData,
+							};
+							progress([toolUpdate]);
+						}
 
 						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
