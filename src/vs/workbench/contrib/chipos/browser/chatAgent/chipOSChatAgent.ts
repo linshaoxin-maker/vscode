@@ -292,6 +292,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						if (isSubagent && args) {
 							this._lastSubagentToolCallId = key;
 							const desc = (args.description ?? args.prompt ?? '') as string;
+							// Extract first line or first 60 chars as short description for card title
+							const shortDesc = desc.split('\n')[0].slice(0, 60);
 							const agentType = (args.subagent_type ?? args.agent_type ?? '') as string;
 							const toolUpdate: IChatExternalToolInvocationUpdate = {
 								kind: 'externalToolInvocationUpdate',
@@ -301,9 +303,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								invocationMessage: invocationMsg,
 								toolSpecificData: {
 									kind: 'subagent',
-									description: desc.slice(0, 200),
+									description: shortDesc,
 									agentName: agentType || 'sub-agent',
-									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : undefined,
+									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : desc.slice(0, 500),
 								} satisfies IChatSubagentToolInvocationData,
 							};
 							progress([toolUpdate]);
@@ -1019,6 +1021,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						if (isSubagent && args) {
 							this._lastSubagentToolCallId = key;
 							const desc = (args.description ?? args.prompt ?? '') as string;
+							// Extract first line or first 60 chars as short description for card title
+							const shortDesc = desc.split('\n')[0].slice(0, 60);
 							const agentType = (args.subagent_type ?? args.agent_type ?? '') as string;
 							const toolUpdate: IChatExternalToolInvocationUpdate = {
 								kind: 'externalToolInvocationUpdate',
@@ -1028,9 +1032,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								invocationMessage: invocationMsg,
 								toolSpecificData: {
 									kind: 'subagent',
-									description: desc.slice(0, 200),
+									description: shortDesc,
 									agentName: agentType || 'sub-agent',
-									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : undefined,
+									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : desc.slice(0, 500),
 								} satisfies IChatSubagentToolInvocationData,
 							};
 							progress([toolUpdate]);

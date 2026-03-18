@@ -849,9 +849,12 @@ export class ChatListWidget extends Disposable {
 						// Manually scroll so buttonsEl bottom is at viewport bottom.
 						const containerRect = this._container.getBoundingClientRect();
 						const elRect = buttonsEl.getBoundingClientRect();
+						const visibleHeight = containerRect.height;
 						const elBottomInList = elRect.bottom - containerRect.top + this.scrollTop;
-						const target = elBottomInList - this.renderHeight + 8;
-						if (target > this.scrollTop) {
+						const target = elBottomInList - visibleHeight + 8;
+						if (target !== this.scrollTop) {
+							this.scrollTop = target;
+						}
 							this.scrollTop = target;
 						}
 					} else {

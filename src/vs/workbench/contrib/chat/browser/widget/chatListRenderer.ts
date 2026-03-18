@@ -1696,6 +1696,7 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 	}
 
 	private handleSubagentToolGrouping(toolInvocation: IChatToolInvocation | IChatToolInvocationSerialized, subagentId: string, context: IChatContentPartRenderContext, templateData: IChatListItemTemplate, codeBlockStartIndex: number): ChatSubagentContentPart {
+		this.logService.info(`[ChatListRenderer] handleSubagentToolGrouping: subagentId=${subagentId}, isParent=${isParentSubagentTool(toolInvocation)}, toolCallId=${toolInvocation.toolCallId}`);
 		// Finalize any active thinking part since subagent tools have their own grouping
 		this.finalizeCurrentThinkingPart(context, templateData);
 
