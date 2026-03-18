@@ -39,32 +39,6 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		const confirmationWidget = this._register(this.instantiationService.createInstance(SimpleChatConfirmationWidget, context, { title: confirmation.title, buttons, message: confirmation.message }));
 		confirmationWidget.setShowButtons(!confirmation.isUsed);
 
-		// DEBUG: force-check button visibility
-		const btnContainer = confirmationWidget.domNode.querySelector('.chat-buttons-container') as HTMLElement | null;
-		const btnEl = confirmationWidget.domNode.querySelector('.chat-buttons') as HTMLElement | null;
-		if (btnContainer) {
-			// Force buttons visible for debugging
-			btnContainer.style.display = 'flex';
-			btnContainer.style.visibility = 'visible';
-			btnContainer.style.opacity = '1';
-			btnContainer.style.position = 'relative';
-			btnContainer.style.zIndex = '999';
-		}
-		console.warn('[ChipOS] Confirmation card:', {
-			title: confirmation.title,
-			isUsed: confirmation.isUsed,
-			showButtons: !confirmation.isUsed,
-			buttonsCount: buttons.length,
-			buttonLabels: buttons.map(b => b.label),
-			btnContainerFound: !!btnContainer,
-			btnContainerDisplay: btnContainer?.style.display,
-			btnContainerComputed: btnContainer ? getComputedStyle(btnContainer).display : 'N/A',
-			btnElFound: !!btnEl,
-			btnElChildren: btnEl?.children.length,
-			hideButtonsClass: confirmationWidget.domNode.classList.contains('hideButtons'),
-			containerHideButtons: confirmationWidget.domNode.parentElement?.classList.contains('hideButtons'),
-		});
-
 		this._register(confirmationWidget.onDidClick(async e => {
 			if (isResponseVM(element)) {
 				const prompt = `${e.label}: "${confirmation.title}"`;
