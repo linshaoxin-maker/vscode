@@ -57,6 +57,13 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 				return;
 			}
 			// Scroll the chat list so the buttons row is visible at the bottom of the viewport.
+			const buttonsRect = elements.buttonsArea.getBoundingClientRect();
+			const listNode = (widget as any)?.listWidget?.domNode as HTMLElement | undefined;
+			const listRect = listNode?.getBoundingClientRect();
+			console.log('[ConfirmReveal] buttonsRect:', JSON.stringify({ top: buttonsRect.top, bottom: buttonsRect.bottom, height: buttonsRect.height }));
+			console.log('[ConfirmReveal] listRect:', listRect ? JSON.stringify({ top: listRect.top, bottom: listRect.bottom, height: listRect.height }) : 'N/A');
+			console.log('[ConfirmReveal] buttonsArea offsetParent:', elements.buttonsArea.offsetParent?.className);
+			console.log('[ConfirmReveal] buttonsArea offsetTop:', elements.buttonsArea.offsetTop, 'offsetHeight:', elements.buttonsArea.offsetHeight);
 			widget?.revealElement(elements.buttonsArea);
 		};
 

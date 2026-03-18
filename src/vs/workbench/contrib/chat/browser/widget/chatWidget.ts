@@ -2087,11 +2087,20 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		const containerRect = listContainer.getBoundingClientRect();
 		const elementRect = element.getBoundingClientRect();
 
+		// Use the actual visible viewport height, not renderHeight which may include
+		// areas hidden behind headers or other overlapping UI.
+		const visibleHeight = containerRect.height;
+
 		// elementBottom relative to the list container top, accounting for current scroll
 		const elementBottomInList = elementRect.bottom - containerRect.top + this.listWidget.scrollTop;
-		const targetScrollTop = elementBottomInList - this.listWidget.renderHeight + 8; // 8px padding
+		const targetScrollTop = elementBottomInList - visibleHeight + 8; // 8px padding
 
-		if (targetScrollTop > this.listWidget.scrollTop) {
+		console.log('[revealElement] containerRect:', JSON.stringify({ top: containerRect.top, bottom: containerRect.bottom, height: containerRect.height }));
+		console.log('[revealElement] elementRect:', JSON.stringify({ top: elementRect.top, bottom: elementRect.bottom, height: elementRect.height }));
+		console.log('[revealElement] scrollTop:', this.listWidget.scrollTop, 'visibleHeight:', visibleHeight, 'renderHeight:', this.listWidget.renderHeight);
+		console.log('[revealElement] elementBottomInList:', elementBottomInList, 'targetScrollTop:', targetScrollTop, 'willScroll:', targetScrollTop !== this.listWidget.scrollTop);
+
+		if (targetScrollTop !== this.listWidget.scrollTop) {
 			this.listWidget.scrollTop = targetScrollTop;
 		}
 	}

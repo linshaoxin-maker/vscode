@@ -2031,6 +2031,7 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 		// Check for subagent grouping before creating tool part - subagent part handles lazy creation
 		const subagentId = getSubagentId(toolInvocation);
+		this.logService.info(`[ChatListRenderer] renderToolInvocation: tool=${toolInvocation.toolId}, toolCallId=${toolInvocation.toolCallId}, subagentId=${subagentId ?? 'none'}, toolSpecificData.kind=${toolInvocation.toolSpecificData?.kind ?? 'none'}, subAgentInvocationId=${toolInvocation.subAgentInvocationId ?? 'none'}`);
 		if (subagentId && isResponseVM(context.element) && toolInvocation.presentation !== 'hidden') {
 			return this.handleSubagentToolGrouping(toolInvocation, subagentId, context, templateData, codeBlockStartIndex);
 		}
