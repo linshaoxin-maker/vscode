@@ -10,7 +10,8 @@ import { Action, Separator } from '../../../../../../base/common/actions.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { IMarkdownString, MarkdownString } from '../../../../../../base/common/htmlContent.js';
 import { Disposable, MutableDisposable } from '../../../../../../base/common/lifecycle.js';
-import type { ThemeIcon } from '../../../../../../base/common/themables.js';
+import { ThemeIcon } from '../../../../../../base/common/themables.js';
+import { Codicon } from '../../../../../../base/common/codicons.js';
 import { localize } from '../../../../../../nls.js';
 import { MenuWorkbenchToolBar } from '../../../../../../platform/actions/browser/toolbar.js';
 import { MenuId } from '../../../../../../platform/actions/common/actions.js';
@@ -108,16 +109,43 @@ abstract class BaseSimpleChatConfirmationWidget<T> extends Disposable {
 	private _onDidClick = this._register(new Emitter<IChatConfirmationButton<T>>());
 	get onDidClick(): Event<IChatConfirmationButton<T>> { return this._onDidClick.event; }
 
+	private _onDidToggleCollapse = this._register(new Emitter<boolean>());
+	/** Fires when the card is collapsed or expanded. `true` = collapsed. */
+	get onDidToggleCollapse(): Event<boolean> { return this._onDidToggleCollapse.event; }
+
 	private _domNode: HTMLElement;
 	get domNode(): HTMLElement {
 		return this._domNode;
 	}
 
+	private _collapsed = false;
+	private _chevronElement: HTMLElement | undefined;
+
 	setShowButtons(showButton: boolean): void {
 		this.domNode.classList.toggle('hideButtons', !showButton);
 	}
 
+	/** Collapse or expand the message body + buttons. */
+	setCollapsed(collapsed: boolean): void {
+		this._collapsed = collapsed;
+		this._domNode.classList.toggle('collapsed', collapsed);
+		this._updateChevron();
+		this._onDidToggleCollapse.fire(collapsed);
+	}
+
+	private _updateChevron(): void {
+		if (this._chevronElement) {
+			this._chevronElement.className = 'chat-confirmation-widget-expando';
+			this._chevronElement.classList.add(...ThemeIcon.asClassNameArray(this._collapsed ? Codicon.chevronRight : Codicon.chevronDown));
+		}
+	}
+
+	get buttonsContainer(): HTMLElement {
+		return this._buttonsContainer;
+	}
+
 	private readonly messageElement: HTMLElement;
+	private readonly _buttonsContainer: HTMLElement;
 
 	constructor(
 		protected readonly context: IChatContentPartRenderContext,
@@ -133,7 +161,9 @@ abstract class BaseSimpleChatConfirmationWidget<T> extends Disposable {
 
 		const elements = dom.h('.chat-confirmation-widget-container@container', [
 			dom.h('.chat-confirmation-widget@root', [
-				dom.h('.chat-confirmation-widget-title@title'),
+				dom.h('.chat-confirmation-widget-title.expandable@title', [
+					dom.h('.chat-confirmation-widget-expando@expando'),
+				]),
 				dom.h('.chat-confirmation-widget-message-container', [
 					dom.h('.chat-confirmation-widget-message@message'),
 					dom.h('.chat-buttons-container@buttonsContainer', [
@@ -145,6 +175,16 @@ abstract class BaseSimpleChatConfirmationWidget<T> extends Disposable {
 		]);
 		configureAccessibilityContainer(elements.container, title, message);
 		this._domNode = elements.root;
+		this._buttonsContainer = elements.buttonsContainer;
+
+		// Chevron icon for collapse/expand
+		this._chevronElement = elements.expando;
+		this._updateChevron();
+
+		// Click title to toggle collapse
+		this._register(dom.addDisposableListener(elements.title, dom.EventType.CLICK, () => {
+			this.setCollapsed(!this._collapsed);
+		}));
 
 		this._register(instantiationService.createInstance(
 			ChatQueryTitlePart,

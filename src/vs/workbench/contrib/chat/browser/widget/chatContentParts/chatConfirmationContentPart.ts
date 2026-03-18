@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as dom from '../../../../../../base/browser/dom.js';
 import { Disposable, IDisposable } from '../../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../../nls.js';
 import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
@@ -38,6 +39,31 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			];
 		const confirmationWidget = this._register(this.instantiationService.createInstance(SimpleChatConfirmationWidget, context, { title: confirmation.title, buttons, message: confirmation.message }));
 		confirmationWidget.setShowButtons(!confirmation.isUsed);
+
+		// Default to collapsed state so the card is compact
+		if (!confirmation.isUsed) {
+			confirmationWidget.setCollapsed(true);
+		}
+
+		// When the card is expanded, scroll the buttons into view
+		this._register(confirmationWidget.onDidToggleCollapse(collapsed => {
+			if (!collapsed) {
+				// Use requestAnimationFrame so the DOM has time to layout after expanding
+				dom.scheduleAtNextAnimationFrame(dom.getWindow(confirmationWidget.domNode), () => {
+					confirmationWidget.buttonsContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+				});
+			}
+		}));
+
+		// Also scroll buttons into view when <details> inside the message is toggled open
+		this._register(dom.addDisposableListener(confirmationWidget.domNode, 'toggle', (e: Event) => {
+			const target = e.target;
+			if (target instanceof HTMLDetailsElement && target.open) {
+				dom.scheduleAtNextAnimationFrame(dom.getWindow(confirmationWidget.domNode), () => {
+					confirmationWidget.buttonsContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+				});
+			}
+		}, true));
 
 		this._register(confirmationWidget.onDidClick(async e => {
 			if (isResponseVM(element)) {

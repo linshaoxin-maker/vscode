@@ -138,7 +138,7 @@ export interface IConfirmRequestPayload {
 	readonly card_data: Record<string, unknown>;
 	readonly title?: string;
 	readonly message?: string;
-	readonly options?: Array<{ label: string; action: string }>;
+	readonly options?: Array<{ label: string; action?: string; action_id?: string }>;
 	readonly is_background?: boolean;
 }
 

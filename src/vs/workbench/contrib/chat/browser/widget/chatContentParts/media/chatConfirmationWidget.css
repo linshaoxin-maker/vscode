@@ -80,6 +80,9 @@
 .chat-confirmation-widget .chat-confirmation-widget-title .chat-confirmation-widget-expando {
 	display: flex;
 	align-items: center;
+	flex-shrink: 0;
+	margin-right: 4px;
+	font-size: 14px;
 }
 
 .chat-confirmation-widget .chat-confirmation-widget-title.monaco-button {
@@ -160,6 +163,10 @@
 	align-items: center;
 }
 
+.chat-confirmation-widget.collapsed .chat-confirmation-widget-message-container {
+	display: none;
+}
+
 .chat-confirmation-widget.collapsed .chat-confirmation-widget-message {
 	display: none;
 }
@@ -187,7 +194,8 @@
 	margin-bottom: 8px;
 }
 
-.chat-confirmation-widget-container.hideButtons .chat-buttons-container {
+.chat-confirmation-widget-container.hideButtons .chat-buttons-container,
+.chat-confirmation-widget.hideButtons .chat-buttons-container {
 	display: none;
 }
 

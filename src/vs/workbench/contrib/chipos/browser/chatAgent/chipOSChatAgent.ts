@@ -43,6 +43,9 @@ import {
 } from '../../../../contrib/chat/common/chatService/chatService.js';
 import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/common/tools/languageModelToolsService.js';
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
+import { IChatEditingService, type IChatEditingSession } from '../../../../contrib/chat/common/editing/chatEditingService.js';
+import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
+import type { IChatResponseModel } from '../../../../contrib/chat/common/model/chatModel.js';
 import { WebSocketEventStreamClient } from '../eventStream/webSocketEventStreamClient.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
 import { ChipOSEditorEffects } from './editorEffects.js';
@@ -101,6 +104,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _subagentParentMap = new Map<string, string>();
 	/** Most recent subagent-type toolCallId, used to link SubagentEvent → parent */
 	private _lastSubagentToolCallId: string | undefined;
+	/** Maps tool call id → operationId for external edits tracking */
+	private readonly _externalEditOps = new Map<string, number>();
+	/** Counter for generating unique external edit operation IDs */
+	private _externalEditOpCounter = 0;
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,
@@ -108,6 +115,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IChatTodoListService private readonly _todoListService: IChatTodoListService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IChatEditingService private readonly _chatEditingService: IChatEditingService,
+		@IChatService private readonly _chatService: IChatService,
 	) {
 		super();
 	}
@@ -132,9 +141,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		// ── FEAT-23: Route confirmation responses instead of starting a new task ──
 		if (request.acceptedConfirmationData?.length) {
-			const data = request.acceptedConfirmationData[0] as { requestId: string; options?: Array<{ label: string; action: string; action_id?: string }> };
-			// The framework sends the clicked button label in request.message as: "ButtonLabel: \"CardTitle\""
-			// Match it against options to find the correct action
+			const data = request.acceptedConfirmationData[0] as { requestId: string; sessionId?: string; options?: Array<{ label: string; action?: string; action_id?: string }> };
 			let action = 'approve';
 			if (data.options?.length) {
 				const msgLabel = request.message.split(':')[0]?.trim();
@@ -145,16 +152,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					action = data.options[0]?.action ?? data.options[0]?.action_id ?? 'approve';
 				}
 			}
-			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'label:', request.message);
-			wsClient.sendConfirmResponse(data.requestId, action, undefined, this._lastSessionId);
+			// Use the sessionId stored in the confirmation data, NOT a new one
+			const confirmSessionId = data.sessionId ?? this._lastSessionId;
+			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'session:', confirmSessionId);
+			wsClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
 			progress([this._progress('$(check) Confirmed')]);
 			return this._listenForContinuation(wsClient, progress, token, request);
 		}
 
 		if (request.rejectedConfirmationData?.length) {
-			const data = request.rejectedConfirmationData[0] as { requestId: string };
-			this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId);
-			wsClient.sendConfirmResponse(data.requestId, 'reject', undefined, this._lastSessionId);
+			const data = request.rejectedConfirmationData[0] as { requestId: string; sessionId?: string };
+			const confirmSessionId = data.sessionId ?? this._lastSessionId;
+			this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId, 'session:', confirmSessionId);
+			wsClient.sendConfirmResponse(data.requestId, 'reject', undefined, confirmSessionId);
 			progress([this._progress('$(circle-slash) Rejected')]);
 			return {};
 		}
@@ -310,9 +320,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							progress([toolUpdate]);
 						}
 
-						// For file-writing tools, register the file in the editing session
-						// with empty edits (backend writes directly to disk).
-						// This makes the file appear in the "N Files" widget above TODO.
+						// For file-writing tools, start external edit tracking
+						// so the editing session can snapshot the file before backend writes.
 						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
 							if (filePath) {
@@ -320,15 +329,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								const fileUri = filePath.startsWith('/')
 									? URI.file(filePath)
 									: workspaceRoot
-										? URI.joinPath(workspaceRoot, filePath)
+										? URI.joinPath(URI.file(workspaceRoot), filePath)
 										: URI.file(filePath);
-								// Empty edits — just registers the file entry without applying changes
-								progress([{
-									uri: fileUri,
-									edits: [],
-									kind: 'textEdit',
-									done: false,
-								} satisfies IChatTextEdit]);
+								this._toolFileArgs.set(key, filePath);
+								// Start external edit — snapshot file before backend writes
+								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId);
 							}
 						}
 						break;
@@ -360,11 +365,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						};
 						progress([toolComplete]);
 
-						// ── Emit file reference for file-modifying tools ──
-						if (p.success) {
+						// ── Stop external edit tracking and emit file reference ──
+						if (this._externalEditOps.has(key)) {
+							// External edit was started for this tool — stop it to compute diff
+							this._stopExternalEdit(key, request.sessionResource).then(editProgress => {
+								if (editProgress.length > 0) {
+									progress(editProgress);
+								}
+							});
+							this._toolFileArgs.delete(key);
+						} else if (p.success) {
+							// Fallback for tools not tracked via external edits
 							let filePath = this._toolFileArgs.get(key);
 							this._toolFileArgs.delete(key);
-							// Fallback: try to extract path from tool result JSON
 							if (!filePath && typeof p.result === 'string') {
 								try {
 									const resultObj = JSON.parse(p.result);
@@ -392,16 +405,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										},
 									};
 									progress([ref]);
-
-									// Mark the textEdit as done so the editing session widget updates
-									if (!isDelete) {
-										progress([{
-											uri: fileUri,
-											edits: [],
-											kind: 'textEdit',
-											done: true,
-										} satisfies IChatTextEdit]);
-									}
 								}
 							}
 						}
@@ -440,7 +443,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							kind: 'confirmation',
 							title,
 							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-							data: { requestId: p.request_id, options: p.options ?? cardOpts },
+							data: { requestId: p.request_id, sessionId, options: p.options ?? cardOpts },
 							buttons,
 						};
 						pendingConfirmations.set(p.request_id, confirmation);
@@ -720,40 +723,37 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.ModelTurnEnd:
 						break;
 
-					// ── FEAT-30: Worktree files applied → clickable references ──
+					// ── FEAT-30: Worktree files applied → external edits for editing session ──
 					case AgentEventType.WorktreeFilesApplied: {
 						const p = event.payload as IWorktreeFilesAppliedPayload;
 						if (p.files && p.files.length > 0) {
-							const grouped = { added: [] as string[], modified: [] as string[], deleted: [] as string[] };
+							// For files not already tracked via ToolCall external edits,
+							// start+stop external edits to register them in the editing session.
 							for (const f of p.files) {
-								const bucket = f.action === 'added' ? grouped.added :
-									f.action === 'deleted' ? grouped.deleted : grouped.modified;
-								bucket.push(f.path);
-							}
-							const summary: string[] = [];
-							if (grouped.added.length) { summary.push(`+${grouped.added.length} added`); }
-							if (grouped.modified.length) { summary.push(`~${grouped.modified.length} modified`); }
-							if (grouped.deleted.length) { summary.push(`-${grouped.deleted.length} deleted`); }
-							progress([this._markdown(
-								`**$(file-text) Files applied** (${p.files.length}): ${summary.join(', ')}`
-							)]);
-							for (const f of p.files) {
-								const actionIcon = f.action === 'added' ? '$(diff-added)' :
-									f.action === 'deleted' ? '$(diff-removed)' : '$(diff-modified)';
-								const ref: IChatContentReference = {
-									kind: 'reference',
-									reference: URI.file(f.path),
-									options: {
-										status: {
-											description: `${actionIcon} ${f.action}`,
-											kind: f.action === 'deleted'
-												? ChatResponseReferencePartStatusKind.Omitted
-												: ChatResponseReferencePartStatusKind.Complete,
-										},
-										isDeletion: f.action === 'deleted',
-									},
-								};
-								progress([ref]);
+								if (f.action === 'deleted') { continue; }
+								const fileUri = URI.file(f.path);
+								// Check if this file is already being tracked by a tool call
+								const alreadyTracked = [...this._externalEditOps.keys()].some(k => {
+									const fp = this._toolFileArgs.get(k);
+									return fp && (fp === f.path || f.path.endsWith(fp));
+								});
+								if (!alreadyTracked) {
+									const opId = ++this._externalEditOpCounter;
+									const editingSession = this._getEditingSession(request.sessionResource);
+									const responseModel = this._getResponseModel(request.sessionResource);
+									if (editingSession && responseModel) {
+										// Start and immediately stop — file is already on disk
+										editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
+											return editingSession.stopExternalEdits(responseModel, opId);
+										}).then(editProgress => {
+											if (editProgress.length > 0) {
+												progress(editProgress);
+											}
+										}).catch(err => {
+											this._logService.error(`[ChipOS Agent] WorktreeFilesApplied external edit failed for ${f.path}`, err);
+										});
+									}
+								}
 							}
 						}
 						break;
@@ -944,19 +944,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							if (filePath) {
+							if (filePath && request) {
 								const workspaceRoot = this._getWorkspaceRoot();
 								const fileUri = filePath.startsWith('/')
 									? URI.file(filePath)
 									: workspaceRoot
-										? URI.joinPath(workspaceRoot, filePath)
+										? URI.joinPath(URI.file(workspaceRoot), filePath)
 										: URI.file(filePath);
-								progress([{
-									uri: fileUri,
-									edits: [],
-									kind: 'textEdit',
-									done: false,
-								} satisfies IChatTextEdit]);
+								this._toolFileArgs.set(key, filePath);
+								// Start external edit — snapshot file before backend writes
+								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId);
 							}
 						}
 						break;
@@ -987,8 +984,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						};
 						progress([toolComplete]);
 
-						// ── Emit file reference + editing session entry for file-modifying tools ──
-						if (p.success) {
+						// ── Stop external edit tracking and emit file reference ──
+						if (this._externalEditOps.has(key) && request) {
+							this._stopExternalEdit(key, request.sessionResource).then(editProgress => {
+								if (editProgress.length > 0) {
+									progress(editProgress);
+								}
+							});
+							this._toolFileArgs.delete(key);
+						} else if (p.success) {
 							let filePath = this._toolFileArgs.get(key);
 							this._toolFileArgs.delete(key);
 							if (!filePath && typeof p.result === 'string') {
@@ -1018,14 +1022,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										},
 									};
 									progress([ref]);
-									if (!isDelete) {
-										progress([{
-											uri: fileUri,
-											edits: [],
-											kind: 'textEdit',
-											done: true,
-										} satisfies IChatTextEdit]);
-									}
 								}
 							}
 						}
@@ -1069,37 +1065,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 					case AgentEventType.WorktreeFilesApplied: {
 						const p = event.payload as IWorktreeFilesAppliedPayload;
-						if (p.files && p.files.length > 0) {
-							const grouped = { added: [] as string[], modified: [] as string[], deleted: [] as string[] };
+						if (p.files && p.files.length > 0 && request) {
+							// For files not already tracked via ToolCall external edits,
+							// start+stop external edits to register them in the editing session.
 							for (const f of p.files) {
-								const bucket = f.action === 'added' ? grouped.added :
-									f.action === 'deleted' ? grouped.deleted : grouped.modified;
-								bucket.push(f.path);
-							}
-							const summary: string[] = [];
-							if (grouped.added.length) { summary.push(`+${grouped.added.length} added`); }
-							if (grouped.modified.length) { summary.push(`~${grouped.modified.length} modified`); }
-							if (grouped.deleted.length) { summary.push(`-${grouped.deleted.length} deleted`); }
-							progress([this._markdown(
-								`**$(file-text) Files applied** (${p.files.length}): ${summary.join(', ')}`
-							)]);
-							for (const f of p.files) {
-								const actionIcon = f.action === 'added' ? '$(diff-added)' :
-									f.action === 'deleted' ? '$(diff-removed)' : '$(diff-modified)';
-								const ref: IChatContentReference = {
-									kind: 'reference',
-									reference: URI.file(f.path),
-									options: {
-										status: {
-											description: `${actionIcon} ${f.action}`,
-											kind: f.action === 'deleted'
-												? ChatResponseReferencePartStatusKind.Omitted
-												: ChatResponseReferencePartStatusKind.Complete,
-										},
-										isDeletion: f.action === 'deleted',
-									},
-								};
-								progress([ref]);
+								if (f.action === 'deleted') { continue; }
+								const fileUri = URI.file(f.path);
+								const alreadyTracked = [...this._externalEditOps.keys()].some(k => {
+									const fp = this._toolFileArgs.get(k);
+									return fp && (fp === f.path || f.path.endsWith(fp));
+								});
+								if (!alreadyTracked) {
+									const opId = ++this._externalEditOpCounter;
+									const editingSession = this._getEditingSession(request.sessionResource);
+									const responseModel = this._getResponseModel(request.sessionResource);
+									if (editingSession && responseModel) {
+										editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
+											return editingSession.stopExternalEdits(responseModel, opId);
+										}).then(editProgress => {
+											if (editProgress.length > 0) {
+												progress(editProgress);
+											}
+										}).catch(err => {
+											this._logService.error(`[ChipOS Agent] WorktreeFilesApplied external edit failed for ${f.path}`, err);
+										});
+									}
+								}
 							}
 						}
 						break;
@@ -1197,7 +1188,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							kind: 'confirmation',
 							title,
 							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-							data: { requestId: p.request_id, options: p.options ?? cardOpts },
+							data: { requestId: p.request_id, sessionId: contSessionId, options: p.options ?? cardOpts },
 							buttons: buttons2,
 						};
 						progress([confirmation]);
@@ -1510,12 +1501,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'spec_confirm': {
 				const specText = data.spec_result ?? data.analysis ?? data.result;
 				if (typeof specText === 'string') {
-					// Only show a brief summary in the confirmation card
-					const lines = specText.split('\n').filter((l: string) => l.trim());
-					const summaryLines = lines.slice(0, 8);
-					const summary = summaryLines.join('\n');
-					const truncated = lines.length > 8 ? `\n\n*(${lines.length - 8} more lines — full content shown above)*` : '';
-					return summary + truncated;
+					return ChipOSChatAgent._wrapInCollapsibleDetails(specText, 3, 'Show full spec');
 				}
 				if (data.summary) { return String(data.summary); }
 				return 'Spec analysis complete. Review and approve to continue.';
@@ -1524,11 +1510,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'arch_confirm': {
 				const archText = data.arch_result ?? data.analysis ?? data.result;
 				if (typeof archText === 'string') {
-					const lines = archText.split('\n').filter((l: string) => l.trim());
-					const summaryLines = lines.slice(0, 8);
-					const summary = summaryLines.join('\n');
-					const truncated = lines.length > 8 ? `\n\n*(${lines.length - 8} more lines — full content shown above)*` : '';
-					return summary + truncated;
+					return ChipOSChatAgent._wrapInCollapsibleDetails(archText, 3, 'Show full architecture');
 				}
 				if (data.summary) { return String(data.summary); }
 				return 'Architecture analysis complete. Review and approve to continue.';
@@ -1562,6 +1544,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			default:
 				return JSON.stringify(data, null, 2).slice(0, 500);
 		}
+	}
+
+	/**
+	 * Wrap long text in a collapsible <details> block.
+	 * Shows the first `visibleLines` as a summary; the rest is hidden behind a toggle.
+	 */
+	private static _wrapInCollapsibleDetails(text: string, visibleLines: number, toggleLabel: string): string {
+		const lines = text.split('\n').filter((l: string) => l.trim());
+		if (lines.length <= visibleLines) {
+			return lines.join('\n');
+		}
+		const summary = lines.slice(0, visibleLines).join('\n');
+		const rest = lines.slice(visibleLines).join('\n');
+		return `${summary}\n\n<details><summary>${toggleLabel} (${lines.length - visibleLines} more lines)</summary>\n\n${rest}\n\n</details>`;
 	}
 
 	// ── FEAT-26: Friendly tool name mapping (used by IChatExternalToolInvocationUpdate) ──
@@ -1618,6 +1614,79 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private static _isFileWriteTool(toolName: string): boolean {
 		return ChipOSChatAgent._fileWriteTools.has(toolName);
+	}
+
+	/**
+	 * Get the current editing session for a chat session resource.
+	 */
+	private _getEditingSession(sessionResource: URI): IChatEditingSession | undefined {
+		return this._chatEditingService.getEditingSession(sessionResource);
+	}
+
+	/**
+	 * Get the last response model for a chat session (the one currently being streamed).
+	 */
+	private _getResponseModel(sessionResource: URI): IChatResponseModel | undefined {
+		const chatModel = this._chatService.getSession(sessionResource);
+		if (!chatModel) { return undefined; }
+		const lastRequest = chatModel.getRequests().at(-1);
+		return lastRequest?.response ?? undefined;
+	}
+
+	/**
+	 * Start tracking an external edit operation for a file-writing tool.
+	 * Calls editingSession.startExternalEdits to snapshot the file before the backend writes it.
+	 */
+	private async _startExternalEdit(
+		toolCallId: string,
+		fileUri: URI,
+		sessionResource: URI,
+		requestId: string,
+	): Promise<void> {
+		const editingSession = this._getEditingSession(sessionResource);
+		const responseModel = this._getResponseModel(sessionResource);
+		if (!editingSession || !responseModel) {
+			this._logService.warn('[ChipOS Agent] Cannot start external edit: no editing session or response model');
+			return;
+		}
+		const opId = ++this._externalEditOpCounter;
+		this._externalEditOps.set(toolCallId, opId);
+		try {
+			await editingSession.startExternalEdits(responseModel, opId, [fileUri], requestId);
+			this._logService.info(`[ChipOS Agent] startExternalEdits opId=${opId} for ${fileUri.path}`);
+		} catch (err) {
+			this._logService.error(`[ChipOS Agent] startExternalEdits failed for ${fileUri.path}`, err);
+			this._externalEditOps.delete(toolCallId);
+		}
+	}
+
+	/**
+	 * Stop tracking an external edit operation. Calls editingSession.stopExternalEdits
+	 * to compute the diff and create the editing session entry.
+	 * Returns IChatProgress[] that should be pushed to the framework.
+	 */
+	private async _stopExternalEdit(
+		toolCallId: string,
+		sessionResource: URI,
+	): Promise<IChatProgress[]> {
+		const opId = this._externalEditOps.get(toolCallId);
+		if (opId === undefined) { return []; }
+		this._externalEditOps.delete(toolCallId);
+
+		const editingSession = this._getEditingSession(sessionResource);
+		const responseModel = this._getResponseModel(sessionResource);
+		if (!editingSession || !responseModel) {
+			this._logService.warn('[ChipOS Agent] Cannot stop external edit: no editing session or response model');
+			return [];
+		}
+		try {
+			const result = await editingSession.stopExternalEdits(responseModel, opId);
+			this._logService.info(`[ChipOS Agent] stopExternalEdits opId=${opId}, ${result.length} progress items`);
+			return result;
+		} catch (err) {
+			this._logService.error(`[ChipOS Agent] stopExternalEdits failed opId=${opId}`, err);
+			return [];
+		}
 	}
 
 	private static _formatRawInput(toolName: string, args: unknown): unknown {
