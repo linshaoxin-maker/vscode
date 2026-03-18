@@ -432,9 +432,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const richMessage = this._renderConfirmMessage(p);
 						// Extract buttons from p.options or card_data.options
 						const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
-						const buttons = p.options?.map(o => o.label)
-							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean)
+						const rawButtons = p.options?.map(o => o.label).filter((l): l is string => !!l)
+							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean) as string[] | undefined
 							?? ['Approve', 'Reject'];
+						const buttons = rawButtons.length > 0 ? rawButtons : ['Approve', 'Reject'];
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
@@ -1188,15 +1189,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
 						const richMessage = this._renderConfirmMessage(p);
 						const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
-						const buttons = p.options?.map(o => o.label)
-							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean)
+						const rawButtons2 = p.options?.map(o => o.label).filter((l): l is string => !!l)
+							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean) as string[] | undefined
 							?? ['Approve', 'Reject'];
+						const buttons2 = rawButtons2.length > 0 ? rawButtons2 : ['Approve', 'Reject'];
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
 							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
 							data: { requestId: p.request_id, options: p.options ?? cardOpts },
-							buttons,
+							buttons: buttons2,
 						};
 						progress([confirmation]);
 						finish({}, 'Awaiting confirmation');
