@@ -18,13 +18,15 @@ import { IWorkspaceContextService } from '../../../../../../platform/workspace/c
 import { IEditorService } from '../../../../../services/editor/common/editorService.js';
 import { IChatProgressRenderableResponseContent } from '../../../common/model/chatModel.js';
 import { ChatSendResult, IChatConfirmation, IChatSendRequestOptions, IChatService } from '../../../common/chatService/chatService.js';
-import { isResponseVM } from '../../../common/model/chatViewModel.js';
-import { IChatWidgetService } from '../../chat.js';
+import { IChatResponseViewModel, isResponseVM } from '../../../common/model/chatViewModel.js';
+import { IChatWidget, IChatWidgetService } from '../../chat.js';
 import { IChatContentPart, IChatContentPartRenderContext } from './chatContentParts.js';
+import './media/chatConfirmationWidget.css';
 
 export class ChatConfirmationContentPart extends Disposable implements IChatContentPart {
 	public readonly domNode: HTMLElement;
 	private _tempFileUri: URI | undefined;
+	private _overlay: HTMLElement | undefined;
 
 	constructor(
 		confirmation: IChatConfirmation,
@@ -41,7 +43,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		const element = context.element;
 		const widget = isResponseVM(element) ? chatWidgetService.getWidgetBySessionResource(element.sessionResource) : undefined;
 
-		// ── Card DOM (title + preview only, no buttons inside) ──
+		// ── Card DOM (title + preview, no buttons) ──
 		const elements = dom.h('.chat-confirmation-widget2@root', [
 			dom.h('.chat-confirmation-widget-title@title'),
 			dom.h('.chat-confirmation-widget-preview@preview'),
@@ -49,7 +51,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 
 		this.domNode = elements.root;
 
-		// ── Title: ⚠ confirmation.title ──
+		// ── Title ──
 		const titleMd = new MarkdownString(
 			`$(${Codicon.warning.id}) ${confirmation.title}`,
 			{ supportThemeIcons: true },
@@ -57,7 +59,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		const renderedTitle = this._register(markdownRendererService.render(titleMd));
 		elements.title.appendChild(renderedTitle.element);
 
-		// ── Preview: 2-3 line summary ──
+		// ── Preview ──
 		const messageContent = typeof confirmation.message === 'string'
 			? confirmation.message
 			: (confirmation.message as IMarkdownString).value;
@@ -67,7 +69,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		const renderedPreview = this._register(markdownRendererService.render(previewMd));
 		elements.preview.appendChild(renderedPreview.element);
 
-		// Click card to open full content in editor
+		// Click card to open full content
 		elements.root.style.cursor = 'pointer';
 		this._register(dom.addDisposableListener(elements.root, 'click', async () => {
 			if (!this._tempFileUri) {
@@ -78,71 +80,159 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			}
 		}));
 
-		// ── Floating buttons overlay ──
-		// Buttons are appended to the chat list area (not inside the card),
-		// positioned at the bottom so they are always visible regardless of scroll.
-		const chatDomNode = widget?.domNode;
-		const listContainer = chatDomNode?.querySelector<HTMLElement>('.interactive-list');
-		if (listContainer && !confirmation.isUsed) {
-			// Ensure the list container is positioned for absolute children
-			const pos = getComputedStyle(listContainer).position;
-			if (pos === 'static') {
-				listContainer.style.position = 'relative';
+		// ── Floating buttons ──
+		if (!confirmation.isUsed) {
+			// Find the list container to attach the floating overlay
+			let target = widget?.domNode?.querySelector<HTMLElement>('.interactive-list');
+			if (!target) {
+				// Fallback: search from document root
+				target = document.querySelector<HTMLElement>('.interactive-list');
 			}
+			// console.log('[ConfirmCard] widget:', !!widget, 'target:', !!target, 'isUsed:', confirmation.isUsed);
 
-			const overlay = document.createElement('div');
-			overlay.className = 'chat-confirmation-floating-buttons';
-
-			const buttonsRow = document.createElement('div');
-			buttonsRow.className = 'chat-buttons';
-			overlay.appendChild(buttonsRow);
-
-			const buttonLabels = confirmation.buttons ?? [localize('accept', "Accept"), localize('dismiss', "Dismiss")];
-			const sendConfirmation = async (label: string, isSecondary: boolean) => {
-				if (!isResponseVM(element)) {
-					return;
-				}
-				const prompt = `${label}: "${confirmation.title}"`;
-				const options: IChatSendRequestOptions = isSecondary
-					? { rejectedConfirmationData: [confirmation.data] }
-					: { acceptedConfirmationData: [confirmation.data] };
-				options.agentId = element.agent?.id;
-				options.slashCommand = element.slashCommand?.name;
-				options.confirmation = label;
-				options.userSelectedModelId = widget?.input.currentLanguageModel;
-				options.modeInfo = widget?.input.currentModeInfo;
-				options.location = widget?.location;
-				Object.assign(options, widget?.getModeRequestOptions());
-
-				const result = await this.chatService.sendRequest(element.sessionResource, prompt, options);
-				if (ChatSendResult.isSent(result)) {
-					confirmation.isUsed = true;
-					overlay.remove();
-				}
-			};
-
-			for (let i = 0; i < buttonLabels.length; i++) {
-				const label = buttonLabels[i];
-				const isSecondary = i > 0;
-				const button = this._register(new Button(buttonsRow, {
-					...defaultButtonStyles, small: true, secondary: isSecondary,
-				}));
-				button.label = label;
-				this._register(button.onDidClick(() => sendConfirmation(label, isSecondary)));
+			if (target) {
+				this._createFloatingButtons(target, confirmation, element, widget);
 			}
-
-			listContainer.appendChild(overlay);
-
-			// Clean up overlay on dispose
-			this._register({
-				dispose: () => overlay.remove(),
-			});
 		}
 	}
 
-	/**
-	 * Extract first N non-heading lines as preview text.
-	 */
+	private _createFloatingButtons(
+		container: HTMLElement,
+		confirmation: IChatConfirmation,
+		element: IChatResponseViewModel | any,
+		widget: IChatWidget | undefined,
+	): void {
+		// Ensure container is positioned
+		const pos = getComputedStyle(container).position;
+		if (pos === 'static') {
+			container.style.position = 'relative';
+		}
+
+		const overlay = document.createElement('div');
+		overlay.className = 'chat-confirmation-floating-buttons';
+		this._overlay = overlay;
+
+		const buttonLabels = confirmation.buttons ?? [localize('accept', "Accept"), localize('dismiss', "Dismiss")];
+
+		// ── Options row: radio-style selectable chips ──
+		const optionsRow = document.createElement('div');
+		optionsRow.className = 'chat-confirm-options';
+		overlay.appendChild(optionsRow);
+
+		let selectedIndex = 0; // default: first option
+		const chips: HTMLElement[] = [];
+
+		const updateSelection = (idx: number) => {
+			selectedIndex = idx;
+			chips.forEach((chip, i) => {
+				chip.classList.toggle('selected', i === idx);
+			});
+		};
+
+		for (let i = 0; i < buttonLabels.length; i++) {
+			const chip = document.createElement('div');
+			chip.className = 'chat-confirm-chip';
+			// Letter label (A, B, C, ...)
+			const letterSpan = document.createElement('span');
+			letterSpan.className = 'chat-confirm-chip-letter';
+			letterSpan.textContent = String.fromCharCode(65 + i); // A, B, C...
+			chip.appendChild(letterSpan);
+			// Label text
+			const labelSpan = document.createElement('span');
+			labelSpan.textContent = buttonLabels[i];
+			chip.appendChild(labelSpan);
+			if (i === 0) {
+				chip.classList.add('selected');
+			}
+			chip.addEventListener('click', () => updateSelection(i));
+			optionsRow.appendChild(chip);
+			chips.push(chip);
+		}
+
+		// ── Action row: Skip (Esc) + Continue (→) ──
+		const actionsRow = document.createElement('div');
+		actionsRow.className = 'chat-confirm-actions';
+		overlay.appendChild(actionsRow);
+
+		const sendConfirmation = async (label: string, isSecondary: boolean) => {
+			if (!isResponseVM(element)) {
+				return;
+			}
+			const prompt = `${label}: "${confirmation.title}"`;
+			const options: IChatSendRequestOptions = isSecondary
+				? { rejectedConfirmationData: [confirmation.data] }
+				: { acceptedConfirmationData: [confirmation.data] };
+			options.agentId = element.agent?.id;
+			options.slashCommand = element.slashCommand?.name;
+			options.confirmation = label;
+			options.userSelectedModelId = widget?.input.currentLanguageModel;
+			options.modeInfo = widget?.input.currentModeInfo;
+			options.location = widget?.location;
+			Object.assign(options, widget?.getModeRequestOptions());
+
+			const result = await this.chatService.sendRequest(element.sessionResource, prompt, options);
+			if (ChatSendResult.isSent(result)) {
+				confirmation.isUsed = true;
+				overlay.remove();
+				this._overlay = undefined;
+			}
+		};
+
+		// Skip — plain text link style (like Cursor)
+		const skipEl = document.createElement('span');
+		skipEl.className = 'chat-confirm-skip';
+		skipEl.textContent = 'Skip';
+		const escHint = document.createElement('span');
+		escHint.className = 'chat-confirm-keyhint';
+		escHint.textContent = 'Esc';
+		skipEl.appendChild(escHint);
+		skipEl.addEventListener('click', () => {
+			const dismissLabel = buttonLabels.length > 1 ? buttonLabels[buttonLabels.length - 1] : 'Dismiss';
+			sendConfirmation(dismissLabel, true);
+		});
+		actionsRow.appendChild(skipEl);
+
+		// Continue button — primary style with arrow hint
+		const continueBtn = this._register(new Button(actionsRow, {
+			...defaultButtonStyles, small: true, secondary: true,
+		}));
+		continueBtn.label = 'Continue';
+		const arrowHint = document.createElement('span');
+		arrowHint.className = 'chat-confirm-keyhint';
+		arrowHint.textContent = '→';
+		(continueBtn.element as HTMLElement).appendChild(arrowHint);
+		this._register(continueBtn.onDidClick(() => {
+			const selectedLabel = buttonLabels[selectedIndex];
+			sendConfirmation(selectedLabel, selectedIndex > 0);
+		}));
+
+		// Keyboard shortcuts
+		const keyHandler = (e: KeyboardEvent) => {
+			if (confirmation.isUsed) {
+				return;
+			}
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				const dismissLabel = buttonLabels.length > 1 ? buttonLabels[buttonLabels.length - 1] : 'Dismiss';
+				sendConfirmation(dismissLabel, true);
+			} else if (e.key === 'Enter' || e.key === 'ArrowRight') {
+				e.preventDefault();
+				const selectedLabel = buttonLabels[selectedIndex];
+				sendConfirmation(selectedLabel, selectedIndex > 0);
+			} else if (e.key >= 'a' && e.key <= 'z') {
+				// Letter key selects option (a=0, b=1, ...)
+				const idx = e.key.charCodeAt(0) - 97;
+				if (idx >= 0 && idx < buttonLabels.length) {
+					updateSelection(idx);
+				}
+			}
+		};
+		document.addEventListener('keydown', keyHandler);
+		this._register({ dispose: () => document.removeEventListener('keydown', keyHandler) });
+
+		container.appendChild(overlay);
+	}
+
 	private _getPreview(content: string, maxLines: number): string {
 		const lines = content.split('\n')
 			.filter(l => l.trim().length > 0)
@@ -180,6 +270,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 	}
 
 	override dispose(): void {
+		this._overlay?.remove();
 		if (this._tempFileUri) {
 			this.fileService.del(this._tempFileUri).catch(() => { /* ignore */ });
 		}

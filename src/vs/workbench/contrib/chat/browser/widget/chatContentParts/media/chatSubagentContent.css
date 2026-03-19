@@ -8,19 +8,26 @@
 
 	/* ── Title bar: background + rounded corners (Cursor-style card header) ── */
 	> .chat-used-context-label {
-		background: var(--vscode-chat-requestBorder);
+		background: color-mix(in srgb, var(--vscode-editor-background) 85%, var(--vscode-foreground) 15%);
+		border: 1px solid var(--vscode-chat-requestBorder);
 		border-radius: var(--vscode-cornerRadius-medium);
 		padding: 2px 4px;
 	}
 
-	/* When expanded, only round the top corners (content area has its own border) */
+	/* When expanded, only round the top corners — content area continues below */
 	&:not(.chat-used-context-collapsed) > .chat-used-context-label {
+		border-bottom: none;
 		border-radius: var(--vscode-cornerRadius-medium) var(--vscode-cornerRadius-medium) 0 0;
 	}
 
 	/* Always show the leading icon (● active / ✓ completed) on subagent title bar */
 	> .chat-used-context-label .monaco-icon-button > .codicon:first-child:not(.chat-collapsible-hover-chevron) {
 		display: inline-block !important;
+	}
+
+	/* Completed state: dim the description text */
+	&:not(.chat-thinking-active) > .chat-used-context-label .chat-thinking-title-detail-text {
+		opacity: 0.7;
 	}
 
 	/* Collapsed + streaming: show only the last item with max-height */

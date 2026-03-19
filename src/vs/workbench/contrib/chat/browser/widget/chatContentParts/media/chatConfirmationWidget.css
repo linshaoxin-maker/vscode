@@ -507,31 +507,6 @@
 		}
 	}
 
-/* ── Floating confirmation buttons overlay ── */
-.chat-confirmation-floating-buttons {
-	position: absolute;
-	bottom: 0;
-	left: 0;
-	right: 0;
-	z-index: 100;
-	display: flex;
-	padding: 8px 12px;
-	background: var(--vscode-chat-list-background, var(--vscode-sideBar-background));
-	border-top: 1px solid var(--vscode-chat-requestBorder);
-	box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
-
-	.chat-buttons {
-		display: flex;
-		column-gap: 6px;
-		align-items: center;
-
-		.monaco-button {
-			overflow-wrap: break-word;
-			width: inherit;
-		}
-	}
-}
-
 	.monaco-button-dropdown > .monaco-button.monaco-dropdown-button {
 		padding: 0px 4px 0 3px;
 	}
@@ -539,6 +514,113 @@
 	.monaco-button-dropdown > .monaco-button.monaco-dropdown-button.codicon[class*='codicon-'] {
 		font-size: 12px;
 	}
+}
+
+/* ── Floating confirmation overlay (Cursor Questions style) ── */
+.chat-confirmation-floating-buttons {
+	position: absolute;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	z-index: 100;
+	display: flex;
+	flex-direction: column;
+	padding: 12px 14px;
+	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-chat-requestBorder));
+	border-bottom: none;
+	border-radius: 8px 8px 0 0;
+	box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.25);
+}
+
+/* Options: vertical list, one per row */
+.chat-confirm-options {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-bottom: 10px;
+}
+
+.chat-confirm-chip {
+	display: flex;
+	align-items: center;
+	padding: 6px 8px;
+	border-radius: 6px;
+	font-size: 13px;
+	cursor: pointer;
+	color: var(--vscode-foreground);
+	background: transparent;
+	user-select: none;
+	border: none;
+	transition: background 0.1s;
+}
+
+.chat-confirm-chip:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.chat-confirm-chip.selected {
+	background: var(--vscode-list-activeSelectionBackground, rgba(255, 255, 255, 0.08));
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+/* Letter badge */
+.chat-confirm-chip-letter {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 20px;
+	height: 20px;
+	border-radius: 4px;
+	background: rgba(255, 255, 255, 0.1);
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	font-weight: 600;
+	margin-right: 8px;
+	flex-shrink: 0;
+}
+
+.chat-confirm-chip.selected .chat-confirm-chip-letter {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+/* Action row: right-aligned Skip + Continue */
+.chat-confirm-actions {
+	display: flex;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 10px;
+	padding-top: 8px;
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-chat-requestBorder));
+}
+
+/* Skip — plain text link */
+.chat-confirm-skip {
+	display: inline-flex;
+	align-items: center;
+	cursor: pointer;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	user-select: none;
+}
+
+.chat-confirm-skip:hover {
+	color: var(--vscode-foreground);
+}
+
+/* Keyboard hint badge */
+.chat-confirm-keyhint {
+	display: inline-block;
+	margin-left: 4px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	font-size: 10px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	opacity: 0.5;
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	background: transparent;
+	vertical-align: middle;
 }
 
 .chat-confirmation-widget2 .interactive-result-code-block.compare {

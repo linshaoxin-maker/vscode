@@ -110,8 +110,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _externalEditOps = new Map<string, number>();
 	/** Counter for generating unique external edit operation IDs */
 	private _externalEditOpCounter = 0;
-	/** Maps subKey → snapshot content (old file content before write) for subagent file tools */
-	private readonly _subagentSnapshots = new Map<string, string>();
+	/** Maps tool call id → Promise of startExternalEdits, so stop can await it */
+	private readonly _pendingStartEdits = new Map<string, Promise<void>>();
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,
@@ -678,16 +678,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							};
 							progress([toolUpdate]);
 
-							// Cache snapshot for file-writing tools (backend sends pre-write content)
+							// Cache file path and start external edit for file-writing tools
 							if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
-								if (filePath) {
+								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
+								if (filePath && request) {
+									const workspaceRoot = this._getWorkspaceRoot();
+									const fileUri = filePath.startsWith('/')
+										? URI.file(filePath)
+										: workspaceRoot
+											? URI.joinPath(URI.file(workspaceRoot), filePath)
+											: URI.file(filePath);
+									this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
 									this._toolFileArgs.set(subKey, filePath);
-									if (typeof p.snapshot_content === 'string') {
-										this._subagentSnapshots.set(subKey, p.snapshot_content);
-										this._logService.info(`[ChipOS Agent] Cached snapshot for ${subKey}, len=${p.snapshot_content.length}`);
-									}
+									this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId);
 								}
+							} else {
+								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, isFileWrite=${ChipOSChatAgent._isFileWriteTool(p.tool_name)}, hasArgs=${!!p.args}`);
 							}
 						} else if (p.kind === 'tool_end' && p.tool_name) {
 							// Find the matching tool_start key for this tool_name (with counter suffix)
@@ -699,6 +706,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 									break;
 								}
 							}
+							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: tool=${p.tool_name}, matchPrefix=${matchPrefix}, foundSubKey=${subKey}, file_path=${p.file_path}`);
 							if (!subKey) { break; }
 							const startTs = this._toolStartTimes.get(subKey);
 							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
@@ -713,62 +721,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							};
 							progress([toolComplete]);
 
-							// For file-writing tools: register file in editing session
-							const cachedFilePath = this._toolFileArgs.get(subKey);
-							const snapshot = this._subagentSnapshots.get(subKey);
-							this._toolFileArgs.delete(subKey);
-							this._subagentSnapshots.delete(subKey);
-							this._externalEditOps.delete(subKey);
-
-							if (cachedFilePath && request) {
-								const workspaceRoot = this._getWorkspaceRoot();
-								const fileUri = cachedFilePath.startsWith('/')
-									? URI.file(cachedFilePath)
-									: workspaceRoot
-										? URI.joinPath(URI.file(workspaceRoot), cachedFilePath)
-										: URI.file(cachedFilePath);
-
-								if (snapshot !== undefined) {
-									// We have a pre-write snapshot from backend.
-									// Push a textEdit that replaces the entire old content.
-									// The framework will diff snapshot vs current disk content.
-									const oldLineCount = snapshot === '' ? 1 : snapshot.split('\n').length;
-									const lastLineLen = snapshot === '' ? 0 : (snapshot.split('\n').pop()?.length ?? 0);
-									// First push done=false to register the file entry
-									progress([{
-										uri: fileUri,
-										edits: [],
-										kind: 'textEdit',
-										done: false,
-									} satisfies IChatTextEdit]);
-									// Then push the actual full-file replacement edit + done=true
-									progress([{
-										uri: fileUri,
-										edits: [{
-											range: new Range(1, 1, oldLineCount, lastLineLen + 1),
-											text: '', // placeholder — framework will revert-to-disk
-										}],
-										kind: 'textEdit',
-										done: true,
-									} satisfies IChatTextEdit]);
-									this._logService.info(`[ChipOS Agent] Pushed textEdit for subagent file ${cachedFilePath} (snapshot len=${snapshot.length})`);
-								} else {
-									// No snapshot — use start/stop external edits as fallback
-									const editingSession = this._getEditingSession(request.sessionResource);
-									const responseModel = this._getResponseModel(request.sessionResource);
-									if (editingSession && responseModel) {
-										const opId = ++this._externalEditOpCounter;
-										editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
-											return editingSession.stopExternalEdits(responseModel, opId);
-										}).then(editProgress => {
-											if (editProgress.length > 0) {
-												progress(editProgress);
-											}
-										}).catch(err => {
-											this._logService.error(`[ChipOS Agent] Subagent tool_end external edit failed for ${cachedFilePath}`, err);
-										});
+							// Stop external edit — _stopExternalEdit awaits _startExternalEdit first
+							const hasOp = this._externalEditOps.has(subKey);
+							const hasPending = this._pendingStartEdits.has(subKey);
+							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: subKey=${subKey}, hasExternalEditOp=${hasOp}, hasPendingStart=${hasPending}, hasRequest=${!!request}`);
+							if (hasOp && request) {
+								this._stopExternalEdit(subKey, request.sessionResource).then(editProgress => {
+									this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit returned ${editProgress.length} progress items for ${subKey}`);
+									if (editProgress.length > 0) {
+										progress(editProgress);
 									}
-								}
+								}).catch(err => {
+									this._logService.error(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit failed for ${subKey}`, err);
+								});
+								this._toolFileArgs.delete(subKey);
 							}
 						} else if (p.kind === 'error' && p.content) {
 							// Route error inside the subagent card
@@ -1084,6 +1050,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
+							this._logService.info(`[ChipOS Agent] ToolCall: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}, key=${key}`);
 							if (filePath && request) {
 								const workspaceRoot = this._getWorkspaceRoot();
 								const fileUri = filePath.startsWith('/')
@@ -1125,7 +1092,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						progress([toolComplete]);
 
 						// ── Stop external edit tracking and emit file reference ──
-						if (this._externalEditOps.has(key) && request) {
+						const hasExternalOp = this._externalEditOps.has(key);
+						this._logService.info(`[ChipOS Agent] ToolResult: tool=${p.tool_name}, key=${key}, hasExternalOp=${hasExternalOp}, hasRequest=${!!request}, success=${p.success}`);
+						if (hasExternalOp && request) {
 							this._stopExternalEdit(key, request.sessionResource).then(editProgress => {
 								if (editProgress.length > 0) {
 									progress(editProgress);
@@ -1205,6 +1174,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 					case AgentEventType.WorktreeFilesApplied: {
 						const p = event.payload as IWorktreeFilesAppliedPayload;
+						this._logService.info(`[ChipOS Agent] WorktreeFilesApplied: files=${p.files?.length ?? 0}, hasRequest=${!!request}`);
 						if (p.files && p.files.length > 0 && request) {
 							// For files not already tracked via ToolCall external edits,
 							// start+stop external edits to register them in the editing session.
@@ -1215,6 +1185,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 									const fp = this._toolFileArgs.get(k);
 									return fp && (fp === f.path || f.path.endsWith(fp));
 								});
+								this._logService.info(`[ChipOS Agent] WorktreeFilesApplied: file=${f.path}, action=${f.action}, alreadyTracked=${alreadyTracked}`);
 								if (!alreadyTracked) {
 									const opId = ++this._externalEditOpCounter;
 									const editingSession = this._getEditingSession(request.sessionResource);
@@ -1272,16 +1243,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							};
 							progress([toolUpdate]);
 
-							// Cache snapshot for file-writing tools (backend sends pre-write content)
+							// Cache file path and start external edit for file-writing tools
 							if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
-								if (filePath) {
+								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
+								if (filePath && request) {
+									const workspaceRoot = this._getWorkspaceRoot();
+									const fileUri = filePath.startsWith('/')
+										? URI.file(filePath)
+										: workspaceRoot
+											? URI.joinPath(URI.file(workspaceRoot), filePath)
+											: URI.file(filePath);
+									this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
 									this._toolFileArgs.set(subKey, filePath);
-									if (typeof p.snapshot_content === 'string') {
-										this._subagentSnapshots.set(subKey, p.snapshot_content);
-										this._logService.info(`[ChipOS Agent] Cached snapshot for ${subKey}, len=${p.snapshot_content.length}`);
-									}
+									this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId);
 								}
+							} else {
+								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, isFileWrite=${ChipOSChatAgent._isFileWriteTool(p.tool_name)}, hasArgs=${!!p.args}`);
 							}
 						} else if (p.kind === 'tool_end' && p.tool_name) {
 							// Find the matching tool_start key for this tool_name (with counter suffix)
@@ -1293,6 +1271,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 									break;
 								}
 							}
+							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: tool=${p.tool_name}, matchPrefix=${matchPrefix}, foundSubKey=${subKey}, file_path=${p.file_path}`);
 							if (!subKey) { break; }
 							const startTs = this._toolStartTimes.get(subKey);
 							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
@@ -1307,62 +1286,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							};
 							progress([toolComplete]);
 
-							// For file-writing tools: register file in editing session
-							const cachedFilePath = this._toolFileArgs.get(subKey);
-							const snapshot = this._subagentSnapshots.get(subKey);
-							this._toolFileArgs.delete(subKey);
-							this._subagentSnapshots.delete(subKey);
-							this._externalEditOps.delete(subKey);
-
-							if (cachedFilePath && request) {
-								const workspaceRoot = this._getWorkspaceRoot();
-								const fileUri = cachedFilePath.startsWith('/')
-									? URI.file(cachedFilePath)
-									: workspaceRoot
-										? URI.joinPath(URI.file(workspaceRoot), cachedFilePath)
-										: URI.file(cachedFilePath);
-
-								if (snapshot !== undefined) {
-									// We have a pre-write snapshot from backend.
-									// Push a textEdit that replaces the entire old content.
-									// The framework will diff snapshot vs current disk content.
-									const oldLineCount = snapshot === '' ? 1 : snapshot.split('\n').length;
-									const lastLineLen = snapshot === '' ? 0 : (snapshot.split('\n').pop()?.length ?? 0);
-									// First push done=false to register the file entry
-									progress([{
-										uri: fileUri,
-										edits: [],
-										kind: 'textEdit',
-										done: false,
-									} satisfies IChatTextEdit]);
-									// Then push the actual full-file replacement edit + done=true
-									progress([{
-										uri: fileUri,
-										edits: [{
-											range: new Range(1, 1, oldLineCount, lastLineLen + 1),
-											text: '', // placeholder — framework will revert-to-disk
-										}],
-										kind: 'textEdit',
-										done: true,
-									} satisfies IChatTextEdit]);
-									this._logService.info(`[ChipOS Agent] Pushed textEdit for subagent file ${cachedFilePath} (snapshot len=${snapshot.length})`);
-								} else {
-									// No snapshot — use start/stop external edits as fallback
-									const editingSession = this._getEditingSession(request.sessionResource);
-									const responseModel = this._getResponseModel(request.sessionResource);
-									if (editingSession && responseModel) {
-										const opId = ++this._externalEditOpCounter;
-										editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
-											return editingSession.stopExternalEdits(responseModel, opId);
-										}).then(editProgress => {
-											if (editProgress.length > 0) {
-												progress(editProgress);
-											}
-										}).catch(err => {
-											this._logService.error(`[ChipOS Agent] Subagent tool_end external edit failed for ${cachedFilePath}`, err);
-										});
+							// Stop external edit — _stopExternalEdit awaits _startExternalEdit first
+							const hasOp = this._externalEditOps.has(subKey);
+							const hasPending = this._pendingStartEdits.has(subKey);
+							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: subKey=${subKey}, hasExternalEditOp=${hasOp}, hasPendingStart=${hasPending}, hasRequest=${!!request}`);
+							if (hasOp && request) {
+								this._stopExternalEdit(subKey, request.sessionResource).then(editProgress => {
+									this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit returned ${editProgress.length} progress items for ${subKey}`);
+									if (editProgress.length > 0) {
+										progress(editProgress);
 									}
-								}
+								}).catch(err => {
+									this._logService.error(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit failed for ${subKey}`, err);
+								});
+								this._toolFileArgs.delete(subKey);
 							}
 						} else if (p.kind === 'error' && p.content) {
 							// Route error inside the subagent card
@@ -1886,55 +1823,80 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	/**
 	 * Start tracking an external edit operation for a file-writing tool.
 	 * Calls editingSession.startExternalEdits to snapshot the file before the backend writes it.
+	 * Stores the promise so _stopExternalEdit can await it before calling stop.
 	 */
-	private async _startExternalEdit(
+	private _startExternalEdit(
 		toolCallId: string,
 		fileUri: URI,
 		sessionResource: URI,
 		requestId: string,
-	): Promise<void> {
+	): void {
+		this._logService.info(`[ChipOS Agent] _startExternalEdit ENTER: toolCallId=${toolCallId}, fileUri=${fileUri.path}, sessionResource=${sessionResource.toString()}, requestId=${requestId}`);
 		const editingSession = this._getEditingSession(sessionResource);
 		const responseModel = this._getResponseModel(sessionResource);
+		this._logService.info(`[ChipOS Agent] _startExternalEdit: hasEditingSession=${!!editingSession}, hasResponseModel=${!!responseModel}`);
 		if (!editingSession || !responseModel) {
 			this._logService.warn('[ChipOS Agent] Cannot start external edit: no editing session or response model');
 			return;
 		}
 		const opId = ++this._externalEditOpCounter;
 		this._externalEditOps.set(toolCallId, opId);
-		try {
-			await editingSession.startExternalEdits(responseModel, opId, [fileUri], requestId);
-			this._logService.info(`[ChipOS Agent] startExternalEdits opId=${opId} for ${fileUri.path}`);
-		} catch (err) {
-			this._logService.error(`[ChipOS Agent] startExternalEdits failed for ${fileUri.path}`, err);
+		this._logService.info(`[ChipOS Agent] _startExternalEdit: calling editingSession.startExternalEdits opId=${opId}, file=${fileUri.path}`);
+		const startPromise = editingSession.startExternalEdits(responseModel, opId, [fileUri], requestId).then(() => {
+			this._logService.info(`[ChipOS Agent] startExternalEdits RESOLVED opId=${opId} for ${fileUri.path}`);
+		}).catch(err => {
+			this._logService.error(`[ChipOS Agent] startExternalEdits REJECTED for ${fileUri.path}`, err);
 			this._externalEditOps.delete(toolCallId);
-		}
+		});
+		this._pendingStartEdits.set(toolCallId, startPromise);
+		this._logService.info(`[ChipOS Agent] _startExternalEdit EXIT: opId=${opId}, pendingStartEdits.size=${this._pendingStartEdits.size}, externalEditOps.size=${this._externalEditOps.size}`);
 	}
 
 	/**
-	 * Stop tracking an external edit operation. Calls editingSession.stopExternalEdits
-	 * to compute the diff and create the editing session entry.
+	 * Stop tracking an external edit operation. Awaits the pending startExternalEdits
+	 * promise first, then calls editingSession.stopExternalEdits to compute the diff.
 	 * Returns IChatProgress[] that should be pushed to the framework.
 	 */
 	private async _stopExternalEdit(
 		toolCallId: string,
 		sessionResource: URI,
 	): Promise<IChatProgress[]> {
+		this._logService.info(`[ChipOS Agent] _stopExternalEdit ENTER: toolCallId=${toolCallId}`);
+		// CRITICAL: wait for startExternalEdits to finish before calling stop
+		const pending = this._pendingStartEdits.get(toolCallId);
+		this._logService.info(`[ChipOS Agent] _stopExternalEdit: hasPending=${!!pending}, externalEditOps keys=[${[...this._externalEditOps.keys()].join(',')}], pendingStartEdits keys=[${[...this._pendingStartEdits.keys()].join(',')}]`);
+		if (pending) {
+			this._logService.info(`[ChipOS Agent] _stopExternalEdit: awaiting pending startExternalEdits for ${toolCallId}...`);
+			await pending;
+			this._logService.info(`[ChipOS Agent] _stopExternalEdit: pending startExternalEdits resolved for ${toolCallId}`);
+			this._pendingStartEdits.delete(toolCallId);
+		}
+
 		const opId = this._externalEditOps.get(toolCallId);
-		if (opId === undefined) { return []; }
+		this._logService.info(`[ChipOS Agent] _stopExternalEdit: opId=${opId} for toolCallId=${toolCallId}`);
+		if (opId === undefined) {
+			this._logService.warn(`[ChipOS Agent] _stopExternalEdit: no opId found, returning empty. toolCallId=${toolCallId}`);
+			return [];
+		}
 		this._externalEditOps.delete(toolCallId);
 
 		const editingSession = this._getEditingSession(sessionResource);
 		const responseModel = this._getResponseModel(sessionResource);
+		this._logService.info(`[ChipOS Agent] _stopExternalEdit: hasEditingSession=${!!editingSession}, hasResponseModel=${!!responseModel}`);
 		if (!editingSession || !responseModel) {
 			this._logService.warn('[ChipOS Agent] Cannot stop external edit: no editing session or response model');
 			return [];
 		}
 		try {
+			this._logService.info(`[ChipOS Agent] _stopExternalEdit: calling editingSession.stopExternalEdits opId=${opId}...`);
 			const result = await editingSession.stopExternalEdits(responseModel, opId);
-			this._logService.info(`[ChipOS Agent] stopExternalEdits opId=${opId}, ${result.length} progress items`);
+			this._logService.info(`[ChipOS Agent] _stopExternalEdit: stopExternalEdits RESOLVED opId=${opId}, result.length=${result.length}`);
+			for (const item of result) {
+				this._logService.info(`[ChipOS Agent] _stopExternalEdit: progress item kind=${item.kind}`);
+			}
 			return result;
 		} catch (err) {
-			this._logService.error(`[ChipOS Agent] stopExternalEdits failed opId=${opId}`, err);
+			this._logService.error(`[ChipOS Agent] _stopExternalEdit: stopExternalEdits REJECTED opId=${opId}`, err);
 			return [];
 		}
 	}

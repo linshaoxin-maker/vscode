@@ -638,6 +638,7 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 	}
 
 	async startExternalEdits(responseModel: IChatResponseModel, operationId: number, resources: URI[], undoStopId: string): Promise<IChatProgress[]> {
+		this._logService.info(`[ChatEditingSession] startExternalEdits ENTER: opId=${operationId}, resources=[${resources.map(r => r.path).join(',')}], undoStopId=${undoStopId}`);
 		const snapshots = new ResourceMap<string | undefined>();
 		const acquiredLockPromises: DeferredPromise<void>[] = [];
 		const releaseLockPromises: DeferredPromise<void>[] = [];
@@ -661,6 +662,7 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 				}
 
 				const entry = await this._getOrCreateModifiedFileEntry(resource, NotExistBehavior.Abort, telemetryInfo);
+				this._logService.info(`[ChatEditingSession] startExternalEdits: resource=${resource.path}, entry=${!!entry}`);
 				if (entry) {
 					await this._acceptStreamingEditsStart(responseModel, undoStopId, resource);
 				}
@@ -673,7 +675,9 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 				await entry?.save();
 
 				// Take snapshot of current state
-				snapshots.set(resource, entry && this._getCurrentTextOrNotebookSnapshot(entry));
+				const snapshotValue = entry && this._getCurrentTextOrNotebookSnapshot(entry);
+				this._logService.info(`[ChatEditingSession] startExternalEdits: resource=${resource.path}, snapshotLength=${snapshotValue?.length ?? 'undefined'}`);
+				snapshots.set(resource, snapshotValue);
 				entry?.startExternalEdit();
 				acquiredLock.complete();
 
@@ -698,6 +702,7 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 
 	async stopExternalEdits(responseModel: IChatResponseModel, operationId: number): Promise<IChatProgress[]> {
 		const operation = this._externalEditOperations.get(operationId);
+		this._logService.info(`[ChatEditingSession] stopExternalEdits ENTER: opId=${operationId}, hasOperation=${!!operation}`);
 		if (!operation) {
 			this._logService.warn(`stopExternalEdits called for unknown operation ${operationId}`);
 			return [];
@@ -711,11 +716,14 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 			// For each resource, compute the diff and create edit parts
 			for (const [resource, beforeSnapshot] of operation.snapshots) {
 				let entry = this._getEntry(resource);
+				this._logService.info(`[ChatEditingSession] stopExternalEdits: resource=${resource.path}, hasEntry=${!!entry}, beforeSnapshotLength=${beforeSnapshot?.length ?? 'undefined'}`);
 
 				// Files that did not exist on disk before may not exist in our working
 				// set yet. Create those if that's the case.
 				if (!entry && beforeSnapshot === undefined) {
+					this._logService.info(`[ChatEditingSession] stopExternalEdits: new file detected, creating entry for ${resource.path}`);
 					entry = await this._getOrCreateModifiedFileEntry(resource, NotExistBehavior.Abort, this._getTelemetryInfoForModel(responseModel), '');
+					this._logService.info(`[ChatEditingSession] stopExternalEdits: new file entry created=${!!entry} for ${resource.path}`);
 					if (entry) {
 						entry.startExternalEdit();
 						entry.acceptStreamingEditsStart(responseModel, operation.undoStopId, undefined);
@@ -731,10 +739,12 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 
 				// Take new snapshot after external changes
 				const afterSnapshot = this._getCurrentTextOrNotebookSnapshot(entry);
+				this._logService.info(`[ChatEditingSession] stopExternalEdits: resource=${resource.path}, afterSnapshotLength=${afterSnapshot?.length ?? 'undefined'}, beforeSnapshotLength=${beforeSnapshot?.length ?? 'undefined'}`);
 
 				// Compute edits from the snapshots
 				let edits: (TextEdit | ICellEditOperation)[] = [];
 				if (beforeSnapshot === undefined) {
+					this._logService.info(`[ChatEditingSession] stopExternalEdits: NEW FILE path, recording FileOperationType.Create for ${resource.path}`);
 					this._timeline.recordFileOperation({
 						type: FileOperationType.Create,
 						uri: resource,
@@ -745,6 +755,7 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 					});
 				} else {
 					edits = await entry.computeEditsFromSnapshots(beforeSnapshot, afterSnapshot);
+					this._logService.info(`[ChatEditingSession] stopExternalEdits: EXISTING FILE, computed ${edits.length} edits for ${resource.path}`);
 					this._recordEditOperations(entry, resource, edits, responseModel);
 				}
 
@@ -1086,6 +1097,7 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 	private async _createModifiedFileEntry(resource: URI, telemetryInfo: IModifiedEntryTelemetryInfo, ifNotExists: NotExistBehavior, initialContent: string | undefined): Promise<AbstractChatEditingModifiedFileEntry | undefined>;
 
 	private async _createModifiedFileEntry(resource: URI, telemetryInfo: IModifiedEntryTelemetryInfo, ifNotExists: NotExistBehavior, initialContent: string | undefined): Promise<AbstractChatEditingModifiedFileEntry | undefined> {
+		this._logService.info(`[ChatEditingSession] _createModifiedFileEntry: resource=${resource.path}, ifNotExists=${ifNotExists}, hasInitialContent=${initialContent !== undefined}`);
 		const multiDiffEntryDelegate = {
 			collapse: (transaction: ITransaction | undefined) => this._collapse(resource, transaction),
 			recordOperation: (operation: Mutable<FileOperation>) => {
@@ -1104,8 +1116,11 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 		};
 
 		try {
-			return await doCreate(ChatEditKind.Modified);
+			const result = await doCreate(ChatEditKind.Modified);
+			this._logService.info(`[ChatEditingSession] _createModifiedFileEntry: doCreate succeeded for ${resource.path}`);
+			return result;
 		} catch (err) {
+			this._logService.info(`[ChatEditingSession] _createModifiedFileEntry: doCreate failed for ${resource.path}, ifNotExists=${ifNotExists}, err=${err}`);
 			if (ifNotExists === NotExistBehavior.Abort) {
 				return undefined;
 			}
