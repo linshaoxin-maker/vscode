@@ -111,8 +111,7 @@ export function registerMoveActions() {
 		appendOpenChatInViewMenuItem(id, localize('interactiveSession.openInPanel.label', "Move Chat into Panel"), Codicon.layoutPanelDock, ChatContextKeys.panelLocation.isEqualTo(ViewContainerLocation.Panel));
 	});
 
-	// [ChipOS] Toggle Maximize Chat — hides Editor/Sidebar/Panel, AuxiliaryBar fills the window
-	const chatMaximizedKey = new RawContextKey<boolean>('chipos.chatMaximized', false);
+	// [ChipOS] Toggle Maximize Chat — uses upstream AuxiliaryBar maximize (proper state save/restore)
 	registerAction2(class ToggleMaximizeChatAction extends Action2 {
 		static readonly ID = 'workbench.action.chat.toggleMaximize';
 
@@ -124,7 +123,7 @@ export function registerMoveActions() {
 				precondition: ChatContextKeys.enabled,
 				icon: Codicon.screenFull,
 				toggled: {
-					condition: chatMaximizedKey,
+					condition: ContextKeyExpr.has('auxiliaryBarMaximized'),
 					icon: Codicon.screenNormal,
 					tooltip: localize('chat.restore', "Restore Chat"),
 				},
@@ -139,23 +138,8 @@ export function registerMoveActions() {
 
 		async run(accessor: ServicesAccessor) {
 			const layoutService = accessor.get(IWorkbenchLayoutService);
-			const contextKeyService = accessor.get(IContextKeyService);
-			const maximizedCtx = chatMaximizedKey.bindTo(contextKeyService);
-			const isMaximized = maximizedCtx.get();
-
-			if (isMaximized) {
-				// Restore: show Editor and Panel back
-				layoutService.setPartHidden(false, Parts.EDITOR_PART);
-				layoutService.setPartHidden(false, Parts.PANEL_PART);
-				maximizedCtx.set(false);
-				console.log('[ChipOS] Chat: restored from maximized');
-			} else {
-				// Maximize: hide Editor and Panel, AuxiliaryBar fills remaining space
-				layoutService.setPartHidden(true, Parts.EDITOR_PART);
-				layoutService.setPartHidden(true, Parts.PANEL_PART);
-				maximizedCtx.set(true);
-				console.log('[ChipOS] Chat: maximized (Editor + Panel hidden)');
-			}
+			layoutService.toggleMaximizedAuxiliaryBar();
+			console.log('[ChipOS] Chat: toggleMaximizedAuxiliaryBar called');
 		}
 	});
 }
