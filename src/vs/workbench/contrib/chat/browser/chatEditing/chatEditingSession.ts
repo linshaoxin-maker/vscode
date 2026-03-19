@@ -637,8 +637,8 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 		}
 	}
 
-	async startExternalEdits(responseModel: IChatResponseModel, operationId: number, resources: URI[], undoStopId: string): Promise<IChatProgress[]> {
-		this._logService.info(`[ChatEditingSession] startExternalEdits ENTER: opId=${operationId}, resources=[${resources.map(r => r.path).join(',')}], undoStopId=${undoStopId}`);
+	async startExternalEdits(responseModel: IChatResponseModel, operationId: number, resources: URI[], undoStopId: string, beforeSnapshots?: ResourceMap<string>): Promise<IChatProgress[]> {
+		this._logService.info(`[ChatEditingSession] startExternalEdits ENTER: opId=${operationId}, resources=[${resources.map(r => r.path).join(',')}], undoStopId=${undoStopId}, hasBeforeSnapshots=${!!beforeSnapshots}`);
 		const snapshots = new ResourceMap<string | undefined>();
 		const acquiredLockPromises: DeferredPromise<void>[] = [];
 		const releaseLockPromises: DeferredPromise<void>[] = [];
@@ -674,9 +674,10 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 				// Save to disk to ensure disk state is current before external edits
 				await entry?.save();
 
-				// Take snapshot of current state
-				const snapshotValue = entry && this._getCurrentTextOrNotebookSnapshot(entry);
-				this._logService.info(`[ChatEditingSession] startExternalEdits: resource=${resource.path}, snapshotLength=${snapshotValue?.length ?? 'undefined'}`);
+				// Take snapshot of current state — prefer caller-provided snapshot if available
+				const callerSnapshot = beforeSnapshots?.get(resource);
+				const snapshotValue = callerSnapshot !== undefined ? callerSnapshot : (entry && this._getCurrentTextOrNotebookSnapshot(entry));
+				this._logService.info(`[ChatEditingSession] startExternalEdits: resource=${resource.path}, snapshotLength=${snapshotValue?.length ?? 'undefined'}, usedCallerSnapshot=${callerSnapshot !== undefined}`);
 				snapshots.set(resource, snapshotValue);
 				entry?.startExternalEdit();
 				acquiredLock.complete();
@@ -720,7 +721,7 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 
 				// Files that did not exist on disk before may not exist in our working
 				// set yet. Create those if that's the case.
-				if (!entry && beforeSnapshot === undefined) {
+				if (!entry && (beforeSnapshot === undefined || beforeSnapshot === '')) {
 					this._logService.info(`[ChatEditingSession] stopExternalEdits: new file detected, creating entry for ${resource.path}`);
 					entry = await this._getOrCreateModifiedFileEntry(resource, NotExistBehavior.Abort, this._getTelemetryInfoForModel(responseModel), '');
 					this._logService.info(`[ChatEditingSession] stopExternalEdits: new file entry created=${!!entry} for ${resource.path}`);

@@ -2093,6 +2093,19 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		const activeEditorPane = this.activeEditorPane;
 		if (activeEditorPane instanceof EditorPane) {
 			const editorScopedContextKeyService = activeEditorPane.scopedContextKeyService ?? this.scopedContextKeyService;
+
+			// [ChipOS DEBUG] Log context keys for editor title menu
+			try {
+				const langId = editorScopedContextKeyService.getContextKeyValue<string>('editorLangId');
+				const notebookFocused = editorScopedContextKeyService.getContextKeyValue<boolean>('notebookEditorFocused');
+				const hasCustomMdPreview = editorScopedContextKeyService.getContextKeyValue<boolean>('hasCustomMarkdownPreview');
+				const activeWebviewPanelId = editorScopedContextKeyService.getContextKeyValue<string>('activeWebviewPanelId');
+				const activeCustomEditorId = editorScopedContextKeyService.getContextKeyValue<string>('activeCustomEditorId');
+				console.log(`[ChipOS EditorTitle DEBUG] editorLangId=${langId}, notebookEditorFocused=${notebookFocused}, hasCustomMarkdownPreview=${hasCustomMdPreview}, activeWebviewPanelId=${activeWebviewPanelId}, activeCustomEditorId=${activeCustomEditorId}, scopedContextKeyService=${activeEditorPane.scopedContextKeyService ? 'from-editor' : 'from-group'}`);
+			} catch (e) {
+				console.log('[ChipOS EditorTitle DEBUG] Error reading context keys:', e);
+			}
+
 			const editorTitleMenu = disposables.add(this.menuService.createMenu(menuId, editorScopedContextKeyService, { emitEventsForSubmenuChanges: true, eventDebounceDelay: 0 }));
 			onDidChange = editorTitleMenu.onDidChange;
 
@@ -2103,6 +2116,12 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 				'navigation',
 				shouldInlineGroup
 			);
+
+			// [ChipOS DEBUG] Log resolved actions
+			console.log(`[ChipOS EditorTitle DEBUG] Resolved actions: primary=${actions.primary.length}, secondary=${actions.secondary.length}`);
+			for (const a of actions.primary) {
+				console.log(`[ChipOS EditorTitle DEBUG]   primary action: ${a.id}`);
+			}
 		} else {
 			// If there is no active pane in the group (it's the last group and it's empty)
 			// Trigger the change event when the active editor changes

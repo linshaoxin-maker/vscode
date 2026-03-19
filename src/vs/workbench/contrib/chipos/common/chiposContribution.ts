@@ -130,6 +130,8 @@ const enum ChipOSCommandId {
 	UndoAllFileChanges = 'chipos.undoAllFileChanges',
 	ClearFileChanges = 'chipos.clearFileChanges',
 	SaveContent = 'chipos.saveContent',
+	MarkdownPreviewToSide = 'chipos.markdownPreviewToSide',
+	MarkdownShowSource = 'chipos.markdownShowSource',
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────────
@@ -261,6 +263,19 @@ KeybindingsRegistry.registerKeybindingRule({
 	when: ContextKeyExpr.has('chatIsVisible'),
 });
 
+// ── Markdown Preview / Source Commands (delegate to built-in extension) ──────
+CommandsRegistry.registerCommand(ChipOSCommandId.MarkdownPreviewToSide, accessor => {
+	console.log('[ChipOS] MarkdownPreviewToSide command triggered');
+	const commandService = accessor.get(ICommandService);
+	commandService.executeCommand('markdown.showPreviewToSide');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.MarkdownShowSource, accessor => {
+	console.log('[ChipOS] MarkdownShowSource command triggered');
+	const commandService = accessor.get(ICommandService);
+	commandService.executeCommand('markdown.showSource');
+});
+
 // ── Menu Contributions ─────────────────────────────────────────────────────────
 
 MenuRegistry.appendMenuItems([
@@ -374,6 +389,37 @@ MenuRegistry.appendMenuItems([
 			command: { id: ChipOSCommandId.OpenSettings, title: localize('chipos.prefMenu', 'ChipOS Settings'), icon: Codicon.gear },
 			group: '2_configuration',
 			order: 5,
+		},
+	},
+	// ── Markdown Preview / Source buttons in Editor Title ──────────────────
+	// DEBUG: when set to true() to always show — will restrict after confirming it works
+	{
+		id: MenuId.EditorTitle,
+		item: {
+			command: {
+				id: ChipOSCommandId.MarkdownPreviewToSide,
+				title: localize('chipos.markdownPreview', 'Open Preview to the Side'),
+				icon: Codicon.openPreview,
+			},
+			when: ContextKeyExpr.true(),
+			group: 'navigation',
+			order: -100,
+		},
+	},
+	{
+		id: MenuId.EditorTitle,
+		item: {
+			command: {
+				id: ChipOSCommandId.MarkdownShowSource,
+				title: localize('chipos.markdownSource', 'Show Source'),
+				icon: Codicon.goToFile,
+			},
+			when: ContextKeyExpr.or(
+				ContextKeyExpr.equals('activeWebviewPanelId', 'markdown.preview'),
+				ContextKeyExpr.equals('activeCustomEditorId', 'vscode.markdown.preview.editor'),
+			),
+			group: 'navigation',
+			order: -100,
 		},
 	},
 ]);

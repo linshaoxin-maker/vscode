@@ -2530,29 +2530,28 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		const lastItem = this.listWidget.lastItem;
 
 		const contentHeight = Math.max(0, height - inputHeight - chatSuggestNextWidgetHeight);
-		this.listWidget.layout(contentHeight, width);
 
-		this.welcomeMessageContainer.style.height = `${contentHeight}px`;
+		// If the floating confirmation overlay is present (inserted between list and input),
+		// subtract its height plus extra padding so the list content isn't cramped
+		// against the overlay — gives a comfortable visual gap like Cursor does.
+		const overlayEl = this.container.querySelector<HTMLElement>('.chat-confirmation-floating-buttons');
+		const overlayHeight = overlayEl ? overlayEl.offsetHeight + 80 : 0;
+		const listHeight = Math.max(0, contentHeight - overlayHeight);
+		this.listWidget.layout(listHeight, width);
+
+		this.welcomeMessageContainer.style.height = `${listHeight}px`;
 
 		const lastResponseIsRendering = isResponseVM(lastItem) && lastItem.renderData;
 
-		// If there's a pending confirmation, always reveal it so the action buttons stay visible,
-		// regardless of current scroll position or whether we're at the bottom.
-		const pendingConfirmationItem = this.viewModel?.getItems().find(
-			item => isResponseVM(item) && item.model?.isPendingConfirmation.get()
-		);
-		if (pendingConfirmationItem) {
-			// Try to reveal the exact buttons DOM node for precision; fall back to item-level reveal.
-			const buttonsEl = this.listWidget.domNode.querySelector<HTMLElement>('.chat-confirmation-widget-buttons');
-			if (buttonsEl) {
-				this.revealElement(buttonsEl);
-			} else {
-				this.listWidget.reveal(pendingConfirmationItem as ChatTreeItem, 1);
-			}
-		} else if (lastElementVisible && (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll))) {
+		// Auto-scroll: only scroll to end when the user was already at the bottom.
+		// Skip auto-scroll when the confirmation overlay is present — the overlay
+		// insertion already scrolls to end once, and subsequent layout calls should
+		// not fight with the user's manual scrolling.
+		const shouldScroll = lastElementVisible && (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll));
+		if (shouldScroll && !overlayEl) {
 			this.listWidget.scrollToEnd();
 		}
-		this.listContainer.style.height = `${contentHeight}px`;
+		this.listContainer.style.height = `${listHeight}px`;
 
 		this._onDidChangeHeight.fire(height);
 	}

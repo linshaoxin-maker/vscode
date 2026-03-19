@@ -12,19 +12,24 @@ import { InputBox } from '../../../../../../base/browser/ui/inputbox/inputBox.js
 import { Checkbox } from '../../../../../../base/browser/ui/toggle/toggle.js';
 import { defaultCheckboxStyles, defaultInputBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
+import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
 
 export class ConnectionTab extends Disposable {
 
 	private _statusContainer!: HTMLElement;
 	private readonly _disposables = this._register(new DisposableStore());
+	private readonly _contextViewProvider: IContextViewProvider | undefined;
 
 	constructor(
 		private readonly _container: HTMLElement,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
-		@IContextViewService private readonly _contextViewService: IContextViewService,
+		@IContextViewService contextViewService: IContextViewService,
 	) {
 		super();
+		// IContextViewService may not be available in all editor pane contexts.
+		// InputBox accepts undefined for contextViewProvider, so gracefully degrade.
+		this._contextViewProvider = contextViewService ?? undefined;
 		this._render();
 	}
 
@@ -88,7 +93,7 @@ export class ConnectionTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.manualUrl.desc', 'Set a manual WebSocket URL for development mode. When set, Sidecar auto-start is bypassed. Example: ws://127.0.0.1:8000/ws/agent')));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewService, {
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'ws://127.0.0.1:8000/ws/agent',
 			inputBoxStyles: defaultInputBoxStyles,
 		}));
@@ -111,7 +116,7 @@ export class ConnectionTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.sidecarPort.desc', 'Starting port for the Sidecar backend (auto-increments if occupied).')));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewService, {
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: '8765',
 			type: 'number',
 			inputBoxStyles: defaultInputBoxStyles,

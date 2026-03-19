@@ -377,6 +377,8 @@
 	overflow: hidden;
 	position: relative;
 	/* For the scroll down button */
+	flex: 1;
+	min-height: 0;
 }
 
 .hc-black .interactive-request,
@@ -1775,6 +1777,7 @@ have to be updated for changes to the rules above, or to support more deeply nes
 	flex-direction: column;
 	gap: 4px;
 	position: relative;
+	flex-shrink: 0;
 }
 
 .interactive-session .interactive-input-part.compact {

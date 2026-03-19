@@ -137,22 +137,30 @@ export class ChipOSSettingsEditor extends EditorPane {
 		this._activeTabDisposable = store;
 		this._tabInstances.add(store);
 
-		switch (tab) {
-			case 'models':
-				store.add(this._instantiationService.createInstance(ModelsTab, this._contentArea));
-				break;
-			case 'features':
-				store.add(this._instantiationService.createInstance(FeaturesTab, this._contentArea));
-				break;
-			case 'connection':
-				store.add(this._instantiationService.createInstance(ConnectionTab, this._contentArea));
-				break;
-			case 'rules':
-				store.add(this._instantiationService.createInstance(RulesTab, this._contentArea));
-				break;
-			case 'beta':
-				store.add(this._instantiationService.createInstance(BetaTab, this._contentArea));
-				break;
+		try {
+			switch (tab) {
+				case 'models':
+					store.add(this._instantiationService.createInstance(ModelsTab, this._contentArea));
+					break;
+				case 'features':
+					store.add(this._instantiationService.createInstance(FeaturesTab, this._contentArea));
+					break;
+				case 'connection':
+					store.add(this._instantiationService.createInstance(ConnectionTab, this._contentArea));
+					break;
+				case 'rules':
+					store.add(this._instantiationService.createInstance(RulesTab, this._contentArea));
+					break;
+				case 'beta':
+					store.add(this._instantiationService.createInstance(BetaTab, this._contentArea));
+					break;
+			}
+		} catch (err) {
+			const errorEl = dom.append(this._contentArea, dom.$('.chipos-settings-empty'));
+			const icon = dom.append(errorEl, dom.$('.codicon'));
+			icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.warning));
+			dom.append(errorEl, dom.$('span', undefined, localize('chipos.settings.tabError', 'Failed to load {0} tab: {1}', tab, String(err))));
+			console.error(`[ChipOS Settings] Failed to create ${tab} tab:`, err);
 		}
 	}
 

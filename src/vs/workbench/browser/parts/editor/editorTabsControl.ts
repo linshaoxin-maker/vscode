@@ -252,6 +252,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 
 	protected updateEditorActionsToolbar(): void {
 		if (!this.editorActionsEnabled) {
+			console.log('[ChipOS EditorTitle DEBUG] updateEditorActionsToolbar: editorActionsEnabled=false, skipping');
 			return;
 		}
 
@@ -262,6 +263,13 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 
 		const editorActionsToolbar = assertReturnsDefined(this.editorActionsToolbar);
 		const { primary, secondary } = this.prepareEditorActions(editorActions.actions);
+
+		// [ChipOS DEBUG] Log after prepareEditorActions
+		console.log(`[ChipOS EditorTitle DEBUG] After prepareEditorActions: primary=${primary.length}, secondary=${secondary.length}`);
+		for (const a of primary) {
+			console.log(`[ChipOS EditorTitle DEBUG]   final primary action: ${a.id}`);
+		}
+
 		editorActionsToolbar.setActions(prepareActions(primary), prepareActions(secondary));
 	}
 

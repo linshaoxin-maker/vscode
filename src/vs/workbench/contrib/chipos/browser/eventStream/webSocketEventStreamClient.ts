@@ -314,7 +314,7 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 
 			// ── Tool lifecycle ──
 			case 'tool_start':
-				this._handleToolStart(msg.data as { tool_name: string; args: unknown; tool_id: string; summary?: string });
+				this._handleToolStart(msg.data as { tool_name: string; args: unknown; tool_id: string; summary?: string; snapshot_content?: string });
 				break;
 			case 'tool_result':
 				this._handleToolResult(msg.data as { tool_name: string; content: string; content_type?: string; tool_id?: string; summary?: string; is_error?: boolean });
@@ -464,7 +464,7 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 
 	// ── tool_start / tool_result ─────────────────────────────────────────────
 
-	private _handleToolStart(data: { tool_name: string; args: unknown; tool_id: string; summary?: string }): void {
+	private _handleToolStart(data: { tool_name: string; args: unknown; tool_id: string; summary?: string; snapshot_content?: string }): void {
 		this._emit({
 			event_id: nextEventId(),
 			event_type: AgentEventType.ToolCall,
@@ -474,6 +474,7 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 				arguments: (typeof data.args === 'object' && data.args !== null ? data.args : {}) as Record<string, unknown>,
 				call_id: data.tool_id || `tc_${Date.now()}`,
 				summary: data.summary,
+				snapshot_content: data.snapshot_content,
 			},
 		} as IToolCallEvent);
 	}

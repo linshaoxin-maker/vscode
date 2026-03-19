@@ -58,6 +58,7 @@ export interface IToolCallPayload {
 	readonly arguments: Record<string, unknown>;
 	readonly call_id: string;
 	readonly summary?: string;
+	readonly snapshot_content?: string;
 }
 
 export interface IToolResultPayload {

@@ -19,6 +19,7 @@ import { IEditorService } from '../../../../../services/editor/common/editorServ
 import { IChatProgressRenderableResponseContent } from '../../../common/model/chatModel.js';
 import { ChatSendResult, IChatConfirmation, IChatSendRequestOptions, IChatService } from '../../../common/chatService/chatService.js';
 import { IChatResponseViewModel, isResponseVM } from '../../../common/model/chatViewModel.js';
+import { LocalChatSessionUri } from '../../../common/model/chatUri.js';
 import { IChatWidget, IChatWidgetService } from '../../chat.js';
 import { IChatContentPart, IChatContentPartRenderContext } from './chatContentParts.js';
 import './media/chatConfirmationWidget.css';
@@ -27,6 +28,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 	public readonly domNode: HTMLElement;
 	private _tempFileUri: URI | undefined;
 	private _overlay: HTMLElement | undefined;
+	private readonly _sessionResource: URI | undefined;
 
 	constructor(
 		confirmation: IChatConfirmation,
@@ -41,6 +43,9 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		super();
 
 		const element = context.element;
+		this._sessionResource = isResponseVM(element) ? element.sessionResource : undefined;
+		const sessionId = this._sessionResource ? LocalChatSessionUri.parseLocalSessionId(this._sessionResource) : undefined;
+		console.log('[ChatTempFile] ConfirmationContentPart created, sessionId:', sessionId, 'title:', confirmation.title);
 		const widget = isResponseVM(element) ? chatWidgetService.getWidgetBySessionResource(element.sessionResource) : undefined;
 
 		// ── Card DOM (title + preview, no buttons) ──
@@ -81,15 +86,22 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		}));
 
 		// ── Floating buttons ──
-		if (!confirmation.isUsed) {
+		// Only show if:
+		// 1. confirmation is not yet used (user hasn't clicked)
+		// 2. response is still pending confirmation (backend is waiting)
+		// 3. no subsequent user request exists after this response in the session
+		//    (in historical sessions, the user's confirmation action creates a new request)
+		const isPending = isResponseVM(element) && element.model?.isPendingConfirmation?.get();
+		const items = widget?.viewModel?.getItems();
+		const elementIdx = items ? items.findIndex(item => item === element) : -1;
+		const hasFollowUpRequest = elementIdx >= 0 && items!.slice(elementIdx + 1).some(item => !isResponseVM(item));
+		if (!confirmation.isUsed && isPending && !hasFollowUpRequest) {
 			// Find the list container to attach the floating overlay
 			let target = widget?.domNode?.querySelector<HTMLElement>('.interactive-list');
 			if (!target) {
 				// Fallback: search from document root
 				target = document.querySelector<HTMLElement>('.interactive-list');
 			}
-			// console.log('[ConfirmCard] widget:', !!widget, 'target:', !!target, 'isUsed:', confirmation.isUsed);
-
 			if (target) {
 				this._createFloatingButtons(target, confirmation, element, widget);
 			}
@@ -102,24 +114,24 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		element: IChatResponseViewModel | any,
 		widget: IChatWidget | undefined,
 	): void {
-		// Ensure container is positioned
-		const pos = getComputedStyle(container).position;
-		if (pos === 'static') {
-			container.style.position = 'relative';
-		}
-
 		const overlay = document.createElement('div');
 		overlay.className = 'chat-confirmation-floating-buttons';
 		this._overlay = overlay;
 
 		const buttonLabels = confirmation.buttons ?? [localize('accept', "Accept"), localize('dismiss', "Dismiss")];
 
+		// ── Title row ──
+		const titleRow = document.createElement('div');
+		titleRow.className = 'chat-confirm-title';
+		titleRow.textContent = confirmation.title;
+		overlay.appendChild(titleRow);
+
 		// ── Options row: radio-style selectable chips ──
 		const optionsRow = document.createElement('div');
 		optionsRow.className = 'chat-confirm-options';
 		overlay.appendChild(optionsRow);
 
-		let selectedIndex = 0; // default: first option
+		let selectedIndex = 0;
 		const chips: HTMLElement[] = [];
 
 		const updateSelection = (idx: number) => {
@@ -132,12 +144,10 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		for (let i = 0; i < buttonLabels.length; i++) {
 			const chip = document.createElement('div');
 			chip.className = 'chat-confirm-chip';
-			// Letter label (A, B, C, ...)
 			const letterSpan = document.createElement('span');
 			letterSpan.className = 'chat-confirm-chip-letter';
-			letterSpan.textContent = String.fromCharCode(65 + i); // A, B, C...
+			letterSpan.textContent = String.fromCharCode(65 + i);
 			chip.appendChild(letterSpan);
-			// Label text
 			const labelSpan = document.createElement('span');
 			labelSpan.textContent = buttonLabels[i];
 			chip.appendChild(labelSpan);
@@ -149,7 +159,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			chips.push(chip);
 		}
 
-		// ── Action row: Skip (Esc) + Continue (→) ──
+		// ── Action row: Skip + Continue (both are buttons) ──
 		const actionsRow = document.createElement('div');
 		actionsRow.className = 'chat-confirm-actions';
 		overlay.appendChild(actionsRow);
@@ -178,29 +188,23 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			}
 		};
 
-		// Skip — plain text link style (like Cursor)
-		const skipEl = document.createElement('span');
-		skipEl.className = 'chat-confirm-skip';
-		skipEl.textContent = 'Skip';
-		const escHint = document.createElement('span');
-		escHint.className = 'chat-confirm-keyhint';
-		escHint.textContent = 'Esc';
-		skipEl.appendChild(escHint);
-		skipEl.addEventListener('click', () => {
-			const dismissLabel = buttonLabels.length > 1 ? buttonLabels[buttonLabels.length - 1] : 'Dismiss';
-			sendConfirmation(dismissLabel, true);
-		});
-		actionsRow.appendChild(skipEl);
-
-		// Continue button — primary style with arrow hint
-		const continueBtn = this._register(new Button(actionsRow, {
+		// Skip button — secondary style
+		const skipBtn = this._register(new Button(actionsRow, {
 			...defaultButtonStyles, small: true, secondary: true,
 		}));
-		continueBtn.label = 'Continue';
-		const arrowHint = document.createElement('span');
-		arrowHint.className = 'chat-confirm-keyhint';
-		arrowHint.textContent = '→';
-		(continueBtn.element as HTMLElement).appendChild(arrowHint);
+		skipBtn.label = 'Skip';
+		skipBtn.element.classList.add('chat-confirm-btn-skip');
+		this._register(skipBtn.onDidClick(() => {
+			const dismissLabel = buttonLabels.length > 1 ? buttonLabels[buttonLabels.length - 1] : 'Dismiss';
+			sendConfirmation(dismissLabel, true);
+		}));
+
+		// Continue button — primary style, prominent
+		const continueBtn = this._register(new Button(actionsRow, {
+			...defaultButtonStyles, small: true, secondary: false,
+		}));
+		continueBtn.label = 'Submit →';
+		continueBtn.element.classList.add('chat-confirm-btn-continue');
 		this._register(continueBtn.onDidClick(() => {
 			const selectedLabel = buttonLabels[selectedIndex];
 			sendConfirmation(selectedLabel, selectedIndex > 0);
@@ -230,7 +234,31 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		document.addEventListener('keydown', keyHandler);
 		this._register({ dispose: () => document.removeEventListener('keydown', keyHandler) });
 
-		container.appendChild(overlay);
+		// Insert overlay AFTER the list container (between list and input),
+		// so it participates in flex layout and the list shrinks automatically.
+		container.parentElement?.insertBefore(overlay, container.nextSibling);
+
+		// Trigger re-layout after overlay is in the DOM so the list height
+		// calculation in chatWidget.layout() accounts for the overlay height.
+		// Also add bottom padding to the list's scroll area so content isn't
+		// hidden behind the overlay (similar to how Cursor handles it).
+		requestAnimationFrame(() => {
+			if (widget) {
+				const dim = (widget as any).bodyDimension;
+				if (dim) {
+					(widget as any).layout(dim.height, dim.width);
+				}
+				// Scroll list to bottom so the confirmation context is visible
+				(widget as any).listWidget?.scrollToEnd?.();
+			}
+		});
+
+		// Clean up on dispose
+		this._register({
+			dispose: () => {
+				overlay.remove();
+			},
+		});
 	}
 
 	private _getPreview(content: string, maxLines: number): string {
@@ -252,11 +280,21 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		const root = folders[0].uri;
 		const safeName = title.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_').slice(0, 60);
 		const fileName = `${safeName}_${Date.now()}.md`;
-		const fileUri = URI.joinPath(root, '.coderust', 'tmp', fileName);
+
+		// Use sessionId as subdirectory so temp files can be cleaned up per session
+		const sessionId = this._sessionResource
+			? LocalChatSessionUri.parseLocalSessionId(this._sessionResource)
+			: undefined;
+		const fileUri = sessionId
+			? URI.joinPath(root, '.coderust', 'tmp', sessionId, fileName)
+			: URI.joinPath(root, '.coderust', 'tmp', fileName);
+
 		try {
 			await this.fileService.writeFile(fileUri, VSBuffer.fromString(`# ${title}\n\n${content}`));
+			console.log('[ChatTempFile] Wrote temp file:', fileUri.toString(), 'sessionId:', sessionId ?? '(none)');
 			return fileUri;
-		} catch {
+		} catch (err) {
+			console.warn('[ChatTempFile] Failed to write temp file:', fileUri.toString(), err);
 			return undefined;
 		}
 	}
@@ -272,6 +310,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 	override dispose(): void {
 		this._overlay?.remove();
 		if (this._tempFileUri) {
+			console.log('[ChatTempFile] Disposing, deleting temp file:', this._tempFileUri.toString());
 			this.fileService.del(this._tempFileUri).catch(() => { /* ignore */ });
 		}
 		super.dispose();

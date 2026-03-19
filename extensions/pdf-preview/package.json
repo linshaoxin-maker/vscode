@@ -1,0 +1,109 @@
+{
+  "name": "pdf-preview",
+  "displayName": "PDF Preview",
+  "description": "Provides PDF file preview with annotation and highlight support",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "version": "1.0.0",
+  "publisher": "chipos",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "main": "./out/extension",
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "pdfPreview.previewEditor",
+        "displayName": "PDF Preview",
+        "priority": "builtin",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "pdfPreview.toggleHighlight",
+        "title": "Toggle Highlight Mode",
+        "category": "PDF Preview",
+        "icon": "$(symbol-color)"
+      },
+      {
+        "command": "pdfPreview.clearAnnotations",
+        "title": "Clear All Annotations",
+        "category": "PDF Preview"
+      },
+      {
+        "command": "pdfPreview.zoomIn",
+        "title": "Zoom In",
+        "category": "PDF Preview",
+        "icon": "$(zoom-in)"
+      },
+      {
+        "command": "pdfPreview.zoomOut",
+        "title": "Zoom Out",
+        "category": "PDF Preview",
+        "icon": "$(zoom-out)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "pdfPreview.toggleHighlight",
+          "when": "activeCustomEditorId == 'pdfPreview.previewEditor'",
+          "group": "navigation"
+        },
+        {
+          "command": "pdfPreview.zoomIn",
+          "when": "activeCustomEditorId == 'pdfPreview.previewEditor'",
+          "group": "navigation"
+        },
+        {
+          "command": "pdfPreview.zoomOut",
+          "when": "activeCustomEditorId == 'pdfPreview.previewEditor'",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "pdfPreview.toggleHighlight",
+          "when": "activeCustomEditorId == 'pdfPreview.previewEditor'"
+        },
+        {
+          "command": "pdfPreview.clearAnnotations",
+          "when": "activeCustomEditorId == 'pdfPreview.previewEditor'"
+        },
+        {
+          "command": "pdfPreview.zoomIn",
+          "when": "activeCustomEditorId == 'pdfPreview.previewEditor'"
+        },
+        {
+          "command": "pdfPreview.zoomOut",
+          "when": "activeCustomEditorId == 'pdfPreview.previewEditor'"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "gulp compile-extension:pdf-preview",
+    "watch": "gulp watch-extension:pdf-preview"
+  },
+  "devDependencies": {
+    "@types/node": "22.x"
+  }
+}
