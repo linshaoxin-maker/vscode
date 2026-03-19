@@ -6,6 +6,7 @@
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
+import { ResourceMap } from '../../../../../base/common/map.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
@@ -339,7 +340,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										: URI.file(filePath);
 								this._toolFileArgs.set(key, filePath);
 								// Start external edit — snapshot file before backend writes
-								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId);
+								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
 							}
 						}
 						break;
@@ -683,15 +684,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
 								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
 								if (filePath && request) {
-									const workspaceRoot = this._getWorkspaceRoot();
-									const fileUri = filePath.startsWith('/')
-										? URI.file(filePath)
-										: workspaceRoot
-											? URI.joinPath(URI.file(workspaceRoot), filePath)
-											: URI.file(filePath);
-									this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
-									this._toolFileArgs.set(subKey, filePath);
-									this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId);
+									// Dedup: skip if this file already has a pending external edit
+									const alreadyTracked = [...this._toolFileArgs.entries()].some(
+										([k, v]) => v === filePath && this._externalEditOps.has(k)
+									);
+									if (alreadyTracked) {
+										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: SKIPPED (already tracked) file=${filePath}, subKey=${subKey}`);
+									} else {
+										const workspaceRoot = this._getWorkspaceRoot();
+										const fileUri = filePath.startsWith('/')
+											? URI.file(filePath)
+											: workspaceRoot
+												? URI.joinPath(URI.file(workspaceRoot), filePath)
+												: URI.file(filePath);
+										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
+										this._toolFileArgs.set(subKey, filePath);
+										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
+									}
 								}
 							} else {
 								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, isFileWrite=${ChipOSChatAgent._isFileWriteTool(p.tool_name)}, hasArgs=${!!p.args}`);
@@ -1060,7 +1069,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										: URI.file(filePath);
 								this._toolFileArgs.set(key, filePath);
 								// Start external edit — snapshot file before backend writes
-								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId);
+								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
 							}
 						}
 						break;
@@ -1248,15 +1257,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
 								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
 								if (filePath && request) {
-									const workspaceRoot = this._getWorkspaceRoot();
-									const fileUri = filePath.startsWith('/')
-										? URI.file(filePath)
-										: workspaceRoot
-											? URI.joinPath(URI.file(workspaceRoot), filePath)
-											: URI.file(filePath);
-									this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
-									this._toolFileArgs.set(subKey, filePath);
-									this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId);
+									// Dedup: skip if this file already has a pending external edit
+									const alreadyTracked = [...this._toolFileArgs.entries()].some(
+										([k, v]) => v === filePath && this._externalEditOps.has(k)
+									);
+									if (alreadyTracked) {
+										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: SKIPPED (already tracked) file=${filePath}, subKey=${subKey}`);
+									} else {
+										const workspaceRoot = this._getWorkspaceRoot();
+										const fileUri = filePath.startsWith('/')
+											? URI.file(filePath)
+											: workspaceRoot
+												? URI.joinPath(URI.file(workspaceRoot), filePath)
+												: URI.file(filePath);
+										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
+										this._toolFileArgs.set(subKey, filePath);
+										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
+									}
 								}
 							} else {
 								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, isFileWrite=${ChipOSChatAgent._isFileWriteTool(p.tool_name)}, hasArgs=${!!p.args}`);
@@ -1679,27 +1696,34 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	// ── FEAT-29: Render rich confirm message based on card_type ──
 
 	private _renderConfirmMessage(p: IConfirmRequestPayload): string {
+		console.log('[ConfirmMsg] card_type:', p.card_type, 'has p.message:', !!p.message, 'card_data keys:', Object.keys(p.card_data || {}));
 		if (p.message) {
-			return p.message;
+			console.log('[ConfirmMsg] Using p.message (first 200 chars):', p.message.slice(0, 200));
 		}
 
+		// If p.message exists but card_data also has full content, prefer the full content
+		// for spec_confirm and arch_confirm so the temp file has complete details.
 		const data = p.card_data;
 		switch (p.card_type) {
 			case 'spec_confirm': {
-				const specText = data.spec_result ?? data.analysis ?? data.result;
-				if (typeof specText === 'string') {
-					return ChipOSChatAgent._wrapInCollapsibleDetails(specText, 3, 'Show full spec');
+				const specText = data?.spec_result ?? data?.analysis ?? data?.result;
+				console.log('[ConfirmMsg] spec_confirm: specText type:', typeof specText, 'length:', typeof specText === 'string' ? specText.length : 'N/A');
+				if (typeof specText === 'string' && specText.length > 0) {
+					return specText;
 				}
-				if (data.summary) { return String(data.summary); }
+				if (p.message) { return p.message; }
+				if (data?.summary) { return String(data.summary); }
 				return 'Spec analysis complete. Review and approve to continue.';
 			}
 
 			case 'arch_confirm': {
-				const archText = data.arch_result ?? data.analysis ?? data.result;
-				if (typeof archText === 'string') {
-					return ChipOSChatAgent._wrapInCollapsibleDetails(archText, 3, 'Show full architecture');
+				const archText = data?.arch_result ?? data?.analysis ?? data?.result;
+				console.log('[ConfirmMsg] arch_confirm: archText type:', typeof archText, 'length:', typeof archText === 'string' ? archText.length : 'N/A');
+				if (typeof archText === 'string' && archText.length > 0) {
+					return archText;
 				}
-				if (data.summary) { return String(data.summary); }
+				if (p.message) { return p.message; }
+				if (data?.summary) { return String(data.summary); }
 				return 'Architecture analysis complete. Review and approve to continue.';
 			}
 
@@ -1731,20 +1755,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			default:
 				return JSON.stringify(data, null, 2).slice(0, 500);
 		}
-	}
-
-	/**
-	 * Wrap long text in a collapsible <details> block.
-	 * Shows the first `visibleLines` as a summary; the rest is hidden behind a toggle.
-	 */
-	private static _wrapInCollapsibleDetails(text: string, visibleLines: number, toggleLabel: string): string {
-		const lines = text.split('\n').filter((l: string) => l.trim());
-		if (lines.length <= visibleLines) {
-			return lines.join('\n');
-		}
-		const summary = lines.slice(0, visibleLines).join('\n');
-		const rest = lines.slice(visibleLines).join('\n');
-		return `${summary}\n\n<details><summary>${toggleLabel} (${lines.length - visibleLines} more lines)</summary>\n\n${rest}\n\n</details>`;
 	}
 
 	// ── FEAT-26: Friendly tool name mapping (used by IChatExternalToolInvocationUpdate) ──
@@ -1830,26 +1840,44 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		fileUri: URI,
 		sessionResource: URI,
 		requestId: string,
+		snapshotContent?: string,
 	): void {
-		this._logService.info(`[ChipOS Agent] _startExternalEdit ENTER: toolCallId=${toolCallId}, fileUri=${fileUri.path}, sessionResource=${sessionResource.toString()}, requestId=${requestId}`);
+		// Filter out files in hidden directories (e.g. .cursor/, .git/, .vscode/)
+		// Only check the path relative to workspace root, not the full absolute path
+		const workspaceRoot = this._getWorkspaceRoot();
+		const relativePath = workspaceRoot && fileUri.path.startsWith(workspaceRoot)
+			? fileUri.path.slice(workspaceRoot.length + 1)
+			: fileUri.path;
+		const pathSegments = relativePath.split('/');
+		if (pathSegments.some(seg => seg.startsWith('.') && seg.length > 1)) {
+			this._logService.info(`[ChipOS Agent] _startExternalEdit SKIPPED (hidden dir): ${fileUri.path}, relativePath=${relativePath}`);
+			return;
+		}
+		this._logService.info(`[ChipOS Agent] _startExternalEdit ENTER: toolCallId=${toolCallId}, fileUri=${fileUri.path}, hasSnapshotContent=${snapshotContent !== undefined}, snapshotLen=${snapshotContent?.length ?? 0}`);
 		const editingSession = this._getEditingSession(sessionResource);
 		const responseModel = this._getResponseModel(sessionResource);
-		this._logService.info(`[ChipOS Agent] _startExternalEdit: hasEditingSession=${!!editingSession}, hasResponseModel=${!!responseModel}`);
 		if (!editingSession || !responseModel) {
 			this._logService.warn('[ChipOS Agent] Cannot start external edit: no editing session or response model');
 			return;
 		}
 		const opId = ++this._externalEditOpCounter;
 		this._externalEditOps.set(toolCallId, opId);
-		this._logService.info(`[ChipOS Agent] _startExternalEdit: calling editingSession.startExternalEdits opId=${opId}, file=${fileUri.path}`);
-		const startPromise = editingSession.startExternalEdits(responseModel, opId, [fileUri], requestId).then(() => {
+
+		// Build beforeSnapshots map if we have snapshot content from the backend
+		let beforeSnapshots: ResourceMap<string> | undefined;
+		if (snapshotContent !== undefined) {
+			beforeSnapshots = new ResourceMap<string>();
+			beforeSnapshots.set(fileUri, snapshotContent);
+		}
+
+		this._logService.info(`[ChipOS Agent] _startExternalEdit: calling editingSession.startExternalEdits opId=${opId}, file=${fileUri.path}, hasBeforeSnapshots=${!!beforeSnapshots}`);
+		const startPromise = editingSession.startExternalEdits(responseModel, opId, [fileUri], requestId, beforeSnapshots).then(() => {
 			this._logService.info(`[ChipOS Agent] startExternalEdits RESOLVED opId=${opId} for ${fileUri.path}`);
 		}).catch(err => {
 			this._logService.error(`[ChipOS Agent] startExternalEdits REJECTED for ${fileUri.path}`, err);
 			this._externalEditOps.delete(toolCallId);
 		});
 		this._pendingStartEdits.set(toolCallId, startPromise);
-		this._logService.info(`[ChipOS Agent] _startExternalEdit EXIT: opId=${opId}, pendingStartEdits.size=${this._pendingStartEdits.size}, externalEditOps.size=${this._externalEditOps.size}`);
 	}
 
 	/**
