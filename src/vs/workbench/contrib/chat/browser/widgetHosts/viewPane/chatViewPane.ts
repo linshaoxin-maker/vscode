@@ -134,6 +134,10 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
+		// [ChipOS] Hide the ViewPane header bar to avoid duplicate title/buttons with ChatViewTitleControl
+		this.headerVisible = false;
+		console.log('[ChipOS] ChatViewPane: headerVisible set to false — ViewPane title bar hidden');
+
 		// View state for the ViewPane is currently global per-provider basically,
 		// but some other strictly per-model state will require a separate memento.
 		this.memento = new Memento(`interactive-session-view-${CHAT_PROVIDER_ID}`, this.storageService);

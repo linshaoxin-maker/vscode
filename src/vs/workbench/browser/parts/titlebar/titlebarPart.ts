@@ -489,6 +489,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 						updateSpacerVisibility();
 					}
 				}));
+				console.log('[ChipOS] TitleBar: macOS traffic lights spacer created (70px)');
 			}
 
 			// Toggle AuxiliaryBar (Chat panel) button
@@ -498,11 +499,11 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 			toggleButton.setAttribute('aria-label', localize('toggleChatSidebar', "Toggle Chat Sidebar"));
 			toggleButton.tabIndex = 0;
 			this._register(addDisposableListener(toggleButton, EventType.CLICK, () => {
-				this.layoutService.setPartHidden(
-					this.layoutService.isVisible(Parts.AUXILIARYBAR_PART),
-					Parts.AUXILIARYBAR_PART
-				);
+				const isVisible = this.layoutService.isVisible(Parts.AUXILIARYBAR_PART);
+				console.log('[ChipOS] TitleBar: Toggle AuxiliaryBar clicked, current visible:', isVisible, '-> setting hidden:', isVisible);
+				this.layoutService.setPartHidden(isVisible, Parts.AUXILIARYBAR_PART);
 			}));
+			console.log('[ChipOS] TitleBar: Toggle AuxiliaryBar button created');
 		}
 
 		// Title
@@ -598,6 +599,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 				this.title.textContent = this.windowTitle.value;
 				this.title.style.cursor = 'pointer';
 				this.titleDisposables.add(addDisposableListener(this.title, EventType.CLICK, () => {
+					console.log('[ChipOS] TitleBar: project name clicked, opening Quick Open');
 					this.instantiationService.invokeFunction(accessor => {
 						accessor.get(IQuickInputService).quickAccess.show();
 					});
@@ -608,6 +610,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 						this.updateLayout(this.lastLayoutDimensions); // layout menubar and other renderings in the titlebar
 					}
 				}));
+				console.log('[ChipOS] TitleBar: Command Center hidden, showing plain text title:', this.windowTitle.value);
 			} else {
 				reset(this.title);
 			}

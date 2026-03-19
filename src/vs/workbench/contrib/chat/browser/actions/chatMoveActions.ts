@@ -38,12 +38,17 @@ export function registerMoveActions() {
 				category: CHAT_CATEGORY,
 				precondition: ChatContextKeys.enabled,
 				f1: true,
-				menu: {
+				menu: [{
 					id: MenuId.ViewTitle,
 					when: ContextKeyExpr.equals('view', ChatViewId),
 					order: 0,
 					group: '1_open'
-				},
+				}, {
+					// [ChipOS] Also in ChatViewSessionTitleToolbar (ViewPane header is hidden)
+					id: MenuId.ChatViewSessionTitleToolbar,
+					order: 0,
+					group: '1_open'
+				}],
 			});
 		}
 
@@ -61,12 +66,17 @@ export function registerMoveActions() {
 				category: CHAT_CATEGORY,
 				precondition: ChatContextKeys.enabled,
 				f1: true,
-				menu: {
+				menu: [{
 					id: MenuId.ViewTitle,
 					when: ContextKeyExpr.equals('view', ChatViewId),
 					order: 0,
 					group: '1_open'
-				},
+				}, {
+					// [ChipOS] Also in ChatViewSessionTitleToolbar (ViewPane header is hidden)
+					id: MenuId.ChatViewSessionTitleToolbar,
+					order: 0,
+					group: '1_open'
+				}],
 			});
 		}
 
