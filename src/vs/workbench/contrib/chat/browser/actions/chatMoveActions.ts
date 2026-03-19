@@ -37,13 +37,19 @@ export function registerMoveActions() {
 				title: localize2('chat.openInEditor.label', "Move Chat into Editor Area"),
 				category: CHAT_CATEGORY,
 				precondition: ChatContextKeys.enabled,
+				icon: Codicon.screenFull, // [ChipOS] Show as icon button in title bar
 				f1: true,
-				menu: {
+				menu: [{
 					id: MenuId.ViewTitle,
 					when: ContextKeyExpr.equals('view', ChatViewId),
 					order: 0,
 					group: '1_open'
-				},
+				}, {
+					// [ChipOS] Also show as navigation icon in ChatViewSessionTitleToolbar
+					id: MenuId.ChatViewSessionTitleToolbar,
+					order: 102,
+					group: 'navigation'
+				}],
 			});
 		}
 
