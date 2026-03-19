@@ -8,13 +8,14 @@ import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../../platform/actions/common/actions.js';
-import { ContextKeyExpr, ContextKeyExpression } from '../../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, ContextKeyExpression, IContextKeyService, RawContextKey } from '../../../../../platform/contextkey/common/contextkey.js';
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ActiveEditorContext } from '../../../../common/contextkeys.js';
 import { ViewContainerLocation } from '../../../../common/views.js';
 import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
 import { ACTIVE_GROUP, AUX_WINDOW_GROUP, IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../services/layout/browser/layoutService.js';
 import { isChatViewTitleActionContext } from '../../common/actions/chatActions.js';
 import { ChatContextKeys } from '../../common/actions/chatContextKeys.js';
 import { ChatAgentLocation } from '../../common/constants.js';
@@ -37,19 +38,13 @@ export function registerMoveActions() {
 				title: localize2('chat.openInEditor.label', "Move Chat into Editor Area"),
 				category: CHAT_CATEGORY,
 				precondition: ChatContextKeys.enabled,
-				icon: Codicon.screenFull, // [ChipOS] Show as icon button in title bar
 				f1: true,
-				menu: [{
+				menu: {
 					id: MenuId.ViewTitle,
 					when: ContextKeyExpr.equals('view', ChatViewId),
 					order: 0,
 					group: '1_open'
-				}, {
-					// [ChipOS] Also show as navigation icon in ChatViewSessionTitleToolbar
-					id: MenuId.ChatViewSessionTitleToolbar,
-					order: 102,
-					group: 'navigation'
-				}],
+				},
 			});
 		}
 
@@ -114,6 +109,52 @@ export function registerMoveActions() {
 		appendOpenChatInViewMenuItem(id, localize('interactiveSession.openInSecondarySidebar.label', "Move Chat into Secondary Side Bar"), Codicon.layoutSidebarRightDock, ChatContextKeys.panelLocation.isEqualTo(ViewContainerLocation.AuxiliaryBar));
 		appendOpenChatInViewMenuItem(id, localize('interactiveSession.openInPrimarySidebar.label', "Move Chat into Primary Side Bar"), Codicon.layoutSidebarLeftDock, ChatContextKeys.panelLocation.isEqualTo(ViewContainerLocation.Sidebar));
 		appendOpenChatInViewMenuItem(id, localize('interactiveSession.openInPanel.label', "Move Chat into Panel"), Codicon.layoutPanelDock, ChatContextKeys.panelLocation.isEqualTo(ViewContainerLocation.Panel));
+	});
+
+	// [ChipOS] Toggle Maximize Chat — hides Editor/Sidebar/Panel, AuxiliaryBar fills the window
+	const chatMaximizedKey = new RawContextKey<boolean>('chipos.chatMaximized', false);
+	registerAction2(class ToggleMaximizeChatAction extends Action2 {
+		static readonly ID = 'workbench.action.chat.toggleMaximize';
+
+		constructor() {
+			super({
+				id: ToggleMaximizeChatAction.ID,
+				title: localize2('chat.toggleMaximize.label', "Toggle Maximize Chat"),
+				category: CHAT_CATEGORY,
+				precondition: ChatContextKeys.enabled,
+				icon: Codicon.screenFull,
+				toggled: {
+					condition: chatMaximizedKey.toContextKeyExpression()!,
+					icon: Codicon.screenNormal,
+					tooltip: localize('chat.restore', "Restore Chat"),
+				},
+				f1: true,
+				menu: [{
+					id: MenuId.ChatViewSessionTitleToolbar,
+					order: 102,
+					group: 'navigation'
+				}],
+			});
+		}
+
+		async run(accessor: ServicesAccessor) {
+			const layoutService = accessor.get(IWorkbenchLayoutService);
+			const contextKeyService = accessor.get(IContextKeyService);
+			const maximizedCtx = chatMaximizedKey.bindTo(contextKeyService);
+			const isMaximized = maximizedCtx.get();
+
+			if (isMaximized) {
+				// Restore: show Editor area back
+				layoutService.setPartHidden(false, Parts.EDITOR_PART);
+				maximizedCtx.set(false);
+				console.log('[ChipOS] Chat: restored from maximized');
+			} else {
+				// Maximize: hide Editor area, AuxiliaryBar fills remaining space
+				layoutService.setPartHidden(true, Parts.EDITOR_PART);
+				maximizedCtx.set(true);
+				console.log('[ChipOS] Chat: maximized (Editor hidden)');
+			}
+		}
 	});
 }
 
