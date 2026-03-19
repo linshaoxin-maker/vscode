@@ -382,7 +382,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 		// [ChipOS] Search Agents input — Cursor style
 		const searchContainer = append(sessionsContainer, $('.agent-sessions-search-container'));
-		const searchInput = append(searchContainer, $('input.agent-sessions-search-input'));
+		const searchInput = append(searchContainer, $('input.agent-sessions-search-input')) as HTMLInputElement;
 		searchInput.type = 'text';
 		searchInput.placeholder = localize('searchAgents', "Search Agents...");
 		this._register(addDisposableListener(searchInput, EventType.FOCUS, () => {
