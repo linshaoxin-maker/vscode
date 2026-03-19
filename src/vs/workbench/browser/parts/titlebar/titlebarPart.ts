@@ -850,7 +850,10 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	}
 
 	protected get isCommandCenterVisible() {
-		return !this.isCompact && this.configurationService.getValue<boolean>(LayoutSettings.COMMAND_CENTER) !== false;
+		const commandCenterSetting = this.configurationService.getValue<boolean>(LayoutSettings.COMMAND_CENTER);
+		const result = !this.isCompact && commandCenterSetting !== false;
+		console.log('[ChipOS] TitleBar: isCommandCenterVisible =', result, '(isCompact:', this.isCompact, ', commandCenter setting:', commandCenterSetting, ')');
+		return result;
 	}
 
 	private get editorActionsEnabled(): boolean {

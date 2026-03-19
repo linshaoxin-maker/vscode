@@ -100,7 +100,7 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 		super(
 			Parts.AUXILIARYBAR_PART,
 			{
-				hasTitle: true,
+				hasTitle: false, // [ChipOS] Hide Container-level title bar ("CHIPOS CHAT" + duplicate buttons)
 				trailingSeparator: true,
 				borderWidth: () => (this.getColor(SIDE_BAR_BORDER) || this.getColor(contrastBorder)) ? 1 : 0,
 			},
@@ -128,6 +128,8 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 			extensionService,
 			menuService,
 		);
+
+		console.log('[ChipOS] AuxiliaryBarPart: constructed with hasTitle=false — Container title bar hidden');
 
 		// Track visible view containers for auto-hide
 		this.visibleViewContainersTracker = this._register(instantiationService.createInstance(VisibleViewContainersTracker, ViewContainerLocation.AuxiliaryBar));

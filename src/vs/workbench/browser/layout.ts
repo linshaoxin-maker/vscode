@@ -401,12 +401,16 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			].some(setting => e.affectsConfiguration(setting))) {
 
 				// Show Command Center if command center actions enabled
+				// [ChipOS] Disabled: this force-overrides commandCenter=false from product.json configurationDefaults
+				// when chat.agentsControl.enabled or other COMMAND_CENTER_SETTINGS are true.
+				// We want commandCenter to stay false (plain text project name in title bar).
 				const enabledCommandCenterAction = COMMAND_CENTER_SETTINGS.some(setting => e.affectsConfiguration(setting) && this.configurationService.getValue<boolean>(setting) === true);
 
 				if (enabledCommandCenterAction) {
 					if (this.configurationService.getValue<boolean>(LayoutSettings.COMMAND_CENTER) === false) {
-						this.configurationService.updateValue(LayoutSettings.COMMAND_CENTER, true);
-						return; // onDidChangeConfiguration will be triggered again
+						console.log('[ChipOS] layout.ts: Blocked force-override of commandCenter=true (triggered by COMMAND_CENTER_SETTINGS)');
+						// this.configurationService.updateValue(LayoutSettings.COMMAND_CENTER, true);
+						// return; // onDidChangeConfiguration will be triggered again
 					}
 				}
 
