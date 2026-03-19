@@ -75,16 +75,6 @@ export function registerNewChatActions() {
 		isSplitButton: true
 	});
 
-	// [ChipOS] Also register in ChatViewSessionTitleToolbar (ViewPane header is hidden)
-	MenuRegistry.appendMenuItem(MenuId.ChatViewSessionTitleToolbar, {
-		submenu: MenuId.ChatNewMenu,
-		title: localize2('chat.newEdits.label', "New Chat"),
-		icon: Codicon.plus,
-		group: 'navigation',
-		order: 100,
-		isSplitButton: true
-	});
-
 	registerAction2(class NewChatEditorAction extends Action2 {
 		constructor() {
 			super({

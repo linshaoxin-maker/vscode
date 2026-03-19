@@ -20,6 +20,10 @@ import { IAgentSessionsService } from './agentSessionsService.js';
 import { ContextKeyExpr } from '../../../../../platform/contextkey/common/contextkey.js';
 import { ChatEditorInput, showClearEditingSessionConfirmation } from '../widgetHosts/editor/chatEditorInput.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { LocalChatSessionUri } from '../../common/model/chatUri.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ChatConfiguration } from '../../common/constants.js';
 import { ACTION_ID_NEW_CHAT } from '../actions/chatActions.js';
@@ -605,11 +609,28 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 
 		const chatService = accessor.get(IChatService);
 		const widgetService = accessor.get(IChatWidgetService);
+		const fileService = accessor.get(IFileService);
+		const workspaceContextService = accessor.get(IWorkspaceContextService);
 
 		for (const session of sessions) {
 
 			// Cancel any in-progress request before clearing
 			chatService.cancelCurrentRequestForSession(session.resource);
+
+			// Clean up temp files created by this session's confirmation cards
+			const localSessionId = LocalChatSessionUri.parseLocalSessionId(session.resource);
+			if (localSessionId) {
+				const folders = workspaceContextService.getWorkspace().folders;
+				if (folders.length > 0) {
+					const tmpSessionDir = URI.joinPath(folders[0].uri, '.coderust', 'tmp', localSessionId);
+					console.log('[ChatTempFile] DeleteSession: cleaning up tmp dir for sessionId:', localSessionId, 'path:', tmpSessionDir.toString());
+					fileService.del(tmpSessionDir, { recursive: true }).catch((err) => {
+						console.log('[ChatTempFile] DeleteSession: tmp dir not found or already deleted:', localSessionId, err?.message);
+					});
+				}
+			} else {
+				console.log('[ChatTempFile] DeleteSession: no localSessionId for resource:', session.resource.toString());
+			}
 
 			// Remove from storage FIRST, before clearing the widget.
 			// widget.clear() triggers model dispose → willDisposeModel → storeSessions,
@@ -643,6 +664,8 @@ export class DeleteAllLocalSessionsAction extends Action2 {
 		const widgetService = accessor.get(IChatWidgetService);
 		const dialogService = accessor.get(IDialogService);
 		const agentSessionsService = accessor.get(IAgentSessionsService);
+		const fileService = accessor.get(IFileService);
+		const workspaceContextService = accessor.get(IWorkspaceContextService);
 
 		const localSessionsCount = agentSessionsService.model.sessions.filter(session => isLocalAgentSessionItem(session)).length;
 		if (localSessionsCount === 0) {
@@ -659,6 +682,16 @@ export class DeleteAllLocalSessionsAction extends Action2 {
 
 		if (!confirmed.confirmed) {
 			return;
+		}
+
+		// Clean up all temp files under .coderust/tmp/
+		const folders = workspaceContextService.getWorkspace().folders;
+		if (folders.length > 0) {
+			const tmpDir = URI.joinPath(folders[0].uri, '.coderust', 'tmp');
+			console.log('[ChatTempFile] DeleteAllSessions: cleaning up entire tmp dir:', tmpDir.toString());
+			fileService.del(tmpDir, { recursive: true }).catch((err) => {
+				console.log('[ChatTempFile] DeleteAllSessions: tmp dir not found or already deleted:', err?.message);
+			});
 		}
 
 		// Clear all chat widgets
@@ -800,6 +833,7 @@ export class RefreshAgentSessionsViewerAction extends Action2 {
 				id: MenuId.AgentSessionsToolbar,
 				group: 'navigation',
 				order: 1,
+				when: ContextKeyExpr.false(), // [ChipOS] Hidden — only keep pin/toggle button in Sessions toolbar
 			},
 		});
 	}
@@ -820,6 +854,7 @@ export class FindAgentSessionInViewerAction extends Action2 {
 				id: MenuId.AgentSessionsToolbar,
 				group: 'navigation',
 				order: 2,
+				when: ContextKeyExpr.false(), // [ChipOS] Hidden — only keep pin/toggle button in Sessions toolbar
 			}
 		});
 	}

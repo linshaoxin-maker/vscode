@@ -1453,15 +1453,6 @@ export function registerChatActions() {
 		icon: Codicon.gear,
 		order: 6
 	});
-
-	// [ChipOS] Also register in ChatViewSessionTitleToolbar (ViewPane header is hidden)
-	MenuRegistry.appendMenuItem(MenuId.ChatViewSessionTitleToolbar, {
-		submenu: CHAT_CONFIG_MENU_ID,
-		title: localize2('config.label', "Configure Chat"),
-		group: 'navigation',
-		icon: Codicon.gear,
-		order: 101
-	});
 }
 
 export function stringifyItem(item: IChatRequestViewModel | IChatResponseViewModel, includeName = true): string {

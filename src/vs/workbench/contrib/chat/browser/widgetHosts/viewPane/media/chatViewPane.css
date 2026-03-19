@@ -164,6 +164,31 @@
 	}
 }
 
+/* [ChipOS] Search Agents input — Cursor style */
+.agent-sessions-search-container {
+	padding: 4px 8px;
+}
+
+.agent-sessions-search-input {
+	width: 100%;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	outline: none;
+	box-sizing: border-box;
+}
+
+.agent-sessions-search-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.agent-sessions-search-input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
 /* Sessions control: panel location */
 .chat-viewpane.has-sessions-control.chat-view-location-panel {
 

@@ -359,6 +359,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		const sessionsTitleContainer = this.sessionsTitleContainer = append(sessionsContainer, $('.agent-sessions-title-container'));
 		const sessionsTitle = this.sessionsTitle = append(sessionsTitleContainer, $('span.agent-sessions-title'));
 		sessionsTitle.textContent = localize('sessions', "Sessions");
+		sessionsTitle.style.display = 'none'; // [ChipOS] Hide "SESSIONS" title text — Cursor style
 		this._register(addDisposableListener(sessionsTitle, EventType.CLICK, () => {
 			this.sessionsControl?.scrollToTop();
 			this.sessionsControl?.focus();
@@ -379,10 +380,21 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 			sessionsToolbarContainer.classList.toggle('filtered', !sessionsFilter.isDefault());
 		}));
 
+		// [ChipOS] Search Agents input — Cursor style
+		const searchContainer = append(sessionsContainer, $('.agent-sessions-search-container'));
+		const searchInput = append(searchContainer, $('input.agent-sessions-search-input'));
+		searchInput.type = 'text';
+		searchInput.placeholder = localize('searchAgents', "Search Agents...");
+		this._register(addDisposableListener(searchInput, EventType.FOCUS, () => {
+			// Delegate to the existing find action when user clicks the search box
+			searchInput.blur();
+			this.sessionsControl?.openFind();
+		}));
+
 		// New Session Button
 		const newSessionButtonContainer = this.sessionsNewButtonContainer = append(sessionsContainer, $('.agent-sessions-new-button-container'));
 		const newSessionButton = this._register(new Button(newSessionButtonContainer, { ...defaultButtonStyles, secondary: true }));
-		newSessionButton.label = localize('newSession', "New Session");
+		newSessionButton.label = localize('newAgent', "New Agent"); // [ChipOS] Renamed from "New Session" to match Cursor
 		this._register(newSessionButton.onDidClick(() => this.commandService.executeCommand(ACTION_ID_NEW_CHAT)));
 
 		// Sessions Control

@@ -789,6 +789,13 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		// Window border
 		this.updateWindowBorder(true);
+
+		// [ChipOS] Force commandCenter=false — a previous version of layout.ts auto-set it to true
+		// and persisted it in user settings. Override it on every startup.
+		if (this.configurationService.getValue<boolean>(LayoutSettings.COMMAND_CENTER) !== false) {
+			console.log('[ChipOS] layout.ts initLayoutState: Resetting commandCenter from true to false');
+			this.configurationService.updateValue(LayoutSettings.COMMAND_CENTER, false);
+		}
 	}
 
 	private getDefaultLayoutViews(environmentService: IBrowserWorkbenchEnvironmentService, storageService: IStorageService): string[] | undefined {
