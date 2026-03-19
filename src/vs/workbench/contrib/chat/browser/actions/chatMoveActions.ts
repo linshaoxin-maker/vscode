@@ -124,7 +124,7 @@ export function registerMoveActions() {
 				precondition: ChatContextKeys.enabled,
 				icon: Codicon.screenFull,
 				toggled: {
-					condition: chatMaximizedKey.toContextKeyExpression()!,
+					condition: chatMaximizedKey,
 					icon: Codicon.screenNormal,
 					tooltip: localize('chat.restore', "Restore Chat"),
 				},
@@ -144,15 +144,17 @@ export function registerMoveActions() {
 			const isMaximized = maximizedCtx.get();
 
 			if (isMaximized) {
-				// Restore: show Editor area back
+				// Restore: show Editor and Panel back
 				layoutService.setPartHidden(false, Parts.EDITOR_PART);
+				layoutService.setPartHidden(false, Parts.PANEL_PART);
 				maximizedCtx.set(false);
 				console.log('[ChipOS] Chat: restored from maximized');
 			} else {
-				// Maximize: hide Editor area, AuxiliaryBar fills remaining space
+				// Maximize: hide Editor and Panel, AuxiliaryBar fills remaining space
 				layoutService.setPartHidden(true, Parts.EDITOR_PART);
+				layoutService.setPartHidden(true, Parts.PANEL_PART);
 				maximizedCtx.set(true);
-				console.log('[ChipOS] Chat: maximized (Editor hidden)');
+				console.log('[ChipOS] Chat: maximized (Editor + Panel hidden)');
 			}
 		}
 	});
