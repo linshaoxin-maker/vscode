@@ -187,19 +187,47 @@ export class GrpcSseEventStreamClient extends Disposable {
 		const type = serverEvent.type;
 		const data = serverEvent.data || {};
 
-		// 映射 Proto ServerEvent 类型到前端 AgentEventType
+		// 映射 Proto ServerEvent 类型到前端 AgentEventType（32 种）
 		const typeMap: Record<string, AgentEventType> = {
+			// 核心推理
 			'text_delta': AgentEventType.TextDelta,
 			'thinking_delta': AgentEventType.ThinkingDelta,
-			'tool_call': AgentEventType.ToolCallStart,
-			'tool_result': AgentEventType.ToolCallEnd,
+			'model_turn_start': AgentEventType.ModelTurnStart,
+			'model_turn_end': AgentEventType.ModelTurnEnd,
+			// 工具执行
+			'tool_call': AgentEventType.ToolCall,
+			'tool_result': AgentEventType.ToolResult,
+			'file_edit': AgentEventType.FileEdit,
+			// 确认交互
 			'confirm_request': AgentEventType.ConfirmRequest,
+			'confirm': AgentEventType.Confirm,
+			// 状态与进度
+			'status': AgentEventType.Status,
+			'round_start': AgentEventType.RoundStart,
+			'todo': AgentEventType.TodoUpdate,
+			'plan': AgentEventType.Plan,
+			'loop_progress': AgentEventType.LoopProgress,
+			'parallel_progress': AgentEventType.ParallelProgress,
+			'task_complete': AgentEventType.TaskComplete,
+			'task_summary': AgentEventType.TaskComplete,
+			// EDA 专用
+			'diff_preview': AgentEventType.DiffPreview,
+			'sim_report': AgentEventType.SimReport,
+			'coverage_report': AgentEventType.CoverageReport,
+			'lint_report': AgentEventType.LintReport,
+			'spec_review': AgentEventType.SpecReview,
+			'negotiation_view': AgentEventType.NegotiationView,
+			// SubAgent
+			'subagent': AgentEventType.SubagentEvent,
+			'worktree_files_applied': AgentEventType.WorktreeFilesApplied,
+			// 系统
+			'usage': AgentEventType.Usage,
 			'done': AgentEventType.Done,
 			'error': AgentEventType.Error,
-			'subagent': AgentEventType.SubagentEvent,
-			'status': AgentEventType.Status,
-			'usage': AgentEventType.Usage,
 			'heartbeat': AgentEventType.Heartbeat,
+			'skill_tree': AgentEventType.SkillTree,
+			'queue_update': AgentEventType.QueueUpdate,
+			'context_warning': AgentEventType.ContextWarning,
 		};
 
 		const agentType = typeMap[type];
