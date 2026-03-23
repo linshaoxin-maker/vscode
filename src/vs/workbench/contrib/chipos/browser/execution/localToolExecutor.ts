@@ -5,8 +5,8 @@
  *  覆盖：文件读写（IFileService）、搜索（ISearchService）、终端（child_process）、Git（ISCMService）
  *---------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../../base/common/lifecycle.js';
-import { URI } from '../../../../../../base/common/uri.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { URI } from '../../../../../base/common/uri.js';
 
 /**
  * 工具调用 Action

@@ -192,7 +192,7 @@ import './contrib/mcp/electron-browser/mcp.contribution.js';
 import './contrib/policyExport/electron-browser/policyExport.contribution.js';
 
 // ChipOS
-import './contrib/chipos/common/chiposContribution.js';
+import './contrib/chipos/electron-browser/chiposContribution.js';
 
 //#endregion
 

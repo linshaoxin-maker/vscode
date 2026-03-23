@@ -105,31 +105,39 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
-		'chipos.sidecar.autoStart': {
-			type: 'boolean',
-			default: false,
-			description: localize('chipos.sidecar.autoStart.desc', 'Automatically start the Sidecar backend on IDE launch. When disabled, connect to a manually started backend using backendUrl.'),
+		// ── v2: 推理-执行分离架构配置 ──
+
+		'chipos.backend.mode': {
+			type: 'string',
+			enum: ['local', 'cloud-reasoning', 'manual'],
+			enumDescriptions: [
+				localize('chipos.backend.mode.local', 'Local: reasoning + execution in one process (dev/debug, or via Remote-SSH)'),
+				localize('chipos.backend.mode.cloudReasoning', 'Cloud Reasoning: local execution + cloud reasoning layer'),
+				localize('chipos.backend.mode.manual', 'Manual: connect to pre-deployed reasoning/worker URLs'),
+			],
+			default: 'local',
+			description: localize('chipos.backend.mode.desc', 'Backend deployment mode. Remote-SSH is orthogonal — when connected via SSH, "local" mode runs on the remote server.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
-		'chipos.sidecar.port': {
-			type: 'number',
-			default: 8765,
-			description: localize('chipos.sidecar.port.desc', 'Starting port for the Sidecar backend (auto-increments if occupied).'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.sidecar.manualUrl': {
+		'chipos.backend.reasoningUrl': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.sidecar.manualUrl.desc', 'Manual WebSocket URL for development mode. When set, Sidecar auto-start is bypassed and the IDE connects directly to this URL. Example: ws://127.0.0.1:8000/ws/agent'),
+			description: localize('chipos.backend.reasoningUrl.desc', 'Reasoning layer URL for remote modes (e.g. https://reasoning.chipos.ai). Leave empty for local mode.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
-		'chipos.sidecar.autoRestart': {
-			type: 'boolean',
-			default: true,
-			description: localize('chipos.sidecar.autoRestart.desc', 'Automatically restart the Sidecar backend if it crashes (up to 3 attempts).'),
+		'chipos.backend.httpPort': {
+			type: 'number',
+			default: 8080,
+			description: localize('chipos.backend.httpPort.desc', 'HTTP/SSE port for reasoning layer (v2 protocol).'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.backend.token': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.token.desc', 'JWT token for authenticating with the reasoning layer (cloud-reasoning and manual modes).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 

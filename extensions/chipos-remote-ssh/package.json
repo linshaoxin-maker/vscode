@@ -1,0 +1,138 @@
+{
+  "name": "chipos-remote-ssh",
+  "displayName": "ChipOS Remote SSH",
+  "description": "Connect to remote EDA servers via SSH for ChipOS IDE",
+  "version": "0.1.0",
+  "publisher": "chipos",
+  "license": "MIT",
+  "enabledApiProposals": [
+    "resolvers",
+    "tunnels"
+  ],
+  "private": true,
+  "engines": {
+    "vscode": "^1.25.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "scripts": {
+    "compile": "node ./node_modules/vscode/bin/compile -watch -p ./",
+    "vscode:prepublish": "node ../../node_modules/gulp/bin/gulp.js --gulpfile ../../build/gulpfile.extensions.mjs compile-extension:chipos-remote-ssh"
+  },
+  "activationEvents": [
+    "onResolveRemoteAuthority:chipos-ssh",
+    "onCommand:chipos-remote-ssh.connect",
+    "onCommand:chipos-remote-ssh.connectInCurrentWindow",
+    "onCommand:chipos-remote-ssh.showLog",
+    "onCommand:chipos-remote-ssh.disconnect"
+  ],
+  "main": "./out/extension",
+  "dependencies": {
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "@types/ssh2": "^1.15.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "resourceLabelFormatters": [
+      {
+        "scheme": "vscode-remote",
+        "authority": "chipos-ssh+*",
+        "formatting": {
+          "label": "${path}",
+          "separator": "/",
+          "tildify": true,
+          "workspaceSuffix": "SSH",
+          "workspaceTooltip": "Connected to remote EDA server via SSH"
+        }
+      }
+    ],
+    "commands": [
+      {
+        "title": "Connect to SSH Host...",
+        "category": "ChipOS Remote",
+        "command": "chipos-remote-ssh.connect"
+      },
+      {
+        "title": "Connect to SSH Host in Current Window...",
+        "category": "ChipOS Remote",
+        "command": "chipos-remote-ssh.connectInCurrentWindow"
+      },
+      {
+        "title": "Show SSH Log",
+        "category": "ChipOS Remote",
+        "command": "chipos-remote-ssh.showLog"
+      },
+      {
+        "title": "Disconnect from SSH Host",
+        "category": "ChipOS Remote",
+        "command": "chipos-remote-ssh.disconnect"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "chipos-remote-ssh.disconnect",
+          "when": "remoteName == chipos-ssh"
+        },
+        {
+          "command": "chipos-remote-ssh.showLog",
+          "when": "remoteName == chipos-ssh"
+        }
+      ],
+      "statusBar/remoteIndicator": [
+        {
+          "command": "chipos-remote-ssh.connect",
+          "when": "!remoteName && !virtualWorkspace",
+          "group": "remote_10_chipos_ssh@1"
+        },
+        {
+          "command": "chipos-remote-ssh.connectInCurrentWindow",
+          "when": "!remoteName && !virtualWorkspace",
+          "group": "remote_10_chipos_ssh@2"
+        },
+        {
+          "command": "chipos-remote-ssh.showLog",
+          "when": "remoteName == chipos-ssh",
+          "group": "remote_10_chipos_ssh@3"
+        },
+        {
+          "command": "chipos-remote-ssh.disconnect",
+          "when": "remoteName == chipos-ssh",
+          "group": "remote_10_chipos_ssh@4"
+        }
+      ]
+    },
+    "configuration": {
+      "properties": {
+        "chipos.remote.ssh.defaultHost": {
+          "description": "Default SSH host to connect to (e.g. user@eda-server.company.com)",
+          "type": "string",
+          "default": ""
+        },
+        "chipos.remote.ssh.configFile": {
+          "description": "Path to SSH config file (default: ~/.ssh/config)",
+          "type": "string",
+          "default": ""
+        },
+        "chipos.remote.ssh.serverInstallPath": {
+          "description": "Path on remote server where ChipOS Server will be installed",
+          "type": "string",
+          "default": "~/.chipos-server"
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chipos/coderust.git"
+  }
+}

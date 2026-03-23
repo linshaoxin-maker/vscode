@@ -1,281 +1,284 @@
 /*---------------------------------------------------------------------------------------------
- *  FEAT-T08: gRPC-Web + SSE Event Stream Client (v2)
+ *  FEAT-T08: HTTP/2 SSE Event Stream Client (v2)
  *
  *  替换 webSocketEventStreamClient.ts，使用 HTTP/2 SSE 接收推理层推送，
  *  HTTP/2 POST 发送任务/停止/确认。
  *
- *  设计为可替换的 IEventStreamClient 实现。
+ *  实现 IEventStreamClient 接口，可作为 WebSocketEventStreamClient 的替代。
+ *
+ *  通信协议（REQ-A03 / REQ-A04）：
+ *  - UI -> 推理层: HTTP/2 POST (SendTask / StopTask / SendConfirmResponse)
+ *  - 推理层 -> UI: HTTP/2 SSE (EventStream)
  *---------------------------------------------------------------------------------------------*/
 
-import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
-import { Emitter, Event } from '../../../../../../base/common/event.js';
-import { IServerMessage, AgentEventType } from './eventTypes.js';
-
-/**
- * 连接状态
- */
-export const enum ConnectionState {
-	Disconnected = 0,
-	Connecting = 1,
-	Connected = 2,
-	Reconnecting = 3,
-}
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter } from '../../../../../base/common/event.js';
+import {
+	AgentEvent,
+	AgentEventType,
+	ConnectionState,
+	type IMentionItem,
+} from './eventTypes.js';
+import type { IEventStreamClient } from './eventStreamClient.js';
 
 /**
  * SSE + HTTP/2 配置
  */
-export interface IGrpcSseClientConfig {
-	/** 推理层 HTTP/2 基础 URL (e.g. https://reasoning.chipos.ai) */
+export interface ISseClientConfig {
+	/** 推理层 HTTP/2 基础 URL (e.g. http://localhost:8080) */
 	baseUrl: string;
-	/** JWT Token */
+	/** JWT Token（remote 模式必填） */
 	token?: string;
-	/** 部署模式 */
-	deploymentMode: 'local' | 'remote-reasoning' | 'remote-all';
-	/** 重连间隔基数 (ms) */
+	/** 重连间隔基数 (ms)，默认 1000 */
 	reconnectBaseMs?: number;
-	/** 最大重连间隔 (ms) */
+	/** 最大重连间隔 (ms)，默认 30000 */
 	reconnectMaxMs?: number;
-	/** 最大重连次数 */
+	/** 最大重连次数，默认 10 */
 	maxReconnectAttempts?: number;
 }
 
 /**
- * gRPC-Web + SSE 事件流客户端
+ * SSE 事件类型 → AgentEventType 映射表
  *
- * 通信协议：
- * - UI -> 推理层: HTTP/2 POST (SendTask / StopTask / SendConfirmResponse)
- * - 推理层 -> UI: HTTP/2 SSE (EventStream)
+ * 对齐 Proto ServerEvent 的 32 种 oneof payload。
+ * SSE data 字段中的 JSON 对象的 "type" 字段值 → AgentEventType 枚举。
  */
-export class GrpcSseEventStreamClient extends Disposable {
+const SSE_TYPE_MAP: Record<string, AgentEventType> = {
+	'text_delta': AgentEventType.TextDelta,
+	'thinking_delta': AgentEventType.ThinkingDelta,
+	'model_turn_start': AgentEventType.ModelTurnStart,
+	'model_turn_end': AgentEventType.ModelTurnEnd,
+	'tool_call': AgentEventType.ToolCall,
+	'tool_result': AgentEventType.ToolResult,
+	'file_edit': AgentEventType.FileEdit,
+	'confirm_request': AgentEventType.ConfirmRequest,
+	'confirm': AgentEventType.Confirm,
+	'status': AgentEventType.Status,
+	'round_start': AgentEventType.RoundStart,
+	'todo': AgentEventType.TodoUpdate,
+	'plan': AgentEventType.Plan,
+	'diff_preview': AgentEventType.DiffPreview,
+	'task_complete': AgentEventType.TaskComplete,
+	'skill_tree': AgentEventType.SkillTree,
+	'sim_report': AgentEventType.SimReport,
+	'coverage_report': AgentEventType.CoverageReport,
+	'lint_report': AgentEventType.LintReport,
+	'negotiation_view': AgentEventType.NegotiationView,
+	'parallel_progress': AgentEventType.ParallelProgress,
+	'loop_progress': AgentEventType.LoopProgress,
+	'spec_review': AgentEventType.SpecReview,
+	'task_summary': AgentEventType.TaskSummary,
+	'subagent_event': AgentEventType.SubagentEvent,
+	'worktree_files_applied': AgentEventType.WorktreeFilesApplied,
+	'usage': AgentEventType.Usage,
+	'heartbeat': AgentEventType.Heartbeat,
+	'error': AgentEventType.Error,
+	'done': AgentEventType.Done,
+	'queue_update': AgentEventType.QueueUpdate,
+	'context_warning': AgentEventType.ContextWarning,
+};
 
-	private readonly _disposables = new DisposableStore();
+/**
+ * HTTP/2 SSE 事件流客户端
+ *
+ * 实现 IEventStreamClient 接口，可直接替换 WebSocketEventStreamClient。
+ */
+export class SseEventStreamClient extends Disposable implements IEventStreamClient {
+
 	private _eventSource: EventSource | null = null;
 	private _sessionId: string = '';
 	private _lastSequenceId: number = 0;
 	private _reconnectAttempts: number = 0;
 	private _state: ConnectionState = ConnectionState.Disconnected;
+	private _reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-	private readonly _onMessage = new Emitter<IServerMessage>();
-	readonly onMessage: Event<IServerMessage> = this._onMessage.event;
+	private readonly _onDidReceiveEvent = this._register(new Emitter<AgentEvent>());
+	readonly onDidReceiveEvent = this._onDidReceiveEvent.event;
 
-	private readonly _onStateChange = new Emitter<ConnectionState>();
-	readonly onStateChange: Event<ConnectionState> = this._onStateChange.event;
+	private readonly _onDidChangeConnectionState = this._register(new Emitter<ConnectionState>());
+	readonly onDidChangeConnectionState = this._onDidChangeConnectionState.event;
 
-	constructor(private readonly _config: IGrpcSseClientConfig) {
+	constructor(private readonly _config: ISseClientConfig) {
 		super();
 	}
 
-	/**
-	 * 发送任务 (HTTP/2 POST)
-	 */
-	async sendTask(params: {
-		prompt: string;
-		mode?: string;
-		model?: string;
-		provider?: string;
-		apiKey?: string;
-		apiBaseUrl?: string;
-		contextFiles?: Array<{ path: string; content: string; kind: string }>;
-		thinking?: boolean;
-	}): Promise<string> {
-		const response = await this._post('/api/v1/task', {
-			session_id: this._sessionId || undefined,
-			prompt: params.prompt,
-			mode: params.mode || 'agent',
-			llm_config: {
-				model: params.model || '',
-				provider: params.provider || 'auto',
-				api_key: params.apiKey || '',
-				api_base_url: params.apiBaseUrl || '',
-			},
-			context_files: params.contextFiles || [],
-			thinking: params.thinking || false,
-		});
-
-		const data = await response.json();
-		this._sessionId = data.session_id;
-
-		// 开始监听 SSE 事件流
-		this._connectSSE();
-
-		return this._sessionId;
+	get connectionState(): ConnectionState {
+		return this._state;
 	}
 
-	/**
-	 * 停止任务 (HTTP/2 POST)
-	 */
-	async sendStop(): Promise<void> {
-		if (!this._sessionId) { return; }
-		await this._post('/api/v1/stop', {
-			session_id: this._sessionId,
-		});
+	// ── IEventStreamClient: connect ─────────────────────────────────────────
+
+	async connect(): Promise<void> {
+		if (this._state === ConnectionState.Connected || this._state === ConnectionState.Connecting) {
+			return;
+		}
+		this._setState(ConnectionState.Connecting);
+		this._openEventSource();
 	}
 
-	/**
-	 * 发送确认响应 (HTTP/2 POST)
-	 */
-	async sendConfirmResponse(callId: string, choice: string, comment?: string): Promise<void> {
-		await this._post('/api/v1/confirm', {
-			session_id: this._sessionId,
-			call_id: callId,
-			choice,
-			comment: comment || '',
+	// ── IEventStreamClient: disconnect ──────────────────────────────────────
+
+	disconnect(): void {
+		this._closeEventSource();
+		this._clearReconnectTimer();
+		this._reconnectAttempts = 0;
+		this._setState(ConnectionState.Disconnected);
+	}
+
+	// ── IEventStreamClient: sendTask ────────────────────────────────────────
+
+	sendTask(
+		sessionId: string,
+		query: string,
+		mentions: IMentionItem[],
+		mode: 'agent' | 'spec',
+		options: { thinking: boolean; autoApproveMode: string },
+	): void {
+		this._sessionId = sessionId;
+		this._post('/api/v1/task', {
+			session_id: sessionId,
+			prompt: query,
+			mode,
+			context_files: mentions.map(m => ({
+				path: m.uri?.toString() ?? '',
+				content: m.content ?? '',
+			})),
+			thinking: options.thinking,
+			auto_approve_mode: options.autoApproveMode,
+		}).catch(err => {
+			console.error('[SseClient] sendTask failed:', err);
+			this._emitError(`sendTask failed: ${err}`);
 		});
 	}
 
-	/**
-	 * 获取模型列表
-	 */
-	async listModels(): Promise<Array<{
-		id: string;
-		name: string;
-		provider: string;
-		profile: {
-			max_context_window: number;
-			vision: boolean;
-			tool_use: boolean;
-			streaming: boolean;
-			thinking: boolean;
-		};
-	}>> {
-		const response = await this._get('/api/v1/models');
-		const data = await response.json();
-		return data.models || [];
+	// ── IEventStreamClient: sendStop ────────────────────────────────────────
+
+	sendStop(sessionId: string): void {
+		this._post('/api/v1/stop', { session_id: sessionId }).catch(err => {
+			console.error('[SseClient] sendStop failed:', err);
+		});
 	}
 
-	/**
-	 * 连接 SSE 事件流
-	 */
-	private _connectSSE(): void {
-		if (this._eventSource) {
-			this._eventSource.close();
+	// ── IEventStreamClient: sendConfirmResponse ─────────────────────────────
+
+	sendConfirmResponse(requestId: string, action: string, comment?: string, sessionId?: string): void {
+		this._post('/api/v1/confirm', {
+			session_id: sessionId ?? this._sessionId,
+			request_id: requestId,
+			action,
+			comment: comment ?? '',
+		}).catch(err => {
+			console.error('[SseClient] sendConfirmResponse failed:', err);
+		});
+	}
+
+	// ── SSE 连接管理 ────────────────────────────────────────────────────────
+
+	private _openEventSource(): void {
+		this._closeEventSource();
+
+		const params = new URLSearchParams();
+		if (this._sessionId) {
+			params.set('session_id', this._sessionId);
+		}
+		if (this._lastSequenceId > 0) {
+			params.set('last_sequence_id', String(this._lastSequenceId));
 		}
 
-		this._setState(ConnectionState.Connecting);
-
-		const url = `${this._config.baseUrl}/api/v1/events?session_id=${this._sessionId}&last_sequence_id=${this._lastSequenceId}`;
-		this._eventSource = new EventSource(url, {
-			// Note: EventSource 不支持自定义 headers，
-			// JWT token 通过 query param 传递（或使用 cookie）
-		});
+		const url = `${this._config.baseUrl}/api/v1/events?${params.toString()}`;
+		this._eventSource = new EventSource(url);
 
 		this._eventSource.onopen = () => {
-			this._setState(ConnectionState.Connected);
 			this._reconnectAttempts = 0;
+			this._setState(ConnectionState.Connected);
 		};
 
-		this._eventSource.onmessage = (event) => {
+		this._eventSource.onmessage = (ev: MessageEvent) => {
 			try {
-				const serverEvent = JSON.parse(event.data);
-				this._lastSequenceId = parseInt(serverEvent.sequence_id?.split('-')[1] || '0', 10);
-				this._dispatchEvent(serverEvent);
+				this._dispatchEvent(JSON.parse(ev.data));
 			} catch (e) {
-				console.error('[GrpcSseClient] Failed to parse SSE event:', e);
+				console.error('[SseClient] Failed to parse SSE event:', e);
 			}
 		};
 
 		this._eventSource.onerror = () => {
-			this._setState(ConnectionState.Reconnecting);
+			this._closeEventSource();
 			this._scheduleReconnect();
 		};
 	}
 
-	/**
-	 * 将 ServerEvent 转换为 IServerMessage 并分发
-	 */
-	private _dispatchEvent(serverEvent: any): void {
-		const type = serverEvent.type;
-		const data = serverEvent.data || {};
-
-		// 映射 Proto ServerEvent 类型到前端 AgentEventType（32 种）
-		const typeMap: Record<string, AgentEventType> = {
-			// 核心推理
-			'text_delta': AgentEventType.TextDelta,
-			'thinking_delta': AgentEventType.ThinkingDelta,
-			'model_turn_start': AgentEventType.ModelTurnStart,
-			'model_turn_end': AgentEventType.ModelTurnEnd,
-			// 工具执行
-			'tool_call': AgentEventType.ToolCall,
-			'tool_result': AgentEventType.ToolResult,
-			'file_edit': AgentEventType.FileEdit,
-			// 确认交互
-			'confirm_request': AgentEventType.ConfirmRequest,
-			'confirm': AgentEventType.Confirm,
-			// 状态与进度
-			'status': AgentEventType.Status,
-			'round_start': AgentEventType.RoundStart,
-			'todo': AgentEventType.TodoUpdate,
-			'plan': AgentEventType.Plan,
-			'loop_progress': AgentEventType.LoopProgress,
-			'parallel_progress': AgentEventType.ParallelProgress,
-			'task_complete': AgentEventType.TaskComplete,
-			'task_summary': AgentEventType.TaskComplete,
-			// EDA 专用
-			'diff_preview': AgentEventType.DiffPreview,
-			'sim_report': AgentEventType.SimReport,
-			'coverage_report': AgentEventType.CoverageReport,
-			'lint_report': AgentEventType.LintReport,
-			'spec_review': AgentEventType.SpecReview,
-			'negotiation_view': AgentEventType.NegotiationView,
-			// SubAgent
-			'subagent': AgentEventType.SubagentEvent,
-			'worktree_files_applied': AgentEventType.WorktreeFilesApplied,
-			// 系统
-			'usage': AgentEventType.Usage,
-			'done': AgentEventType.Done,
-			'error': AgentEventType.Error,
-			'heartbeat': AgentEventType.Heartbeat,
-			'skill_tree': AgentEventType.SkillTree,
-			'queue_update': AgentEventType.QueueUpdate,
-			'context_warning': AgentEventType.ContextWarning,
-		};
-
-		const agentType = typeMap[type];
-		if (agentType !== undefined) {
-			this._onMessage.fire({
-				type: agentType,
-				data,
-				sessionId: serverEvent.session_id,
-				sequenceId: serverEvent.sequence_id,
-			});
+	private _closeEventSource(): void {
+		if (this._eventSource) {
+			this._eventSource.close();
+			this._eventSource = null;
 		}
 	}
 
-	/**
-	 * 指数退避重连
-	 */
-	private _scheduleReconnect(): void {
-		const maxAttempts = this._config.maxReconnectAttempts ?? 5;
-		if (this._reconnectAttempts >= maxAttempts) {
-			this._setState(ConnectionState.Disconnected);
-			this._onMessage.fire({
-				type: AgentEventType.Error,
-				data: { code: 'RECONNECT_FAILED', message: '无法连接推理服务，请检查网络', retryable: false },
-				sessionId: this._sessionId,
-			});
+	// ── 事件分发 ────────────────────────────────────────────────────────────
+
+	private _dispatchEvent(raw: Record<string, unknown>): void {
+		const type = raw['type'] as string | undefined;
+		if (!type) {
 			return;
 		}
 
-		const baseMs = this._config.reconnectBaseMs ?? 1000;
-		const maxMs = this._config.reconnectMaxMs ?? 30000;
-		const delay = Math.min(baseMs * Math.pow(2, this._reconnectAttempts), maxMs);
+		// 更新 sequence_id（断线续传用）
+		const seqId = raw['sequence_id'] as string | undefined;
+		if (seqId) {
+			const parts = seqId.split('-');
+			const num = parseInt(parts[parts.length - 1], 10);
+			if (!isNaN(num) && num > this._lastSequenceId) {
+				this._lastSequenceId = num;
+			}
+		}
+
+		const eventType = SSE_TYPE_MAP[type];
+		if (eventType === undefined) {
+			console.warn('[SseClient] Unknown event type:', type);
+			return;
+		}
+
+		this._onDidReceiveEvent.fire({
+			event_type: eventType,
+			event_id: (raw['event_id'] as string) ?? seqId ?? '',
+			session_id: (raw['session_id'] as string) ?? this._sessionId,
+			timestamp: (raw['timestamp_ms'] as number) ?? Date.now(),
+			data: (raw['data'] ?? raw) as any,
+		} as AgentEvent);
+	}
+
+	// ── 重连 ────────────────────────────────────────────────────────────────
+
+	private _scheduleReconnect(): void {
+		const maxAttempts = this._config.maxReconnectAttempts ?? 10;
+		if (this._reconnectAttempts >= maxAttempts) {
+			this._setState(ConnectionState.Error);
+			this._emitError('Max reconnect attempts reached');
+			return;
+		}
+
+		this._setState(ConnectionState.Reconnecting);
 		this._reconnectAttempts++;
 
-		setTimeout(() => {
-			if (this._state === ConnectionState.Reconnecting) {
-				this._connectSSE();
-			}
+		const baseMs = this._config.reconnectBaseMs ?? 1000;
+		const maxMs = this._config.reconnectMaxMs ?? 30000;
+		const delay = Math.min(baseMs * Math.pow(2, this._reconnectAttempts - 1), maxMs);
+
+		this._reconnectTimer = setTimeout(() => {
+			this._openEventSource();
 		}, delay);
 	}
 
-	private _setState(state: ConnectionState): void {
-		if (this._state !== state) {
-			this._state = state;
-			this._onStateChange.fire(state);
+	private _clearReconnectTimer(): void {
+		if (this._reconnectTimer !== undefined) {
+			clearTimeout(this._reconnectTimer);
+			this._reconnectTimer = undefined;
 		}
 	}
 
-	private async _post(path: string, body: any): Promise<Response> {
+	// ── HTTP POST ───────────────────────────────────────────────────────────
+
+	private async _post(path: string, body: unknown): Promise<Response> {
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
 		};
@@ -283,39 +286,39 @@ export class GrpcSseEventStreamClient extends Disposable {
 			headers['Authorization'] = `Bearer ${this._config.token}`;
 		}
 
-		return fetch(`${this._config.baseUrl}${path}`, {
+		const resp = await fetch(`${this._config.baseUrl}${path}`, {
 			method: 'POST',
 			headers,
 			body: JSON.stringify(body),
 		});
-	}
 
-	private async _get(path: string): Promise<Response> {
-		const headers: Record<string, string> = {};
-		if (this._config.token) {
-			headers['Authorization'] = `Bearer ${this._config.token}`;
+		if (!resp.ok) {
+			throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
 		}
-
-		return fetch(`${this._config.baseUrl}${path}`, {
-			method: 'GET',
-			headers,
-		});
+		return resp;
 	}
 
-	get connectionState(): ConnectionState {
-		return this._state;
+	// ── 辅助 ────────────────────────────────────────────────────────────────
+
+	private _setState(state: ConnectionState): void {
+		if (this._state !== state) {
+			this._state = state;
+			this._onDidChangeConnectionState.fire(state);
+		}
 	}
 
-	get sessionId(): string {
-		return this._sessionId;
+	private _emitError(message: string): void {
+		this._onDidReceiveEvent.fire({
+			event_type: AgentEventType.Error,
+			event_id: `err_${Date.now()}`,
+			session_id: this._sessionId,
+			timestamp: Date.now(),
+			data: { message },
+		} as AgentEvent);
 	}
 
 	override dispose(): void {
-		if (this._eventSource) {
-			this._eventSource.close();
-			this._eventSource = null;
-		}
-		this._disposables.dispose();
+		this.disconnect();
 		super.dispose();
 	}
 }

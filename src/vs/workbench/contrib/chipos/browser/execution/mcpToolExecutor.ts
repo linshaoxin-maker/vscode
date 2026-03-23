@@ -5,7 +5,7 @@
  *  工具调用通过 ToolExecutorRouter 分发。
  *---------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../../base/common/lifecycle.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IToolExecutor, IToolCallAction, IToolResultObservation } from './localToolExecutor.js';
 
 /**

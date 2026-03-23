@@ -27,7 +27,7 @@ export interface IEventStreamClient {
 	disconnect(): void;
 	sendTask(sessionId: string, query: string, mentions: IMentionItem[], mode: 'agent' | 'spec', options: { thinking: boolean; autoApproveMode: string }): void;
 	sendStop(sessionId: string): void;
-	sendConfirmResponse(requestId: string, action: string, comment?: string): void;
+	sendConfirmResponse(requestId: string, action: string, comment?: string, sessionId?: string): void;
 }
 
 // ── MockEventStreamClient ──────────────────────────────────────────────────

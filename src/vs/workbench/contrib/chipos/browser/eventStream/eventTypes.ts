@@ -7,6 +7,7 @@
 
 export const enum AgentEventType {
 	TextDelta = 'text_delta',
+	ThinkingDelta = 'thinking_delta',
 	ToolCall = 'tool_call',
 	ToolResult = 'tool_result',
 	FileEdit = 'file_edit',
@@ -33,6 +34,9 @@ export const enum AgentEventType {
 	ModelTurnStart = 'model_turn_start',
 	ModelTurnEnd = 'model_turn_end',
 	WorktreeFilesApplied = 'worktree_files_applied',
+	// FEAT-T01: Proto 对齐 — 系统事件
+	Usage = 'usage',
+	Heartbeat = 'heartbeat',
 	// FEAT-61: Queue position update
 	QueueUpdate = 'queue_update',
 	// FEAT-65: Context window usage warning
@@ -415,6 +419,7 @@ export interface IContextWarningEvent extends IAgentEventBase {
 
 export type AgentEvent =
 	| ITextDeltaEvent
+	| IThinkingDeltaEvent
 	| IToolCallEvent
 	| IToolResultEvent
 	| IFileEditEvent
@@ -440,6 +445,8 @@ export type AgentEvent =
 	| ISubagentEventEvent
 	| IModelTurnEvent
 	| IWorktreeFilesAppliedEvent
+	| IUsageEvent
+	| IHeartbeatEvent
 	| IQueueUpdateEvent
 	| IContextWarningEvent;
 
@@ -493,6 +500,38 @@ export interface IContextWarningPayload {
 	readonly tokens_used: number;
 	readonly tokens_max: number;
 	readonly suggestion?: string;
+}
+
+// ── FEAT-T01: Proto 对齐 — ThinkingDelta / Usage / Heartbeat ────────────────
+
+export interface IThinkingDeltaPayload {
+	readonly content: string;
+}
+
+export interface IThinkingDeltaEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.ThinkingDelta;
+	readonly data: IThinkingDeltaPayload;
+}
+
+export interface IUsagePayload {
+	readonly prompt_tokens: number;
+	readonly completion_tokens: number;
+	readonly total_tokens: number;
+	readonly model?: string;
+}
+
+export interface IUsageEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.Usage;
+	readonly data: IUsagePayload;
+}
+
+export interface IHeartbeatPayload {
+	readonly timestamp_ms: number;
+}
+
+export interface IHeartbeatEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.Heartbeat;
+	readonly data: IHeartbeatPayload;
 }
 
 // ── Connection state ────────────────────────────────────────────────────────

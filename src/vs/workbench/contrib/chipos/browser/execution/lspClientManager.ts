@@ -5,8 +5,8 @@
  *  LSP Server 位置：本地或远程（通过 SSH 隧道）。
  *---------------------------------------------------------------------------------------------*/
 
-import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
-import { Emitter, Event } from '../../../../../../base/common/event.js';
+import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 
 /**
  * Language Server 配置

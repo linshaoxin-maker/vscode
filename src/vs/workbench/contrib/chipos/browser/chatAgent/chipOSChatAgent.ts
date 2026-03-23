@@ -47,7 +47,8 @@ import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/c
 import { IChatEditingService, type IChatEditingSession } from '../../../../contrib/chat/common/editing/chatEditingService.js';
 import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
 import type { IChatResponseModel } from '../../../../contrib/chat/common/model/chatModel.js';
-import { WebSocketEventStreamClient } from '../eventStream/webSocketEventStreamClient.js';
+import { SseEventStreamClient } from '../eventStream/grpcSseEventStreamClient.js';
+import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
 import { ChipOSEditorEffects } from './editorEffects.js';
 import {
@@ -82,7 +83,7 @@ import {
 
 /**
  * IChatAgentImplementation that bridges the native VSCode Chat UI
- * to the ChipOS backend via WebSocket.
+ * to the ChipOS backend via SSE (Server-Sent Events).
  *
  * Maps all backend events to native IChatProgress types:
  *   - model_output → markdownContent / thinking
@@ -93,7 +94,7 @@ import {
  */
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
-	private _wsClient: WebSocketEventStreamClient | undefined;
+	private _streamClient: IEventStreamClient | undefined;
 	private _editorEffects: ChipOSEditorEffects | undefined;
 	private _contextCollector: ContextCollector | undefined;
 	private _sessionCounter = 0;
@@ -134,12 +135,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	): Promise<IChatAgentResult> {
 		// ── FEAT-32: Connection status feedback ──
 		progress([this._progress('$(sync~spin) Connecting to backend...', true)]);
-		const wsClient = await this._ensureClient();
-		if (!wsClient || wsClient.connectionState !== ConnectionState.Connected) {
-			const manualUrl = this._configurationService.getValue<string>('chipos.sidecar.manualUrl');
-			const hint = manualUrl
-				? `Cannot connect to \`${manualUrl}\`. Is the backend running?`
-				: 'Backend not connected. Set `chipos.sidecar.manualUrl` or enable `chipos.sidecar.autoStart`.';
+		const streamClient = await this._ensureClient();
+		if (!streamClient || streamClient.connectionState !== ConnectionState.Connected) {
+			const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+			const reasoningUrl = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
+			const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
+			const target = reasoningUrl || `http://127.0.0.1:${httpPort}`;
+			const hint = mode === 'local'
+				? `Cannot connect to local backend at \`${target}\`. Is it running? Try \`make local\` in backend_v2/.`
+				: `Cannot connect to reasoning layer at \`${target}\` (mode: ${mode}). Check \`chipos.backend.reasoningUrl\` in settings.`;
 			progress([this._markdown(`$(error) **ChipOS:** ${hint}`)]);
 			return { errorDetails: { message: 'Backend not connected' } };
 		}
@@ -160,16 +164,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// Use the sessionId stored in the confirmation data, NOT a new one
 			const confirmSessionId = data.sessionId ?? this._lastSessionId;
 			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'session:', confirmSessionId);
-			wsClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
+			streamClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
 			progress([this._progress('$(check) Confirmed')]);
-			return this._listenForContinuation(wsClient, progress, token, request);
+			return this._listenForContinuation(streamClient, progress, token, request);
 		}
 
 		if (request.rejectedConfirmationData?.length) {
 			const data = request.rejectedConfirmationData[0] as { requestId: string; sessionId?: string };
 			const confirmSessionId = data.sessionId ?? this._lastSessionId;
 			this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId, 'session:', confirmSessionId);
-			wsClient.sendConfirmResponse(data.requestId, 'reject', undefined, confirmSessionId);
+			streamClient.sendConfirmResponse(data.requestId, 'reject', undefined, confirmSessionId);
 			progress([this._progress('$(circle-slash) Rejected')]);
 			return {};
 		}
@@ -248,7 +252,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 			};
 
-			const listener = wsClient.onDidReceiveEvent((event: AgentEvent) => {
+			const listener = streamClient.onDidReceiveEvent((event: AgentEvent) => {
 				if (resolved) {
 					return;
 				}
@@ -942,11 +946,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			token.onCancellationRequested(() => {
 				this._logService.info('[ChipOS Agent] Cancellation requested');
-				wsClient.sendStop(sessionId);
+				streamClient.sendStop(sessionId);
 				finish({});
 			});
 
-			wsClient.sendTask(
+			streamClient.sendTask(
 				sessionId,
 				userMessage,
 				mentions,
@@ -959,7 +963,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	// ── FEAT-23: Listen for backend events after sending confirm response ──
 
 	private _listenForContinuation(
-		wsClient: WebSocketEventStreamClient,
+		streamClient: IEventStreamClient,
 		progress: (parts: IChatProgress[]) => void,
 		token: CancellationToken,
 		request?: IChatAgentRequest,
@@ -987,7 +991,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 			};
 
-			const listener = wsClient.onDidReceiveEvent((event: AgentEvent) => {
+			const listener = streamClient.onDidReceiveEvent((event: AgentEvent) => {
 				if (resolved) { return; }
 
 				try {
@@ -1599,7 +1603,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			token.onCancellationRequested(() => {
 				this._logService.info('[ChipOS Agent] Cancellation requested (continuation)');
 				if (this._lastSessionId) {
-					wsClient.sendStop(this._lastSessionId);
+					streamClient.sendStop(this._lastSessionId);
 				}
 				finish({});
 			});
@@ -2129,43 +2133,41 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return this._editorEffects;
 	}
 
-	// ── WebSocket lifecycle ─────────────────────────────────────────────────
+	// ── Client lifecycle ───────────────────────────────────────────────────
 
-	private async _ensureClient(): Promise<WebSocketEventStreamClient | undefined> {
-		if (this._wsClient && this._wsClient.connectionState === ConnectionState.Connected) {
-			return this._wsClient;
+	private async _ensureClient(): Promise<IEventStreamClient | undefined> {
+		if (this._streamClient && this._streamClient.connectionState === ConnectionState.Connected) {
+			return this._streamClient;
 		}
 
-		const manualUrl = this._configurationService.getValue<string>('chipos.sidecar.manualUrl');
-		const backendUrl = this._configurationService.getValue<string>('chipos.backendUrl');
-		const port = this._configurationService.getValue<number>('chipos.sidecar.port') ?? 8000;
-		const url = manualUrl || backendUrl || `ws://127.0.0.1:${port}/ws/agent`;
+		// v2: 统一使用 SSE 协议连接推理层
+		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
+		const reasoningUrl = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
+		const baseUrl = reasoningUrl || `http://127.0.0.1:${httpPort}`;
+		const token = this._configurationService.getValue<string>('chipos.backend.token') ?? undefined;
 
-		this._logService.info('[ChipOS Agent] Connecting to backend:', url);
+		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl);
 
-		if (!this._wsClient) {
-			this._wsClient = this._register(
-				this._instantiationService.createInstance(WebSocketEventStreamClient, url)
-			);
-		} else {
-			this._wsClient.setUrl(url);
+		if (!this._streamClient || !(this._streamClient instanceof SseEventStreamClient)) {
+			this._streamClient?.dispose();
+			this._streamClient = this._register(new SseEventStreamClient({ baseUrl, token }));
 		}
 
 		try {
-			await this._wsClient.connect();
+			await this._streamClient.connect();
 		} catch (err) {
 			this._logService.error('[ChipOS Agent] Failed to connect:', String(err));
 			return undefined;
 		}
 
-		return this._wsClient;
+		return this._streamClient;
 	}
 
 	override dispose(): void {
 		this._toolStartTimes.clear();
 		this._subagentTimers.clear();
-		if (this._wsClient) {
-			this._wsClient.disconnect();
+		if (this._streamClient) {
+			this._streamClient.disconnect();
 		}
 		super.dispose();
 	}

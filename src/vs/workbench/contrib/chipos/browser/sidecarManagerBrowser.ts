@@ -7,37 +7,42 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
+import { ISidecarManagerService, SidecarState, BackendMode, WorkerState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 
 /**
  * Browser-safe implementation of ISidecarManagerService.
  *
  * Does NOT spawn a child process (that requires Node.js APIs unavailable
- * in the renderer). Instead it relies on a manually started backend
- * configured via `chipos.sidecar.manualUrl`.
- *
- * A future iteration can bridge to the main process via IPC for real
- * process management.
+ * in the renderer). Instead it relies on a manual URL or pre-deployed backend.
+ * This is used in Web IDE mode (场景 C).
  */
 export class SidecarManagerBrowser extends Disposable implements ISidecarManagerService {
 
 	declare readonly _serviceBrand: undefined;
 
+	// ── v1 兼容 ──────────────────────────────────────────────────────────
+
 	private readonly _onDidChangeState = this._register(new Emitter<SidecarState>());
 	readonly onDidChangeState: Event<SidecarState> = this._onDidChangeState.event;
 
-	private _state = SidecarState.NotStarted;
-	private _port = 0;
+	private _state: SidecarState = SidecarState.NotStarted;
 	private _manualUrl: string | undefined;
 
 	get state(): SidecarState { return this._state; }
-	get port(): number { return this._port; }
+	get port(): number { return 0; }
+	get wsUrl(): string { return this._manualUrl ?? ''; }
 
-	get wsUrl(): string {
-		if (this._manualUrl) {
-			return this._manualUrl;
-		}
-		return `ws://127.0.0.1:${this._port}/ws/agent`;
+	// ── v2: BackendManager ───────────────────────────────────────────────
+
+	private readonly _onDidChangeWorkerState = this._register(new Emitter<WorkerState>());
+	readonly onDidChangeWorkerState: Event<WorkerState> = this._onDidChangeWorkerState.event;
+
+	private _workerState: WorkerState = WorkerState.NotStarted;
+
+	get mode(): BackendMode { return BackendMode.Manual; }
+	get workerState(): WorkerState { return this._workerState; }
+	get reasoningUrl(): string {
+		return this._configurationService.getValue<string>('chipos.backend.reasoningUrl') || '';
 	}
 
 	constructor(
@@ -45,25 +50,26 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super();
-		this._port = this._configurationService.getValue<number>('chipos.sidecar.port') ?? 8000;
+
+		const manualUrl = this._configurationService.getValue<string>('chipos.sidecar.manualUrl');
+		if (manualUrl) {
+			this._manualUrl = manualUrl;
+		}
 	}
+
+	// ── v1 ──
 
 	async spawn(): Promise<void> {
 		if (this._manualUrl) {
 			this._logService.info('[ChipOS SidecarBrowser] Using manual URL:', this._manualUrl);
 			this._setState(SidecarState.Connected);
-			return;
+		} else {
+			this._logService.warn('[ChipOS SidecarBrowser] Cannot spawn in browser mode. Set chipos.sidecar.manualUrl or use chipos.backend.mode=manual.');
+			this._setState(SidecarState.Error);
 		}
-
-		this._logService.warn(
-			'[ChipOS SidecarBrowser] Auto-start is not supported in the browser layer. '
-			+ 'Please start the backend manually and set chipos.sidecar.manualUrl.'
-		);
-		this._setState(SidecarState.Error);
 	}
 
 	async kill(): Promise<void> {
-		this._logService.info('[ChipOS SidecarBrowser] kill() called');
 		this._setState(SidecarState.Disconnected);
 	}
 
@@ -74,10 +80,37 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 		}
 	}
 
+	// ── v2 ──
+
+	async startBackend(): Promise<void> {
+		// 浏览器模式 = 场景 C，后端预部署，直接标记连接
+		this._setState(SidecarState.Connected);
+		this._setWorkerState(WorkerState.Connected);
+		this._logService.info('[ChipOS SidecarBrowser] Browser mode, assuming pre-deployed backend');
+	}
+
+	async stopBackend(): Promise<void> {
+		this._setState(SidecarState.Disconnected);
+		this._setWorkerState(WorkerState.NotStarted);
+	}
+
+	async restartWorker(): Promise<void> {
+		this._logService.warn('[ChipOS SidecarBrowser] Cannot restart worker in browser mode');
+	}
+
+	// ── State ──
+
 	private _setState(s: SidecarState): void {
 		if (this._state !== s) {
 			this._state = s;
 			this._onDidChangeState.fire(s);
+		}
+	}
+
+	private _setWorkerState(s: WorkerState): void {
+		if (this._workerState !== s) {
+			this._workerState = s;
+			this._onDidChangeWorkerState.fire(s);
 		}
 	}
 }

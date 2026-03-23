@@ -18,9 +18,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
-import { SidecarManagerBrowser } from '../../../../workbench/contrib/chipos/browser/sidecarManagerBrowser.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -67,9 +65,6 @@ import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 
 // ── Chat Quick Toggles Registration ────────────────────────────────────────
 registerChipOSQuickToggles();
-
-// ── Service Registration ────────────────────────────────────────────────────
-registerSingleton(ISidecarManagerService, SidecarManagerBrowser, InstantiationType.Delayed);
 
 // ── ChipOS Settings Editor Registration ─────────────────────────────────────
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
@@ -124,6 +119,8 @@ const enum ChipOSCommandId {
 	AddToChat = 'chipos.addToChat',
 	Disconnect = 'chipos.disconnect',
 	RestartSidecar = 'chipos.restartSidecar',
+	RestartBackend = 'chipos.restartBackend',
+	RestartWorker = 'chipos.restartWorker',
 	AcceptAllDiffs = 'chipos.acceptAllDiffs',
 	RejectAllDiffs = 'chipos.rejectAllDiffs',
 	OpenGitDiff = 'chipos.openGitDiff',
@@ -179,22 +176,43 @@ CommandsRegistry.registerCommand(ChipOSCommandId.AddToChat, accessor => {
 	commandService.executeCommand('workbench.action.chat.attachSelection');
 });
 
-CommandsRegistry.registerCommand(ChipOSCommandId.Disconnect, accessor => {
-	const sidecar = accessor.get(ISidecarManagerService);
-	sidecar.kill();
+CommandsRegistry.registerCommand(ChipOSCommandId.Disconnect, async accessor => {
+	const backend = accessor.get(ISidecarManagerService);
+	await backend.stopBackend();
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.RestartSidecar, async accessor => {
-	const sidecar = accessor.get(ISidecarManagerService);
+	const backend = accessor.get(ISidecarManagerService);
 	const notifications = accessor.get(INotificationService);
-	await sidecar.kill();
-	notifications.info('ChipOS: Restarting Sidecar backend…');
-	await sidecar.spawn();
-	if (sidecar.state === SidecarState.Connected) {
-		notifications.info('ChipOS: Sidecar backend restarted successfully.');
+	notifications.info('ChipOS: Restarting backend…');
+	await backend.stopBackend();
+	await backend.startBackend();
+	if (backend.state === SidecarState.Connected) {
+		notifications.info('ChipOS: Backend restarted successfully.');
 	} else {
-		notifications.error('ChipOS: Sidecar backend failed to restart.');
+		notifications.error('ChipOS: Backend failed to restart.');
 	}
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.RestartBackend, async accessor => {
+	const backend = accessor.get(ISidecarManagerService);
+	const notifications = accessor.get(INotificationService);
+	notifications.info('ChipOS: Restarting backend…');
+	await backend.stopBackend();
+	await backend.startBackend();
+	if (backend.state === SidecarState.Connected) {
+		notifications.info('ChipOS: Backend restarted successfully.');
+	} else {
+		notifications.error('ChipOS: Backend failed to restart.');
+	}
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.RestartWorker, async accessor => {
+	const backend = accessor.get(ISidecarManagerService);
+	const notifications = accessor.get(INotificationService);
+	notifications.info('ChipOS: Restarting worker…');
+	await backend.restartWorker();
+	notifications.info('ChipOS: Worker restart initiated.');
 });
 
 // ── Keybindings ────────────────────────────────────────────────────────────────
@@ -493,29 +511,16 @@ class ChipOSContribution extends Disposable {
 			if (state === SidecarState.Error) {
 				this._notificationService.notify({
 					severity: Severity.Error,
-					message: 'ChipOS: Sidecar backend failed to start. Check output panel for details.',
+					message: 'ChipOS: Backend failed to start. Check output panel for details.',
 				});
 			}
 		}));
 
-		const autoStart = this._configurationService.getValue<boolean>('chipos.sidecar.autoStart');
-		const manualUrl = this._configurationService.getValue<string>('chipos.sidecar.manualUrl');
-		const backendUrl = this._configurationService.getValue<string>('chipos.backendUrl');
+		const backendMode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
 
-		if (manualUrl) {
-			this._logService.info('[ChipOS] Using manual backend URL:', manualUrl);
-			this._sidecarManager.setManualUrl(manualUrl);
-			this._sidecarManager.spawn();
-		} else if (backendUrl && backendUrl !== 'ws://127.0.0.1:8000/ws/agent') {
-			this._logService.info('[ChipOS] Using configured backend URL:', backendUrl);
-			this._sidecarManager.setManualUrl(backendUrl);
-			this._sidecarManager.spawn();
-		} else if (autoStart) {
-			this._logService.info('[ChipOS] Auto-starting Sidecar backend');
-			this._sidecarManager.spawn();
-		} else {
-			this._logService.info('[ChipOS] Sidecar auto-start disabled. Configure chipos.sidecar.manualUrl or chipos.backendUrl, or enable chipos.sidecar.autoStart.');
-		}
+		// v2: 统一走 BackendManager 策略
+		this._logService.info('[ChipOS] Starting backend, mode:', backendMode);
+		this._sidecarManager.startBackend();
 
 		this._registerChatAgent();
 		this._registerEdaContentParts();
