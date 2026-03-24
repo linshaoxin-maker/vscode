@@ -510,7 +510,7 @@ export interface IThinkingDeltaPayload {
 
 export interface IThinkingDeltaEvent extends IAgentEventBase {
 	readonly event_type: AgentEventType.ThinkingDelta;
-	readonly data: IThinkingDeltaPayload;
+	readonly payload: IThinkingDeltaPayload;
 }
 
 export interface IUsagePayload {
@@ -522,7 +522,7 @@ export interface IUsagePayload {
 
 export interface IUsageEvent extends IAgentEventBase {
 	readonly event_type: AgentEventType.Usage;
-	readonly data: IUsagePayload;
+	readonly payload: IUsagePayload;
 }
 
 export interface IHeartbeatPayload {
@@ -531,7 +531,7 @@ export interface IHeartbeatPayload {
 
 export interface IHeartbeatEvent extends IAgentEventBase {
 	readonly event_type: AgentEventType.Heartbeat;
-	readonly data: IHeartbeatPayload;
+	readonly payload: IHeartbeatPayload;
 }
 
 // ── Connection state ────────────────────────────────────────────────────────

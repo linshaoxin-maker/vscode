@@ -140,7 +140,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			prompt: query,
 			mode,
 			context_files: mentions.map(m => ({
-				path: m.uri?.toString() ?? '',
+				path: m.path,
 				content: m.content ?? '',
 			})),
 			thinking: options.thinking,
@@ -243,7 +243,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			event_id: (raw['event_id'] as string) ?? seqId ?? '',
 			session_id: (raw['session_id'] as string) ?? this._sessionId,
 			timestamp: (raw['timestamp_ms'] as number) ?? Date.now(),
-			data: (raw['data'] ?? raw) as any,
+			payload: (raw['data'] ?? raw) as any,
 		} as AgentEvent);
 	}
 
@@ -313,7 +313,11 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			event_id: `err_${Date.now()}`,
 			session_id: this._sessionId,
 			timestamp: Date.now(),
-			data: { message },
+			payload: {
+				error_code: 'SSE_ERROR',
+				message,
+				retryable: true,
+			},
 		} as AgentEvent);
 	}
 

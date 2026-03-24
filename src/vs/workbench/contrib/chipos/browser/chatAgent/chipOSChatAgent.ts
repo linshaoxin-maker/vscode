@@ -56,6 +56,7 @@ import {
 	ConnectionState,
 	type AgentEvent,
 	type ITextDeltaPayload,
+	type IThinkingDeltaPayload,
 	type IToolCallPayload,
 	type IToolResultPayload,
 	type IConfirmRequestPayload,
@@ -273,6 +274,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						} else {
 							progress([this._markdown(p.content)]);
 						}
+						break;
+					}
+
+					case AgentEventType.ThinkingDelta: {
+						const p = event.payload as IThinkingDeltaPayload;
+						trackFirstProgress();
+						progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
 						break;
 					}
 
@@ -1008,6 +1016,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						} else {
 							progress([this._markdown(p.content)]);
 						}
+						break;
+					}
+					case AgentEventType.ThinkingDelta: {
+						const p = event.payload as IThinkingDeltaPayload;
+						progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
 						break;
 					}
 					case AgentEventType.ToolCall: {
@@ -2149,7 +2162,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl);
 
 		if (!this._streamClient || !(this._streamClient instanceof SseEventStreamClient)) {
-			this._streamClient?.dispose();
+			this._streamClient?.disconnect();
 			this._streamClient = this._register(new SseEventStreamClient({ baseUrl, token }));
 		}
 
