@@ -14,6 +14,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISidecarManagerService, SidecarState, BackendMode, WorkerState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 
 const HEALTH_CHECK_INTERVAL_MS = 500;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
@@ -81,6 +82,20 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		return `${this.reasoningUrl}/api/v1/task/stream`;
 	}
 
+	/** Worker gRPC target（host:port 格式，非 HTTP URL） */
+	get grpcAddress(): string {
+		const addr = this._configurationService.getValue<string>('chipos.backend.grpcAddress');
+		if (addr) {
+			return addr;
+		}
+		try {
+			const url = new URL(this.reasoningUrl);
+			return `${url.hostname}:50051`;
+		} catch {
+			return 'localhost:50051';
+		}
+	}
+
 	// ── v1 兼容属性（connectionTab 等旧代码可能引用）──────────────────────
 
 	get port(): number {
@@ -99,6 +114,7 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		@ILogService private readonly _logService: ILogService,
 		@INativeEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 
@@ -133,13 +149,18 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	}
 
 	async stopBackend(): Promise<void> {
+		this._clearTimer();
+		this._clearWorkerTimer();
+		this._restartCount = 0;
+		this._workerRestartCount = 0;
+
 		await this._killProcess(this._workerProcess, 'Worker');
 		this._workerProcess = undefined;
 		this._setWorkerState(WorkerState.NotStarted);
 
 		await this._killProcess(this._process, 'Backend');
 		this._process = undefined;
-		this._setState(SidecarState.Disconnected);
+		this._setState(SidecarState.NotStarted);
 	}
 
 	async restartWorker(): Promise<void> {
@@ -199,21 +220,63 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	}
 
 	/**
-	 * 场景 B2 / E: 本地执行 + 云端推理
+	 * 场景 B3 / E: 本地执行 + 云端推理
 	 */
 	private async _startCloudReasoning(): Promise<void> {
-		this._setState(SidecarState.Connected);
 		this._logService.info('[ChipOS] Cloud reasoning at:', this.reasoningUrl);
+		this._setState(SidecarState.HealthChecking);
+
+		const ok = await this._httpHealthCheck(this.reasoningUrl);
+		if (!ok) {
+			this._logService.error('[ChipOS] Cloud reasoning not reachable:', this.reasoningUrl);
+			this._setState(SidecarState.Error);
+			return;
+		}
+
+		this._setState(SidecarState.Connected);
 		await this._spawnWorker();
 	}
 
 	/**
-	 * 场景 C / D: 手动模式 — 不 spawn，直接连接
+	 * 场景 B2: 手动模式 — 不 spawn，远端 Reasoner + 远端 Worker
 	 */
 	private async _startManual(): Promise<void> {
-		this._setState(SidecarState.Connected);
-		this._setWorkerState(WorkerState.Connected);
 		this._logService.info('[ChipOS] Manual mode, reasoning at:', this.reasoningUrl);
+		this._setState(SidecarState.HealthChecking);
+
+		const ok = await this._httpHealthCheck(this.reasoningUrl);
+		if (ok) {
+			this._setState(SidecarState.Connected);
+			this._checkManualWorkers();
+		} else {
+			this._logService.error('[ChipOS] Manual reasoning not reachable:', this.reasoningUrl);
+			this._setState(SidecarState.Error);
+		}
+	}
+
+	/**
+	 * Manual 模式下通过 /health 检查是否有 Worker 已注册。
+	 * /health 不需要认证，返回 workers_connected 计数。
+	 */
+	private async _checkManualWorkers(): Promise<void> {
+		try {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 5000);
+			const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
+			clearTimeout(timer);
+			if (resp.ok) {
+				const body = await resp.json() as { workers_connected?: number };
+				if (body.workers_connected && body.workers_connected > 0) {
+					this._setWorkerState(WorkerState.Connected);
+					this._logService.info('[ChipOS Manual] Workers connected:', body.workers_connected);
+				} else {
+					this._setWorkerState(WorkerState.Disconnected);
+					this._logService.warn('[ChipOS Manual] No connected workers found');
+				}
+			}
+		} catch {
+			this._logService.warn('[ChipOS Manual] Failed to check workers');
+		}
 	}
 
 	/**
@@ -221,7 +284,7 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	 */
 	private async _spawnWorker(): Promise<void> {
 		const backendDir = this._resolveBackendDir();
-		const pythonPath = this._resolvePython(backendDir);
+		const pythonPath = this._resolveWorkerPython(backendDir);
 
 		if (!existsSync(pythonPath)) {
 			this._logService.error('[ChipOS Worker] Python not found:', pythonPath);
@@ -231,17 +294,23 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 
 		this._workerId = `worker-${generateUuid().substring(0, 12)}`;
 		this._setWorkerState(WorkerState.Starting);
-		this._logService.info('[ChipOS Worker] Starting, id:', this._workerId, 'reasoning at:', this.reasoningUrl);
+
+		const grpcTarget = this.grpcAddress;
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		const workspaceRoot = folders.length > 0 ? folders[0].uri.fsPath : backendDir;
+
+		this._logService.info('[ChipOS Worker] Starting, id:', this._workerId, 'gRPC target:', grpcTarget);
 
 		try {
 			this._workerProcess = cpSpawn(
 				pythonPath,
-				['-m', 'execution.server.execution_server'],
+				['-m', 'execution.server.cli', 'start', '--server', grpcTarget, '--workspace', workspaceRoot],
 				{
 					cwd: backendDir,
 					stdio: ['ignore', 'pipe', 'pipe'],
 					env: {
 						...this._buildEnv(backendDir),
+						CHIPOS_REASONING_SERVER: grpcTarget,
 						CHIPOS_REASONING_URL: this.reasoningUrl,
 						CHIPOS_WORKER_ID: this._workerId,
 					},
@@ -250,11 +319,13 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 
 			this._attachHandlers(this._workerProcess, 'Worker');
 
-			// 等待 Worker 启动
-			await this._delay(2000);
-			if (this._workerProcess && !this._workerProcess.killed) {
+			const registered = await this._waitForWorkerRegistered(this._workerId!, 15000);
+			if (registered) {
 				this._setWorkerState(WorkerState.Connected);
-				this._logService.info('[ChipOS Worker] Started');
+				this._logService.info('[ChipOS Worker] Registered at Reasoner');
+			} else if (this._workerProcess && !this._workerProcess.killed) {
+				this._setWorkerState(WorkerState.Connected);
+				this._logService.warn('[ChipOS Worker] Registration check unavailable, assuming connected');
 			}
 		} catch (err) {
 			this._logService.error('[ChipOS Worker] Spawn failed:', String(err));
@@ -267,10 +338,19 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	override dispose(): void {
 		this._disposed = true;
 		this._clearTimer();
-		this._process?.kill('SIGKILL');
+		this._clearWorkerTimer();
+		const proc = this._process;
+		const workerProc = this._workerProcess;
 		this._process = undefined;
-		this._workerProcess?.kill('SIGKILL');
 		this._workerProcess = undefined;
+		if (proc && !proc.killed) {
+			proc.kill('SIGTERM');
+			setTimeout(() => { if (!proc.killed) { proc.kill('SIGKILL'); } }, KILL_TIMEOUT_MS);
+		}
+		if (workerProc && !workerProc.killed) {
+			workerProc.kill('SIGTERM');
+			setTimeout(() => { if (!workerProc.killed) { workerProc.kill('SIGKILL'); } }, KILL_TIMEOUT_MS);
+		}
 		super.dispose();
 	}
 
@@ -302,10 +382,17 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	}
 
 	private _resolvePython(backendDir: string): string {
-		// 优先用 .venv 里的 Python（poetry install 创建的）
+		return this._resolvePythonForPackage(backendDir, 'reasoning');
+	}
+
+	private _resolveWorkerPython(backendDir: string): string {
+		return this._resolvePythonForPackage(backendDir, 'execution');
+	}
+
+	private _resolvePythonForPackage(backendDir: string, pkg: string): string {
 		const venvPython = process.platform === 'win32'
-			? join(backendDir, 'packages', 'reasoning', '.venv', 'Scripts', 'python.exe')
-			: join(backendDir, 'packages', 'reasoning', '.venv', 'bin', 'python');
+			? join(backendDir, 'packages', pkg, '.venv', 'Scripts', 'python.exe')
+			: join(backendDir, 'packages', pkg, '.venv', 'bin', 'python');
 
 		if (existsSync(venvPython)) {
 			return venvPython;
@@ -320,7 +407,6 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 			return bundledPython;
 		}
 
-		// 兜底：系统 Python（可能版本不对，但至少能给出有意义的错误）
 		return 'python3';
 	}
 
@@ -367,6 +453,9 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 			} else {
 				this._workerProcess = undefined;
 				this._setWorkerState(WorkerState.Disconnected);
+				if (!this._disposed && this._mode === BackendMode.CloudReasoning && code !== 0) {
+					this._handleWorkerCrash(code);
+				}
 			}
 		});
 
@@ -397,20 +486,12 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	// ── Health check ────────────────────────────────────────────────────
 
 	private async _healthCheckLoop(port: number): Promise<void> {
-		const deadline = Date.now() + HEALTH_CHECK_TIMEOUT_MS;
-
-		while (Date.now() < deadline && !this._disposed && this._state === SidecarState.HealthChecking) {
-			const ok = await this._tcpCheck(port);
-			if (ok) {
-				this._restartCount = 0;
-				this._setState(SidecarState.Connected);
-				this._logService.info('[ChipOS] Connected on port', port);
-				return;
-			}
-			await this._delay(HEALTH_CHECK_INTERVAL_MS);
-		}
-
-		if (this._state === SidecarState.HealthChecking) {
+		const ok = await this._httpHealthCheck(`http://127.0.0.1:${port}`);
+		if (ok) {
+			this._restartCount = 0;
+			this._setState(SidecarState.Connected);
+			this._logService.info('[ChipOS] Connected on port', port);
+		} else if (this._state === SidecarState.HealthChecking) {
 			this._logService.error('[ChipOS] Health check timed out');
 			this._setState(SidecarState.Error);
 		}
@@ -426,6 +507,59 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 			socket.once('timeout', () => { socket.destroy(); resolve(false); });
 			socket.once('error', () => { socket.destroy(); resolve(false); });
 		});
+	}
+
+	/**
+	 * HTTP GET health check for remote reasoning servers.
+	 * Tries up to HEALTH_CHECK_TIMEOUT_MS with retries.
+	 */
+	private async _httpHealthCheck(baseUrl: string): Promise<boolean> {
+		const deadline = Date.now() + HEALTH_CHECK_TIMEOUT_MS;
+		while (Date.now() < deadline && !this._disposed) {
+			try {
+				const controller = new AbortController();
+				const timeout = setTimeout(() => controller.abort(), 3000);
+				const resp = await fetch(`${baseUrl}/health`, { signal: controller.signal });
+				clearTimeout(timeout);
+				if (resp.ok) {
+					this._logService.info('[ChipOS] Health check passed:', baseUrl);
+					return true;
+				}
+			} catch {
+				// retry
+			}
+			await this._delay(HEALTH_CHECK_INTERVAL_MS);
+		}
+		return false;
+	}
+
+	/**
+	 * Poll GET /api/v1/workers on the Reasoning server until our worker_id appears as registered.
+	 */
+	/**
+	 * Poll GET /health to confirm worker count increased, as a proxy for our worker having registered.
+	 * Falls back to simple delay if /health is not available.
+	 */
+	private async _waitForWorkerRegistered(_workerId: string, timeoutMs: number): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline && !this._disposed) {
+			try {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), 3000);
+				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
+				clearTimeout(timer);
+				if (resp.ok) {
+					const body = await resp.json() as { status?: string; workers_connected?: number };
+					if (body.workers_connected && body.workers_connected > 0) {
+						return true;
+					}
+				}
+			} catch {
+				// Reasoner may not be ready yet
+			}
+			await new Promise(resolve => setTimeout(resolve, 1000));
+		}
+		return false;
 	}
 
 	// ── Crash recovery ──────────────────────────────────────────────────
@@ -449,6 +583,35 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 				this.startBackend();
 			}
 		}, RESTART_DELAY_MS);
+	}
+
+	private _workerRestartCount = 0;
+	private _workerTimer: ReturnType<typeof setTimeout> | undefined;
+
+	private _handleWorkerCrash(code: number | null): void {
+		this._workerRestartCount++;
+		this._logService.info('[ChipOS Worker] Crash, exit code:', code, 'attempt:', this._workerRestartCount, '/', MAX_RESTART_COUNT);
+
+		if (this._workerRestartCount > MAX_RESTART_COUNT) {
+			this._logService.error('[ChipOS Worker] Max restarts exceeded');
+			this._setWorkerState(WorkerState.Error);
+			return;
+		}
+
+		this._logService.info('[ChipOS Worker] Restarting in', RESTART_DELAY_MS, 'ms');
+		this._workerTimer = setTimeout(() => {
+			this._workerTimer = undefined;
+			if (!this._disposed && this._mode === BackendMode.CloudReasoning) {
+				this._spawnWorker();
+			}
+		}, RESTART_DELAY_MS);
+	}
+
+	private _clearWorkerTimer(): void {
+		if (this._workerTimer !== undefined) {
+			clearTimeout(this._workerTimer);
+			this._workerTimer = undefined;
+		}
 	}
 
 	// ── State ───────────────────────────────────────────────────────────

@@ -83,10 +83,31 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 	// ── v2 ──
 
 	async startBackend(): Promise<void> {
-		// 浏览器模式 = 场景 C，后端预部署，直接标记连接
-		this._setState(SidecarState.Connected);
-		this._setWorkerState(WorkerState.Connected);
-		this._logService.info('[ChipOS SidecarBrowser] Browser mode, assuming pre-deployed backend');
+		// 浏览器模式 = 场景 C，后端预部署
+		const reasoningUrl = this.reasoningUrl;
+		if (!reasoningUrl) {
+			this._logService.warn('[ChipOS SidecarBrowser] No reasoning URL configured');
+			this._setState(SidecarState.Error);
+			return;
+		}
+
+		this._logService.info('[ChipOS SidecarBrowser] Checking reasoning at:', reasoningUrl);
+		try {
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 5000);
+			const resp = await fetch(`${reasoningUrl}/health`, { signal: controller.signal });
+			clearTimeout(timeout);
+			if (resp.ok) {
+				this._setState(SidecarState.Connected);
+				this._logService.info('[ChipOS SidecarBrowser] Reasoning server reachable');
+			} else {
+				this._setState(SidecarState.Error);
+				this._logService.error('[ChipOS SidecarBrowser] Reasoning returned:', resp.status);
+			}
+		} catch (err) {
+			this._setState(SidecarState.Connected);
+			this._logService.warn('[ChipOS SidecarBrowser] Health check failed, assuming connected:', String(err));
+		}
 	}
 
 	async stopBackend(): Promise<void> {

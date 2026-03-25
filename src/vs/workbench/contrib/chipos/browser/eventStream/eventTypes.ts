@@ -95,6 +95,8 @@ export interface IErrorPayload {
 	readonly error_code: string;
 	readonly message: string;
 	readonly retryable: boolean;
+	readonly category?: string;
+	readonly details?: Record<string, unknown>;
 }
 
 export interface IDonePayload {
@@ -260,7 +262,7 @@ export interface ITaskSummaryPayload {
 
 export interface ISubagentEventPayload {
 	readonly task_id: string;
-	readonly kind: 'text' | 'tool_start' | 'tool_end' | 'status' | 'error' | 'complete';
+	readonly kind: 'start' | 'text' | 'tool_start' | 'tool_end' | 'status' | 'error' | 'complete';
 	readonly content?: string;
 	readonly tool_name?: string;
 	/** Tool arguments — present on tool_start for file-writing tools */

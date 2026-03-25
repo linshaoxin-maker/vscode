@@ -87,6 +87,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 	private _eventSource: EventSource | null = null;
 	private _sessionId: string = '';
+	private _streamToken: string = '';
 	private _lastSequenceId: number = 0;
 	private _reconnectAttempts: number = 0;
 	private _state: ConnectionState = ConnectionState.Disconnected;
@@ -109,11 +110,38 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	// ── IEventStreamClient: connect ─────────────────────────────────────────
 
 	async connect(): Promise<void> {
-		if (this._state === ConnectionState.Connected || this._state === ConnectionState.Connecting) {
+		if (this._state === ConnectionState.Connected) {
 			return;
+		}
+		if (this._state === ConnectionState.Connecting) {
+			return new Promise<void>((resolve, reject) => {
+				const d = this._onDidChangeConnectionState.event(state => {
+					d.dispose();
+					if (state === ConnectionState.Connected) {
+						resolve();
+					} else {
+						reject(new Error(`Connection failed (state=${state})`));
+					}
+				});
+			});
 		}
 		this._setState(ConnectionState.Connecting);
 		this._openEventSource();
+		return new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				d.dispose();
+				reject(new Error('SSE connect timeout (10s)'));
+			}, 10_000);
+			const d = this._onDidChangeConnectionState.event(state => {
+				clearTimeout(timeout);
+				d.dispose();
+				if (state === ConnectionState.Connected) {
+					resolve();
+				} else {
+					reject(new Error(`Connection failed (state=${state})`));
+				}
+			});
+		});
 	}
 
 	// ── IEventStreamClient: disconnect ──────────────────────────────────────
@@ -145,9 +173,17 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			})),
 			thinking: options.thinking,
 			auto_approve_mode: options.autoApproveMode,
+		}).then(async resp => {
+			try {
+				const data = await resp.json();
+				if (data.stream_token) {
+					this._streamToken = data.stream_token;
+					this._reopenEventSourceWithToken();
+				}
+			} catch { /* response may not have JSON body */ }
 		}).catch(err => {
 			console.error('[SseClient] sendTask failed:', err);
-			this._emitError(`sendTask failed: ${err}`);
+			this._emitError(`sendTask failed: ${err}`, 'TASK_SUBMIT_FAILED', 'SESSION', false);
 		});
 	}
 
@@ -156,6 +192,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	sendStop(sessionId: string): void {
 		this._post('/api/v1/stop', { session_id: sessionId }).catch(err => {
 			console.error('[SseClient] sendStop failed:', err);
+			this._emitError(`sendStop failed: ${err}`, 'STOP_FAILED', 'SESSION', true);
 		});
 	}
 
@@ -169,10 +206,17 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			comment: comment ?? '',
 		}).catch(err => {
 			console.error('[SseClient] sendConfirmResponse failed:', err);
+			this._emitError(`Confirm response failed: ${err}`, 'CONFIRM_FAILED', 'SESSION', false);
 		});
 	}
 
 	// ── SSE 连接管理 ────────────────────────────────────────────────────────
+
+	private _reopenEventSourceWithToken(): void {
+		if (this._state === ConnectionState.Connected || this._state === ConnectionState.Connecting) {
+			this._openEventSource();
+		}
+	}
 
 	private _openEventSource(): void {
 		this._closeEventSource();
@@ -183,6 +227,9 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}
 		if (this._lastSequenceId > 0) {
 			params.set('last_sequence_id', String(this._lastSequenceId));
+		}
+		if (this._streamToken) {
+			params.set('stream_token', this._streamToken);
 		}
 
 		const url = `${this._config.baseUrl}/api/v1/events?${params.toString()}`;
@@ -238,12 +285,19 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			return;
 		}
 
+		const payload = raw['data'] && typeof raw['data'] === 'object'
+			? raw['data'] as Record<string, unknown>
+			: (() => {
+				const { type: _t, event_id: _e, session_id: _s, sequence_id: _sq, timestamp_ms: _ts, ...rest } = raw;
+				return rest;
+			})();
+
 		this._onDidReceiveEvent.fire({
 			event_type: eventType,
 			event_id: (raw['event_id'] as string) ?? seqId ?? '',
 			session_id: (raw['session_id'] as string) ?? this._sessionId,
 			timestamp: (raw['timestamp_ms'] as number) ?? Date.now(),
-			payload: (raw['data'] ?? raw) as any,
+			payload,
 		} as AgentEvent);
 	}
 
@@ -307,16 +361,18 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}
 	}
 
-	private _emitError(message: string): void {
+	private _emitError(message: string, code: string = 'SSE_ERROR', category: string = 'TRANSPORT', retryable: boolean = true): void {
 		this._onDidReceiveEvent.fire({
 			event_type: AgentEventType.Error,
 			event_id: `err_${Date.now()}`,
 			session_id: this._sessionId,
 			timestamp: Date.now(),
 			payload: {
-				error_code: 'SSE_ERROR',
+				error_code: code,
 				message,
-				retryable: true,
+				retryable,
+				category,
+				details: {},
 			},
 		} as AgentEvent);
 	}

@@ -150,12 +150,21 @@ export class ConnectionTab extends Disposable {
 		const state = this._sidecarManager.workerState;
 		dom.clearNode(this._workerStatusContainer);
 
-		// Worker 状态只在 cloud-reasoning 模式下显示
 		if (mode === BackendMode.Local) {
 			this._workerStatusContainer.style.display = 'none';
 			return;
 		}
 		this._workerStatusContainer.style.display = '';
+
+		// Manual mode: Worker is externally managed
+		if (mode === BackendMode.Manual) {
+			this._workerStatusContainer.className = 'chipos-connection-status connected';
+			dom.append(this._workerStatusContainer, dom.$('.chipos-status-dot'));
+			dom.append(this._workerStatusContainer, dom.$('span', undefined,
+				localize('chipos.worker.external', 'Worker: Managed externally')
+			));
+			return;
+		}
 
 		let cssClass: string;
 		let label: string;
@@ -201,12 +210,16 @@ export class ConnectionTab extends Disposable {
 
 			case 'cloud-reasoning':
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
+				this._renderGrpcAddressInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
 				break;
 
 			case 'manual':
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
+				dom.append(this._modeSpecificContainer, dom.$('.chipos-setting-hint', undefined,
+					localize('chipos.mode.manual.hint', 'Worker is managed externally. Deploy it separately and point it to the Reasoning gRPC address.')
+				));
 				break;
 		}
 	}
@@ -227,6 +240,25 @@ export class ConnectionTab extends Disposable {
 
 		this._disposables.add(inputBox.onDidChange(value => {
 			this._configurationService.updateValue('chipos.backend.reasoningUrl', value, ConfigurationTarget.USER);
+		}));
+	}
+
+	private _renderGrpcAddressInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.grpcAddress', 'Worker gRPC Target')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.grpcAddress.desc', 'gRPC address for the local Worker to connect to the Reasoning server (e.g. reasoning.chipos.ai:50051). If empty, derived from Reasoning URL host + port 50051.')
+		));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: 'reasoning.chipos.ai:50051',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.backend.grpcAddress') || '';
+
+		this._disposables.add(inputBox.onDidChange(value => {
+			this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
 		}));
 	}
 

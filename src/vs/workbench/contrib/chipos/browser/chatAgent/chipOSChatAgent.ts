@@ -264,6 +264,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					this._logService.warn('[ChipOS Agent] Editor effect error:', String(e));
 				}
 
+				try {
 				switch (event.event_type) {
 					// ── Streaming text ──
 					case AgentEventType.TextDelta: {
@@ -391,6 +392,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								if (editProgress.length > 0) {
 									progress(editProgress);
 								}
+							}).catch(err => {
+								this._logService.warn('[ChipOS Agent] ToolResult: stopExternalEdit failed for', key, err);
 							});
 							this._toolFileArgs.delete(key);
 						} else if (p.success) {
@@ -475,16 +478,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 					// ── Error → IChatAgentError content part ──
 					case AgentEventType.Error: {
-						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string };
+						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string; category?: string; details?: Record<string, unknown> };
 						trackFirstProgress();
+						const errorMsg = p.category ? `[${p.category}] ${p.message}` : p.message;
 						progress([{
 							kind: 'agentError',
 							error_code: p.error_code ?? 'AGENT_ERROR',
-							message: p.message,
+							message: errorMsg,
 							retryable: p.retryable ?? true,
 							suggestion: p.suggestion,
 						} satisfies IChatAgentError]);
-						finish({ errorDetails: { message: p.message } });
+						finish({ errorDetails: { message: errorMsg } });
 						break;
 					}
 
@@ -938,7 +942,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// ── FEAT-65: Context window usage warning ──
 					case AgentEventType.ContextWarning: {
 						const p = event.payload as IContextWarningPayload;
-						const pct = p.tokens_max > 0 ? Math.round((p.tokens_used / p.tokens_max) * 100) : 0;
+						const pct = p.usage_percent > 0 ? Math.round(p.usage_percent) : (p.tokens_max > 0 ? Math.round((p.tokens_used / p.tokens_max) * 100) : 0);
 						const suggestion = p.suggestion ? ` ${p.suggestion}` : '';
 						progress([this._warning(
 							`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
@@ -949,6 +953,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					default:
 						this._logService.trace('[ChipOS Agent] Unhandled event:', (event as AgentEvent).event_type);
 						break;
+				}
+				} catch (eventErr) {
+					this._logService.error('[ChipOS Agent] Event handler error for', event.event_type, eventErr);
 				}
 			});
 
@@ -1008,6 +1015,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					this._logService.warn('[ChipOS Agent] Editor effect error (continuation):', String(e));
 				}
 
+				try {
 				switch (event.event_type) {
 					case AgentEventType.TextDelta: {
 						const p = event.payload as ITextDeltaPayload;
@@ -1125,6 +1133,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								if (editProgress.length > 0) {
 									progress(editProgress);
 								}
+							}).catch(err => {
+								this._logService.warn('[ChipOS Agent] ToolResult (cont): stopExternalEdit failed for', key, err);
 							});
 							this._toolFileArgs.delete(key);
 						} else if (p.success) {
@@ -1527,15 +1537,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 					case AgentEventType.Error: {
-						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string };
+						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string; category?: string; details?: Record<string, unknown> };
+						const errorMsg = p.category ? `[${p.category}] ${p.message}` : p.message;
 						progress([{
 							kind: 'agentError',
 							error_code: p.error_code ?? 'AGENT_ERROR',
-							message: p.message,
+							message: errorMsg,
 							retryable: p.retryable ?? true,
 							suggestion: p.suggestion,
 						} satisfies IChatAgentError]);
-						finish({ errorDetails: { message: p.message } });
+						finish({ errorDetails: { message: errorMsg } });
 						break;
 					}
 					case AgentEventType.TaskComplete: {
@@ -1600,7 +1611,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// ── FEAT-65: Context window warning ──
 					case AgentEventType.ContextWarning: {
 						const p = event.payload as IContextWarningPayload;
-						const pct = Math.round(p.usage_percent);
+						const pct = p.usage_percent > 0 ? Math.round(p.usage_percent) : (p.tokens_max > 0 ? Math.round((p.tokens_used / p.tokens_max) * 100) : 0);
 						const suggestion = p.suggestion ? ` ${p.suggestion}` : '';
 						progress([this._warning(
 							`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
@@ -1610,6 +1621,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					default:
 						this._logService.trace('[ChipOS Agent] Unhandled event in continuation:', event.event_type);
 						break;
+				}
+				} catch (eventErr) {
+					this._logService.error('[ChipOS Agent] Event handler error (continuation) for', event.event_type, eventErr);
 				}
 			});
 
