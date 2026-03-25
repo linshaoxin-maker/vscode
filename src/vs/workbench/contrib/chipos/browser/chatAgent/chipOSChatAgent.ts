@@ -171,12 +171,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 
 		if (request.rejectedConfirmationData?.length) {
-			const data = request.rejectedConfirmationData[0] as { requestId: string; sessionId?: string };
+			const data = request.rejectedConfirmationData[0] as { requestId: string; sessionId?: string; options?: Array<{ label: string; action?: string; action_id?: string }> };
 			const confirmSessionId = data.sessionId ?? this._lastSessionId;
-			this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId, 'session:', confirmSessionId);
-			streamClient.sendConfirmResponse(data.requestId, 'reject', undefined, confirmSessionId);
-			progress([this._progress('$(circle-slash) Rejected')]);
-			return {};
+
+			// When multi-option confirmations exist, the user may have selected a non-primary
+			// option which VSCode routes as "reject". Try to match the user's message to an option.
+			let action = 'reject';
+			if (data.options?.length) {
+				const msgLabel = request.message.split(':')[0]?.trim();
+				const matched = data.options.find(o => o.label === msgLabel);
+				if (matched) {
+					action = matched.action ?? matched.action_id ?? 'reject';
+					this._logService.info('[ChipOS Agent] Confirm response (multi-option selected):', data.requestId, action, 'session:', confirmSessionId);
+				} else {
+					this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId, 'session:', confirmSessionId);
+				}
+			} else {
+				this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId, 'session:', confirmSessionId);
+			}
+
+			streamClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
+			if (action === 'reject') {
+				progress([this._progress('$(circle-slash) Rejected')]);
+			} else {
+				progress([this._progress(`$(check) Selected: ${action}`)]);
+			}
+			return this._listenForContinuation(streamClient, progress, token, request);
 		}
 
 		const sessionId = `native_chat_${++this._sessionCounter}_${Date.now()}`;
@@ -2164,26 +2184,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private async _ensureClient(): Promise<IEventStreamClient | undefined> {
 		if (this._streamClient && this._streamClient.connectionState === ConnectionState.Connected) {
+			this._logService.trace('[ChipOS Agent] Reusing existing connected SSE client');
 			return this._streamClient;
 		}
 
-		// v2: 统一使用 SSE 协议连接推理层
 		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
 		const reasoningUrl = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
 		const baseUrl = reasoningUrl || `http://127.0.0.1:${httpPort}`;
 		const token = this._configurationService.getValue<string>('chipos.backend.token') ?? undefined;
+		const noProxy = this._configurationService.getValue<string[]>('http.noProxy') ?? [];
 
-		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl);
+		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl, '| http.noProxy:', JSON.stringify(noProxy));
 
-		if (!this._streamClient || !(this._streamClient instanceof SseEventStreamClient)) {
+		if (this._streamClient && this._streamClient instanceof SseEventStreamClient
+			&& this._streamClient.connectionState !== ConnectionState.Error) {
+			this._logService.trace('[ChipOS Agent] Reusing existing SSE client for reconnect');
+		} else {
 			this._streamClient?.disconnect();
 			this._streamClient = this._register(new SseEventStreamClient({ baseUrl, token }));
 		}
 
 		try {
 			await this._streamClient.connect();
+			this._logService.info('[ChipOS Agent] SSE connected successfully');
 		} catch (err) {
-			this._logService.error('[ChipOS Agent] Failed to connect:', String(err));
+			this._logService.error('[ChipOS Agent] Failed to connect SSE:', String(err));
+			this._logService.error('[ChipOS Agent] Hint: If proxy issue, add server IP to Settings > http.noProxy');
 			return undefined;
 		}
 

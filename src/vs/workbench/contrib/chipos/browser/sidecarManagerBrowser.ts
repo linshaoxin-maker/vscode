@@ -83,7 +83,6 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 	// ── v2 ──
 
 	async startBackend(): Promise<void> {
-		// 浏览器模式 = 场景 C，后端预部署
 		const reasoningUrl = this.reasoningUrl;
 		if (!reasoningUrl) {
 			this._logService.warn('[ChipOS SidecarBrowser] No reasoning URL configured');
@@ -91,22 +90,25 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 			return;
 		}
 
-		this._logService.info('[ChipOS SidecarBrowser] Checking reasoning at:', reasoningUrl);
+		const noProxy = this._configurationService.getValue<string[]>('http.noProxy') ?? [];
+		this._logService.info('[ChipOS SidecarBrowser] Checking reasoning at:', reasoningUrl, '| http.noProxy:', JSON.stringify(noProxy));
 		try {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 5000);
 			const resp = await fetch(`${reasoningUrl}/health`, { signal: controller.signal });
 			clearTimeout(timeout);
 			if (resp.ok) {
+				const body = await resp.json().catch(() => ({}));
 				this._setState(SidecarState.Connected);
-				this._logService.info('[ChipOS SidecarBrowser] Reasoning server reachable');
+				this._logService.info('[ChipOS SidecarBrowser] Reasoning server reachable, health:', JSON.stringify(body));
 			} else {
 				this._setState(SidecarState.Error);
-				this._logService.error('[ChipOS SidecarBrowser] Reasoning returned:', resp.status);
+				this._logService.error('[ChipOS SidecarBrowser] Reasoning returned:', resp.status, resp.statusText);
 			}
 		} catch (err) {
-			this._setState(SidecarState.Connected);
-			this._logService.warn('[ChipOS SidecarBrowser] Health check failed, assuming connected:', String(err));
+			this._setState(SidecarState.Error);
+			this._logService.error('[ChipOS SidecarBrowser] Health check failed:', String(err));
+			this._logService.error('[ChipOS SidecarBrowser] This is likely a proxy issue. Add the server IP to Settings > Http: No Proxy');
 		}
 	}
 

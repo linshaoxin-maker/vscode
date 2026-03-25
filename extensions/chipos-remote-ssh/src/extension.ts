@@ -173,53 +173,66 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 // ── Commands ────────────────────────────────────────────────────────────────
 
 async function connectToHost(reuseWindow: boolean): Promise<void> {
-	// Get saved hosts from SSH config + recent connections
 	const hosts = await getSshHosts();
+	const defaultHost = vscode.workspace.getConfiguration('chipos.remote.ssh')
+		.get<string>('defaultHost', '');
 
-	const items: vscode.QuickPickItem[] = [
-		...hosts.map(h => ({ label: h, description: 'SSH Host' })),
-		{ label: '$(add) Enter SSH host manually...', description: '' },
-	];
+	let sshTarget: string | undefined;
 
-	const selected = await vscode.window.showQuickPick(items, {
-		placeHolder: 'Select an SSH host to connect to',
-		title: 'ChipOS: Connect via SSH',
-	});
+	if (hosts.length > 0) {
+		// Show QuickPick with existing hosts + manual entry as the FIRST option
+		const manualItem: vscode.QuickPickItem = {
+			label: '$(edit) Enter host manually...',
+			description: '',
+			alwaysShow: true,
+		};
+		const items: vscode.QuickPickItem[] = [
+			manualItem,
+			...hosts.map(h => ({ label: h, description: 'SSH Host' })),
+		];
 
-	if (!selected) {
+		const selected = await vscode.window.showQuickPick(items, {
+			placeHolder: 'Select or type a host (e.g. root@192.168.1.1)',
+			title: 'ChipOS: Connect via SSH',
+		});
+
+		if (!selected) {
+			return;
+		}
+		if (selected === manualItem) {
+			sshTarget = undefined; // fall through to input box
+		} else {
+			sshTarget = selected.label;
+		}
+	}
+
+	if (!sshTarget) {
+		sshTarget = await vscode.window.showInputBox({
+			prompt: 'Enter SSH host (e.g. root@192.168.1.1)',
+			placeHolder: 'user@hostname',
+			value: defaultHost,
+		});
+	}
+
+	if (!sshTarget) {
 		return;
 	}
 
-	let sshTarget: string;
-	if (selected.label.startsWith('$(add)')) {
-		const input = await vscode.window.showInputBox({
-			prompt: 'Enter SSH host (e.g. user@eda-server.company.com)',
-			placeHolder: 'user@hostname',
-			value: vscode.workspace.getConfiguration('chipos.remote.ssh').get<string>('defaultHost', ''),
-		});
-		if (!input) {
-			return;
-		}
-		sshTarget = input;
-	} else {
-		sshTarget = selected.label;
-	}
+	log(`Connecting to SSH target: ${sshTarget}`);
 
-	// Open a new window (or reuse current) with the remote authority
 	const remoteAuthority = `chipos-ssh+${sshTarget}`;
-	const uri = vscode.Uri.parse(`vscode-remote://${remoteAuthority}/`);
 
-	// Ask for remote folder to open
 	const folderPath = await vscode.window.showInputBox({
 		prompt: 'Enter the remote folder path to open',
-		placeHolder: '/home/user/project',
-		value: '/home/',
+		placeHolder: '/root/workspace',
+		value: '/root/workspace',
 	});
 
 	if (folderPath) {
 		const folderUri = vscode.Uri.parse(`vscode-remote://${remoteAuthority}${folderPath}`);
 		await vscode.commands.executeCommand('vscode.openFolder', folderUri, { forceNewWindow: !reuseWindow });
 	} else {
+		const uri = vscode.Uri.parse(`vscode-remote://${remoteAuthority}/`);
 		await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !reuseWindow });
 	}
 }

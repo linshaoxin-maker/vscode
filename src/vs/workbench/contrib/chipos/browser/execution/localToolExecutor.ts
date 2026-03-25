@@ -3,10 +3,14 @@
  *
  *  接收推理层 gRPC Action，调用 VSCode API 执行，返回 Observation。
  *  覆盖：文件读写（IFileService）、搜索（ISearchService）、终端（child_process）、Git（ISCMService）
+ *
+ *  Node.js 模块加载策略：
+ *  browser/ 层不能使用 import('child_process') 等 ESM 动态导入——浏览器的模块解析器
+ *  对裸标识符会抛出不可捕获的 TypeError。统一使用 require() 替代，require() 是
+ *  普通函数调用，在 Electron 环境正常工作，在浏览器环境被 try-catch 捕获。
  *---------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { URI } from '../../../../../base/common/uri.js';
 
 /**
  * 工具调用 Action
@@ -49,18 +53,11 @@ export class LocalToolExecutor extends Disposable {
 		super();
 	}
 
-	/**
-	 * 注册工具执行器
-	 */
 	registerExecutor(executor: IToolExecutor): void {
 		this._executors.set(executor.name, executor);
 	}
 
-	/**
-	 * 执行工具调用
-	 */
 	async execute(action: IToolCallAction): Promise<IToolResultObservation> {
-		// 查找能处理该工具的执行器
 		for (const executor of this._executors.values()) {
 			if (executor.canHandle(action.name)) {
 				try {
@@ -86,9 +83,19 @@ export class LocalToolExecutor extends Disposable {
 }
 
 /**
+ * Safely load a Node.js built-in module via require().
+ * Returns undefined in browser environments where require() is not available.
+ */
+function tryRequireNode<T>(moduleName: string): T | undefined {
+	try {
+		return require(moduleName) as T;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * FileToolExecutor — 文件操作执行器
- *
- * 使用 VSCode IFileService 执行文件读写。
  */
 export class FileToolExecutor implements IToolExecutor {
 	readonly name = 'file';
@@ -124,8 +131,10 @@ export class FileToolExecutor implements IToolExecutor {
 
 	private async _readFile(callId: string, path: string): Promise<IToolResultObservation> {
 		try {
-			// 使用 Node.js fs（Electron 环境）
-			const fs = await import('fs');
+			const fs = tryRequireNode<typeof import('fs')>('fs');
+			if (!fs) {
+				return { callId, content: 'File operations not available (Node.js required)', isError: true, toolName: 'read_file' };
+			}
 			const content = fs.readFileSync(path, 'utf-8');
 			return { callId, content, isError: false, toolName: 'read_file' };
 		} catch (e) {
@@ -135,8 +144,11 @@ export class FileToolExecutor implements IToolExecutor {
 
 	private async _writeFile(callId: string, path: string, content: string): Promise<IToolResultObservation> {
 		try {
-			const fs = await import('fs');
-			const pathModule = await import('path');
+			const fs = tryRequireNode<typeof import('fs')>('fs');
+			const pathModule = tryRequireNode<typeof import('path')>('path');
+			if (!fs || !pathModule) {
+				return { callId, content: 'File operations not available (Node.js required)', isError: true, toolName: 'write_file' };
+			}
 			fs.mkdirSync(pathModule.dirname(path), { recursive: true });
 			fs.writeFileSync(path, content, 'utf-8');
 			return { callId, content: `Written to ${path}`, isError: false, toolName: 'write_file' };
@@ -147,7 +159,10 @@ export class FileToolExecutor implements IToolExecutor {
 
 	private async _listDir(callId: string, path: string): Promise<IToolResultObservation> {
 		try {
-			const fs = await import('fs');
+			const fs = tryRequireNode<typeof import('fs')>('fs');
+			if (!fs) {
+				return { callId, content: 'File operations not available (Node.js required)', isError: true, toolName: 'list_dir' };
+			}
 			const entries = fs.readdirSync(path, { withFileTypes: true });
 			const lines = entries.map((e: any) => `${e.isDirectory() ? '📁' : '📄'} ${e.name}`);
 			return { callId, content: lines.join('\n'), isError: false, toolName: 'list_dir' };
@@ -159,8 +174,6 @@ export class FileToolExecutor implements IToolExecutor {
 
 /**
  * ShellToolExecutor — 命令执行器
- *
- * 使用 child_process 执行 shell 命令。
  */
 export class ShellToolExecutor implements IToolExecutor {
 	readonly name = 'shell';
@@ -170,17 +183,21 @@ export class ShellToolExecutor implements IToolExecutor {
 	}
 
 	async execute(action: IToolCallAction): Promise<IToolResultObservation> {
+		const cp = tryRequireNode<typeof import('child_process')>('child_process');
+		if (!cp) {
+			return { callId: action.callId, content: 'Shell execution not available (Node.js required)', isError: true, toolName: action.name };
+		}
+
 		const args = JSON.parse(action.argsJson);
 		const command = args.command || '';
 		const cwd = args.cwd || process.cwd();
 
 		try {
-			const { execSync } = await import('child_process');
-			const output = execSync(command, {
+			const output = cp.execSync(command, {
 				cwd,
 				encoding: 'utf-8',
-				timeout: 300000, // 5 分钟
-				maxBuffer: 10 * 1024 * 1024, // 10MB
+				timeout: 300000,
+				maxBuffer: 10 * 1024 * 1024,
 			});
 			return { callId: action.callId, content: output, isError: false, toolName: action.name };
 		} catch (e: any) {
@@ -201,19 +218,22 @@ export class SearchToolExecutor implements IToolExecutor {
 	}
 
 	async execute(action: IToolCallAction): Promise<IToolResultObservation> {
+		const cp = tryRequireNode<typeof import('child_process')>('child_process');
+		if (!cp) {
+			return { callId: action.callId, content: 'Search not available (Node.js required)', isError: true, toolName: action.name };
+		}
+
 		const args = JSON.parse(action.argsJson);
 		const query = args.query || '';
 		const path = args.path || '.';
 
 		try {
-			const { execSync } = await import('child_process');
-			const output = execSync(
+			const output = cp.execSync(
 				`grep -rn --include="*.v" --include="*.sv" --include="*.py" --include="*.ts" "${query}" "${path}"`,
 				{ encoding: 'utf-8', timeout: 30000, maxBuffer: 5 * 1024 * 1024 }
 			);
 			return { callId: action.callId, content: output, isError: false, toolName: action.name };
 		} catch (e: any) {
-			// grep 返回 1 表示没有匹配
 			if (e.status === 1) {
 				return { callId: action.callId, content: 'No matches found', isError: false, toolName: action.name };
 			}
@@ -230,7 +250,6 @@ export class SearchToolExecutor implements IToolExecutor {
 export class ToolExecutorRouter extends LocalToolExecutor {
 	constructor() {
 		super();
-		// 注册内置执行器
 		this.registerExecutor(new FileToolExecutor());
 		this.registerExecutor(new ShellToolExecutor());
 		this.registerExecutor(new SearchToolExecutor());

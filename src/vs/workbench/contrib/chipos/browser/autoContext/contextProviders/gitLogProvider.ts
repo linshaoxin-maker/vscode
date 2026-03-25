@@ -45,7 +45,6 @@ export class GitLogProvider implements IContextProvider {
 	private _execGitLog(cwd: string): Promise<string | undefined> {
 		return new Promise((resolve) => {
 			try {
-				// Dynamic require to avoid bundler issues in browser context
 				const cp: typeof import('child_process') = require('child_process');
 				cp.exec(
 					`git log --oneline --no-decorate -n ${MAX_COMMITS}`,

@@ -92,6 +92,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	private _reconnectAttempts: number = 0;
 	private _state: ConnectionState = ConnectionState.Disconnected;
 	private _reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+	private readonly _seenEventIds = new Set<string>();
 
 	private readonly _onDidReceiveEvent = this._register(new Emitter<AgentEvent>());
 	readonly onDidReceiveEvent = this._onDidReceiveEvent.event;
@@ -150,6 +151,9 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		this._closeEventSource();
 		this._clearReconnectTimer();
 		this._reconnectAttempts = 0;
+		this._streamToken = '';
+		this._sessionId = '';
+		this._seenEventIds.clear();
 		this._setState(ConnectionState.Disconnected);
 	}
 
@@ -218,7 +222,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}
 	}
 
-	private _openEventSource(): void {
+	private async _openEventSource(): Promise<void> {
 		this._closeEventSource();
 
 		const params = new URLSearchParams();
@@ -233,9 +237,31 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}
 
 		const url = `${this._config.baseUrl}/api/v1/events?${params.toString()}`;
+		console.log('[SseClient] Opening EventSource:', url);
+
+		// Pre-flight: fetch /health to get actionable error info before EventSource
+		try {
+			const healthUrl = `${this._config.baseUrl}/health`;
+			console.log('[SseClient] Pre-flight health check:', healthUrl);
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 5000);
+			const resp = await fetch(healthUrl, { signal: controller.signal });
+			clearTimeout(timer);
+			console.log('[SseClient] Health check result:', resp.status, resp.statusText);
+			if (!resp.ok) {
+				console.warn('[SseClient] Health check failed:', resp.status);
+			}
+		} catch (err) {
+			console.error('[SseClient] Pre-flight health check error (proxy issue?):', String(err));
+			this._setState(ConnectionState.Error);
+			this._emitError(`Cannot reach reasoning server at ${this._config.baseUrl}: ${String(err)}. If using a proxy, add the server IP to http.noProxy in Settings.`, 'PREFLIGHT_FAILED', 'TRANSPORT', true);
+			return;
+		}
+
 		this._eventSource = new EventSource(url);
 
 		this._eventSource.onopen = () => {
+			console.log('[SseClient] EventSource connected');
 			this._reconnectAttempts = 0;
 			this._setState(ConnectionState.Connected);
 		};
@@ -248,7 +274,14 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			}
 		};
 
-		this._eventSource.onerror = () => {
+		this._eventSource.onerror = (ev: Event) => {
+			const es = this._eventSource;
+			const readyState = es ? es.readyState : -1;
+			console.error('[SseClient] EventSource error, readyState:', readyState, '(0=CONNECTING, 1=OPEN, 2=CLOSED)', ev);
+			if (readyState === 2 && this._streamToken) {
+				console.warn('[SseClient] Connection closed with stream_token present — clearing stale token for next attempt');
+				this._streamToken = '';
+			}
 			this._closeEventSource();
 			this._scheduleReconnect();
 		};
@@ -279,6 +312,23 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			}
 		}
 
+		// 去重：跳过已分发的事件（SSE 重连 replay 场景）
+		const eventId = (raw['event_id'] as string) ?? seqId ?? '';
+		if (eventId && this._seenEventIds.has(eventId)) {
+			return;
+		}
+		if (eventId) {
+			this._seenEventIds.add(eventId);
+			if (this._seenEventIds.size > 2000) {
+				let dropped = 0;
+				for (const old of this._seenEventIds) {
+					if (dropped >= 500) { break; }
+					this._seenEventIds.delete(old);
+					dropped++;
+				}
+			}
+		}
+
 		const eventType = SSE_TYPE_MAP[type];
 		if (eventType === undefined) {
 			console.warn('[SseClient] Unknown event type:', type);
@@ -294,11 +344,11 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 		this._onDidReceiveEvent.fire({
 			event_type: eventType,
-			event_id: (raw['event_id'] as string) ?? seqId ?? '',
+			event_id: eventId,
 			session_id: (raw['session_id'] as string) ?? this._sessionId,
 			timestamp: (raw['timestamp_ms'] as number) ?? Date.now(),
 			payload,
-		} as AgentEvent);
+		} as unknown as AgentEvent);
 	}
 
 	// ── 重连 ────────────────────────────────────────────────────────────────

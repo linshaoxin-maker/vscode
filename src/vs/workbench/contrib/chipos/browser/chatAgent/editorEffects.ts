@@ -272,9 +272,9 @@ export class ChipOSEditorEffects extends Disposable {
 
 		if (modified.length) {
 			try {
-				const { exec } = await import('child_process');
+				const cp: typeof import('child_process') = require('child_process');
 				await new Promise<void>((resolve, reject) => {
-					exec(`git checkout HEAD -- ${modified.map(p => `"${p}"`).join(' ')}`, { cwd: workspacePath }, (err) => {
+					cp.exec(`git checkout HEAD -- ${modified.map(p => `"${p}"`).join(' ')}`, { cwd: workspacePath }, (err) => {
 						if (err) { reject(err); } else { resolve(); }
 					});
 				});
@@ -311,8 +311,9 @@ export class ChipOSEditorEffects extends Disposable {
 			return;
 		}
 
-		import('child_process').then(({ exec }) => {
-			exec('git diff --numstat HEAD', { cwd: workspacePath, timeout: 5000 }, (err, stdout) => {
+		try {
+			const cp: typeof import('child_process') = require('child_process');
+			cp.exec('git diff --numstat HEAD', { cwd: workspacePath, timeout: 5000 }, (err, stdout) => {
 				if (err || !stdout.trim()) { return; }
 				let updated = false;
 				for (const line of stdout.trim().split('\n')) {
@@ -332,7 +333,9 @@ export class ChipOSEditorEffects extends Disposable {
 					this._fireFileChanges();
 				}
 			});
-		}).catch(() => { /* child_process not available in browser context */ });
+		} catch {
+			// require('child_process') not available in browser context
+		}
 	}
 
 	private _fireFileChanges(): void {

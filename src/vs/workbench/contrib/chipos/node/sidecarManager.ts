@@ -6,7 +6,6 @@
 import { ChildProcess, spawn as cpSpawn } from 'child_process';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { createConnection, Socket } from 'net';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -495,18 +494,6 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 			this._logService.error('[ChipOS] Health check timed out');
 			this._setState(SidecarState.Error);
 		}
-	}
-
-	private _tcpCheck(port: number): Promise<boolean> {
-		return new Promise<boolean>(resolve => {
-			const socket: Socket = createConnection({ port, host: '127.0.0.1' }, () => {
-				socket.destroy();
-				resolve(true);
-			});
-			socket.setTimeout(HEALTH_CHECK_INTERVAL_MS);
-			socket.once('timeout', () => { socket.destroy(); resolve(false); });
-			socket.once('error', () => { socket.destroy(); resolve(false); });
-		});
 	}
 
 	/**
