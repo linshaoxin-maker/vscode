@@ -83,8 +83,12 @@ export class ServerManager {
 	// ── Private ─────────────────────────────────────────────────────────
 
 	private async _isServerInstalled(): Promise<boolean> {
+		const product = getProductInfo();
+		const serverName = product.serverApplicationName || 'chipos-server';
 		try {
-			const result = await this._ssh.exec(`test -f ${this._installPath}/bin/chipos-server && echo "yes" || echo "no"`);
+			const result = await this._ssh.exec(
+				`(test -f ${this._installPath}/bin/${serverName} || test -f ${this._installPath}/bin/code-server) && echo "yes" || echo "no"`
+			);
 			return result.trim() === 'yes';
 		} catch {
 			return false;
@@ -127,42 +131,40 @@ export class ServerManager {
 		const connectionToken = crypto.randomBytes(16).toString('hex');
 		const product = getProductInfo();
 
-		let startCmd: string;
+		const primaryName = product.serverApplicationName || 'chipos-server';
+		const serverBin = `${this._installPath}/bin/${primaryName}`;
 
-		if (!product.commit) {
-			// Dev 模式：使用 code-server.sh（类似 vscode-test-resolver 的做法）
-			// 在 dev 模式下，server 代码在源码树中，不需要下载
-			this._log('[ServerManager] Dev mode: using local server script');
-			startCmd = [
-				`cd ${this._installPath}`,
-				`nohup bash -c "`,
-				`  export VSCODE_AGENT_FOLDER=${this._installPath}`,
-				`  node server.js`,
-				`  --connection-token ${connectionToken}`,
-				`  --host 127.0.0.1`,
-				`  --port 0`,
-				`  --without-browser-env-var`,
-				`" > ${this._installPath}/.server.log 2>&1 &`,
-			].join(' ');
-		} else {
-			// Production 模式：使用下载的 server binary
-			const serverBin = `${this._installPath}/bin/${product.serverApplicationName || 'chipos-server'}`;
-			startCmd = [
-				`cd ${this._installPath}`,
-				`nohup ${serverBin}`,
-				`--connection-token ${connectionToken}`,
-				`--host 127.0.0.1`,
-				`--port 0`,
-				`--without-browser-env-var`,
-				`--accept-server-license-terms`,
-				`> ${this._installPath}/.server.log 2>&1 &`,
-			].join(' ');
-		}
+		// Ensure the binary exists (may need fallback symlink for dev mode downloads)
+		try {
+			await this._ssh.exec(`test -f ${serverBin} || ln -sf code-server ${serverBin}`);
+		} catch { /* ignore */ }
 
-		await this._ssh.exec(startCmd);
+		// --without-connection-token: the CDN-built server has vsda signature
+		// validation. Our dev client lacks vsda keys, so sign handshake fails.
+		// With type=None the server's validate() returns true for any input,
+		// bypassing vsda. Security is maintained by SSH tunnel + localhost binding.
+		const serverArgs = [
+			`--without-connection-token`,
+			`--host 127.0.0.1`,
+			`--port 0`,
+			`--without-browser-env-var`,
+			`--accept-server-license-terms`,
+		].join(' ');
 
-		// Wait for server to start and report its port
+		const startCmd =
+			`cd ${this._installPath} && nohup ${serverBin} ${serverArgs} > ${this._installPath}/.server.log 2>&1 < /dev/null &`;
+
+		this._log(`[ServerManager] Starting server: ${serverBin}`);
+
+		// Fire-and-forget: exec may hang because SSH channel stays open after backgrounding.
+		// Start server command and immediately begin polling the log for the port.
+		const execDone = this._ssh.exec(startCmd).catch(() => { /* ignore */ });
+
+		// Poll the log for the port announcement (don't wait for exec to finish)
 		const port = await this._waitForServerPort(connectionToken);
+
+		// If exec is still pending, we don't need it anymore — server is up
+		execDone.catch(() => { /* ignore */ });
 
 		// Save server info for reconnection
 		await this._ssh.exec(`echo "${port}:${connectionToken}" > ${this._installPath}/.server-info`);

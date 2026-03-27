@@ -83,12 +83,15 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 
 	/** Worker gRPC target（host:port 格式，非 HTTP URL） */
 	get grpcAddress(): string {
-		const addr = this._configurationService.getValue<string>('chipos.backend.grpcAddress');
-		if (addr) {
-			return addr;
+		const explicit = this._configurationService.getValue<string>('chipos.backend.grpcAddress');
+		if (explicit) {
+			return explicit;
 		}
 		try {
 			const url = new URL(this.reasoningUrl);
+			if (url.port === '443' || url.protocol === 'https:') {
+				return `${url.hostname}:443`;
+			}
 			return `${url.hostname}:50051`;
 		} catch {
 			return 'localhost:50051';
@@ -298,6 +301,10 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		const folders = this._workspaceContextService.getWorkspace().folders;
 		const workspaceRoot = folders.length > 0 ? folders[0].uri.fsPath : backendDir;
 
+		// Fix J: inject auth + TLS config into Worker process environment
+		const token = this._configurationService.getValue<string>('chipos.backend.token') || '';
+		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.tls.enabled') || false;
+
 		this._logService.info('[ChipOS Worker] Starting, id:', this._workerId, 'gRPC target:', grpcTarget);
 
 		try {
@@ -312,6 +319,8 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 						CHIPOS_REASONING_SERVER: grpcTarget,
 						CHIPOS_REASONING_URL: this.reasoningUrl,
 						CHIPOS_WORKER_ID: this._workerId,
+						...(token ? { CHIPOS_API_KEY: token } : {}),
+						CHIPOS_TLS_ENABLED: String(tlsEnabled),
 					},
 				}
 			);

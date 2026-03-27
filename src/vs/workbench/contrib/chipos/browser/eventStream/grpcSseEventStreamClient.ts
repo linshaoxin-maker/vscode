@@ -90,6 +90,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	private _streamToken: string = '';
 	private _lastSequenceId: number = 0;
 	private _reconnectAttempts: number = 0;
+	private _sessionDone: boolean = false;
 	private _state: ConnectionState = ConnectionState.Disconnected;
 	private _reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _seenEventIds = new Set<string>();
@@ -127,22 +128,27 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			});
 		}
 		this._setState(ConnectionState.Connecting);
-		this._openEventSource();
-		return new Promise<void>((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				d.dispose();
-				reject(new Error('SSE connect timeout (10s)'));
-			}, 10_000);
-			const d = this._onDidChangeConnectionState.event(state => {
-				clearTimeout(timeout);
-				d.dispose();
-				if (state === ConnectionState.Connected) {
-					resolve();
-				} else {
-					reject(new Error(`Connection failed (state=${state})`));
-				}
-			});
-		});
+
+		// Only verify the backend is reachable (health check).
+		// The actual EventSource is deferred until sendTask() provides a sessionId,
+		// avoiding the SESSION_NOT_FOUND → reconnect loop that causes event loss.
+		try {
+			const healthUrl = `${this._config.baseUrl}/health`;
+			console.log('[SseClient] connect() health check:', healthUrl);
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 5000);
+			const resp = await fetch(healthUrl, { signal: controller.signal });
+			clearTimeout(timer);
+			if (!resp.ok) {
+				throw new Error(`Health check returned ${resp.status}`);
+			}
+			console.log('[SseClient] Backend reachable, EventSource deferred until sendTask');
+			this._setState(ConnectionState.Connected);
+		} catch (err) {
+			console.error('[SseClient] connect() health check failed:', String(err));
+			this._setState(ConnectionState.Error);
+			throw new Error(`Cannot reach backend at ${this._config.baseUrl}: ${String(err)}`);
+		}
 	}
 
 	// ── IEventStreamClient: disconnect ──────────────────────────────────────
@@ -166,7 +172,18 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		mode: 'agent' | 'spec',
 		options: { thinking: boolean; autoApproveMode: string },
 	): void {
+		// Clean up previous session state to prevent stale reconnect timers
+		// from racing with the new POST + EventSource.
+		this._clearReconnectTimer();
+		this._closeEventSource();
+		this._reconnectAttempts = 0;
+		this._sessionDone = false;
+		this._lastSequenceId = 0;
+		this._seenEventIds.clear();
 		this._sessionId = sessionId;
+
+		// Send POST first so the backend creates the session before the
+		// EventSource connects — avoids SESSION_NOT_FOUND → reconnect loop.
 		this._post('/api/v1/task', {
 			session_id: sessionId,
 			prompt: query,
@@ -182,9 +199,10 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 				const data = await resp.json();
 				if (data.stream_token) {
 					this._streamToken = data.stream_token;
-					this._reopenEventSourceWithToken();
 				}
 			} catch { /* response may not have JSON body */ }
+			// Open EventSource AFTER the POST succeeds (session now exists on server).
+			this._openEventSource();
 		}).catch(err => {
 			console.error('[SseClient] sendTask failed:', err);
 			this._emitError(`sendTask failed: ${err}`, 'TASK_SUBMIT_FAILED', 'SESSION', false);
@@ -225,10 +243,13 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	private async _openEventSource(): Promise<void> {
 		this._closeEventSource();
 
-		const params = new URLSearchParams();
-		if (this._sessionId) {
-			params.set('session_id', this._sessionId);
+		if (!this._sessionId) {
+			console.log('[SseClient] Skipping EventSource open: no session_id yet');
+			return;
 		}
+
+		const params = new URLSearchParams();
+		params.set('session_id', this._sessionId);
 		if (this._lastSequenceId > 0) {
 			params.set('last_sequence_id', String(this._lastSequenceId));
 		}
@@ -238,25 +259,6 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 		const url = `${this._config.baseUrl}/api/v1/events?${params.toString()}`;
 		console.log('[SseClient] Opening EventSource:', url);
-
-		// Pre-flight: fetch /health to get actionable error info before EventSource
-		try {
-			const healthUrl = `${this._config.baseUrl}/health`;
-			console.log('[SseClient] Pre-flight health check:', healthUrl);
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 5000);
-			const resp = await fetch(healthUrl, { signal: controller.signal });
-			clearTimeout(timer);
-			console.log('[SseClient] Health check result:', resp.status, resp.statusText);
-			if (!resp.ok) {
-				console.warn('[SseClient] Health check failed:', resp.status);
-			}
-		} catch (err) {
-			console.error('[SseClient] Pre-flight health check error (proxy issue?):', String(err));
-			this._setState(ConnectionState.Error);
-			this._emitError(`Cannot reach reasoning server at ${this._config.baseUrl}: ${String(err)}. If using a proxy, add the server IP to http.noProxy in Settings.`, 'PREFLIGHT_FAILED', 'TRANSPORT', true);
-			return;
-		}
 
 		this._eventSource = new EventSource(url);
 
@@ -278,6 +280,11 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			const es = this._eventSource;
 			const readyState = es ? es.readyState : -1;
 			console.error('[SseClient] EventSource error, readyState:', readyState, '(0=CONNECTING, 1=OPEN, 2=CLOSED)', ev);
+			if (this._sessionDone) {
+				console.log('[SseClient] Session done — not reconnecting');
+				this._closeEventSource();
+				return;
+			}
 			if (readyState === 2 && this._streamToken) {
 				console.warn('[SseClient] Connection closed with stream_token present — clearing stale token for next attempt');
 				this._streamToken = '';
@@ -349,6 +356,12 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			timestamp: (raw['timestamp_ms'] as number) ?? Date.now(),
 			payload,
 		} as unknown as AgentEvent);
+
+		if (type === 'done') {
+			this._sessionDone = true;
+			this._closeEventSource();
+			this._clearReconnectTimer();
+		}
 	}
 
 	// ── 重连 ────────────────────────────────────────────────────────────────
