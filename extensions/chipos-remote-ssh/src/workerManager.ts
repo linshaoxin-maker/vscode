@@ -150,12 +150,14 @@ export class WorkerManager {
 	}
 
 	/**
-	 * 检查 Worker 包是否已安装（通过 import execution）。
+	 * 检查 Worker 包是否已安装。
+	 * 优先检查 .venv（R22 安装目标），fallback 检查系统 python3。
 	 */
 	private async _isWorkerInstalled(): Promise<boolean> {
 		try {
+			// 优先检查 .venv/bin/python（R22 downloadAndInstallWorker 的安装目标）
 			const result = await this._ssh.exec(
-				`cd ${this._installPath} && python3 -c "import execution; print('ok')" 2>/dev/null`
+				`cd ${this._installPath} && .venv/bin/python -c "import execution; print('ok')" 2>/dev/null`
 			);
 			return result.trim() === 'ok';
 		} catch {
@@ -172,10 +174,12 @@ export class WorkerManager {
 
 		// Fix2: 环境变量名必须是 CHIPOS_REASONING_SERVER（WorkerConfig.from_env 读这个）
 		// Fix3: 用 export 确保子进程能继承；nohup 命令和重定向在同一行
+		// Bug fix: 用 .venv/bin/python（R22 安装目标），不用系统 python3
+		const venvPython = `${this._installPath}/.venv/bin/python`;
 		const cmd = [
 			`cd ${this._installPath}`,
 			`export CHIPOS_REASONING_SERVER="${grpcTarget}"`,
-			`nohup python3 -m execution.server.cli start --server "${grpcTarget}" > ${logFile} 2>&1 & echo $! > ${pidFile}`,
+			`nohup ${venvPython} -m execution.server.cli start --server "${grpcTarget}" > ${logFile} 2>&1 & echo $! > ${pidFile}`,
 		].join(' && ');
 
 		try {

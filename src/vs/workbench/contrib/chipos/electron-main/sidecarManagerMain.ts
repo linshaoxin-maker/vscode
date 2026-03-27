@@ -98,11 +98,31 @@ export function registerSidecarIpcHandlers(): void {
 		return { pid: child.pid, role };
 	});
 
-	// ── chipos:spawnWorker（向后兼容，委托 spawnProcess） ─────────────────
+	// ── chipos:spawnWorker（向后兼容，直接复用 spawnProcess 逻辑） ──────
 
 	ipcMain.handle('chipos:spawnWorker', async (_event, args: any) => {
 		const role = args.role || 'worker';
-		return ipcMain.emit('chipos:spawnProcess', _event, { ...args, role });
+		// Bug fix: ipcMain.emit 不返回 handle 结果，直接内联调用逻辑
+		const existing = getProc(role);
+		if (existing && !existing.process.killed) {
+			return { pid: existing.pid, alreadyRunning: true, role };
+		}
+		const { pythonPath, moduleArgs, env, cwd } = args;
+		const child = cp.spawn(pythonPath, moduleArgs, {
+			cwd,
+			env: { ...process.env, ...env },
+			stdio: ['ignore', 'pipe', 'pipe'],
+			detached: false,
+		});
+		const managed: ManagedProcess = { process: child, pid: child.pid, role };
+		setProc(role, managed);
+		child.on('exit', () => setProc(role, undefined));
+		child.on('error', () => setProc(role, undefined));
+		child.stderr?.on('data', (data: Buffer) => {
+			const line = data.toString().trim();
+			if (line) { console.log(`[ChipOS ${role} stderr] ${line}`); }
+		});
+		return { pid: child.pid, role };
 	});
 
 	// ── chipos:killProcess ───────────────────────────────────────────────
