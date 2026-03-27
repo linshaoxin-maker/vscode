@@ -5,14 +5,10 @@
 
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { ISidecarManagerService } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
-import { SidecarManagerBrowser } from '../../../../workbench/contrib/chipos/browser/sidecarManagerBrowser.js';
+import { SidecarManagerElectron } from '../../../../workbench/contrib/chipos/electron-sandbox/sidecarManagerElectron.js';
 
-// NOTE: VS Code's renderer is sandboxed (sandbox: true) — static ESM imports of
-// bare Node.js specifiers (child_process, fs, net …) fail at module-link time.
-// The node/sidecarManager.ts must NOT be imported here.
-// SidecarManagerBrowser provides a renderer-safe implementation that connects to
-// pre-started backends via URL. For local auto-spawn (Scenario A), a future
-// IPC-based SidecarManagerElectron should delegate spawning to the main/utility process.
-registerSingleton(ISidecarManagerService, SidecarManagerBrowser, InstantiationType.Delayed);
+// FEAT-R30: Electron desktop 使用 SidecarManagerElectron（通过 IPC 委托 main 进程 spawn）。
+// Web IDE 模式仍使用 SidecarManagerBrowser（在 workbench.web.main.ts 中注册）。
+registerSingleton(ISidecarManagerService, SidecarManagerElectron, InstantiationType.Delayed);
 
 import '../../../../workbench/contrib/chipos/common/chiposContribution.js';

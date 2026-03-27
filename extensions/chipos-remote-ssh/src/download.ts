@@ -117,22 +117,41 @@ export async function downloadAndInstallServer(
 ): Promise<void> {
 	const product = getProductInfo();
 
-	// Dev 模式：没有 commit hash，不下载，使用本地开发 server
+	// Dev mode: no commit hash → download latest VS Code Server from CDN
 	if (!product.commit) {
-		log('[Download] Dev mode detected (no commit hash). Skipping download.');
-		log('[Download] Please manually install ChipOS Server on the remote machine.');
-		onProgress?.('Dev mode: manual server installation required');
+		log('[Download] Dev mode: downloading VS Code Server from official CDN...');
+		onProgress?.('Downloading VS Code Server...');
 
-		// Create a placeholder script that tells the user what to do
-		await ssh.exec(`mkdir -p ${installPath}/bin`);
-		await ssh.exec(`cat > ${installPath}/bin/chipos-server << 'EOF'
-#!/bin/bash
-echo "ChipOS Server (dev mode)"
-echo "Please install the server manually or build from source."
-echo "See: https://github.com/chipos/coderust/blob/main/docs/plan/reasoning-execution-split/developer-journey-packages.md"
-exit 1
-EOF`);
-		await ssh.exec(`chmod +x ${installPath}/bin/chipos-server`);
+		const platform = await detectRemotePlatform(ssh);
+		log(`[Download] Remote platform: ${platform.os}-${platform.arch}`);
+
+		const archStr = platform.arch === 'arm64' ? 'arm64' : (platform.arch === 'armhf' ? 'armhf' : 'x64');
+		const cdnUrl = `https://update.code.visualstudio.com/latest/server-${platform.os}-${archStr}/stable`;
+		log(`[Download] URL: ${cdnUrl}`);
+
+		const downloadCmd = `
+			cd ${installPath} && \
+			(curl -fsSL "${cdnUrl}" -o /tmp/chipos-server.tar.gz 2>/dev/null || wget -q "${cdnUrl}" -O /tmp/chipos-server.tar.gz) && \
+			tar xzf /tmp/chipos-server.tar.gz --strip-components=1 && \
+			rm -f /tmp/chipos-server.tar.gz
+		`;
+
+		try {
+			await ssh.exec(`mkdir -p ${installPath}`);
+			onProgress?.('Extracting...');
+			await ssh.exec(downloadCmd);
+
+			// Create symlink so ServerManager can find it by either name
+			const serverName = product.serverApplicationName || 'chipos-server';
+			await ssh.exec(`test -f ${installPath}/bin/${serverName} || ln -sf code-server ${installPath}/bin/${serverName}`);
+
+			log('[Download] VS Code Server installed successfully (dev mode)');
+			onProgress?.('Server installed');
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			log(`[Download] Installation failed: ${message}`);
+			throw new Error(`Failed to install VS Code Server on remote: ${message}`);
+		}
 		return;
 	}
 
@@ -193,4 +212,120 @@ EOF`);
 			throw new Error('Server installation verification failed: binary not found');
 		}
 	}
+}
+
+// ── FEAT-R22: Worker 包远端安装 ─────────────────────────────────────────────
+
+/**
+ * Worker 安装路径（与 Server 平行）。
+ */
+export function getWorkerInstallPath(): string {
+	return `$HOME/.chipos-worker`;
+}
+
+/**
+ * 检查远端是否已安装 Worker（检查 venv + execution 模块）。
+ */
+export async function isWorkerInstalled(ssh: SshConnection): Promise<boolean> {
+	const installPath = getWorkerInstallPath();
+	try {
+		await ssh.exec(`test -f ${installPath}/.venv/bin/python && test -d ${installPath}/packages/execution`);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * 在远端安装 Worker 包。
+ *
+ * 安装流程：
+ * 1. 创建安装目录
+ * 2. 下载 Worker 包 tarball（从 updateUrl 或 fallback）
+ * 3. 解压
+ * 4. 创建 venv + pip install
+ * 5. 验证安装
+ */
+export async function downloadAndInstallWorker(
+	ssh: SshConnection,
+	installPath: string,
+	log: (msg: string) => void = () => { },
+): Promise<string> {
+	const product = getProductInfo();
+
+	log('[Worker Download] Checking existing installation...');
+
+	if (await isWorkerInstalled(ssh)) {
+		log('[Worker Download] Worker already installed, skipping');
+		return installPath;
+	}
+
+	log('[Worker Download] Installing worker on remote...');
+
+	const platform = await detectRemotePlatform(ssh);
+	log(`[Worker Download] Remote platform: ${platform.os}/${platform.arch}`);
+
+	// 创建安装目录
+	await ssh.exec(`mkdir -p ${installPath}`);
+
+	// 构造下载 URL
+	const workerTarball = `chipos-worker-${platform.os}-${platform.arch}.tar.gz`;
+	let downloadUrl: string;
+
+	if (product.commit && product.updateUrl) {
+		downloadUrl = `${product.updateUrl}/worker/${product.commit}/${workerTarball}`;
+	} else {
+		// Dev 模式：从本地同步（通过 scp 或 rsync）
+		log('[Worker Download] Dev mode: using local sync fallback');
+		try {
+			// 尝试用 pip install 从 PyPI 安装
+			await ssh.exec([
+				`cd ${installPath}`,
+				'python3 -m venv .venv',
+				'.venv/bin/pip install chipos-execution',
+			].join(' && '));
+			log('[Worker Download] Installed from PyPI');
+			return installPath;
+		} catch {
+			log('[Worker Download] PyPI install failed, trying tarball...');
+			downloadUrl = `https://releases.chipos.ai/worker/latest/${workerTarball}`;
+		}
+	}
+
+	// 下载并解压
+	log(`[Worker Download] Downloading from ${downloadUrl}`);
+	try {
+		await ssh.exec([
+			`cd ${installPath}`,
+			`curl -fsSL "${downloadUrl}" -o worker.tar.gz`,
+			'tar xzf worker.tar.gz --strip-components=1',
+			'rm -f worker.tar.gz',
+		].join(' && '));
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw new Error(`Worker download failed: ${message}`);
+	}
+
+	// 创建 venv 并安装依赖
+	log('[Worker Download] Setting up Python environment...');
+	try {
+		await ssh.exec([
+			`cd ${installPath}`,
+			'python3 -m venv .venv',
+			'.venv/bin/pip install -r requirements.txt 2>/dev/null || true',
+			'.venv/bin/pip install -e . 2>/dev/null || true',
+		].join(' && '));
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		log(`[Worker Download] Warning: pip install had issues: ${message}`);
+	}
+
+	// 验证安装
+	const installed = await isWorkerInstalled(ssh);
+	if (!installed) {
+		throw new Error('Worker installation verification failed');
+	}
+
+	log('[Worker Download] Worker installed successfully');
+	return installPath;
 }

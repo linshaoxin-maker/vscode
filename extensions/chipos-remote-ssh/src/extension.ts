@@ -9,10 +9,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { SshConnection, SshConnectionOptions } from './sshConnection';
 import { ServerManager } from './serverManager';
+import { WorkerManager } from './workerManager';
+import { downloadAndInstallWorker, getWorkerInstallPath } from './download';
 
 let outputChannel: vscode.OutputChannel;
 let activeSshConnection: SshConnection | undefined;
 let activeServerManager: ServerManager | undefined;
+let activeWorkerManager: WorkerManager | undefined;
 
 // ── Activation ──────────────────────────────────────────────────────────────
 
@@ -84,29 +87,55 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 			},
 			async (progress, cancelToken) => {
 				try {
-					// 1. Establish SSH connection
-					progress.report({ message: 'Establishing SSH connection...' });
-					const sshOptions = await buildSshOptions(sshTarget);
+				// 1. Establish SSH connection
+				progress.report({ message: 'Establishing SSH connection...' });
+				const sshOptions = await buildSshOptions(sshTarget);
 
-					// If no key and no agent, ask for password
-					if (!sshOptions.privateKeyPath && !process.env.SSH_AUTH_SOCK) {
+				// If no key and no agent, ask for password upfront
+				if (!sshOptions.privateKeyPath && !process.env.SSH_AUTH_SOCK) {
+					const password = await vscode.window.showInputBox({
+						prompt: `Enter password for ${sshOptions.username}@${sshOptions.host}`,
+						password: true,
+					});
+					if (!password) {
+						throw new Error('Authentication cancelled by user');
+					}
+					sshOptions.password = password;
+					sshOptions.useAgent = false;
+				}
+
+				if (cancelToken.isCancellationRequested) {
+					throw new Error('Connection cancelled');
+				}
+
+				activeSshConnection = new SshConnection(sshOptions, log);
+				try {
+					await activeSshConnection.connect();
+				} catch (firstErr) {
+					// Key/agent auth failed — fallback to password
+					const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+					if (msg.includes('authentication') || msg.includes('auth')) {
+						log(`[SSH] Key/agent auth failed, prompting for password...`);
+						activeSshConnection.dispose();
+						activeSshConnection = undefined;
+
 						const password = await vscode.window.showInputBox({
-							prompt: `Enter password for ${sshOptions.username}@${sshOptions.host}`,
+							prompt: `Key auth failed. Enter password for ${sshOptions.username}@${sshOptions.host}`,
 							password: true,
 						});
 						if (!password) {
 							throw new Error('Authentication cancelled by user');
 						}
 						sshOptions.password = password;
+						sshOptions.privateKeyPath = undefined;
 						sshOptions.useAgent = false;
-					}
 
-					if (cancelToken.isCancellationRequested) {
-						throw new Error('Connection cancelled');
+						activeSshConnection = new SshConnection(sshOptions, log);
+						await activeSshConnection.connect();
+					} else {
+						throw firstErr;
 					}
-
-					activeSshConnection = new SshConnection(sshOptions, log);
-					await activeSshConnection.connect();
+				}
 					log('SSH connection established');
 
 					// 2. Start ChipOS Server on remote
@@ -122,10 +151,47 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					const { port, connectionToken } = await activeServerManager.ensureServerRunning();
 					log(`ChipOS Server running on remote port ${port}`);
 
-					// 3. Create a local TCP tunnel to the remote port
+					// 3. Create a local TCP tunnel to the remote VS Code Server port
 					progress.report({ message: 'Setting up port forwarding...' });
 					const localPort = await activeSshConnection.forwardPort(0, '127.0.0.1', port);
 					log(`Local port forwarding: 127.0.0.1:${localPort} → remote:${port}`);
+
+				// 4. Forward the Reasoning HTTP port so the local renderer's
+				//    SSE client (browser fetch/EventSource) can reach the remote backend.
+				const reasoningPort = vscode.workspace.getConfiguration('chipos.backend')
+					.get<number>('httpPort', 8080);
+				try {
+					const localReasoningPort = await activeSshConnection.forwardPort(
+						reasoningPort, '127.0.0.1', reasoningPort);
+					log(`Reasoning port forwarding: 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
+				} catch (fwdErr) {
+					log(`[WARN] Could not forward reasoning port ${reasoningPort}: ${fwdErr}`);
+				}
+
+				// 5. FEAT-R23: Start Worker on remote + forward Worker HTTP port
+				progress.report({ message: 'Starting Execution Worker on remote...' });
+				const workerInstallPath = getWorkerInstallPath();
+				const reasonerGrpcTarget = `127.0.0.1:${vscode.workspace.getConfiguration('chipos.backend').get<number>('grpcPort', 50051)}`;
+				activeWorkerManager = new WorkerManager(activeSshConnection, workerInstallPath, log);
+				try {
+					await activeWorkerManager.ensureWorkerRunning(reasonerGrpcTarget);
+					log('Execution Worker started on remote');
+
+					// Forward Worker HTTP port (8081) for UI direct access
+					const workerHttpPort = vscode.workspace.getConfiguration('chipos.backend')
+						.get<number>('workerHttpPort', 8081);
+					try {
+						const localWorkerPort = await activeSshConnection.forwardPort(
+							workerHttpPort, '127.0.0.1', workerHttpPort);
+						log(`Worker HTTP port forwarding: 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
+					} catch (fwdErr) {
+						log(`[WARN] Could not forward worker HTTP port ${workerHttpPort}: ${fwdErr}`);
+					}
+				} catch (workerErr) {
+					const workerMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
+					log(`[WARN] Worker start failed (non-fatal): ${workerMsg}`);
+					// Worker 启动失败不阻塞连接（Reasoner 仍可用，只是没有远端执行能力）
+				}
 
 					return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 
@@ -238,6 +304,10 @@ async function connectToHost(reuseWindow: boolean): Promise<void> {
 }
 
 async function disconnect(): Promise<void> {
+	if (activeWorkerManager) {
+		await activeWorkerManager.stopWorker();
+		activeWorkerManager = undefined;
+	}
 	if (activeServerManager) {
 		await activeServerManager.stopServer();
 		activeServerManager = undefined;
