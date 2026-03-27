@@ -10,7 +10,7 @@ import * as path from 'path';
 import { SshConnection, SshConnectionOptions } from './sshConnection';
 import { ServerManager } from './serverManager';
 import { WorkerManager } from './workerManager';
-import { downloadAndInstallWorker, getWorkerInstallPath } from './download';
+import { getWorkerInstallPath } from './download';
 
 let outputChannel: vscode.OutputChannel;
 let activeSshConnection: SshConnection | undefined;

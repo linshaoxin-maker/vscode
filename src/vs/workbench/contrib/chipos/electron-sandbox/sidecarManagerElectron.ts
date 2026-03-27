@@ -7,14 +7,21 @@
  * FEAT-R30: SidecarManagerElectron — Electron desktop 实现。
  *
  * 与 SidecarManagerBrowser 的区别：
- * - 本地模式（Local）下通过 IPC 委托 main 进程 spawn Worker 子进程
- * - cloud-reasoning 模式下行为与 Browser 版一致（连接远端 Reasoner）
- * - manual 模式下行为与 Browser 版一致
+ * - 本地模式（Local）下通过 IPC 委托 main 进程 spawn Reasoner + Worker 子进程
+ * - cloud-reasoning 模式下只启动 Worker，连接远端 Reasoner
+ * - manual 模式下不启动任何进程
  *
  * IPC 通道（由 R29 sidecarManagerMain.ts 注册）：
- * - chipos:spawnWorker  → 启动 Worker 子进程
- * - chipos:killWorker   → 停止 Worker 子进程
- * - chipos:workerStatus → 查询 Worker 状态
+ * - chipos:spawnProcess  → 启动子进程（role='reasoner'|'worker'）
+ * - chipos:killProcess   → 停止子进程（按 role）
+ * - chipos:processStatus → 查询进程状态
+ *
+ * 复盘修复:
+ * - Fix1: IPC 通道名从 chipos:spawnWorker 改为 chipos:spawnProcess + role 参数
+ *         （R29 分离了 Reasoner/Worker 两个进程变量，必须用 role 区分）
+ * - Fix2: Worker 环境变量名从 CHIPOS_REASONING_GRPC_TARGET 改为 CHIPOS_REASONING_SERVER
+ *         （WorkerConfig.from_env 读的是 CHIPOS_REASONING_SERVER）
+ * - Fix3: stopBackend 需要同时停 Reasoner 和 Worker（之前只停 Worker）
  */
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
@@ -122,12 +129,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 		try {
 			if (this._mode === BackendMode.Local) {
-				// Local 模式：spawn Reasoner + Worker
-				await this._spawnViaIpc();
+				await this._spawnReasonerViaIpc();
 			}
 
-			// 启动 Worker（Local 和 CloudReasoning 都需要）
-			await this._startWorkerViaIpc();
+			// Worker（Local 和 CloudReasoning 都需要）
+			await this._spawnWorkerViaIpc();
 
 			this._setState(SidecarState.Connected);
 		} catch (err) {
@@ -139,11 +145,19 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	/**
 	 * 停止后端。
+	 * Fix3: 同时停 Worker 和 Reasoner（之前只停 Worker）。
 	 */
 	async stopBackend(): Promise<void> {
 		this._logService.info('[ChipOS SidecarElectron] stopBackend()');
 
-		await this._stopWorkerViaIpc();
+		// 先停 Worker 再停 Reasoner（Worker 依赖 Reasoner）
+		await this._killProcessViaIpc('worker');
+		this._setWorkerState(WorkerState.NotStarted);
+
+		if (this._mode === BackendMode.Local) {
+			await this._killProcessViaIpc('reasoner');
+		}
+
 		this._setState(SidecarState.NotStarted);
 	}
 
@@ -152,8 +166,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	 */
 	async restartWorker(): Promise<void> {
 		this._logService.info('[ChipOS SidecarElectron] restartWorker()');
-		await this._stopWorkerViaIpc();
-		await this._startWorkerViaIpc();
+		await this._killProcessViaIpc('worker');
+		await this._spawnWorkerViaIpc();
 	}
 
 	// ── v1 兼容 ──────────────────────────────────────────────────────────
@@ -166,12 +180,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	/**
 	 * 通过 IPC 委托 main 进程 spawn Reasoner 进程。
-	 * 对应 R29 的 chipos:spawnWorker handler。
+	 * Fix1: 使用 chipos:spawnProcess + role='reasoner'（不再用 chipos:spawnWorker）。
 	 */
-	private async _spawnViaIpc(): Promise<void> {
+	private async _spawnReasonerViaIpc(): Promise<void> {
 		this._logService.info('[ChipOS SidecarElectron] Spawning reasoner via IPC...');
 
-		// 获取 Python 路径和参数
 		const pythonPath = this._configurationService.getValue<string>('chipos.backend.pythonPath') ?? 'python3';
 		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
 		const grpcPort = this._configurationService.getValue<number>('chipos.backend.grpcPort') ?? 50051;
@@ -182,24 +195,26 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			CHIPOS_DEPLOYMENT_MODE: 'local',
 		};
 
-		// 通过 window.chiposIpc（preload 注入）或 ipcRenderer 调用
 		try {
-			const result = await (globalThis as any).chiposIpc?.invoke('chipos:spawnWorker', {
+			const result = await this._invokeIpc('chipos:spawnProcess', {
 				pythonPath,
 				moduleArgs: ['-m', 'reasoning.server.cli', 'start'],
 				env,
 				cwd: '.',
+				role: 'reasoner',
 			});
 			this._logService.info(`[ChipOS SidecarElectron] Reasoner spawned: pid=${result?.pid}`);
 		} catch (err) {
-			throw new Error(`IPC spawnWorker failed: ${err}`);
+			throw new Error(`IPC spawn reasoner failed: ${err}`);
 		}
 	}
 
 	/**
 	 * 通过 IPC 启动 Worker 子进程。
+	 * Fix1: 使用 chipos:spawnProcess + role='worker'。
+	 * Fix2: 环境变量名改为 CHIPOS_REASONING_SERVER（匹配 WorkerConfig.from_env）。
 	 */
-	private async _startWorkerViaIpc(): Promise<void> {
+	private async _spawnWorkerViaIpc(): Promise<void> {
 		this._setWorkerState(WorkerState.Starting);
 
 		const pythonPath = this._configurationService.getValue<string>('chipos.backend.pythonPath') ?? 'python3';
@@ -207,16 +222,18 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const apiKey = this._configurationService.getValue<string>('chipos.backend.apiKey') ?? '';
 
 		const env: Record<string, string> = {
-			CHIPOS_REASONING_GRPC_TARGET: grpcTarget,
+			// Fix2: WorkerConfig.from_env 读 CHIPOS_REASONING_SERVER，不是 CHIPOS_REASONING_GRPC_TARGET
+			CHIPOS_REASONING_SERVER: grpcTarget,
 			...(apiKey ? { CHIPOS_WORKER_OUTBOUND_KEY: apiKey } : {}),
 		};
 
 		try {
-			const result = await (globalThis as any).chiposIpc?.invoke('chipos:spawnWorker', {
+			const result = await this._invokeIpc('chipos:spawnProcess', {
 				pythonPath,
-				moduleArgs: ['-m', 'execution.server.cli', 'start'],
+				moduleArgs: ['-m', 'execution.server.cli', 'start', '--server', grpcTarget],
 				env,
 				cwd: '.',
+				role: 'worker',
 			});
 			this._workerPid = result?.pid;
 			this._setWorkerState(WorkerState.Connected);
@@ -229,16 +246,35 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	}
 
 	/**
-	 * 通过 IPC 停止 Worker 子进程。
+	 * 通过 IPC 停止指定角色的子进程。
 	 */
-	private async _stopWorkerViaIpc(): Promise<void> {
+	private async _killProcessViaIpc(role: 'reasoner' | 'worker'): Promise<void> {
 		try {
-			await (globalThis as any).chiposIpc?.invoke('chipos:killWorker');
-			this._workerPid = undefined;
-			this._setWorkerState(WorkerState.NotStarted);
+			await this._invokeIpc('chipos:killProcess', role);
+			if (role === 'worker') {
+				this._workerPid = undefined;
+			}
 		} catch (err) {
-			this._logService.warn(`[ChipOS SidecarElectron] Worker stop failed: ${err}`);
+			this._logService.warn(`[ChipOS SidecarElectron] kill ${role} failed: ${err}`);
 		}
+	}
+
+	/**
+	 * IPC 调用封装。
+	 *
+	 * electron-sandbox 层不能直接 import electron 的 ipcRenderer，
+	 * 需要通过 preload 脚本注入的 bridge 或 VS Code 的 INativeHostService 间接调用。
+	 *
+	 * 当前实现：通过 globalThis.chiposIpc（preload 注入）调用。
+	 * 如果 preload 未注入，降级为 noop（不会崩溃，但功能不可用）。
+	 */
+	private async _invokeIpc(channel: string, ...args: any[]): Promise<any> {
+		const bridge = (globalThis as any).chiposIpc;
+		if (!bridge) {
+			this._logService.warn(`[ChipOS SidecarElectron] IPC bridge not available, skipping ${channel}`);
+			return undefined;
+		}
+		return bridge.invoke(channel, ...args);
 	}
 
 	// ── State helpers ────────────────────────────────────────────────────

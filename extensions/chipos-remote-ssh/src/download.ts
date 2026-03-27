@@ -226,10 +226,10 @@ export function getWorkerInstallPath(): string {
 /**
  * 检查远端是否已安装 Worker（检查 venv + execution 模块）。
  */
-export async function isWorkerInstalled(ssh: SshConnection): Promise<boolean> {
-	const installPath = getWorkerInstallPath();
+export async function isWorkerInstalled(ssh: SshConnection, installPath?: string): Promise<boolean> {
+	const effectivePath = installPath || getWorkerInstallPath();
 	try {
-		await ssh.exec(`test -f ${installPath}/.venv/bin/python && test -d ${installPath}/packages/execution`);
+		await ssh.exec(`test -f ${effectivePath}/.venv/bin/python && test -d ${effectivePath}/packages/execution`);
 		return true;
 	} catch {
 		return false;
@@ -255,7 +255,7 @@ export async function downloadAndInstallWorker(
 
 	log('[Worker Download] Checking existing installation...');
 
-	if (await isWorkerInstalled(ssh)) {
+	if (await isWorkerInstalled(ssh, installPath)) {
 		log('[Worker Download] Worker already installed, skipping');
 		return installPath;
 	}
@@ -321,7 +321,7 @@ export async function downloadAndInstallWorker(
 	}
 
 	// 验证安装
-	const installed = await isWorkerInstalled(ssh);
+	const installed = await isWorkerInstalled(ssh, installPath);
 	if (!installed) {
 		throw new Error('Worker installation verification failed');
 	}
