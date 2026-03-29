@@ -82,6 +82,18 @@ import {
 	type IMentionItem,
 } from '../eventStream/eventTypes.js';
 
+interface IChatSessionRuntime {
+	streamClient?: IEventStreamClient;
+	backendSessionId?: string;
+	toolStartTimes: Map<string, number>;
+	toolFileArgs: Map<string, string>;
+	subagentTimers: Map<string, number>;
+	subagentParentMap: Map<string, string>;
+	lastSubagentToolCallId?: string;
+	externalEditOps: Map<string, number>;
+	pendingStartEdits: Map<string, Promise<void>>;
+}
+
 /**
  * IChatAgentImplementation that bridges the native VSCode Chat UI
  * to the ChipOS backend via SSE (Server-Sent Events).
@@ -95,26 +107,14 @@ import {
  */
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
-	private _streamClient: IEventStreamClient | undefined;
+	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
 	private _editorEffects: ChipOSEditorEffects | undefined;
 	private _contextCollector: ContextCollector | undefined;
 	private _sessionCounter = 0;
-	private _lastSessionId: string | undefined;
-	private readonly _toolStartTimes = new Map<string, number>();
-	private readonly _toolFileArgs = new Map<string, string>();
-	private readonly _subagentTimers = new Map<string, number>();
-	/** Maps subagent task_id → parent ToolCall toolCallId for grouping */
-	private readonly _subagentParentMap = new Map<string, string>();
-	/** Most recent subagent-type toolCallId, used to link SubagentEvent → parent */
-	private _lastSubagentToolCallId: string | undefined;
 	/** Counter for generating unique subagent tool call keys (avoids collision when same tool is called multiple times) */
 	private _subagentToolCounter = 0;
-	/** Maps tool call id → operationId for external edits tracking */
-	private readonly _externalEditOps = new Map<string, number>();
 	/** Counter for generating unique external edit operation IDs */
 	private _externalEditOpCounter = 0;
-	/** Maps tool call id → Promise of startExternalEdits, so stop can await it */
-	private readonly _pendingStartEdits = new Map<string, Promise<void>>();
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,
@@ -126,6 +126,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatService private readonly _chatService: IChatService,
 	) {
 		super();
+		this._register(this._chatService.onDidDisposeSession(e => {
+			for (const sessionResource of e.sessionResource) {
+				this._disposeRuntime(sessionResource);
+			}
+		}));
 	}
 
 	async invoke(
@@ -136,7 +141,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	): Promise<IChatAgentResult> {
 		// ── FEAT-32: Connection status feedback ──
 		progress([this._progress('$(sync~spin) Connecting to backend...', true)]);
-		const streamClient = await this._ensureClient();
+		const runtime = this._getOrCreateRuntime(request.sessionResource);
+		const streamClient = await this._ensureClient(request.sessionResource);
 		if (!streamClient || streamClient.connectionState !== ConnectionState.Connected) {
 			const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
 			const reasoningUrl = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
@@ -163,7 +169,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 			}
 			// Use the sessionId stored in the confirmation data, NOT a new one
-			const confirmSessionId = data.sessionId ?? this._lastSessionId;
+			const confirmSessionId = data.sessionId ?? runtime.backendSessionId;
 			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'session:', confirmSessionId);
 			streamClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
 			progress([this._progress('$(check) Confirmed')]);
@@ -172,7 +178,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		if (request.rejectedConfirmationData?.length) {
 			const data = request.rejectedConfirmationData[0] as { requestId: string; sessionId?: string; options?: Array<{ label: string; action?: string; action_id?: string }> };
-			const confirmSessionId = data.sessionId ?? this._lastSessionId;
+			const confirmSessionId = data.sessionId ?? runtime.backendSessionId;
 
 			// When multi-option confirmations exist, the user may have selected a non-primary
 			// option which VSCode routes as "reject". Try to match the user's message to an option.
@@ -200,10 +206,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 
 		const sessionId = `native_chat_${++this._sessionCounter}_${Date.now()}`;
-		this._lastSessionId = sessionId;
+		this._setSessionBackendId(request.sessionResource, sessionId);
 		const userMessage = request.message;
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
+		effects.setActiveSession(request.sessionResource);
 		const modeFromInstructions = request.modeInstructions?.name;
 		const isSpecMode = modeFromInstructions === 'spec' || this._configurationService.getValue<string>('chipos.chatMode') === 'spec';
 		const mode: 'agent' | 'spec' = isSpecMode ? 'spec' : 'agent';
@@ -237,9 +244,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		this._logService.info('[ChipOS Agent] invoke:', userMessage.slice(0, 100), 'mode:', mode, 'mentions:', mentions.length);
 
-		this._toolStartTimes.clear();
-		this._toolFileArgs.clear();
-		this._subagentTimers.clear();
+		runtime.toolStartTimes.clear();
+		runtime.toolFileArgs.clear();
+		runtime.subagentTimers.clear();
+		runtime.subagentParentMap.clear();
+		runtime.lastSubagentToolCallId = undefined;
+		runtime.externalEditOps.clear();
+		runtime.pendingStartEdits.clear();
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -277,9 +288,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (resolved) {
 					return;
 				}
+				if (event.session_id && event.session_id !== sessionId) {
+					this._logService.trace('[ChipOS Agent] Ignoring event for different session', event.session_id, 'expected', sessionId, 'type', event.event_type);
+					return;
+				}
 
 				try {
-					effects.handleEvent(event);
+					effects.handleEvent(request.sessionResource, event);
 				} catch (e) {
 					this._logService.warn('[ChipOS Agent] Editor effect error:', String(e));
 				}
@@ -310,12 +325,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
 						stepCount++;
-						this._toolStartTimes.set(key, Date.now());
+						runtime.toolStartTimes.set(key, Date.now());
 						// Save file_path from arguments for later reference emission
 						const args = p.arguments as Record<string, unknown> | undefined;
 						if (args) {
 							const fp = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							if (fp) { this._toolFileArgs.set(key, fp); }
+							if (fp) { runtime.toolFileArgs.set(key, fp); }
 						}
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
@@ -324,7 +339,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						// Subagent tools get special rendering — Cursor-style collapsible card
 						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
 						if (isSubagent && args) {
-							this._lastSubagentToolCallId = key;
+							runtime.lastSubagentToolCallId = key;
 							const desc = (args.description ?? args.prompt ?? '') as string;
 							// Extract first line or first 60 chars as short description for card title
 							const shortDesc = desc.split('\n')[0].slice(0, 60);
@@ -371,9 +386,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 									: workspaceRoot
 										? URI.joinPath(URI.file(workspaceRoot), filePath)
 										: URI.file(filePath);
-								this._toolFileArgs.set(key, filePath);
+								runtime.toolFileArgs.set(key, filePath);
 								// Start external edit — snapshot file before backend writes
-								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
+								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
 							}
 						}
 						break;
@@ -383,9 +398,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IToolResultPayload;
 						const key = p.call_id || p.tool_name;
 						const friendly = this._friendlyToolName(p.tool_name);
-						const startTs = this._toolStartTimes.get(key);
+						const startTs = runtime.toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
-						this._toolStartTimes.delete(key);
+						runtime.toolStartTimes.delete(key);
 						const timeSuffix = elapsed ? ` (${elapsed})` : '';
 						const pastMsg = p.summary
 							? `${p.summary}${timeSuffix}`
@@ -406,20 +421,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						progress([toolComplete]);
 
 						// ── Stop external edit tracking and emit file reference ──
-						if (this._externalEditOps.has(key)) {
+						if (runtime.externalEditOps.has(key)) {
 							// External edit was started for this tool — stop it to compute diff
-							this._stopExternalEdit(key, request.sessionResource).then(editProgress => {
+							this._stopExternalEdit(key, request.sessionResource, runtime).then(editProgress => {
 								if (editProgress.length > 0) {
 									progress(editProgress);
 								}
 							}).catch(err => {
 								this._logService.warn('[ChipOS Agent] ToolResult: stopExternalEdit failed for', key, err);
 							});
-							this._toolFileArgs.delete(key);
+							runtime.toolFileArgs.delete(key);
 						} else if (p.success) {
 							// Fallback for tools not tracked via external edits
-							let filePath = this._toolFileArgs.get(key);
-							this._toolFileArgs.delete(key);
+							let filePath = runtime.toolFileArgs.get(key);
+							runtime.toolFileArgs.delete(key);
 							if (!filePath && typeof p.result === 'string') {
 								try {
 									const resultObj = JSON.parse(p.result);
@@ -679,14 +694,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// ── FEAT-33: Subagent event — structured rendering ──
 					case AgentEventType.SubagentEvent: {
 						const p = event.payload as ISubagentEventPayload;
-						if (!this._subagentTimers.has(p.task_id)) {
-							this._subagentTimers.set(p.task_id, Date.now());
+						if (!runtime.subagentTimers.has(p.task_id)) {
+							runtime.subagentTimers.set(p.task_id, Date.now());
 							// Link task_id to the most recent subagent ToolCall
-							if (this._lastSubagentToolCallId) {
-								this._subagentParentMap.set(p.task_id, this._lastSubagentToolCallId);
+							if (runtime.lastSubagentToolCallId) {
+								runtime.subagentParentMap.set(p.task_id, runtime.lastSubagentToolCallId);
 							}
 						}
-						const parentId = this._subagentParentMap.get(p.task_id) ?? p.task_id;
+						const parentId = runtime.subagentParentMap.get(p.task_id) ?? p.task_id;
 						if (p.kind === 'text' && p.content) {
 							// Route text as a virtual tool inside the subagent card
 							const textKey = `sub_${p.task_id}_text_${this._subagentToolCounter++}`;
@@ -701,7 +716,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
 							const subKey = `sub_${p.task_id}_${p.tool_name}_${this._subagentToolCounter++}`;
-							this._toolStartTimes.set(subKey, Date.now());
+							runtime.toolStartTimes.set(subKey, Date.now());
 							// Build a friendly invocation message with args summary
 							const argDetail = p.args ? ChipOSChatAgent._formatToolArgs(p.args as Record<string, unknown>) : '';
 							const invMsg = argDetail ? `${p.tool_name} ${argDetail}` : p.tool_name;
@@ -721,8 +736,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
 								if (filePath && request) {
 									// Dedup: skip if this file already has a pending external edit
-									const alreadyTracked = [...this._toolFileArgs.entries()].some(
-										([k, v]) => v === filePath && this._externalEditOps.has(k)
+									const alreadyTracked = [...runtime.toolFileArgs.entries()].some(
+										([k, v]) => v === filePath && runtime.externalEditOps.has(k)
 									);
 									if (alreadyTracked) {
 										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: SKIPPED (already tracked) file=${filePath}, subKey=${subKey}`);
@@ -734,8 +749,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 												? URI.joinPath(URI.file(workspaceRoot), filePath)
 												: URI.file(filePath);
 										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
-										this._toolFileArgs.set(subKey, filePath);
-										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
+										runtime.toolFileArgs.set(subKey, filePath);
+										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
 									}
 								}
 							} else {
@@ -745,7 +760,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							// Find the matching tool_start key for this tool_name (with counter suffix)
 							const matchPrefix = `sub_${p.task_id}_${p.tool_name}_`;
 							let subKey: string | undefined;
-							for (const [k] of this._toolStartTimes) {
+							for (const [k] of runtime.toolStartTimes) {
 								if (k.startsWith(matchPrefix)) {
 									subKey = k;
 									break;
@@ -753,9 +768,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							}
 							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: tool=${p.tool_name}, matchPrefix=${matchPrefix}, foundSubKey=${subKey}, file_path=${p.file_path}`);
 							if (!subKey) { break; }
-							const startTs = this._toolStartTimes.get(subKey);
+							const startTs = runtime.toolStartTimes.get(subKey);
 							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
-							this._toolStartTimes.delete(subKey);
+							runtime.toolStartTimes.delete(subKey);
 							const toolComplete: IChatExternalToolInvocationUpdate = {
 								kind: 'externalToolInvocationUpdate',
 								toolCallId: subKey,
@@ -767,11 +782,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							progress([toolComplete]);
 
 							// Stop external edit — _stopExternalEdit awaits _startExternalEdit first
-							const hasOp = this._externalEditOps.has(subKey);
-							const hasPending = this._pendingStartEdits.has(subKey);
+							const hasOp = runtime.externalEditOps.has(subKey);
+							const hasPending = runtime.pendingStartEdits.has(subKey);
 							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: subKey=${subKey}, hasExternalEditOp=${hasOp}, hasPendingStart=${hasPending}, hasRequest=${!!request}`);
 							if (hasOp && request) {
-								this._stopExternalEdit(subKey, request.sessionResource).then(editProgress => {
+								this._stopExternalEdit(subKey, request.sessionResource, runtime).then(editProgress => {
 									this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit returned ${editProgress.length} progress items for ${subKey}`);
 									if (editProgress.length > 0) {
 										progress(editProgress);
@@ -779,7 +794,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								}).catch(err => {
 									this._logService.error(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit failed for ${subKey}`, err);
 								});
-								this._toolFileArgs.delete(subKey);
+								runtime.toolFileArgs.delete(subKey);
 							}
 						} else if (p.kind === 'error' && p.content) {
 							// Route error inside the subagent card
@@ -806,11 +821,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								subagentInvocationId: parentId,
 							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'complete') {
-							const subStart = this._subagentTimers.get(p.task_id);
-							this._subagentTimers.delete(p.task_id);
+							const subStart = runtime.subagentTimers.get(p.task_id);
+							runtime.subagentTimers.delete(p.task_id);
 							// Close any dangling tool calls belonging to this subagent
 							const prefix = `sub_${p.task_id}_`;
-							for (const [k] of this._toolStartTimes) {
+							for (const [k] of runtime.toolStartTimes) {
 								if (k.startsWith(prefix)) {
 									const toolName = k.slice(prefix.length).replace(/_\d+$/, '');
 									progress([{
@@ -821,16 +836,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										pastTenseMessage: `${toolName} done`,
 										subagentInvocationId: parentId,
 									} satisfies IChatExternalToolInvocationUpdate]);
-									this._toolStartTimes.delete(k);
+									runtime.toolStartTimes.delete(k);
 								}
 							}
 							// Mark the parent subagent tool call as complete
-							if (parentId && this._toolStartTimes.has(parentId)) {
-								const parentStart = this._toolStartTimes.get(parentId);
+							if (parentId && runtime.toolStartTimes.has(parentId)) {
+								const parentStart = runtime.toolStartTimes.get(parentId);
 								const elapsed = parentStart
 									? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)`
 									: subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
-								this._toolStartTimes.delete(parentId);
+								runtime.toolStartTimes.delete(parentId);
 								progress([{
 									kind: 'externalToolInvocationUpdate',
 									toolCallId: parentId,
@@ -839,7 +854,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 									pastTenseMessage: `Sub-agent completed${elapsed}`,
 								} satisfies IChatExternalToolInvocationUpdate]);
 							}
-							this._subagentParentMap.delete(p.task_id);
+							runtime.subagentParentMap.delete(p.task_id);
 						}
 						break;
 					}
@@ -859,8 +874,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								if (f.action === 'deleted') { continue; }
 								const fileUri = URI.file(f.path);
 								// Check if this file is already being tracked by a tool call
-								const alreadyTracked = [...this._externalEditOps.keys()].some(k => {
-									const fp = this._toolFileArgs.get(k);
+								const alreadyTracked = [...runtime.externalEditOps.keys()].some(k => {
+									const fp = runtime.toolFileArgs.get(k);
 									return fp && (fp === f.path || f.path.endsWith(fp));
 								});
 								if (!alreadyTracked) {
@@ -934,7 +949,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 					case AgentEventType.Done:
 						// Close any dangling tool calls before finishing
-						for (const [k] of this._toolStartTimes) {
+						for (const [k] of runtime.toolStartTimes) {
 							const toolName = k.includes('_') ? k.split('_').pop()! : k;
 							progress([{
 								kind: 'externalToolInvocationUpdate',
@@ -944,7 +959,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								pastTenseMessage: `${toolName} done`,
 							} satisfies IChatExternalToolInvocationUpdate]);
 						}
-						this._toolStartTimes.clear();
+						runtime.toolStartTimes.clear();
 						finish({});
 						break;
 
@@ -1005,6 +1020,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	): Promise<IChatAgentResult> {
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
+		if (request) {
+			effects.setActiveSession(request.sessionResource);
+		}
+		const runtime = request
+			? this._getOrCreateRuntime(request.sessionResource)
+			: {
+				toolStartTimes: new Map<string, number>(),
+				toolFileArgs: new Map<string, string>(),
+				subagentTimers: new Map<string, number>(),
+				subagentParentMap: new Map<string, string>(),
+				externalEditOps: new Map<string, number>(),
+				pendingStartEdits: new Map<string, Promise<void>>(),
+			  } as IChatSessionRuntime;
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -1028,9 +1056,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			const listener = streamClient.onDidReceiveEvent((event: AgentEvent) => {
 				if (resolved) { return; }
+				if (runtime.backendSessionId && event.session_id && event.session_id !== runtime.backendSessionId) {
+					this._logService.trace('[ChipOS Agent] Ignoring continuation event for different session', event.session_id, 'expected', runtime.backendSessionId, 'type', event.event_type);
+					return;
+				}
 
 				try {
-					effects.handleEvent(event);
+					if (request) {
+						effects.handleEvent(request.sessionResource, event);
+					}
 				} catch (e) {
 					this._logService.warn('[ChipOS Agent] Editor effect error (continuation):', String(e));
 				}
@@ -1054,11 +1088,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					case AgentEventType.ToolCall: {
 						const p = event.payload as IToolCallPayload;
 						const key = p.call_id || p.tool_name;
-						this._toolStartTimes.set(key, Date.now());
+						runtime.toolStartTimes.set(key, Date.now());
 						const args = p.arguments as Record<string, unknown> | undefined;
 						if (args) {
 							const fp = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							if (fp) { this._toolFileArgs.set(key, fp); }
+							if (fp) { runtime.toolFileArgs.set(key, fp); }
 						}
 						const friendly = this._friendlyToolName(p.tool_name);
 						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
@@ -1067,7 +1101,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						// Subagent tools get special rendering — Cursor-style collapsible card
 						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
 						if (isSubagent && args) {
-							this._lastSubagentToolCallId = key;
+							runtime.lastSubagentToolCallId = key;
 							const desc = (args.description ?? args.prompt ?? '') as string;
 							// Extract first line or first 60 chars as short description for card title
 							const shortDesc = desc.split('\n')[0].slice(0, 60);
@@ -1112,9 +1146,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 									: workspaceRoot
 										? URI.joinPath(URI.file(workspaceRoot), filePath)
 										: URI.file(filePath);
-								this._toolFileArgs.set(key, filePath);
+								runtime.toolFileArgs.set(key, filePath);
 								// Start external edit — snapshot file before backend writes
-								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
+								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
 							}
 						}
 						break;
@@ -1123,9 +1157,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const p = event.payload as IToolResultPayload;
 						const key = p.call_id || p.tool_name;
 						const friendly = this._friendlyToolName(p.tool_name);
-						const startTs = this._toolStartTimes.get(key);
+						const startTs = runtime.toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
-						this._toolStartTimes.delete(key);
+						runtime.toolStartTimes.delete(key);
 						const timeSuffix = elapsed ? ` (${elapsed})` : '';
 						const pastMsg = p.summary
 							? `${p.summary}${timeSuffix}`
@@ -1146,20 +1180,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						progress([toolComplete]);
 
 						// ── Stop external edit tracking and emit file reference ──
-						const hasExternalOp = this._externalEditOps.has(key);
+						const hasExternalOp = runtime.externalEditOps.has(key);
 						this._logService.info(`[ChipOS Agent] ToolResult: tool=${p.tool_name}, key=${key}, hasExternalOp=${hasExternalOp}, hasRequest=${!!request}, success=${p.success}`);
 						if (hasExternalOp && request) {
-							this._stopExternalEdit(key, request.sessionResource).then(editProgress => {
+							this._stopExternalEdit(key, request.sessionResource, runtime).then(editProgress => {
 								if (editProgress.length > 0) {
 									progress(editProgress);
 								}
 							}).catch(err => {
 								this._logService.warn('[ChipOS Agent] ToolResult (cont): stopExternalEdit failed for', key, err);
 							});
-							this._toolFileArgs.delete(key);
+							runtime.toolFileArgs.delete(key);
 						} else if (p.success) {
-							let filePath = this._toolFileArgs.get(key);
-							this._toolFileArgs.delete(key);
+							let filePath = runtime.toolFileArgs.get(key);
+							runtime.toolFileArgs.delete(key);
 							if (!filePath && typeof p.result === 'string') {
 								try {
 									const resultObj = JSON.parse(p.result);
@@ -1237,8 +1271,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							for (const f of p.files) {
 								if (f.action === 'deleted') { continue; }
 								const fileUri = URI.file(f.path);
-								const alreadyTracked = [...this._externalEditOps.keys()].some(k => {
-									const fp = this._toolFileArgs.get(k);
+								const alreadyTracked = [...runtime.externalEditOps.keys()].some(k => {
+									const fp = runtime.toolFileArgs.get(k);
 									return fp && (fp === f.path || f.path.endsWith(fp));
 								});
 								this._logService.info(`[ChipOS Agent] WorktreeFilesApplied: file=${f.path}, action=${f.action}, alreadyTracked=${alreadyTracked}`);
@@ -1264,13 +1298,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 					case AgentEventType.SubagentEvent: {
 						const p = event.payload as ISubagentEventPayload;
-						if (!this._subagentTimers.has(p.task_id)) {
-							this._subagentTimers.set(p.task_id, Date.now());
-							if (this._lastSubagentToolCallId) {
-								this._subagentParentMap.set(p.task_id, this._lastSubagentToolCallId);
+						if (!runtime.subagentTimers.has(p.task_id)) {
+							runtime.subagentTimers.set(p.task_id, Date.now());
+							if (runtime.lastSubagentToolCallId) {
+								runtime.subagentParentMap.set(p.task_id, runtime.lastSubagentToolCallId);
 							}
 						}
-						const parentId = this._subagentParentMap.get(p.task_id) ?? p.task_id;
+						const parentId = runtime.subagentParentMap.get(p.task_id) ?? p.task_id;
 						if (p.kind === 'text' && p.content) {
 							// Route text as a virtual tool inside the subagent card
 							const textKey = `sub_${p.task_id}_text_${this._subagentToolCounter++}`;
@@ -1285,7 +1319,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'tool_start' && p.tool_name) {
 							const subKey = `sub_${p.task_id}_${p.tool_name}_${this._subagentToolCounter++}`;
-							this._toolStartTimes.set(subKey, Date.now());
+							runtime.toolStartTimes.set(subKey, Date.now());
 							// Build a friendly invocation message with args summary
 							const argDetail = p.args ? ChipOSChatAgent._formatToolArgs(p.args as Record<string, unknown>) : '';
 							const invMsg = argDetail ? `${p.tool_name} ${argDetail}` : p.tool_name;
@@ -1305,8 +1339,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
 								if (filePath && request) {
 									// Dedup: skip if this file already has a pending external edit
-									const alreadyTracked = [...this._toolFileArgs.entries()].some(
-										([k, v]) => v === filePath && this._externalEditOps.has(k)
+									const alreadyTracked = [...runtime.toolFileArgs.entries()].some(
+										([k, v]) => v === filePath && runtime.externalEditOps.has(k)
 									);
 									if (alreadyTracked) {
 										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: SKIPPED (already tracked) file=${filePath}, subKey=${subKey}`);
@@ -1318,8 +1352,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 												? URI.joinPath(URI.file(workspaceRoot), filePath)
 												: URI.file(filePath);
 										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
-										this._toolFileArgs.set(subKey, filePath);
-										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, p.snapshot_content);
+										runtime.toolFileArgs.set(subKey, filePath);
+										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
 									}
 								}
 							} else {
@@ -1329,7 +1363,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							// Find the matching tool_start key for this tool_name (with counter suffix)
 							const matchPrefix = `sub_${p.task_id}_${p.tool_name}_`;
 							let subKey: string | undefined;
-							for (const [k] of this._toolStartTimes) {
+							for (const [k] of runtime.toolStartTimes) {
 								if (k.startsWith(matchPrefix)) {
 									subKey = k;
 									break;
@@ -1337,9 +1371,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							}
 							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: tool=${p.tool_name}, matchPrefix=${matchPrefix}, foundSubKey=${subKey}, file_path=${p.file_path}`);
 							if (!subKey) { break; }
-							const startTs = this._toolStartTimes.get(subKey);
+							const startTs = runtime.toolStartTimes.get(subKey);
 							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
-							this._toolStartTimes.delete(subKey);
+							runtime.toolStartTimes.delete(subKey);
 							const toolComplete: IChatExternalToolInvocationUpdate = {
 								kind: 'externalToolInvocationUpdate',
 								toolCallId: subKey,
@@ -1351,11 +1385,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							progress([toolComplete]);
 
 							// Stop external edit — _stopExternalEdit awaits _startExternalEdit first
-							const hasOp = this._externalEditOps.has(subKey);
-							const hasPending = this._pendingStartEdits.has(subKey);
+							const hasOp = runtime.externalEditOps.has(subKey);
+							const hasPending = runtime.pendingStartEdits.has(subKey);
 							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: subKey=${subKey}, hasExternalEditOp=${hasOp}, hasPendingStart=${hasPending}, hasRequest=${!!request}`);
 							if (hasOp && request) {
-								this._stopExternalEdit(subKey, request.sessionResource).then(editProgress => {
+								this._stopExternalEdit(subKey, request.sessionResource, runtime).then(editProgress => {
 									this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit returned ${editProgress.length} progress items for ${subKey}`);
 									if (editProgress.length > 0) {
 										progress(editProgress);
@@ -1363,7 +1397,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								}).catch(err => {
 									this._logService.error(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit failed for ${subKey}`, err);
 								});
-								this._toolFileArgs.delete(subKey);
+								runtime.toolFileArgs.delete(subKey);
 							}
 						} else if (p.kind === 'error' && p.content) {
 							// Route error inside the subagent card
@@ -1390,10 +1424,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								subagentInvocationId: parentId,
 							} satisfies IChatExternalToolInvocationUpdate]);
 						} else if (p.kind === 'complete') {
-							const subStart = this._subagentTimers.get(p.task_id);
-							this._subagentTimers.delete(p.task_id);
+							const subStart = runtime.subagentTimers.get(p.task_id);
+							runtime.subagentTimers.delete(p.task_id);
 							const prefix = `sub_${p.task_id}_`;
-							for (const [k] of this._toolStartTimes) {
+							for (const [k] of runtime.toolStartTimes) {
 								if (k.startsWith(prefix)) {
 									const toolName = k.slice(prefix.length).replace(/_\d+$/, '');
 									progress([{
@@ -1404,16 +1438,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 										pastTenseMessage: `${toolName} done`,
 										subagentInvocationId: parentId,
 									} satisfies IChatExternalToolInvocationUpdate]);
-									this._toolStartTimes.delete(k);
+									runtime.toolStartTimes.delete(k);
 								}
 							}
 							// Mark the parent subagent tool call as complete
-							if (parentId && this._toolStartTimes.has(parentId)) {
-								const parentStart = this._toolStartTimes.get(parentId);
+							if (parentId && runtime.toolStartTimes.has(parentId)) {
+								const parentStart = runtime.toolStartTimes.get(parentId);
 								const elapsed = parentStart
 									? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)`
 									: subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
-								this._toolStartTimes.delete(parentId);
+								runtime.toolStartTimes.delete(parentId);
 								progress([{
 									kind: 'externalToolInvocationUpdate',
 									toolCallId: parentId,
@@ -1422,7 +1456,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 									pastTenseMessage: `Sub-agent completed${elapsed}`,
 								} satisfies IChatExternalToolInvocationUpdate]);
 							}
-							this._subagentParentMap.delete(p.task_id);
+							runtime.subagentParentMap.delete(p.task_id);
 						}
 						break;
 					}
@@ -1438,9 +1472,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const confirmation: IChatConfirmation = {
 							kind: 'confirmation',
 							title,
-							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-							data: { requestId: p.request_id, sessionId: this._lastSessionId, options: p.options ?? cardOpts },
-							buttons: buttons2,
+			message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
+			data: { requestId: p.request_id, sessionId: runtime.backendSessionId, options: p.options ?? cardOpts },
+			buttons: buttons2,
 						};
 						progress([confirmation]);
 						finish({}, 'Awaiting confirmation');
@@ -1580,7 +1614,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 					case AgentEventType.Done:
-						for (const [k] of this._toolStartTimes) {
+						for (const [k] of runtime.toolStartTimes) {
 							const toolName = k.includes('_') ? k.split('_').pop()! : k;
 							progress([{
 								kind: 'externalToolInvocationUpdate',
@@ -1590,7 +1624,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								pastTenseMessage: `${toolName} done`,
 							} satisfies IChatExternalToolInvocationUpdate]);
 						}
-						this._toolStartTimes.clear();
+						runtime.toolStartTimes.clear();
 						finish({});
 						break;
 					case AgentEventType.FileEdit: {
@@ -1649,8 +1683,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			token.onCancellationRequested(() => {
 				this._logService.info('[ChipOS Agent] Cancellation requested (continuation)');
-				if (this._lastSessionId) {
-					streamClient.sendStop(this._lastSessionId);
+				if (runtime.backendSessionId) {
+					streamClient.sendStop(runtime.backendSessionId);
 				}
 				finish({});
 			});
@@ -1891,6 +1925,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		fileUri: URI,
 		sessionResource: URI,
 		requestId: string,
+		runtime: IChatSessionRuntime,
 		snapshotContent?: string,
 	): void {
 		// Filter out files in hidden directories (e.g. .cursor/, .git/, .vscode/)
@@ -1912,7 +1947,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return;
 		}
 		const opId = ++this._externalEditOpCounter;
-		this._externalEditOps.set(toolCallId, opId);
+		runtime.externalEditOps.set(toolCallId, opId);
 
 		// Build beforeSnapshots map if we have snapshot content from the backend
 		let beforeSnapshots: ResourceMap<string> | undefined;
@@ -1926,9 +1961,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._logService.info(`[ChipOS Agent] startExternalEdits RESOLVED opId=${opId} for ${fileUri.path}`);
 		}).catch(err => {
 			this._logService.error(`[ChipOS Agent] startExternalEdits REJECTED for ${fileUri.path}`, err);
-			this._externalEditOps.delete(toolCallId);
+			runtime.externalEditOps.delete(toolCallId);
 		});
-		this._pendingStartEdits.set(toolCallId, startPromise);
+		runtime.pendingStartEdits.set(toolCallId, startPromise);
 	}
 
 	/**
@@ -1939,25 +1974,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private async _stopExternalEdit(
 		toolCallId: string,
 		sessionResource: URI,
+		runtime: IChatSessionRuntime,
 	): Promise<IChatProgress[]> {
 		this._logService.info(`[ChipOS Agent] _stopExternalEdit ENTER: toolCallId=${toolCallId}`);
 		// CRITICAL: wait for startExternalEdits to finish before calling stop
-		const pending = this._pendingStartEdits.get(toolCallId);
-		this._logService.info(`[ChipOS Agent] _stopExternalEdit: hasPending=${!!pending}, externalEditOps keys=[${[...this._externalEditOps.keys()].join(',')}], pendingStartEdits keys=[${[...this._pendingStartEdits.keys()].join(',')}]`);
+		const pending = runtime.pendingStartEdits.get(toolCallId);
+		this._logService.info(`[ChipOS Agent] _stopExternalEdit: hasPending=${!!pending}, externalEditOps keys=[${[...runtime.externalEditOps.keys()].join(',')}], pendingStartEdits keys=[${[...runtime.pendingStartEdits.keys()].join(',')}]`);
 		if (pending) {
 			this._logService.info(`[ChipOS Agent] _stopExternalEdit: awaiting pending startExternalEdits for ${toolCallId}...`);
 			await pending;
 			this._logService.info(`[ChipOS Agent] _stopExternalEdit: pending startExternalEdits resolved for ${toolCallId}`);
-			this._pendingStartEdits.delete(toolCallId);
+			runtime.pendingStartEdits.delete(toolCallId);
 		}
 
-		const opId = this._externalEditOps.get(toolCallId);
+		const opId = runtime.externalEditOps.get(toolCallId);
 		this._logService.info(`[ChipOS Agent] _stopExternalEdit: opId=${opId} for toolCallId=${toolCallId}`);
 		if (opId === undefined) {
 			this._logService.warn(`[ChipOS Agent] _stopExternalEdit: no opId found, returning empty. toolCallId=${toolCallId}`);
 			return [];
 		}
-		this._externalEditOps.delete(toolCallId);
+		runtime.externalEditOps.delete(toolCallId);
 
 		const editingSession = this._getEditingSession(sessionResource);
 		const responseModel = this._getResponseModel(sessionResource);
@@ -2180,12 +2216,105 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return this._editorEffects;
 	}
 
+	private _getOrCreateRuntime(sessionResource: URI): IChatSessionRuntime {
+		let runtime = this._sessionRuntimes.get(sessionResource);
+		if (!runtime) {
+			runtime = {
+				toolStartTimes: new Map<string, number>(),
+				toolFileArgs: new Map<string, string>(),
+				subagentTimers: new Map<string, number>(),
+				subagentParentMap: new Map<string, string>(),
+				externalEditOps: new Map<string, number>(),
+				pendingStartEdits: new Map<string, Promise<void>>(),
+			};
+			this._sessionRuntimes.set(sessionResource, runtime);
+		}
+		return runtime;
+	}
+
+	private _getRuntime(sessionResource: URI): IChatSessionRuntime | undefined {
+		return this._sessionRuntimes.get(sessionResource);
+	}
+
+	private _disposeRuntime(sessionResource: URI): void {
+		const runtime = this._sessionRuntimes.get(sessionResource);
+		if (!runtime) {
+			return;
+		}
+
+		const externalEditOps = new Map(runtime.externalEditOps);
+		const pendingStartEdits = new Map(runtime.pendingStartEdits);
+		void this._cleanupExternalEditsForSession(sessionResource, externalEditOps, pendingStartEdits);
+
+		runtime.streamClient?.dispose();
+		runtime.streamClient = undefined;
+		runtime.backendSessionId = undefined;
+		runtime.lastSubagentToolCallId = undefined;
+		runtime.toolStartTimes.clear();
+		runtime.toolFileArgs.clear();
+		runtime.subagentTimers.clear();
+		runtime.subagentParentMap.clear();
+		runtime.externalEditOps.clear();
+		runtime.pendingStartEdits.clear();
+		this._ensureEditorEffects().clearSessionState(sessionResource);
+		this._sessionRuntimes.delete(sessionResource);
+	}
+
+	private async _cleanupExternalEditsForSession(
+		sessionResource: URI,
+		externalEditOps: Map<string, number>,
+		pendingStartEdits: Map<string, Promise<void>>,
+	): Promise<void> {
+		if (!externalEditOps.size && !pendingStartEdits.size) {
+			return;
+		}
+
+		for (const pending of pendingStartEdits.values()) {
+			try {
+				await pending;
+			} catch (err) {
+				this._logService.warn('[ChipOS Agent] Pending external edit start rejected during runtime dispose:', String(err));
+			}
+		}
+
+		const editingSession = this._getEditingSession(sessionResource);
+		const responseModel = this._getResponseModel(sessionResource);
+		if (editingSession && responseModel) {
+			for (const opId of externalEditOps.values()) {
+				try {
+					await editingSession.stopExternalEdits(responseModel, opId);
+				} catch (err) {
+					this._logService.warn(`[ChipOS Agent] stopExternalEdits failed during runtime dispose (opId=${opId}):`, String(err));
+				}
+			}
+			return;
+		}
+
+		if (editingSession) {
+			try {
+				await editingSession.stop();
+			} catch (err) {
+				this._logService.warn('[ChipOS Agent] editingSession.stop() failed during runtime dispose:', String(err));
+			}
+		}
+	}
+
+	private _sessionBackendId(sessionResource: URI): string | undefined {
+		return this._getRuntime(sessionResource)?.backendSessionId;
+	}
+
+	private _setSessionBackendId(sessionResource: URI, backendSessionId: string | undefined): void {
+		const runtime = this._getOrCreateRuntime(sessionResource);
+		runtime.backendSessionId = backendSessionId;
+	}
+
 	// ── Client lifecycle ───────────────────────────────────────────────────
 
-	private async _ensureClient(): Promise<IEventStreamClient | undefined> {
-		if (this._streamClient && this._streamClient.connectionState === ConnectionState.Connected) {
+	private async _ensureClient(sessionResource: URI): Promise<IEventStreamClient | undefined> {
+		const runtime = this._getOrCreateRuntime(sessionResource);
+		if (runtime.streamClient && runtime.streamClient.connectionState === ConnectionState.Connected) {
 			this._logService.trace('[ChipOS Agent] Reusing existing connected SSE client');
-			return this._streamClient;
+			return runtime.streamClient;
 		}
 
 		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
@@ -2196,16 +2325,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl, '| http.noProxy:', JSON.stringify(noProxy));
 
-		if (this._streamClient && this._streamClient instanceof SseEventStreamClient
-			&& this._streamClient.connectionState !== ConnectionState.Error) {
+		if (runtime.streamClient && runtime.streamClient instanceof SseEventStreamClient
+			&& runtime.streamClient.connectionState !== ConnectionState.Error) {
 			this._logService.trace('[ChipOS Agent] Reusing existing SSE client for reconnect');
 		} else {
-			this._streamClient?.disconnect();
-			this._streamClient = this._register(new SseEventStreamClient({ baseUrl, token }));
+			runtime.streamClient?.dispose();
+			runtime.streamClient = new SseEventStreamClient({ baseUrl, token });
 		}
 
 		try {
-			await this._streamClient.connect();
+			await runtime.streamClient.connect();
 			this._logService.info('[ChipOS Agent] SSE connected successfully');
 		} catch (err) {
 			this._logService.error('[ChipOS Agent] Failed to connect SSE:', String(err));
@@ -2213,14 +2342,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return undefined;
 		}
 
-		return this._streamClient;
+		return runtime.streamClient;
 	}
 
 	override dispose(): void {
-		this._toolStartTimes.clear();
-		this._subagentTimers.clear();
-		if (this._streamClient) {
-			this._streamClient.disconnect();
+		for (const [sessionResource] of this._sessionRuntimes) {
+			this._disposeRuntime(sessionResource);
 		}
 		super.dispose();
 	}

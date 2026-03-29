@@ -67,6 +67,10 @@ export interface ISidecarManagerService {
 
 	readonly reasoningUrl: string;
 
+	// ── Worker HTTP URL（工具管理面板直连地址）─────────────────────────────
+
+	readonly workerHttpUrl: string;
+
 	// ── 生命周期 ────────────────────────────────────────────────────────
 
 	/**

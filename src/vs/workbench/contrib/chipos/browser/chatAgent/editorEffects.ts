@@ -5,6 +5,8 @@
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { Emitter } from '../../../../../base/common/event.js';
+import { ResourceMap } from '../../../../../base/common/map.js';
+import { isEqual } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IMarkerService, IMarkerData, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
@@ -29,7 +31,14 @@ export interface IFileChangeInfo {
 	deletions: number;
 }
 
+interface ISessionEditorEffectsState {
+	readonly trackedFiles: Set<string>;
+	readonly fileChanges: Map<string, IFileChangeInfo>;
+	skillTreeData: ISkillTreeData;
+}
+
 const CHIPOS_MARKER_OWNER = 'chipos-lint';
+const EMPTY_SKILL_TREE: ISkillTreeData = { domains: [] };
 
 /**
  * Handles editor-side effects triggered by backend events.
@@ -37,9 +46,9 @@ const CHIPOS_MARKER_OWNER = 'chipos-lint';
  */
 export class ChipOSEditorEffects extends Disposable {
 
-	private readonly _trackedFiles = new Set<string>();
-	private readonly _fileChanges = new Map<string, IFileChangeInfo>();
-	private readonly _skillTreeHandler: SkillTreeHandler;
+	private readonly _sessionStates = new ResourceMap<ISessionEditorEffectsState>();
+	private readonly _projectedSkillTreeHandler: SkillTreeHandler;
+	private _activeSessionResource: URI | undefined;
 
 	private readonly _onDidChangeFileChanges = this._register(new Emitter<IFileChangeInfo[]>());
 	readonly onDidChangeFileChanges = this._onDidChangeFileChanges.event;
@@ -51,52 +60,82 @@ export class ChipOSEditorEffects extends Disposable {
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
-		this._skillTreeHandler = this._register(new SkillTreeHandler(this._logService));
+		this._projectedSkillTreeHandler = this._register(new SkillTreeHandler(this._logService));
 	}
 
-	get skillTreeHandler(): SkillTreeHandler { return this._skillTreeHandler; }
-	get fileChanges(): IFileChangeInfo[] { return Array.from(this._fileChanges.values()); }
-	get fileChangeCount(): number { return this._fileChanges.size; }
+	get skillTreeHandler(): SkillTreeHandler { return this._projectedSkillTreeHandler; }
+	get fileChanges(): IFileChangeInfo[] {
+		const state = this._getActiveState();
+		return state ? Array.from(state.fileChanges.values()) : [];
+	}
+	get fileChangeCount(): number {
+		return this._getActiveState()?.fileChanges.size ?? 0;
+	}
 
-	handleEvent(event: AgentEvent): void {
+	setActiveSession(sessionResource: URI | undefined): void {
+		if (sessionResource && this._activeSessionResource && isEqual(this._activeSessionResource, sessionResource)) {
+			this._projectActiveState();
+			return;
+		}
+		if (!sessionResource && !this._activeSessionResource) {
+			this._projectActiveState();
+			return;
+		}
+		this._activeSessionResource = sessionResource;
+		this._projectActiveState();
+	}
+
+	clearSessionState(sessionResource: URI): void {
+		this._sessionStates.delete(sessionResource);
+		if (this._isActiveSession(sessionResource)) {
+			this._activeSessionResource = undefined;
+			this._projectActiveState();
+		}
+	}
+
+	handleEvent(sessionResource: URI, event: AgentEvent): void {
+		const state = this._getOrCreateSessionState(sessionResource);
 		switch (event.event_type) {
 			case AgentEventType.FileEdit:
-				this._handleFileEdit(event.payload as IFileEditPayload);
+				this._handleFileEdit(state, event.payload as IFileEditPayload);
 				break;
 			case AgentEventType.LintReport:
 				this._handleLintDiagnostics(event.payload as ILintReportPayload);
 				break;
 			case AgentEventType.ToolResult:
-				this._handleToolResult(event.payload as IToolResultPayload);
+				this._handleToolResult(sessionResource, state, event.payload as IToolResultPayload);
 				break;
 			case AgentEventType.WorktreeFilesApplied:
-				this._handleWorktreeFilesApplied(event.payload as IWorktreeFilesAppliedPayload);
+				this._handleWorktreeFilesApplied(sessionResource, state, event.payload as IWorktreeFilesAppliedPayload);
 				break;
 			case AgentEventType.DiffPreview:
-				this._handleDiffPreview(event.payload as IDiffPreviewPayload);
+				this._handleDiffPreview(state, event.payload as IDiffPreviewPayload);
 				break;
 			case AgentEventType.SkillTree:
-				this._handleSkillTree(event.payload as ISkillTreePayload);
+				this._handleSkillTree(sessionResource, state, event.payload as ISkillTreePayload);
 				break;
 			case AgentEventType.TaskComplete:
-				this._handleTaskComplete();
+				this._handleTaskComplete(sessionResource, state);
 				break;
 		}
 	}
 
 	// ── FileEdit → track file changes (inline diff now handled by framework IChatTextEdit) ──
 
-	private _handleFileEdit(payload: IFileEditPayload): void {
+	private _handleFileEdit(state: ISessionEditorEffectsState, payload: IFileEditPayload): void {
 		this._logService.info(`[ChipOS Effects] FileEdit: ${payload.file_path}, ${payload.edits.length} edits`);
-		this._trackedFiles.add(payload.file_path);
+		state.trackedFiles.add(payload.file_path);
 	}
 
 	// ── SkillTree → SkillTreeHandler ────────────────────────────────────────
 
-	private _handleSkillTree(payload: ISkillTreePayload): void {
+	private _handleSkillTree(sessionResource: URI, state: ISessionEditorEffectsState, payload: ISkillTreePayload): void {
 		this._logService.info(`[ChipOS Effects] SkillTree: ${payload.total_skills} skills`);
 		const data = this._convertSkillTreePayload(payload);
-		this._skillTreeHandler.updateSkillTree(data);
+		state.skillTreeData = data;
+		if (this._isActiveSession(sessionResource)) {
+			this._projectedSkillTreeHandler.updateSkillTree(data);
+		}
 	}
 
 	private _convertSkillTreePayload(payload: ISkillTreePayload): ISkillTreeData {
@@ -154,7 +193,7 @@ export class ChipOSEditorEffects extends Disposable {
 
 	// ── 2. Auto-open files on tool_result with write ops ────────────────────
 
-	private _handleToolResult(payload: IToolResultPayload): void {
+	private _handleToolResult(sessionResource: URI, state: ISessionEditorEffectsState, payload: IToolResultPayload): void {
 		const writeTools = ['write_file', 'str_replace', 'edit_file', 'create_file', 'patch_file'];
 		if (!writeTools.includes(payload.tool_name)) {
 			return;
@@ -176,8 +215,8 @@ export class ChipOSEditorEffects extends Disposable {
 		}
 
 		if (filePath) {
-			this._trackedFiles.add(filePath);
-			this.trackFileChange(filePath, 'modified');
+			state.trackedFiles.add(filePath);
+			this.trackFileChange(filePath, 'modified', sessionResource);
 			this._autoOpenFile(filePath);
 		}
 	}
@@ -194,9 +233,9 @@ export class ChipOSEditorEffects extends Disposable {
 
 	// ── 3. Diff preview → open Diff editor (FEAT-36) ───────────────────────
 
-	private _handleDiffPreview(payload: IDiffPreviewPayload): void {
+	private _handleDiffPreview(state: ISessionEditorEffectsState, payload: IDiffPreviewPayload): void {
 		if (payload.file_path) {
-			this._trackedFiles.add(payload.file_path);
+			state.trackedFiles.add(payload.file_path);
 			this._openDiffEditor(payload).catch(err => {
 				this._logService.warn('[ChipOS Effects] DiffPreview open failed:', String(err));
 			});
@@ -222,42 +261,56 @@ export class ChipOSEditorEffects extends Disposable {
 
 	// ── 4. Worktree files applied → track and open ──────────────────────────
 
-	private _handleWorktreeFilesApplied(payload: IWorktreeFilesAppliedPayload): void {
+	private _handleWorktreeFilesApplied(sessionResource: URI, state: ISessionEditorEffectsState, payload: IWorktreeFilesAppliedPayload): void {
 		for (const f of payload.files ?? []) {
-			this._trackedFiles.add(f.path);
+			state.trackedFiles.add(f.path);
 			if (f.action !== 'deleted') {
-				this.trackFileChange(f.path, f.action === 'added' ? 'created' : 'modified');
+				this.trackFileChange(f.path, f.action === 'added' ? 'created' : 'modified', sessionResource);
 				this._autoOpenFile(f.path);
 			}
 		}
-		this._refreshGitDiffStats();
+		this._refreshGitDiffStats(sessionResource, state);
 	}
 
 	// ── 5. Task complete → refresh git stats (FEAT-38), log summary ────────
 
-	private _handleTaskComplete(): void {
-		this._logService.info(`[ChipOS Effects] Task complete. Tracked ${this._trackedFiles.size} files.`);
-		this._refreshGitDiffStats();
-		this._trackedFiles.clear();
+	private _handleTaskComplete(sessionResource: URI, state: ISessionEditorEffectsState): void {
+		this._logService.info(`[ChipOS Effects] Task complete. Tracked ${state.trackedFiles.size} files.`);
+		this._refreshGitDiffStats(sessionResource, state);
+		state.trackedFiles.clear();
 	}
 
 	// ── FEAT-37: File change commands ────────────────────────────────────────
 
-	trackFileChange(filePath: string, action: 'created' | 'modified'): void {
-		const existing = this._fileChanges.get(filePath);
-		if (!existing) {
-			this._fileChanges.set(filePath, { path: filePath, action, additions: 0, deletions: 0 });
+	trackFileChange(filePath: string, action: 'created' | 'modified', sessionResource?: URI): void {
+		const resolved = this._resolveSessionState(sessionResource, true);
+		if (!resolved) {
+			return;
 		}
-		this._fireFileChanges();
+		const { sessionResource: targetSessionResource, state } = resolved;
+		const existing = state.fileChanges.get(filePath);
+		if (!existing) {
+			state.fileChanges.set(filePath, { path: filePath, action, additions: 0, deletions: 0 });
+		}
+		this._syncProjectionIfActive(targetSessionResource);
 	}
 
-	clearFileChanges(): void {
-		this._fileChanges.clear();
-		this._fireFileChanges();
+	clearFileChanges(sessionResource?: URI): void {
+		const resolved = this._resolveSessionState(sessionResource, false);
+		if (!resolved) {
+			return;
+		}
+		resolved.state.fileChanges.clear();
+		this._syncProjectionIfActive(resolved.sessionResource);
 	}
 
-	async undoAllFileChanges(): Promise<{ reverted: number; errors: string[] }> {
-		const files = Array.from(this._fileChanges.values());
+	async undoAllFileChanges(sessionResource?: URI): Promise<{ reverted: number; errors: string[] }> {
+		const resolved = this._resolveSessionState(sessionResource, false);
+		if (!resolved) {
+			return { reverted: 0, errors: [] };
+		}
+
+		const files = Array.from(resolved.state.fileChanges.values());
 		if (!files.length) {
 			return { reverted: 0, errors: [] };
 		}
@@ -283,8 +336,8 @@ export class ChipOSEditorEffects extends Disposable {
 			}
 		}
 
-		this._fileChanges.clear();
-		this._fireFileChanges();
+		resolved.state.fileChanges.clear();
+		this._syncProjectionIfActive(resolved.sessionResource);
 		return { reverted: files.length - errors.length, errors };
 	}
 
@@ -305,9 +358,9 @@ export class ChipOSEditorEffects extends Disposable {
 
 	// ── FEAT-38: Git diff stats refresh ─────────────────────────────────────
 
-	private _refreshGitDiffStats(): void {
+	private _refreshGitDiffStats(sessionResource: URI, state: ISessionEditorEffectsState): void {
 		const workspacePath = this._getWorkspacePath();
-		if (!workspacePath || !this._fileChanges.size) {
+		if (!workspacePath || !state.fileChanges.size) {
 			return;
 		}
 
@@ -322,7 +375,7 @@ export class ChipOSEditorEffects extends Disposable {
 					const additions = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
 					const deletions = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
 					const path = parts[2];
-					const existing = this._fileChanges.get(path);
+					const existing = state.fileChanges.get(path);
 					if (existing && (existing.additions !== additions || existing.deletions !== deletions)) {
 						existing.additions = additions;
 						existing.deletions = deletions;
@@ -330,12 +383,62 @@ export class ChipOSEditorEffects extends Disposable {
 					}
 				}
 				if (updated) {
-					this._fireFileChanges();
+					this._syncProjectionIfActive(sessionResource);
 				}
 			});
 		} catch {
 			// require('child_process') not available in browser context
 		}
+	}
+
+	private _projectActiveState(): void {
+		const activeState = this._getActiveState();
+		this._projectedSkillTreeHandler.updateSkillTree(activeState?.skillTreeData ?? EMPTY_SKILL_TREE);
+		this._fireFileChanges();
+	}
+
+	private _syncProjectionIfActive(sessionResource: URI): void {
+		if (this._isActiveSession(sessionResource)) {
+			this._projectActiveState();
+		}
+	}
+
+	private _getOrCreateSessionState(sessionResource: URI): ISessionEditorEffectsState {
+		let state = this._sessionStates.get(sessionResource);
+		if (!state) {
+			state = {
+				trackedFiles: new Set<string>(),
+				fileChanges: new Map<string, IFileChangeInfo>(),
+				skillTreeData: EMPTY_SKILL_TREE,
+			};
+			this._sessionStates.set(sessionResource, state);
+		}
+		return state;
+	}
+
+	private _resolveSessionState(sessionResource: URI | undefined, createIfMissing: boolean): { sessionResource: URI; state: ISessionEditorEffectsState } | undefined {
+		const targetSessionResource = sessionResource ?? this._activeSessionResource;
+		if (!targetSessionResource) {
+			return undefined;
+		}
+		const state = createIfMissing
+			? this._getOrCreateSessionState(targetSessionResource)
+			: this._sessionStates.get(targetSessionResource);
+		if (!state) {
+			return undefined;
+		}
+		return { sessionResource: targetSessionResource, state };
+	}
+
+	private _getActiveState(): ISessionEditorEffectsState | undefined {
+		if (!this._activeSessionResource) {
+			return undefined;
+		}
+		return this._sessionStates.get(this._activeSessionResource);
+	}
+
+	private _isActiveSession(sessionResource: URI): boolean {
+		return !!this._activeSessionResource && isEqual(this._activeSessionResource, sessionResource);
 	}
 
 	private _fireFileChanges(): void {

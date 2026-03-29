@@ -81,20 +81,38 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		return `${this.reasoningUrl}/api/v1/task/stream`;
 	}
 
+	get workerHttpUrl(): string {
+		const explicit = this._configurationService.getValue<string>('chipos.backend.workerHttpUrl');
+		if (explicit) {
+			return explicit.replace(/\/$/, '');
+		}
+		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		if (this._mode === BackendMode.Local || this._mode === BackendMode.CloudReasoning) {
+			return `http://127.0.0.1:${workerHttpPort}`;
+		}
+		try {
+			const url = new URL(this.reasoningUrl);
+			return `${url.protocol}//${url.hostname}:${workerHttpPort}`;
+		} catch {
+			return `http://127.0.0.1:${workerHttpPort}`;
+		}
+	}
+
 	/** Worker gRPC target（host:port 格式，非 HTTP URL） */
 	get grpcAddress(): string {
 		const explicit = this._configurationService.getValue<string>('chipos.backend.grpcAddress');
 		if (explicit) {
 			return explicit;
 		}
+		const grpcPort = this._configurationService.getValue<number>('chipos.backend.grpcPort') ?? 50051;
 		try {
 			const url = new URL(this.reasoningUrl);
 			if (url.port === '443' || url.protocol === 'https:') {
 				return `${url.hostname}:443`;
 			}
-			return `${url.hostname}:50051`;
+			return `${url.hostname}:${grpcPort}`;
 		} catch {
-			return 'localhost:50051';
+			return `localhost:${grpcPort}`;
 		}
 	}
 
@@ -197,14 +215,16 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		}
 
 		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
+		const grpcPort = this._configurationService.getValue<number>('chipos.backend.grpcPort') ?? 50051;
+		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
 
 		this._setState(SidecarState.Spawning);
-		this._logService.info('[ChipOS] Spawning local_runner.py, port:', httpPort);
+		this._logService.info('[ChipOS] Spawning local_runner.py, port:', httpPort, 'grpc:', grpcPort, 'workerHttp:', workerHttpPort);
 
 		try {
 			this._process = cpSpawn(
 				pythonPath,
-				['local_runner.py', '--http-port', String(httpPort)],
+				['local_runner.py', '--http-port', String(httpPort), '--grpc-port', String(grpcPort), '--worker-http-port', String(workerHttpPort)],
 				{
 					cwd: backendDir,
 					stdio: ['ignore', 'pipe', 'pipe'],
@@ -308,22 +328,24 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		this._logService.info('[ChipOS Worker] Starting, id:', this._workerId, 'gRPC target:', grpcTarget);
 
 		try {
-			this._workerProcess = cpSpawn(
-				pythonPath,
-				['-m', 'execution.server.cli', 'start', '--server', grpcTarget, '--workspace', workspaceRoot],
-				{
-					cwd: backendDir,
-					stdio: ['ignore', 'pipe', 'pipe'],
-					env: {
-						...this._buildEnv(backendDir),
-						CHIPOS_REASONING_SERVER: grpcTarget,
-						CHIPOS_REASONING_URL: this.reasoningUrl,
-						CHIPOS_WORKER_ID: this._workerId,
-						...(token ? { CHIPOS_API_KEY: token } : {}),
-						CHIPOS_TLS_ENABLED: String(tlsEnabled),
-					},
-				}
-			);
+		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		this._workerProcess = cpSpawn(
+			pythonPath,
+			['-m', 'execution.server.cli', 'start', '--server', grpcTarget, '--workspace', workspaceRoot],
+			{
+				cwd: backendDir,
+				stdio: ['ignore', 'pipe', 'pipe'],
+				env: {
+					...this._buildEnv(backendDir),
+					CHIPOS_REASONING_SERVER: grpcTarget,
+					CHIPOS_REASONING_URL: this.reasoningUrl,
+					CHIPOS_WORKER_ID: this._workerId,
+					CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
+					...(token ? { CHIPOS_API_KEY: token } : {}),
+					CHIPOS_TLS_ENABLED: String(tlsEnabled),
+				},
+			}
+		);
 
 			this._attachHandlers(this._workerProcess, 'Worker');
 

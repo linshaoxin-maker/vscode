@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, type IDisposable } from '../../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import {
 	AgentEvent,
@@ -18,7 +18,7 @@ import {
 
 // ── IEventStreamClient ─────────────────────────────────────────────────────
 
-export interface IEventStreamClient {
+export interface IEventStreamClient extends IDisposable {
 	readonly onDidReceiveEvent: Event<AgentEvent>;
 	readonly onDidChangeConnectionState: Event<ConnectionState>;
 	readonly connectionState: ConnectionState;

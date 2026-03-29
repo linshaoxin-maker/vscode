@@ -44,6 +44,19 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 	get reasoningUrl(): string {
 		return this._configurationService.getValue<string>('chipos.backend.reasoningUrl') || '';
 	}
+	get workerHttpUrl(): string {
+		const explicit = this._configurationService.getValue<string>('chipos.backend.workerHttpUrl');
+		if (explicit) {
+			return explicit.replace(/\/$/, '');
+		}
+		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		try {
+			const url = new URL(this.reasoningUrl);
+			return `${url.protocol}//${url.hostname}:${workerHttpPort}`;
+		} catch {
+			return `http://127.0.0.1:${workerHttpPort}`;
+		}
+	}
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,

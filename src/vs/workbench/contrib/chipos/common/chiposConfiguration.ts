@@ -134,6 +134,41 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.backend.grpcPort': {
+			type: 'number',
+			default: 50051,
+			description: localize('chipos.backend.grpcPort.desc', 'gRPC port for the reasoning layer in local and Remote-SSH deployments.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.backend.workerHttpPort': {
+			type: 'number',
+			default: 8081,
+			description: localize('chipos.backend.workerHttpPort.desc', 'HTTP port for the local or forwarded Worker API used by the Worker Tools panel.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.backend.workerHttpUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.workerHttpUrl.desc', 'Explicit Worker HTTP base URL (for manual/pre-deployed mode). If empty, derived from reasoningUrl host + workerHttpPort or localhost for local/cloud modes.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.backend.pythonPath': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.pythonPath.desc', 'Optional Python executable path used by desktop IPC spawning. Leave empty to use the bundled/runtime default.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.backend.dir': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.dir.desc', 'Optional backend_v2 directory override for local desktop development.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		'chipos.backend.grpcAddress': {
 			type: 'string',
 			default: '',
