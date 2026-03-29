@@ -150,10 +150,7 @@ export class ConnectionTab extends Disposable {
 		const state = this._sidecarManager.workerState;
 		dom.clearNode(this._workerStatusContainer);
 
-		if (mode === BackendMode.Local) {
-			this._workerStatusContainer.style.display = 'none';
-			return;
-		}
+		// Worker is an independent process in all modes — always show status
 		this._workerStatusContainer.style.display = '';
 
 		// Manual mode: Worker is externally managed
@@ -202,21 +199,26 @@ export class ConnectionTab extends Disposable {
 
 		switch (mode) {
 			case 'local':
-				// local 模式无额外配置
-				dom.append(this._modeSpecificContainer, dom.$('.chipos-setting-hint', undefined,
-					localize('chipos.mode.local.hint', 'No additional configuration needed. The backend starts automatically.')
-				));
+				this._renderWorkerHttpPortInput(this._modeSpecificContainer);
+				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
+				this._renderPythonPathInput(this._modeSpecificContainer);
+				this._renderBackendDirInput(this._modeSpecificContainer);
 				break;
 
 			case 'cloud-reasoning':
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderGrpcAddressInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
+				this._renderWorkerHttpPortInput(this._modeSpecificContainer);
+				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
+				this._renderPythonPathInput(this._modeSpecificContainer);
+				this._renderBackendDirInput(this._modeSpecificContainer);
 				break;
 
 			case 'manual':
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
+				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
 				dom.append(this._modeSpecificContainer, dom.$('.chipos-setting-hint', undefined,
 					localize('chipos.mode.manual.hint', 'Worker is managed externally. Deploy it separately and point it to the Reasoning gRPC address.')
 				));
@@ -279,6 +281,92 @@ export class ConnectionTab extends Disposable {
 
 		this._disposables.add(inputBox.onDidChange(value => {
 			this._configurationService.updateValue('chipos.backend.token', value, ConfigurationTarget.USER);
+		}));
+	}
+
+	// ── v2: Worker HTTP Port ─────────────────────────────────────────────
+
+	private _renderWorkerHttpPortInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.workerHttpPort', 'Worker HTTP Port')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.workerHttpPort.desc', 'HTTP port for the Worker process (default: 8081).')
+		));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: '8081',
+			type: 'number',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = String(this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081);
+
+		this._disposables.add(inputBox.onDidChange(value => {
+			const val = Math.max(1024, Math.min(65535, parseInt(value) || 8081));
+			this._configurationService.updateValue('chipos.backend.workerHttpPort', val, ConfigurationTarget.USER);
+		}));
+	}
+
+	// ── v2: Worker HTTP URL (override) ───────────────────────────────────
+
+	private _renderWorkerHttpUrlInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.workerHttpUrl', 'Worker HTTP URL (override)')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.workerHttpUrl.desc', 'Explicit Worker HTTP URL. Leave empty to auto-derive from port.')
+		));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: 'http://127.0.0.1:8081',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.backend.workerHttpUrl') || '';
+
+		this._disposables.add(inputBox.onDidChange(value => {
+			this._configurationService.updateValue('chipos.backend.workerHttpUrl', value, ConfigurationTarget.USER);
+		}));
+	}
+
+	// ── v2: Python Path ──────────────────────────────────────────────────
+
+	private _renderPythonPathInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.pythonPath', 'Python Path')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.pythonPath.desc', 'Path to Python executable for spawning backend processes (default: python3).')
+		));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: 'python3',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.backend.pythonPath') || '';
+
+		this._disposables.add(inputBox.onDidChange(value => {
+			this._configurationService.updateValue('chipos.backend.pythonPath', value, ConfigurationTarget.USER);
+		}));
+	}
+
+	// ── v2: Backend Directory ────────────────────────────────────────────
+
+	private _renderBackendDirInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.backendDir', 'Backend Directory')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.backendDir.desc', 'Path to the ChipOS backend directory. Leave empty for auto-detection.')
+		));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: '/path/to/backend',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.backend.dir') || '';
+
+		this._disposables.add(inputBox.onDidChange(value => {
+			this._configurationService.updateValue('chipos.backend.dir', value, ConfigurationTarget.USER);
 		}));
 	}
 

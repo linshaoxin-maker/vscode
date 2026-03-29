@@ -6,16 +6,18 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
-import { localize } from '../../../../nls.js';
+import { localize, localize2 } from '../../../../nls.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
-import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
-import { MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
@@ -26,7 +28,7 @@ import { GettingStartedInput } from '../../../../workbench/contrib/welcomeGettin
 import { IChatAgentService } from '../../../../workbench/contrib/chat/common/participants/chatAgents.js';
 import { ChatAgentLocation, ChatModeKind } from '../../../../workbench/contrib/chat/common/constants.js';
 import { CHAT_CONFIG_MENU_ID } from '../../../../workbench/contrib/chat/browser/actions/chatActions.js';
-import { ChatViewId } from '../../../../workbench/contrib/chat/browser/chat.js';
+import { ChatViewId, IChatWidgetService } from '../../../../workbench/contrib/chat/browser/chat.js';
 import { nullExtensionDescription } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ChipOSChatAgent } from '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
 import { StatusBarHandler } from '../../../../workbench/contrib/chipos/browser/migration/statusBarHandler.js';
@@ -34,10 +36,11 @@ import { ConnectionState } from '../../../../workbench/contrib/chipos/browser/ev
 import { IStatusbarService } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { Extensions as ViewContainerExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation } from '../../../../workbench/common/views.js';
-import { TreeViewPane, CustomTreeView } from '../../../../workbench/browser/parts/views/treeView.js';
+import { Extensions as ViewContainerExtensions, IViewContainersRegistry, IViewsRegistry, ITreeViewDescriptor, TreeViewItemHandleArg, ViewContainerLocation } from '../../../../workbench/common/views.js';
+import { TreeViewPane, CustomTreeView, TreeView } from '../../../../workbench/browser/parts/views/treeView.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { SkillTreeViewDataProvider } from '../../../../workbench/contrib/chipos/browser/migration/skillTreeHandler.js';
+import { IWorkerToolManagerService, WorkerToolsViewDataProvider } from '../../../../workbench/contrib/chipos/browser/workerToolManager.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
@@ -79,6 +82,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 // ── SkillTree View Registration ────────────────────────────────────────────
 
 const SKILL_TREE_VIEW_ID = 'chipos.skillTree';
+const WORKER_TOOLS_VIEW_ID = 'chipos.workerTools';
 const viewContainersRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
 
@@ -96,16 +100,8 @@ const chiposViewContainer = viewContainersRegistry.registerViewContainer(
 	{ isDefault: false }
 );
 
-viewsRegistry.registerViews([{
-	id: SKILL_TREE_VIEW_ID,
-	name: { value: localize('chiposSkillTree', 'Skill Tree'), original: 'Skill Tree' },
-	ctorDescriptor: new SyncDescriptor(TreeViewPane),
-	canToggleVisibility: true,
-	canMoveView: true,
-	collapsed: true,
-	order: 1,
-	hideByDefault: false,
-}], chiposViewContainer);
+// Note: Skill Tree and Worker Tools views are registered in _initialize()
+// because they need IInstantiationService to create TreeView instances.
 
 // ── Command IDs ────────────────────────────────────────────────────────────────
 
@@ -463,6 +459,7 @@ class ChipOSContribution extends Disposable {
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IChatAgentService private readonly _chatAgentService: IChatAgentService,
+		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@IStatusbarService _statusbarService: IStatusbarService,
 		@IViewsService _viewsService: IViewsService,
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
@@ -524,6 +521,7 @@ class ChipOSContribution extends Disposable {
 
 		this._registerChatAgent();
 		this._registerEdaContentParts();
+		this._registerWorkerToolsView();
 	}
 
 	private _mapSidecarToConnectionState(state: SidecarState): ConnectionState {
@@ -571,6 +569,14 @@ class ChipOSContribution extends Disposable {
 		this._registerFileChangeCommands(agentImpl);
 		this._registerSkillTreeView(agentImpl);
 
+		const syncActiveSessionProjection = () => {
+			const sessionResource = this._chatWidgetService.lastFocusedWidget?.viewModel?.sessionResource;
+			agentImpl.editorEffects.setActiveSession(sessionResource);
+		};
+
+		this._register(this._chatWidgetService.onDidChangeFocusedSession(syncActiveSessionProjection));
+		syncActiveSessionProjection();
+
 		agentImpl.editorEffects.onDidChangeFileChanges(files => {
 			if (this._statusBarHandler) {
 				this._statusBarHandler.updateFileChangeCount(files.length);
@@ -589,11 +595,51 @@ class ChipOSContribution extends Disposable {
 		const dataProvider = new SkillTreeViewDataProvider(agent.skillTreeHandler);
 		treeView.dataProvider = dataProvider;
 
+		// Register the view with treeView field so TreeViewPane can find it
+		viewsRegistry.registerViews([{
+			id: SKILL_TREE_VIEW_ID,
+			name: { value: localize('chiposSkillTree', 'Skill Tree'), original: 'Skill Tree' },
+			ctorDescriptor: new SyncDescriptor(TreeViewPane),
+			treeView,
+			canToggleVisibility: true,
+			canMoveView: true,
+			collapsed: true,
+			order: 1,
+			hideByDefault: false,
+		} as ITreeViewDescriptor], chiposViewContainer);
+
 		agent.skillTreeHandler.onDidChangeTreeData(() => {
 			treeView.refresh();
 		});
 
 		this._logService.info('[ChipOS] SkillTree view registered');
+	}
+
+	// ── R26: Worker Tools View ──────────────────────────────────────────────
+	private _registerWorkerToolsView(): void {
+		const workerToolsTreeView = this._instantiationService.createInstance(
+			TreeView, WORKER_TOOLS_VIEW_ID, localize('chiposWorkerTools', 'Worker Tools')
+		);
+		workerToolsTreeView.showRefreshAction = true;
+		workerToolsTreeView.showCollapseAllAction = true;
+		this._register(workerToolsTreeView);
+
+		const workerToolsDataProvider = this._instantiationService.createInstance(WorkerToolsViewDataProvider);
+		workerToolsTreeView.dataProvider = workerToolsDataProvider;
+
+		viewsRegistry.registerViews([{
+			id: WORKER_TOOLS_VIEW_ID,
+			name: { value: localize('chiposWorkerTools', 'Worker Tools'), original: 'Worker Tools' },
+			ctorDescriptor: new SyncDescriptor(TreeViewPane),
+			treeView: workerToolsTreeView,
+			canToggleVisibility: true,
+			canMoveView: true,
+			collapsed: true,
+			when: ContextKeyExpr.true()!,
+			order: 20,
+		} as ITreeViewDescriptor], chiposViewContainer);
+
+		this._logService.info('[ChipOS] Worker Tools view registered (R26)');
 	}
 
 	private _registerInlineDiffCommands(agent: ChipOSChatAgent): void {
@@ -709,6 +755,183 @@ class ChipOSContribution extends Disposable {
 		this._logService.info('[ChipOS] Welcome view registered');
 	}
 }
+
+// ── R26: Worker Tools 命令 ──────────────────────────────────────────────────
+
+registerAction2(class RefreshWorkerToolsAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.workerTools.refresh',
+			title: localize2('chipos.workerTools.refresh', 'Refresh Worker Tools'),
+			icon: Codicon.refresh,
+			menu: {
+				id: MenuId.ViewTitle,
+				when: ContextKeyExpr.equals('view', WORKER_TOOLS_VIEW_ID),
+				group: 'navigation',
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const viewsService = accessor.get(IViewsService);
+		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
+		if (view) {
+			const treeView = (view as any).treeView;
+			if (treeView) {
+				treeView.refresh();
+			}
+		}
+	}
+});
+
+registerAction2(class InstallWorkerToolAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.workerTools.installTool',
+			title: localize2('chipos.workerTools.installTool', 'Install Tool'),
+			icon: Codicon.cloudDownload,
+			menu: {
+				id: MenuId.ViewItemContext,
+				when: ContextKeyExpr.equals('viewItem', 'chiposWorkerTool'),
+				group: 'inline',
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor, arg: TreeViewItemHandleArg): Promise<void> {
+		const toolManager = accessor.get(IWorkerToolManagerService);
+		const toolName = arg.$treeItemHandle.replace('worker-tool:', '');
+		const notificationService = accessor.get(INotificationService);
+		try {
+			const result = await toolManager.installTool(toolName);
+			if (result.success) {
+				notificationService.info(localize('chipos.workerTools.installSuccess', 'Tool "{0}" installed successfully.', toolName));
+			} else {
+				notificationService.warn(localize('chipos.workerTools.installFail', 'Tool "{0}" installation failed: {1}', toolName, result.error || 'unknown'));
+			}
+		} catch (err) {
+			notificationService.error(localize('chipos.workerTools.installError', 'Failed to install tool "{0}": {1}', toolName, String(err)));
+		}
+		const viewsService = accessor.get(IViewsService);
+		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
+		if (view) {
+			(view as any).treeView?.refresh();
+		}
+	}
+});
+
+registerAction2(class AddMcpServerAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.workerTools.addMcpServer',
+			title: localize2('chipos.workerTools.addMcpServer', 'Add MCP Server'),
+			icon: Codicon.add,
+			menu: {
+				id: MenuId.ViewItemContext,
+				when: ContextKeyExpr.equals('viewItem', 'chiposWorkerMcpRoot'),
+				group: 'inline',
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const quickInput = accessor.get(IQuickInputService);
+		const toolManager = accessor.get(IWorkerToolManagerService);
+		const notificationService = accessor.get(INotificationService);
+
+		const name = await quickInput.input({ title: 'Add MCP Server', placeHolder: 'Server name (e.g. verilator-mcp)', prompt: 'Enter the MCP server name' });
+		if (!name) { return; }
+
+		const command = await quickInput.input({ title: 'Add MCP Server', placeHolder: 'Command (e.g. npx)', prompt: 'Enter the command to start the MCP server' });
+		if (!command) { return; }
+
+		const argsStr = await quickInput.input({ title: 'Add MCP Server', placeHolder: 'Arguments (space-separated, optional)', prompt: 'Enter command arguments' });
+		const args = argsStr ? argsStr.split(/\s+/) : [];
+
+		try {
+			const result = await toolManager.addMcpServer({ name, command, args });
+			if (result.success) {
+				notificationService.info(localize('chipos.workerTools.addMcpSuccess', 'MCP server "{0}" added.', name));
+			} else {
+				notificationService.warn(localize('chipos.workerTools.addMcpFail', 'Failed to add MCP server: {0}', result.error || 'unknown'));
+			}
+		} catch (err) {
+			notificationService.error(localize('chipos.workerTools.addMcpError', 'Error adding MCP server: {0}', String(err)));
+		}
+
+		const viewsService = accessor.get(IViewsService);
+		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
+		if (view) { (view as any).treeView?.refresh(); }
+	}
+});
+
+registerAction2(class RemoveMcpServerAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.workerTools.removeMcpServer',
+			title: localize2('chipos.workerTools.removeMcpServer', 'Remove MCP Server'),
+			icon: Codicon.trash,
+			menu: {
+				id: MenuId.ViewItemContext,
+				when: ContextKeyExpr.equals('viewItem', 'chiposWorkerMcpServer'),
+				group: 'inline',
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor, arg: TreeViewItemHandleArg): Promise<void> {
+		const serverName = arg.$treeItemHandle.replace('worker-mcp:', '');
+		const dialogService = accessor.get(IDialogService);
+		const toolManager = accessor.get(IWorkerToolManagerService);
+		const notificationService = accessor.get(INotificationService);
+
+		const confirmed = await dialogService.confirm({
+			message: localize('chipos.workerTools.removeMcpConfirm', 'Remove MCP server "{0}"?', serverName),
+		});
+		if (!confirmed.confirmed) { return; }
+
+		try {
+			const result = await toolManager.removeMcpServer(serverName);
+			if (result.success) {
+				notificationService.info(localize('chipos.workerTools.removeMcpSuccess', 'MCP server "{0}" removed.', serverName));
+			} else {
+				notificationService.warn(localize('chipos.workerTools.removeMcpFail', 'Failed to remove: {0}', result.error || 'unknown'));
+			}
+		} catch (err) {
+			notificationService.error(localize('chipos.workerTools.removeMcpError', 'Error removing MCP server: {0}', String(err)));
+		}
+
+		const viewsService = accessor.get(IViewsService);
+		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
+		if (view) { (view as any).treeView?.refresh(); }
+	}
+});
+
+registerAction2(class OpenMcpConfigAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.workerTools.openConfig',
+			title: localize2('chipos.workerTools.openConfig', 'Open MCP Config File'),
+		});
+	}
+	async run(accessor: ServicesAccessor, configPath: string): Promise<void> {
+		if (!configPath) { return; }
+		const editorService = accessor.get(IEditorService);
+		await editorService.openEditor({ resource: URI.file(configPath) });
+	}
+});
+
+registerAction2(class OpenWorkerToolsPanelAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.workerTools.openPanel',
+			title: localize2('chipos.workerTools.openPanel', 'Open Worker Tools Panel'),
+			icon: Codicon.tools,
+			f1: true,
+			category: localize2('chipos.category', 'ChipOS'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const viewsService = accessor.get(IViewsService);
+		await viewsService.openView(WORKER_TOOLS_VIEW_ID, true);
+	}
+});
 
 registerWorkbenchContribution2(
 	ChipOSContribution.ID,
