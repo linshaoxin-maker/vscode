@@ -1009,7 +1009,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				userMessage,
 				mentions,
 				mode as 'agent' | 'spec',
-				{ thinking, autoApproveMode },
+				{
+					thinking,
+					autoApproveMode,
+					llmConfig: this._buildLlmConfig(),
+				},
 			);
 
 			// UX: Show "Thinking" indicator while waiting for first backend event
@@ -2171,6 +2175,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private _progress(content: string, shimmer?: boolean): IChatProgressMessage {
 		return { kind: 'progressMessage', content: new MarkdownString(content, { supportThemeIcons: true }), shimmer };
+	}
+
+	/**
+	 * Build llm_config from user Settings for sendTask().
+	 * Maps chipos.provider/apiKey/apiBaseUrl/model → backend LLMConfig fields.
+	 */
+	private _buildLlmConfig(): { provider: string; api_key: string; base_url: string; model: string } {
+		const provider = this._configurationService.getValue<string>('chipos.provider') ?? '';
+		const apiKey = this._configurationService.getValue<string>('chipos.apiKey') ?? '';
+		const baseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') ?? '';
+		const model = this._configurationService.getValue<string>('chipos.model') ?? '';
+		return { provider, api_key: apiKey, base_url: baseUrl, model };
 	}
 
 	private _warning(content: string): IChatWarningMessage {

@@ -172,7 +172,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		query: string,
 		mentions: IMentionItem[],
 		mode: 'agent' | 'spec',
-		options: { thinking: boolean; autoApproveMode: string },
+		options: { thinking: boolean; autoApproveMode: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } },
 	): void {
 		// Clean up previous session state to prevent stale reconnect timers
 		// from racing with the new POST + EventSource.
@@ -196,6 +196,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			})),
 			thinking: options.thinking,
 			auto_approve_mode: options.autoApproveMode,
+			...(options.llmConfig ? { llm_config: options.llmConfig } : {}),
 		}).then(async resp => {
 			try {
 				const data = await resp.json();
