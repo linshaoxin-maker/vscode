@@ -41,6 +41,9 @@ export const enum AgentEventType {
 	QueueUpdate = 'queue_update',
 	// FEAT-65: Context window usage warning
 	ContextWarning = 'context_warning',
+	// Reasoner passthrough events
+	TimingHighlight = 'timing_highlight',
+	PreReviewReport = 'pre_review_report',
 }
 
 export interface IAgentEventBase {

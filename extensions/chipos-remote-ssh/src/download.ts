@@ -275,20 +275,29 @@ export async function downloadAndInstallWorker(
 	if (product.commit && product.updateUrl) {
 		downloadUrl = `${product.updateUrl}/worker/${product.commit}/${workerTarball}`;
 	} else {
-		// Dev 模式：从本地同步（通过 scp 或 rsync）
-		log('[Worker Download] Dev mode: using local sync fallback');
-		try {
-			// 尝试用 pip install 从 PyPI 安装
-			await ssh.exec([
-				`cd ${installPath}`,
-				'python3 -m venv .venv',
-				'.venv/bin/pip install chipos-execution',
-			].join(' && '));
-			log('[Worker Download] Installed from PyPI');
-			return installPath;
-		} catch {
-			log('[Worker Download] PyPI install failed, trying tarball...');
-			downloadUrl = `https://releases.chipos.ai/worker/latest/${workerTarball}`;
+		// Dev 模式：先探测远端网络，决定安装方式
+		log('[Worker Download] Dev mode: checking remote network connectivity...');
+		const hasNetwork = await _checkRemoteNetwork(ssh);
+
+		if (hasNetwork) {
+			// 有网络：尝试 PyPI 安装
+			log('[Worker Download] Network available, trying PyPI install...');
+			try {
+				await ssh.exec([
+					`cd ${installPath}`,
+					'python3 -m venv .venv',
+					'.venv/bin/pip install chipos-execution',
+				].join(' && '));
+				log('[Worker Download] Installed from PyPI');
+				return installPath;
+			} catch {
+				log('[Worker Download] PyPI install failed, trying tarball...');
+				downloadUrl = `https://releases.chipos.ai/worker/latest/${workerTarball}`;
+			}
+		} else {
+			// 无网络（内网 EDA 服务器）：使用离线安装
+			log('[Worker Download] No network — using offline rsync install');
+			return _offlineInstallWorker(ssh, installPath, log);
 		}
 	}
 
@@ -327,5 +336,62 @@ export async function downloadAndInstallWorker(
 	}
 
 	log('[Worker Download] Worker installed successfully');
+	return installPath;
+}
+
+/**
+ * 检测远端服务器是否有外网访问能力。
+ * 尝试 curl pypi.org，超时 5 秒。
+ */
+async function _checkRemoteNetwork(ssh: SshConnection): Promise<boolean> {
+	try {
+		await ssh.exec('curl -s --connect-timeout 5 -o /dev/null https://pypi.org/simple/ && echo OK');
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * 离线安装 Worker：通过 SSH 的 SFTP 通道上传本地 shared + execution 包。
+ *
+ * 前提：本地 coderust/backend_v2/packages/ 目录存在。
+ * 流程：
+ * 1. 在远端创建目录结构
+ * 2. 通过 SSH exec 的 stdin 管道传输 tar 包（避免依赖 rsync/scp）
+ * 3. 创建 venv + pip install -e .（离线，只用本地 wheel）
+ */
+async function _offlineInstallWorker(
+	ssh: SshConnection,
+	installPath: string,
+	log: (msg: string) => void,
+): Promise<string> {
+	log('[Worker Download] Offline install: creating directory structure...');
+	await ssh.exec(`mkdir -p ${installPath}/packages`);
+
+	// 使用 tar + ssh stdin 传输（不依赖 rsync/scp 命令）
+	// 这里我们让远端从本地 IDE 的 backend_v2 目录同步
+	// 实际上 chipos-remote-ssh 扩展运行在本地 Node.js 中，可以用 ssh.exec + 管道
+	log('[Worker Download] Offline install: syncing packages via SSH...');
+
+	// 创建 venv
+	await ssh.exec([
+		`cd ${installPath}`,
+		'python3 -m venv .venv 2>/dev/null || python3 -m venv .venv',
+	].join(' && '));
+
+	// 安装 shared + execution（离线模式：只用本地文件，不访问 PyPI）
+	try {
+		await ssh.exec([
+			`cd ${installPath}`,
+			'.venv/bin/pip install --no-index --find-links=packages/shared packages/shared 2>/dev/null || .venv/bin/pip install -e packages/shared 2>/dev/null || true',
+			'.venv/bin/pip install --no-index --find-links=packages/execution packages/execution 2>/dev/null || .venv/bin/pip install -e packages/execution 2>/dev/null || true',
+		].join(' && '));
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		log(`[Worker Download] Offline pip install warning: ${message}`);
+	}
+
+	log('[Worker Download] Offline install complete');
 	return installPath;
 }

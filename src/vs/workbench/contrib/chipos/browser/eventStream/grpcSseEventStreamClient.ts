@@ -76,6 +76,8 @@ const SSE_TYPE_MAP: Record<string, AgentEventType> = {
 	'done': AgentEventType.Done,
 	'queue_update': AgentEventType.QueueUpdate,
 	'context_warning': AgentEventType.ContextWarning,
+	'timing_highlight': AgentEventType.TimingHighlight,
+	'pre_review_report': AgentEventType.PreReviewReport,
 };
 
 /**

@@ -9,14 +9,15 @@
  * 在 main 进程中管理 Reasoner + Worker 子进程的生命周期，
  * renderer 通过 ipcRenderer.invoke('chipos:*') 调用。
  *
- * 复盘 Fix1: Reasoner 和 Worker 是两个独立进程，必须用独立变量管理。
- * 之前只有一个 workerProcess 变量，导致 spawn Reasoner 后 Worker 永远不会启动。
+ * Fix: 按 webContentsId 隔离进程管理，多窗口不再互相干扰。
+ * 每个窗口有自己的 Reasoner + Worker 进程。
+ * 窗口关闭时自动清理对应进程。
  */
 
 import * as cp from 'child_process';
-import { ipcMain } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
 
-// ── 进程管理（Reasoner + Worker 独立） ──────────────────────────────────
+// ── 进程管理（按窗口隔离） ──────────────────────────────────────────
 
 interface ManagedProcess {
 	process: cp.ChildProcess;
@@ -24,8 +25,8 @@ interface ManagedProcess {
 	role: 'reasoner' | 'worker';
 }
 
-let reasonerProc: ManagedProcess | undefined;
-let workerProc: ManagedProcess | undefined;
+/** windowId → role → ManagedProcess */
+const windowProcesses = new Map<number, Map<string, ManagedProcess>>();
 
 export interface SpawnProcessArgs {
 	pythonPath: string;
@@ -35,16 +36,66 @@ export interface SpawnProcessArgs {
 	role: 'reasoner' | 'worker';
 }
 
-function getProc(role: 'reasoner' | 'worker'): ManagedProcess | undefined {
-	return role === 'reasoner' ? reasonerProc : workerProc;
+function getWindowMap(windowId: number): Map<string, ManagedProcess> {
+	let map = windowProcesses.get(windowId);
+	if (!map) {
+		map = new Map();
+		windowProcesses.set(windowId, map);
+	}
+	return map;
 }
 
-function setProc(role: 'reasoner' | 'worker', proc: ManagedProcess | undefined): void {
-	if (role === 'reasoner') {
-		reasonerProc = proc;
+function getProc(windowId: number, role: string): ManagedProcess | undefined {
+	return windowProcesses.get(windowId)?.get(role);
+}
+
+function setProc(windowId: number, role: string, proc: ManagedProcess | undefined): void {
+	const map = getWindowMap(windowId);
+	if (proc) {
+		map.set(role, proc);
 	} else {
-		workerProc = proc;
+		map.delete(role);
+		if (map.size === 0) {
+			windowProcesses.delete(windowId);
+		}
 	}
+}
+
+function killManagedProcess(managed: ManagedProcess): Promise<boolean> {
+	if (managed.process.killed) {
+		return Promise.resolve(true);
+	}
+	managed.process.kill('SIGTERM');
+	return new Promise<boolean>((resolve) => {
+		const timer = setTimeout(() => {
+			if (!managed.process.killed) {
+				managed.process.kill('SIGKILL');
+			}
+			resolve(false);
+		}, 5000);
+		managed.process.on('exit', () => {
+			clearTimeout(timer);
+			resolve(true);
+		});
+	});
+}
+
+/** Clean up all processes for a window (called on window close). */
+function cleanupWindow(windowId: number): void {
+	const map = windowProcesses.get(windowId);
+	if (!map) { return; }
+	for (const [role, managed] of map) {
+		console.log(`[ChipOS] Cleaning up ${role} process for window ${windowId}`);
+		if (!managed.process.killed) {
+			managed.process.kill('SIGTERM');
+			setTimeout(() => {
+				if (!managed.process.killed) {
+					managed.process.kill('SIGKILL');
+				}
+			}, 3000);
+		}
+	}
+	windowProcesses.delete(windowId);
 }
 
 /**
@@ -53,13 +104,23 @@ function setProc(role: 'reasoner' | 'worker', proc: ManagedProcess | undefined):
  */
 export function registerSidecarIpcHandlers(): void {
 
-	// ── chipos:spawnProcess ──────────────────────────────────────────────
-	// 替代原来的 chipos:spawnWorker，支持 role 区分 Reasoner/Worker
+	// Auto-cleanup on window close
+	BrowserWindow.getAllWindows().forEach(win => {
+		win.on('closed', () => cleanupWindow(win.webContents.id));
+	});
+	// Also listen for new windows
+	const { app } = require('electron');
+	app.on('browser-window-created', (_e: unknown, win: BrowserWindow) => {
+		win.on('closed', () => cleanupWindow(win.webContents.id));
+	});
 
-	ipcMain.handle('chipos:spawnProcess', async (_event, args: SpawnProcessArgs) => {
+	// ── chipos:spawnProcess ──────────────────────────────────────────────
+
+	ipcMain.handle('chipos:spawnProcess', async (event, args: SpawnProcessArgs) => {
+		const windowId = event.sender.id;
 		const { pythonPath, moduleArgs, env, cwd, role } = args;
 
-		const existing = getProc(role);
+		const existing = getProc(windowId, role);
 		if (existing && !existing.process.killed) {
 			return { pid: existing.pid, alreadyRunning: true, role };
 		}
@@ -74,18 +135,18 @@ export function registerSidecarIpcHandlers(): void {
 		const managed: ManagedProcess = {
 			process: child,
 			pid: child.pid,
-			role,
+			role: role as 'reasoner' | 'worker',
 		};
-		setProc(role, managed);
+		setProc(windowId, role, managed);
 
 		child.on('exit', (code, signal) => {
-			console.log(`[ChipOS ${role}] exited: code=${code} signal=${signal}`);
-			setProc(role, undefined);
+			console.log(`[ChipOS ${role}] exited: code=${code} signal=${signal} (window ${windowId})`);
+			setProc(windowId, role, undefined);
 		});
 
 		child.on('error', (err) => {
-			console.error(`[ChipOS ${role}] error: ${err.message}`);
-			setProc(role, undefined);
+			console.error(`[ChipOS ${role}] error: ${err.message} (window ${windowId})`);
+			setProc(windowId, role, undefined);
 		});
 
 		child.stderr?.on('data', (data: Buffer) => {
@@ -98,12 +159,12 @@ export function registerSidecarIpcHandlers(): void {
 		return { pid: child.pid, role };
 	});
 
-	// ── chipos:spawnWorker（向后兼容，直接复用 spawnProcess 逻辑） ──────
+	// ── chipos:spawnWorker（向后兼容） ──────────────────────────────────
 
-	ipcMain.handle('chipos:spawnWorker', async (_event, args: any) => {
+	ipcMain.handle('chipos:spawnWorker', async (event, args: any) => {
+		const windowId = event.sender.id;
 		const role = args.role || 'worker';
-		// Bug fix: ipcMain.emit 不返回 handle 结果，直接内联调用逻辑
-		const existing = getProc(role);
+		const existing = getProc(windowId, role);
 		if (existing && !existing.process.killed) {
 			return { pid: existing.pid, alreadyRunning: true, role };
 		}
@@ -115,9 +176,9 @@ export function registerSidecarIpcHandlers(): void {
 			detached: false,
 		});
 		const managed: ManagedProcess = { process: child, pid: child.pid, role };
-		setProc(role, managed);
-		child.on('exit', () => setProc(role, undefined));
-		child.on('error', () => setProc(role, undefined));
+		setProc(windowId, role, managed);
+		child.on('exit', () => setProc(windowId, role, undefined));
+		child.on('error', () => setProc(windowId, role, undefined));
 		child.stderr?.on('data', (data: Buffer) => {
 			const line = data.toString().trim();
 			if (line) { console.log(`[ChipOS ${role} stderr] ${line}`); }
@@ -127,87 +188,68 @@ export function registerSidecarIpcHandlers(): void {
 
 	// ── chipos:killProcess ───────────────────────────────────────────────
 
-	ipcMain.handle('chipos:killProcess', async (_event, role: 'reasoner' | 'worker') => {
-		const managed = getProc(role);
+	ipcMain.handle('chipos:killProcess', async (event, role: 'reasoner' | 'worker') => {
+		const windowId = event.sender.id;
+		const managed = getProc(windowId, role);
 		if (!managed || managed.process.killed) {
 			return { success: true, wasRunning: false, role };
 		}
 
 		const pid = managed.pid;
-		managed.process.kill('SIGTERM');
-
-		const exited = await new Promise<boolean>((resolve) => {
-			const timer = setTimeout(() => resolve(false), 5000);
-			managed.process.on('exit', () => {
-				clearTimeout(timer);
-				resolve(true);
-			});
-		});
-
-		if (!exited) {
-			const current = getProc(role);
-			if (current && !current.process.killed) {
-				current.process.kill('SIGKILL');
-			}
-		}
-
-		setProc(role, undefined);
-		return { success: true, wasRunning: true, pid, role };
+		const exited = await killManagedProcess(managed);
+		setProc(windowId, role, undefined);
+		return { success: true, wasRunning: true, pid, role, graceful: exited };
 	});
 
 	// ── chipos:killWorker（向后兼容） ────────────────────────────────────
 
-	ipcMain.handle('chipos:killWorker', async () => {
-		const managed = getProc('worker');
+	ipcMain.handle('chipos:killWorker', async (event) => {
+		const windowId = event.sender.id;
+		const managed = getProc(windowId, 'worker');
 		if (!managed || managed.process.killed) {
 			return { success: true, wasRunning: false };
 		}
 		const pid = managed.pid;
-		managed.process.kill('SIGTERM');
-		const exited = await new Promise<boolean>((resolve) => {
-			const timer = setTimeout(() => resolve(false), 5000);
-			managed.process.on('exit', () => { clearTimeout(timer); resolve(true); });
-		});
-		if (!exited) {
-			const current = getProc('worker');
-			if (current && !current.process.killed) {
-				current.process.kill('SIGKILL');
-			}
-		}
-		setProc('worker', undefined);
-		return { success: true, wasRunning: true, pid };
+		const exited = await killManagedProcess(managed);
+		setProc(windowId, 'worker', undefined);
+		return { success: true, wasRunning: true, pid, graceful: exited };
 	});
 
 	// ── chipos:processStatus ─────────────────────────────────────────────
 
-	ipcMain.handle('chipos:processStatus', async (_event, role?: 'reasoner' | 'worker') => {
+	ipcMain.handle('chipos:processStatus', async (event, role?: 'reasoner' | 'worker') => {
+		const windowId = event.sender.id;
 		if (role) {
-			const managed = getProc(role);
+			const managed = getProc(windowId, role);
 			return {
 				role,
 				running: managed !== undefined && !managed.process.killed,
 				pid: managed?.pid,
 			};
 		}
-		// 返回所有进程状态
+		// 返回当前窗口的所有进程状态
+		const reasoner = getProc(windowId, 'reasoner');
+		const worker = getProc(windowId, 'worker');
 		return {
 			reasoner: {
-				running: reasonerProc !== undefined && !reasonerProc.process.killed,
-				pid: reasonerProc?.pid,
+				running: reasoner !== undefined && !reasoner.process.killed,
+				pid: reasoner?.pid,
 			},
 			worker: {
-				running: workerProc !== undefined && !workerProc.process.killed,
-				pid: workerProc?.pid,
+				running: worker !== undefined && !worker.process.killed,
+				pid: worker?.pid,
 			},
 		};
 	});
 
 	// ── chipos:workerStatus（向后兼容） ──────────────────────────────────
 
-	ipcMain.handle('chipos:workerStatus', async () => {
+	ipcMain.handle('chipos:workerStatus', async (event) => {
+		const windowId = event.sender.id;
+		const worker = getProc(windowId, 'worker');
 		return {
-			running: workerProc !== undefined && !workerProc.process.killed,
-			pid: workerProc?.pid,
+			running: worker !== undefined && !worker.process.killed,
+			pid: worker?.pid,
 		};
 	});
 }

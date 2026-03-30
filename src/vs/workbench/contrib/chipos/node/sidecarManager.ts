@@ -78,7 +78,7 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 
 	/** SSE endpoint URL（chatAgent 用） */
 	get sseUrl(): string {
-		return `${this.reasoningUrl}/api/v1/task/stream`;
+		return `${this.reasoningUrl}/api/v1/events`;
 	}
 
 	get workerHttpUrl(): string {
