@@ -15,7 +15,6 @@
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -271,7 +270,9 @@ export class WorkerToolsViewDataProvider extends Disposable implements ITreeView
 		]);
 
 		if (healthResult.status === 'rejected' || toolsResult.status === 'rejected') {
-			const reason = healthResult.status === 'rejected' ? healthResult.reason : toolsResult.reason;
+			const reason = healthResult.status === 'rejected'
+				? healthResult.reason
+				: (toolsResult as PromiseRejectedResult).reason;
 			const message = reason instanceof Error ? reason.message : String(reason);
 			this._logService.warn('[ChipOS WorkerTools] Failed to build view:', message);
 			return [this._toErrorItem(message)];

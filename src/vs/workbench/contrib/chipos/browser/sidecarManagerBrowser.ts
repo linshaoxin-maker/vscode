@@ -117,7 +117,7 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 
 				// Also check Worker reachability
 				if (body.workers_connected && body.workers_connected > 0) {
-					this._setWorkerState(WorkerState.Running);
+					this._setWorkerState(WorkerState.Connected);
 				} else {
 					this._setWorkerState(WorkerState.NotStarted);
 					this._logService.warn('[ChipOS SidecarBrowser] Reasoner connected but no workers registered');
@@ -132,7 +132,7 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 						const wResp = await fetch(`${workerUrl}/health`, { signal: wCtrl.signal });
 						clearTimeout(wTimeout);
 						if (wResp.ok) {
-							this._setWorkerState(WorkerState.Running);
+							this._setWorkerState(WorkerState.Connected);
 							this._logService.info('[ChipOS SidecarBrowser] Worker HTTP reachable');
 						}
 					} catch {

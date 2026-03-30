@@ -24,14 +24,14 @@
  * - Fix3: stopBackend 需要同时停 Reasoner 和 Worker（之前只停 Worker）
  */
 
-import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { Emitter, Event } from '../../../../../base/common/event.js';
-import { join } from '../../../../../base/common/path.js';
-import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
-import { INativeHostService } from '../../../../../platform/native/common/native.js';
-import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { join } from '../../../../base/common/path.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import {
 	ISidecarManagerService,
 	SidecarState,

@@ -220,7 +220,18 @@ export async function downloadAndInstallServer(
  * Worker 安装路径（与 Server 平行）。
  */
 export function getWorkerInstallPath(): string {
-	return `$HOME/.chipos-worker`;
+	const vscodeConfig = _tryGetConfig('chipos.remote.ssh', 'workerInstallPath');
+	return vscodeConfig || '/opt/chipos-backend';
+}
+
+function _tryGetConfig(section: string, key: string): string | undefined {
+	try {
+		// 在扩展上下文中可以访问 vscode API
+		const vscode = require('vscode');
+		return vscode.workspace.getConfiguration(section).get<string>(key);
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -229,7 +240,12 @@ export function getWorkerInstallPath(): string {
 export async function isWorkerInstalled(ssh: SshConnection, installPath?: string): Promise<boolean> {
 	const effectivePath = installPath || getWorkerInstallPath();
 	try {
-		await ssh.exec(`test -f ${effectivePath}/.venv/bin/python && test -d ${effectivePath}/packages/execution`);
+		// 支持两种布局：
+		// rsync 布局: installPath/packages/execution/.venv/bin/python
+		// 独立安装:   installPath/.venv/bin/python
+		await ssh.exec(
+			`test -f ${effectivePath}/packages/execution/.venv/bin/python || test -f ${effectivePath}/.venv/bin/python`
+		);
 		return true;
 	} catch {
 		return false;

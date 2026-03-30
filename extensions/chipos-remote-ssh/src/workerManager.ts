@@ -49,18 +49,23 @@ export class WorkerManager {
 	 */
 	async ensureWorkerRunning(reasonerGrpcTarget: string): Promise<void> {
 		this._log('[WorkerManager] Ensuring worker is running...');
+		this._log(`[WorkerManager] installPath=${this._installPath}, grpcTarget=${reasonerGrpcTarget}`);
 
 		// 1. 检查 Python 环境
+		this._log('[WorkerManager] Step 1/5: Checking Python environment...');
 		await this._checkPythonEnv();
 
 		// 2. 检查 Worker 包是否已安装
+		this._log('[WorkerManager] Step 2/5: Checking if Worker is installed...');
 		const installed = await this._isWorkerInstalled();
+		this._log(`[WorkerManager] Worker installed: ${installed}`);
 		if (!installed) {
 			this._log('[WorkerManager] Worker not installed, installing...');
 			await downloadAndInstallWorker(this._ssh, this._installPath, this._log);
 		}
 
 		// 3. 检查已有进程
+		this._log('[WorkerManager] Step 3/5: Checking existing PID...');
 		const existingPid = await this._readPidFile();
 		if (existingPid) {
 			const alive = await this._isProcessAlive(existingPid);
@@ -75,9 +80,11 @@ export class WorkerManager {
 		}
 
 		// 4. 启动 Worker
+		this._log('[WorkerManager] Step 4/5: Starting Worker...');
 		await this._startWorker(reasonerGrpcTarget);
 
 		// 5. 等待健康检查通过
+		this._log('[WorkerManager] Step 5/5: Waiting for health check...');
 		await this._waitForHealthy();
 		this._log('[WorkerManager] Worker is healthy');
 	}
@@ -155,12 +162,19 @@ export class WorkerManager {
 	 */
 	private async _isWorkerInstalled(): Promise<boolean> {
 		try {
-			// 优先检查 .venv/bin/python（R22 downloadAndInstallWorker 的安装目标）
-			const result = await this._ssh.exec(
-				`cd ${this._installPath} && .venv/bin/python -c "import execution; print('ok')" 2>/dev/null`
-			);
+			// 检查两种布局：
+			// 1. rsync 部署: installPath/packages/execution/.venv/bin/python
+			// 2. 独立安装: installPath/.venv/bin/python
+			const cmd = [
+				`(cd ${this._installPath}/packages/execution 2>/dev/null && .venv/bin/python -c "import execution; print('ok')" 2>/dev/null)`,
+				`|| (cd ${this._installPath} 2>/dev/null && .venv/bin/python -c "import execution; print('ok')" 2>/dev/null)`,
+			].join(' ');
+			this._log(`[WorkerManager] _isWorkerInstalled cmd: ${cmd}`);
+			const result = await this._ssh.exec(cmd);
+			this._log(`[WorkerManager] _isWorkerInstalled result: "${result.trim()}"`);
 			return result.trim() === 'ok';
-		} catch {
+		} catch (err) {
+			this._log(`[WorkerManager] _isWorkerInstalled error: ${err}`);
 			return false;
 		}
 	}
@@ -172,16 +186,33 @@ export class WorkerManager {
 		const pidFile = `${this._installPath}/worker.pid`;
 		const logFile = `${this._installPath}/worker.log`;
 
-		// Fix2: 环境变量名必须是 CHIPOS_REASONING_SERVER（WorkerConfig.from_env 读这个）
-		// Fix3: 用 export 确保子进程能继承；nohup 命令和重定向在同一行
-		// Bug fix: 用 .venv/bin/python（R22 安装目标），不用系统 python3
-		const venvPython = `${this._installPath}/.venv/bin/python`;
+		// 探测 venv 位置：rsync 布局 vs 独立安装
+		let workerDir = this._installPath;
+		let venvPython = `${this._installPath}/.venv/bin/python`;
+		try {
+			await this._ssh.exec(`test -f ${this._installPath}/packages/execution/.venv/bin/python`);
+			// rsync 布局
+			workerDir = `${this._installPath}/packages/execution`;
+			venvPython = `${workerDir}/.venv/bin/python`;
+			this._log(`[WorkerManager] Detected rsync layout, workerDir=${workerDir}`);
+		} catch {
+			this._log(`[WorkerManager] Using standalone layout, workerDir=${workerDir}`);
+		}
+
+		// PYTHONPATH 需要包含 shared + execution 的 src/
+		const pythonPath = [
+			`${this._installPath}/packages/shared/src`,
+			`${this._installPath}/packages/execution/src`,
+		].join(':');
+
 		const cmd = [
-			`cd ${this._installPath}`,
+			`cd ${workerDir}`,
 			`export CHIPOS_REASONING_SERVER="${grpcTarget}"`,
+			`export PYTHONPATH="${pythonPath}"`,
 			`nohup ${venvPython} -m execution.server.cli start --server "${grpcTarget}" > ${logFile} 2>&1 & echo $! > ${pidFile}`,
 		].join(' && ');
 
+		this._log(`[WorkerManager] _startWorker cmd: ${cmd}`);
 		try {
 			await this._ssh.exec(cmd);
 		} catch (err) {
@@ -199,20 +230,25 @@ export class WorkerManager {
 	 * 等待 Worker 健康检查通过（HTTP /health）。
 	 */
 	private async _waitForHealthy(timeoutMs: number = 30000): Promise<void> {
+		this._log(`[WorkerManager] _waitForHealthy: timeout=${timeoutMs}ms`);
 		const start = Date.now();
+		let attempt = 0;
 		while (Date.now() - start < timeoutMs) {
+			attempt++;
 			try {
 				const result = await this._ssh.exec(
 					'curl -sf http://localhost:8081/health'
 				);
+				this._log(`[WorkerManager] Health check attempt ${attempt}: ${result.trim()}`);
 				if (result.includes('"status"')) {
 					return;
 				}
-			} catch {
-				// Not ready yet
+			} catch (err) {
+				this._log(`[WorkerManager] Health check attempt ${attempt} failed: ${err}`);
 			}
 			await delay(1000);
 		}
+		this._log(`[WorkerManager] Health check timed out after ${timeoutMs}ms (${attempt} attempts)`);
 		throw new Error('Worker health check timed out');
 	}
 
