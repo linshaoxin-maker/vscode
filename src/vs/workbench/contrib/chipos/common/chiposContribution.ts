@@ -830,12 +830,15 @@ registerAction2(class AddMcpServerAction extends Action2 {
 		super({
 			id: 'chipos.workerTools.addMcpServer',
 			title: localize2('chipos.workerTools.addMcpServer', 'Add MCP Server'),
+			category: localize2('chipos.category', 'ChipOS'),
 			icon: Codicon.add,
-			menu: {
+			menu: [{
 				id: MenuId.ViewItemContext,
 				when: ContextKeyExpr.equals('viewItem', 'chiposWorkerMcpRoot'),
 				group: 'inline',
-			},
+			}, {
+				id: MenuId.CommandPalette,
+			}],
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
