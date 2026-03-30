@@ -209,7 +209,7 @@ export class WorkerManager {
 			`cd ${workerDir}`,
 			`export CHIPOS_REASONING_SERVER="${grpcTarget}"`,
 			`export PYTHONPATH="${pythonPath}"`,
-			`nohup ${venvPython} -m execution.server.cli start --server "${grpcTarget}" > ${logFile} 2>&1 & echo $! > ${pidFile}`,
+			`nohup ${venvPython} -m execution.server.cli start --server "${grpcTarget}" > ${logFile} 2>&1 < /dev/null & echo $! > ${pidFile}`,
 		].join(' && ');
 
 		this._log(`[WorkerManager] _startWorker cmd: ${cmd}`);
