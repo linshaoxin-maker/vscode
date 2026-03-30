@@ -111,9 +111,34 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 			const resp = await fetch(`${reasoningUrl}/health`, { signal: controller.signal });
 			clearTimeout(timeout);
 			if (resp.ok) {
-				const body = await resp.json().catch(() => ({}));
+				const body = await resp.json().catch(() => ({})) as { workers_connected?: number };
 				this._setState(SidecarState.Connected);
 				this._logService.info('[ChipOS SidecarBrowser] Reasoning server reachable, health:', JSON.stringify(body));
+
+				// Also check Worker reachability
+				if (body.workers_connected && body.workers_connected > 0) {
+					this._setWorkerState(WorkerState.Running);
+				} else {
+					this._setWorkerState(WorkerState.NotStarted);
+					this._logService.warn('[ChipOS SidecarBrowser] Reasoner connected but no workers registered');
+				}
+
+				// Probe Worker HTTP directly if URL is configured
+				const workerUrl = this.workerHttpUrl;
+				if (workerUrl) {
+					try {
+						const wCtrl = new AbortController();
+						const wTimeout = setTimeout(() => wCtrl.abort(), 5000);
+						const wResp = await fetch(`${workerUrl}/health`, { signal: wCtrl.signal });
+						clearTimeout(wTimeout);
+						if (wResp.ok) {
+							this._setWorkerState(WorkerState.Running);
+							this._logService.info('[ChipOS SidecarBrowser] Worker HTTP reachable');
+						}
+					} catch {
+						this._logService.warn('[ChipOS SidecarBrowser] Worker HTTP not reachable at:', workerUrl);
+					}
+				}
 			} else {
 				this._setState(SidecarState.Error);
 				this._logService.error('[ChipOS SidecarBrowser] Reasoning returned:', resp.status, resp.statusText);

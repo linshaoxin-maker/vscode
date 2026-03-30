@@ -8,6 +8,7 @@ import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -126,6 +127,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IChatEditingService private readonly _chatEditingService: IChatEditingService,
 		@IChatService private readonly _chatService: IChatService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super();
 		this._register(this._chatService.onDidDisposeSession(e => {
@@ -1009,6 +1011,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				mode as 'agent' | 'spec',
 				{ thinking, autoApproveMode },
 			);
+
+			// UX: Show "Thinking" indicator while waiting for first backend event
+			progress([this._progress('$(loading~spin) Waiting for backend response...', true)]);
 		});
 	}
 
@@ -2337,6 +2342,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		} else {
 			runtime.streamClient?.dispose();
 			runtime.streamClient = new SseEventStreamClient({ baseUrl, token });
+
+			// Monitor connection state changes for user-facing notifications
+			runtime.streamClient.onDidChangeConnectionState((state) => {
+				if (state === ConnectionState.Reconnecting) {
+					this._notificationService.info(
+						localize('chipos.agent.reconnecting', 'ChipOS: Connection lost, reconnecting to backend...')
+					);
+				} else if (state === ConnectionState.Error) {
+					this._notificationService.warn(
+						localize('chipos.agent.disconnected', 'ChipOS: Backend connection failed. Check if the Reasoner is running.')
+					);
+				} else if (state === ConnectionState.Connected) {
+					// Only notify on reconnect (not initial connect)
+					if (this._logService) {
+						this._logService.info('[ChipOS Agent] SSE reconnected');
+					}
+				}
+			});
 		}
 
 		try {

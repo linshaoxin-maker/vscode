@@ -221,7 +221,6 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 						log(`[WARN] Could not forward worker HTTP port ${workerHttpPort}: ${fwdErr}`);
 						vscode.window.showWarningMessage(
 							`ChipOS: Failed to forward Worker HTTP port ${workerHttpPort}. Worker Tools panel may not work.`);
-					}ARN] Could not forward worker HTTP port ${workerHttpPort}: ${fwdErr}`);
 					}
 				} catch (workerErr) {
 					const workerMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
@@ -229,9 +228,9 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					// Worker 启动失败不阻塞连接（Reasoner 仍可用，只是没有远端执行能力）
 				}
 
-					return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
+				return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 
-				} catch (err) {
+			} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					log(`Resolution failed: ${message}`);
 

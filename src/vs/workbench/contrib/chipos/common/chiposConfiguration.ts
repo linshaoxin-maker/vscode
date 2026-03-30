@@ -236,6 +236,23 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.beta.specMode.desc', 'Enable Spec Review mode for hardware specification analysis.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+
+		// ── v1 Legacy (deprecated, kept for backward compatibility) ──
+		'chipos.sidecar.manualUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.sidecar.manualUrl.desc', '[Deprecated] Manual WebSocket URL for v1 sidecar. Use chipos.backend.reasoningUrl instead.'),
+			scope: ConfigurationScope.APPLICATION,
+			deprecationMessage: localize('chipos.sidecar.manualUrl.deprecated', 'Use chipos.backend.reasoningUrl instead.'),
+		},
+
+		'chipos.sidecar.port': {
+			type: 'number',
+			default: 8765,
+			description: localize('chipos.sidecar.port.desc', '[Deprecated] v1 sidecar WebSocket port. Use chipos.backend.httpPort instead.'),
+			scope: ConfigurationScope.APPLICATION,
+			deprecationMessage: localize('chipos.sidecar.port.deprecated', 'Use chipos.backend.httpPort instead.'),
+		},
 	},
 });
 

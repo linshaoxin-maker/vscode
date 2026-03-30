@@ -15,6 +15,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -178,16 +179,12 @@ CommandsRegistry.registerCommand(ChipOSCommandId.Disconnect, async accessor => {
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.RestartSidecar, async accessor => {
+	// Deprecated alias — delegates to RestartBackend
 	const backend = accessor.get(ISidecarManagerService);
 	const notifications = accessor.get(INotificationService);
 	notifications.info('ChipOS: Restarting backend…');
 	await backend.stopBackend();
 	await backend.startBackend();
-	if (backend.state === SidecarState.Connected) {
-		notifications.info('ChipOS: Backend restarted successfully.');
-	} else {
-		notifications.error('ChipOS: Backend failed to restart.');
-	}
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.RestartBackend, async accessor => {
@@ -800,16 +797,26 @@ registerAction2(class InstallWorkerToolAction extends Action2 {
 		const toolManager = accessor.get(IWorkerToolManagerService);
 		const toolName = arg.$treeItemHandle.replace('worker-tool:', '');
 		const notificationService = accessor.get(INotificationService);
-		try {
-			const result = await toolManager.installTool(toolName);
-			if (result.success) {
-				notificationService.info(localize('chipos.workerTools.installSuccess', 'Tool "{0}" installed successfully.', toolName));
-			} else {
-				notificationService.warn(localize('chipos.workerTools.installFail', 'Tool "{0}" installation failed: {1}', toolName, result.error || 'unknown'));
-			}
-		} catch (err) {
-			notificationService.error(localize('chipos.workerTools.installError', 'Failed to install tool "{0}": {1}', toolName, String(err)));
-		}
+		const progressService = accessor.get(IProgressService);
+		await progressService.withProgress(
+			{
+				location: ProgressLocation.Notification,
+				title: localize('chipos.workerTools.installing', 'Installing tool "{0}"...', toolName),
+				cancellable: false,
+			},
+			async () => {
+				try {
+					const result = await toolManager.installTool(toolName);
+					if (result.success) {
+						notificationService.info(localize('chipos.workerTools.installSuccess', 'Tool "{0}" installed successfully.', toolName));
+					} else {
+						notificationService.warn(localize('chipos.workerTools.installFail', 'Tool "{0}" installation failed: {1}', toolName, result.error || 'unknown'));
+					}
+				} catch (err) {
+					notificationService.error(localize('chipos.workerTools.installError', 'Failed to install tool "{0}": {1}', toolName, String(err)));
+				}
+			},
+		);
 		const viewsService = accessor.get(IViewsService);
 		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
 		if (view) {
