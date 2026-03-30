@@ -323,7 +323,7 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 
 		// Fix J: inject auth + TLS config into Worker process environment
 		const token = this._configurationService.getValue<string>('chipos.backend.token') || '';
-		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.tls.enabled') || false;
+		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') || false;
 
 		this._logService.info('[ChipOS Worker] Starting, id:', this._workerId, 'gRPC target:', grpcTarget);
 
@@ -387,6 +387,12 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	// ── Path resolution ─────────────────────────────────────────────────
 
 	private _resolveBackendDir(): string {
+		// 用户自定义路径（最高优先级）
+		const customDir = this._configurationService.getValue<string>('chipos.backend.dir');
+		if (customDir && existsSync(customDir)) {
+			return customDir;
+		}
+
 		// 产品模式：resources/chipos-backend/
 		const productDir = join(this._environmentService.appRoot, 'resources', 'chipos-backend');
 		if (existsSync(productDir)) {
@@ -399,12 +405,6 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		if (existsSync(devDir)) {
 			this._logService.info('[ChipOS] Dev mode: using', devDir);
 			return devDir;
-		}
-
-		// 用户自定义路径
-		const customDir = this._configurationService.getValue<string>('chipos.backend.dir');
-		if (customDir && existsSync(customDir)) {
-			return customDir;
 		}
 
 		// 兜底：返回产品路径（会在后续 existsSync(pythonPath) 检查时报错）
@@ -540,8 +540,12 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 				const resp = await fetch(`${baseUrl}/health`, { signal: controller.signal });
 				clearTimeout(timeout);
 				if (resp.ok) {
-					this._logService.info('[ChipOS] Health check passed:', baseUrl);
-					return true;
+					const body = await resp.json() as { status?: string; workers_connected?: number };
+					if (body.workers_connected && body.workers_connected > 0) {
+						this._logService.info('[ChipOS] Health check passed, workers_connected:', body.workers_connected);
+						return true;
+					}
+					this._logService.trace('[ChipOS] Health check: waiting for workers_connected > 0');
 				}
 			} catch {
 				// retry

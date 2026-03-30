@@ -206,16 +206,24 @@ export class WorkerToolManagerService extends Disposable implements IWorkerToolM
 			throw new Error(localize('chipos.workerTools.urlMissing', 'Worker HTTP URL is not configured.'));
 		}
 
-		const response = await fetch(`${baseUrl}${path}`, init);
-		if (!response.ok) {
-			const body = await response.text().catch(() => '');
-			const suffix = body ? ` – ${body}` : '';
-			const message = `Worker API ${init?.method ?? 'GET'} ${path} failed (${response.status})${suffix}`;
-			this._logService.warn('[ChipOS WorkerTools]', message);
-			throw new Error(message);
-		}
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 8000);
+		try {
+			const response = await fetch(`${baseUrl}${path}`, { ...init, signal: controller.signal });
+			clearTimeout(timeout);
+			if (!response.ok) {
+				const body = await response.text().catch(() => '');
+				const suffix = body ? ` – ${body}` : '';
+				const message = `Worker API ${init?.method ?? 'GET'} ${path} failed (${response.status})${suffix}`;
+				this._logService.warn('[ChipOS WorkerTools]', message);
+				throw new Error(message);
+			}
 
-		return response.json() as Promise<T>;
+			return response.json() as Promise<T>;
+		} catch (err) {
+			clearTimeout(timeout);
+			throw err;
+		}
 	}
 }
 
@@ -409,6 +417,7 @@ export class WorkerToolsViewDataProvider extends Disposable implements ITreeView
 			description: localize('chipos.workerTools.mcp.count', '{0} configured', result.servers.length),
 			tooltip,
 			themeIcon: Codicon.plug,
+			contextValue: 'chiposWorkerMcpRoot',
 			command: result.config_path ? {
 				id: 'chipos.workerTools.openConfig',
 				title: '',

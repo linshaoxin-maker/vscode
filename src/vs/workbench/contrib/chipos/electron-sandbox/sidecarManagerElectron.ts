@@ -351,8 +351,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			await new Promise<void>(r => setTimeout(r, interval));
 		}
 
-		this._logService.warn('[ChipOS SidecarElectron] Health check timeout, setting Connected as fallback');
-		this._setState(SidecarState.Connected);
+		this._logService.warn('[ChipOS SidecarElectron] Health check timeout — backend may not be fully ready');
+		this._setState(SidecarState.Error);
 	}
 
 	/**

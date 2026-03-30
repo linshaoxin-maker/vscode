@@ -48,6 +48,8 @@ export interface IAgentEventBase {
 	readonly event_type: AgentEventType;
 	readonly sub_type?: string;
 	readonly timestamp: number;
+	/** Session ID for multi-session isolation (R20). Injected by SSE client. */
+	readonly session_id?: string;
 }
 
 // ── Core payload interfaces ─────────────────────────────────────────────────

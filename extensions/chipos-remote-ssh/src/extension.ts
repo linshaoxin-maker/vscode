@@ -162,10 +162,38 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					.get<number>('httpPort', 8080);
 				try {
 					const localReasoningPort = await activeSshConnection.forwardPort(
-						reasoningPort, '127.0.0.1', reasoningPort);
+						0, '127.0.0.1', reasoningPort);
 					log(`Reasoning port forwarding: 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
+					// Update config so frontend components use the actual local port
+					if (localReasoningPort !== reasoningPort) {
+						await vscode.workspace.getConfiguration('chipos.backend').update(
+							'reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, vscode.ConfigurationTarget.Workspace);
+					}
 				} catch (fwdErr) {
 					log(`[WARN] Could not forward reasoning port ${reasoningPort}: ${fwdErr}`);
+					vscode.window.showWarningMessage(
+						`ChipOS: Failed to forward Reasoning port ${reasoningPort}. Chat may not work. Check if the port is already in use locally.`);
+				}
+
+				// 4b. Probe Reasoner health through the SSH tunnel
+				try {
+					const probeUrl = `http://127.0.0.1:${reasoningPort}`;
+					const controller = new AbortController();
+					const probeTimer = setTimeout(() => controller.abort(), 5000);
+					const resp = await fetch(`${probeUrl}/health`, { signal: controller.signal });
+					clearTimeout(probeTimer);
+					if (resp.ok) {
+						const body = await resp.json() as { status?: string; workers_connected?: number };
+						log(`Reasoner health: ${JSON.stringify(body)}`);
+					} else {
+						log(`[WARN] Reasoner /health returned ${resp.status}`);
+						vscode.window.showWarningMessage(
+							`ChipOS: Reasoner on remote returned HTTP ${resp.status}. Make sure the Reasoner is running on the remote server.`);
+					}
+				} catch {
+					log('[WARN] Reasoner /health probe failed — Reasoner may not be running on remote');
+					vscode.window.showWarningMessage(
+						'ChipOS: Cannot reach Reasoner on remote server. Please start the Reasoner first (see startup guide).');
 				}
 
 				// 5. FEAT-R23: Start Worker on remote + forward Worker HTTP port
@@ -182,10 +210,18 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 						.get<number>('workerHttpPort', 8081);
 					try {
 						const localWorkerPort = await activeSshConnection.forwardPort(
-							workerHttpPort, '127.0.0.1', workerHttpPort);
+							0, '127.0.0.1', workerHttpPort);
 						log(`Worker HTTP port forwarding: 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
+						// Update config so Worker Tools panel uses the actual local port
+						if (localWorkerPort !== workerHttpPort) {
+							await vscode.workspace.getConfiguration('chipos.backend').update(
+								'workerHttpUrl', `http://127.0.0.1:${localWorkerPort}`, vscode.ConfigurationTarget.Workspace);
+						}
 					} catch (fwdErr) {
 						log(`[WARN] Could not forward worker HTTP port ${workerHttpPort}: ${fwdErr}`);
+						vscode.window.showWarningMessage(
+							`ChipOS: Failed to forward Worker HTTP port ${workerHttpPort}. Worker Tools panel may not work.`);
+					}ARN] Could not forward worker HTTP port ${workerHttpPort}: ${fwdErr}`);
 					}
 				} catch (workerErr) {
 					const workerMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);

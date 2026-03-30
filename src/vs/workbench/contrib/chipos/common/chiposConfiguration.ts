@@ -183,6 +183,13 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.backend.tlsEnabled': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.backend.tlsEnabled.desc', 'Enable TLS for gRPC connections between Worker and Reasoner.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		'chipos.autoContext': {
 			type: 'boolean',
 			default: true,

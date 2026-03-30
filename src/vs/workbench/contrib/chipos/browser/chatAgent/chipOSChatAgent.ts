@@ -92,6 +92,8 @@ interface IChatSessionRuntime {
 	lastSubagentToolCallId?: string;
 	externalEditOps: Map<string, number>;
 	pendingStartEdits: Map<string, Promise<void>>;
+	/** Aborted when the session is disposed, so pending invoke/continuation can reject. */
+	disposeController: AbortController;
 }
 
 /**
@@ -2226,6 +2228,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				subagentParentMap: new Map<string, string>(),
 				externalEditOps: new Map<string, number>(),
 				pendingStartEdits: new Map<string, Promise<void>>(),
+				disposeController: new AbortController(),
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
 		}
@@ -2241,6 +2244,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		if (!runtime) {
 			return;
 		}
+
+		// Abort any pending invoke/continuation Promise
+		runtime.disposeController.abort();
 
 		const externalEditOps = new Map(runtime.externalEditOps);
 		const pendingStartEdits = new Map(runtime.pendingStartEdits);

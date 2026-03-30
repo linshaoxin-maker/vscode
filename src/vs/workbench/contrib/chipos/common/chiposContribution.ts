@@ -791,7 +791,7 @@ registerAction2(class InstallWorkerToolAction extends Action2 {
 			icon: Codicon.cloudDownload,
 			menu: {
 				id: MenuId.ViewItemContext,
-				when: ContextKeyExpr.equals('viewItem', 'chiposWorkerTool'),
+				when: ContextKeyExpr.equals('viewItem', 'chiposWorkerToolInstallable'),
 				group: 'inline',
 			},
 		});
@@ -846,7 +846,7 @@ registerAction2(class AddMcpServerAction extends Action2 {
 		const args = argsStr ? argsStr.split(/\s+/) : [];
 
 		try {
-			const result = await toolManager.addMcpServer({ name, command, args });
+			const result = await toolManager.addMcpServer({ name, command, args, env: {} });
 			if (result.success) {
 				notificationService.info(localize('chipos.workerTools.addMcpSuccess', 'MCP server "{0}" added.', name));
 			} else {
