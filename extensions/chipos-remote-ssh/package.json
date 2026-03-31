@@ -128,6 +128,11 @@
           "description": "Path on remote server where ChipOS Server will be installed",
           "type": "string",
           "default": "~/.chipos-server"
+        },
+        "chipos.remote.ssh.workerInstallPath": {
+          "description": "Path on remote server where ChipOS Worker will be installed. Set to an existing path (e.g. /opt/chipos-backend) to skip auto-deploy.",
+          "type": "string",
+          "default": "~/.chipos-worker"
         }
       }
     }

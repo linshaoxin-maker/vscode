@@ -172,7 +172,7 @@ configurationRegistry.registerConfiguration({
 		'chipos.backend.grpcAddress': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.backend.grpcAddress.desc', 'gRPC address for Worker to connect to the Reasoning server (e.g. reasoning.chipos.ai:50051). If empty, derived from reasoningUrl host + default port 50051. Only used in cloud-reasoning mode.'),
+			description: localize('chipos.backend.grpcAddress.desc', 'gRPC address for Worker to connect to the Reasoning server (e.g. reasoning.chipos.ai:50051). If empty, derived from reasoningUrl host + grpcPort. Used in cloud-reasoning and Remote-SSH modes when Reasoner is on a different host.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 

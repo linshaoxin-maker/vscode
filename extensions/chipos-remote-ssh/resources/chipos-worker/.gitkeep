@@ -1,0 +1,2 @@
+# CI 构建时由 build-worker-wheels.sh 填充
+# 包含: chipos_shared-*.whl, chipos_execution-*.whl, deps.txt

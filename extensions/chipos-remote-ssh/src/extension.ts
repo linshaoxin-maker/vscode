@@ -203,11 +203,15 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				log('[Step 5] Starting Worker deployment...');
 				const workerInstallPath = getWorkerInstallPath();
 				log(`[Step 5] workerInstallPath=${workerInstallPath}`);
-				const reasonerGrpcTarget = `127.0.0.1:${vscode.workspace.getConfiguration('chipos.backend').get<number>('grpcPort', 50051)}`;
+				const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 				log(`[Step 5] reasonerGrpcTarget=${reasonerGrpcTarget}`);
 				activeWorkerManager = new WorkerManager(activeSshConnection, workerInstallPath, log);
 				try {
-					await activeWorkerManager.ensureWorkerRunning(reasonerGrpcTarget);
+					// Determine remote workspace path from VS Code workspace folders
+					const folders = vscode.workspace.workspaceFolders;
+					const remoteWorkspacePath = folders && folders.length > 0 ? folders[0].uri.path : undefined;
+					log(`[Step 5] remoteWorkspacePath=${remoteWorkspacePath}`);
+					await activeWorkerManager.ensureWorkerRunning(reasonerGrpcTarget, remoteWorkspacePath);
 					log('[Step 5] Execution Worker started on remote');
 
 					// Forward Worker HTTP port (8081) for UI direct access
@@ -442,6 +446,30 @@ async function getSshHosts(): Promise<string[]> {
 	}
 
 	return hosts;
+}
+
+/**
+ * Resolve the gRPC target address that the remote Worker should use to connect
+ * to the Reasoner.  Priority:
+ *   1. Explicit `chipos.backend.grpcAddress` (e.g. "10.0.0.5:50051")
+ *   2. Host extracted from `chipos.backend.reasoningUrl` + `grpcPort`
+ *   3. Fallback `127.0.0.1:<grpcPort>` (same-machine default)
+ */
+function resolveReasonerGrpcTarget(): string {
+	const cfg = vscode.workspace.getConfiguration('chipos.backend');
+	const explicit = cfg.get<string>('grpcAddress', '');
+	if (explicit) {
+		return explicit;
+	}
+	const grpcPort = cfg.get<number>('grpcPort', 50051);
+	const reasoningUrl = cfg.get<string>('reasoningUrl', '');
+	if (reasoningUrl) {
+		try {
+			const url = new URL(reasoningUrl);
+			return `${url.hostname}:${grpcPort}`;
+		} catch { /* fall through */ }
+	}
+	return `127.0.0.1:${grpcPort}`;
 }
 
 function log(message: string): void {

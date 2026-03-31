@@ -29,7 +29,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import {
@@ -119,8 +119,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	constructor(
 		@ILogService private readonly _logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
-		@INativeHostService private readonly _nativeHostService: INativeHostService,
-		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
+		@INativeHostService _nativeHostService: INativeHostService,
+		@IEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
@@ -290,12 +290,17 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			...(workspaceRoot ? { CHIPOS_WORKSPACE_ROOT: workspaceRoot } : {}),
 		};
 
+		// MCP 配置文件路径：backend 目录下的 mcp_servers.json
+		const backendDir = this._resolveBackendDir();
+		const mcpConfigPath = join(backendDir, 'mcp_servers.json');
+		env.CHIPOS_WORKER_MCP_CONFIG_PATH = mcpConfigPath;
+
 		try {
 			const result = await this._invokeIpc('chipos:spawnProcess', {
 				pythonPath,
-				moduleArgs: ['-m', 'execution.server.cli', 'start', '--server', grpcTarget],
+				moduleArgs: ['-m', 'execution.server.cli', 'start', '--server', grpcTarget, '--mcp-config', mcpConfigPath],
 				env,
-				cwd: this._resolveBackendDir(),
+				cwd: backendDir,
 				role: 'worker',
 			});
 			this._workerPid = result?.pid;

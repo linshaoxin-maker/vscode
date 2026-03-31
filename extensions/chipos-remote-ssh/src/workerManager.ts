@@ -24,6 +24,8 @@ export class WorkerManager {
 	private readonly _ssh: SshConnection;
 	private readonly _installPath: string;
 	private readonly _log: (msg: string) => void;
+	/** 远端实际可用的 Python 命令（由 _checkPythonEnv 探测） */
+	private _pythonCmd: string = 'python3.11';
 	private _workerPid: number | null = null;
 
 	constructor(ssh: SshConnection, installPath: string, log: (msg: string) => void) {
@@ -47,7 +49,7 @@ export class WorkerManager {
 	 * 5. 启动 Worker（nohup）
 	 * 6. 等待 Worker 健康检查通过
 	 */
-	async ensureWorkerRunning(reasonerGrpcTarget: string): Promise<void> {
+	async ensureWorkerRunning(reasonerGrpcTarget: string, workspacePath?: string): Promise<void> {
 		this._log('[WorkerManager] Ensuring worker is running...');
 		this._log(`[WorkerManager] installPath=${this._installPath}, grpcTarget=${reasonerGrpcTarget}`);
 
@@ -81,7 +83,7 @@ export class WorkerManager {
 
 		// 4. 启动 Worker
 		this._log('[WorkerManager] Step 4/5: Starting Worker...');
-		await this._startWorker(reasonerGrpcTarget);
+		await this._startWorker(reasonerGrpcTarget, workspacePath);
 
 		// 5. 等待健康检查通过
 		this._log('[WorkerManager] Step 5/5: Waiting for health check...');
@@ -133,26 +135,98 @@ export class WorkerManager {
 
 	/**
 	 * 检查远端 Python 版本 >= 3.10。
+	 * 按优先级探测: python3.11 → python3.12 → python3.10 → python3
+	 * 找到的命令存入 this._pythonCmd，后续 venv/启动都用它。
+	 * 如果全部探测失败，尝试自动安装 python3.11。
 	 */
 	private async _checkPythonEnv(): Promise<void> {
-		try {
-			const result = await this._ssh.exec('python3 --version');
-			const match = result.match(/Python (\d+)\.(\d+)/);
-			if (match) {
-				const major = parseInt(match[1], 10);
-				const minor = parseInt(match[2], 10);
-				if (major < 3 || (major === 3 && minor < 10)) {
-					throw new Error(`Python 3.10+ required, got Python ${major}.${minor}`);
+		const candidates = ['python3.11', 'python3.12', 'python3.10', 'python3'];
+		for (const cmd of candidates) {
+			try {
+				const result = await this._ssh.exec(`${cmd} --version`);
+				const match = result.match(/Python (\d+)\.(\d+)/);
+				if (match) {
+					const major = parseInt(match[1], 10);
+					const minor = parseInt(match[2], 10);
+					if (major >= 3 && minor >= 10) {
+						this._pythonCmd = cmd;
+						this._log(`[WorkerManager] Found ${cmd} → Python ${major}.${minor} ✓`);
+						return;
+					}
+					this._log(`[WorkerManager] ${cmd} → Python ${major}.${minor} (too old, need >=3.10)`);
 				}
-				this._log(`[WorkerManager] Python ${major}.${minor} OK`);
-			} else {
-				this._log('[WorkerManager] Could not parse Python version, proceeding');
+			} catch {
+				// cmd not found, try next
 			}
-		} catch (err) {
-			if (err instanceof Error && err.message.includes('required')) {
-				throw err;
+		}
+
+		// 没有找到合适的 Python，尝试自动安装
+		this._log('[WorkerManager] Python >= 3.10 not found, attempting auto-install...');
+		try {
+			await this._autoInstallPython();
+			return;
+		} catch (installErr) {
+			const msg = installErr instanceof Error ? installErr.message : String(installErr);
+			throw new Error(
+				'Python >= 3.10 not found on remote. Tried: ' + candidates.join(', ') +
+				'. Auto-install also failed: ' + msg +
+				'. Please install Python 3.10+ manually on the remote server.'
+			);
+		}
+	}
+
+	/**
+	 * 尝试在远端自动安装 Python 3.11。
+	 * 支持 apt (Debian/Ubuntu) 和 yum/dnf (CentOS/RHEL)。
+	 */
+	private async _autoInstallPython(): Promise<void> {
+		// 检测包管理器
+		let pkgManager: 'apt' | 'yum' | 'dnf' | null = null;
+		for (const pm of ['apt', 'dnf', 'yum'] as const) {
+			try {
+				await this._ssh.exec(`which ${pm}`);
+				pkgManager = pm;
+				break;
+			} catch {
+				// not found
 			}
-			throw new Error(`Python 3 not found on remote: ${err}`);
+		}
+
+		if (!pkgManager) {
+			throw new Error('No supported package manager found (apt/dnf/yum)');
+		}
+
+		this._log(`[WorkerManager] Detected package manager: ${pkgManager}`);
+
+		if (pkgManager === 'apt') {
+			// Debian/Ubuntu: 先尝试直接安装，失败则添加 deadsnakes PPA
+			try {
+				await this._ssh.exec('apt-get update -qq && apt-get install -y -qq python3.11 python3.11-venv 2>&1');
+				this._log('[WorkerManager] python3.11 installed via apt');
+			} catch {
+				this._log('[WorkerManager] Direct apt install failed, trying deadsnakes PPA...');
+				await this._ssh.exec(
+					'apt-get install -y -qq software-properties-common && ' +
+					'add-apt-repository -y ppa:deadsnakes/ppa && ' +
+					'apt-get update -qq && ' +
+					'apt-get install -y -qq python3.11 python3.11-venv 2>&1'
+				);
+				this._log('[WorkerManager] python3.11 installed via deadsnakes PPA');
+			}
+		} else {
+			// CentOS/RHEL
+			await this._ssh.exec(`${pkgManager} install -y python3.11 2>&1`);
+			this._log(`[WorkerManager] python3.11 installed via ${pkgManager}`);
+		}
+
+		// 验证安装
+		const result = await this._ssh.exec('python3.11 --version');
+		const match = result.match(/Python (\d+)\.(\d+)/);
+		if (match && parseInt(match[1], 10) >= 3 && parseInt(match[2], 10) >= 10) {
+			this._pythonCmd = 'python3.11';
+			this._log(`[WorkerManager] Auto-installed Python ${match[1]}.${match[2]} ✓`);
+		} else {
+			throw new Error(`python3.11 installed but version check failed: ${result}`);
 		}
 	}
 
@@ -182,39 +256,53 @@ export class WorkerManager {
 	/**
 	 * 启动 Worker 进程（nohup，SSH 断开后存活）。
 	 */
-	private async _startWorker(grpcTarget: string): Promise<void> {
+	private async _startWorker(grpcTarget: string, workspacePath?: string): Promise<void> {
 		const pidFile = `${this._installPath}/worker.pid`;
 		const logFile = `${this._installPath}/worker.log`;
 
-		// 探测 venv 位置：rsync 布局 vs 独立安装
+		// 探测 venv 位置：rsync 布局 vs pip_wheel 布局
 		let workerDir = this._installPath;
 		let venvPython = `${this._installPath}/.venv/bin/python`;
+		let needPythonPath = false;
 		try {
 			await this._ssh.exec(`test -f ${this._installPath}/packages/execution/.venv/bin/python`);
-			// rsync 布局
+			// rsync 布局：需要 PYTHONPATH
 			workerDir = `${this._installPath}/packages/execution`;
 			venvPython = `${workerDir}/.venv/bin/python`;
+			needPythonPath = true;
 			this._log(`[WorkerManager] Detected rsync layout, workerDir=${workerDir}`);
 		} catch {
-			this._log(`[WorkerManager] Using standalone layout, workerDir=${workerDir}`);
+			this._log(`[WorkerManager] Using standalone/pip_wheel layout, workerDir=${workerDir}`);
 		}
 
-		// PYTHONPATH 需要包含 shared + execution 的 src/
-		const pythonPath = [
-			`${this._installPath}/packages/shared/src`,
-			`${this._installPath}/packages/execution/src`,
-		].join(':');
+		const envVars = [`CHIPOS_REASONING_SERVER="${grpcTarget}"`];
+		if (needPythonPath) {
+			// rsync 布局需要 PYTHONPATH 指向 src/ 目录
+			const pythonPath = [
+				`${this._installPath}/packages/shared/src`,
+				`${this._installPath}/packages/execution/src`,
+			].join(':');
+			envVars.push(`PYTHONPATH="${pythonPath}"`);
+		}
 
-		const cmd = [
-			`cd ${workerDir}`,
-			`export CHIPOS_REASONING_SERVER="${grpcTarget}"`,
-			`export PYTHONPATH="${pythonPath}"`,
-			`nohup ${venvPython} -m execution.server.cli start --server "${grpcTarget}" > ${logFile} 2>&1 < /dev/null & echo $! > ${pidFile}`,
-		].join(' && ');
+		// 启动 Worker 后台进程：
+		// 1. 用 bash -c + setsid 彻底脱离 SSH session
+		// 2. 不依赖 $! 获取 PID（在 setsid 下不可靠），
+		//    而是让启动命令自己用 bash 的 exec 写 PID
+		const exportLine = envVars.map(v => `export ${v}`).join('; ');
+		const wsArg = workspacePath ? ` --workspace \\"${workspacePath}\\"` : '';
+		const mcpConfigArg = ` --mcp-config \\"$HOME/.chipos-worker/mcp_servers.json\\"`;
+		const startCmd = [
+			`bash -c '${exportLine}; cd ${workerDir};`,
+			`setsid bash -c "echo \\$\\$ > ${pidFile};`,
+			`exec ${venvPython} -m execution.server.cli start --server \\"${grpcTarget}\\"${wsArg}${mcpConfigArg}`,
+			`> ${logFile} 2>&1 < /dev/null" &`,
+			`sleep 0.3; exit 0'`,
+		].join(' ');
 
-		this._log(`[WorkerManager] _startWorker cmd: ${cmd}`);
+		this._log(`[WorkerManager] _startWorker cmd: ${startCmd}`);
 		try {
-			await this._ssh.exec(cmd);
+			await this._ssh.exec(startCmd);
 		} catch (err) {
 			throw new Error(`Failed to start worker: ${err}`);
 		}

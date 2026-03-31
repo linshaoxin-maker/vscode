@@ -170,7 +170,7 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 		query: string,
 		mentions: IMentionItem[],
 		mode: 'agent' | 'spec',
-		options: { thinking: boolean; autoApproveMode: string },
+		options: { thinking: boolean; autoApproveMode: string; workspacePath?: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } },
 	): void {
 		const apiKey = this._configurationService.getValue<string>('chipos.apiKey') || '';
 		const apiBaseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') || 'https://open.bigmodel.cn/api/paas/v4';

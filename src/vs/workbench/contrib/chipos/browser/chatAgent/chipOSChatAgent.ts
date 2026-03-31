@@ -7,6 +7,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
+import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -1012,6 +1013,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				{
 					thinking,
 					autoApproveMode,
+					workspacePath: this._getWorkspaceRoot(),
 					llmConfig: this._buildLlmConfig(),
 				},
 			);
@@ -2256,10 +2258,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return runtime;
 	}
 
-	private _getRuntime(sessionResource: URI): IChatSessionRuntime | undefined {
-		return this._sessionRuntimes.get(sessionResource);
-	}
-
 	private _disposeRuntime(sessionResource: URI): void {
 		const runtime = this._sessionRuntimes.get(sessionResource);
 		if (!runtime) {
@@ -2324,10 +2322,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				this._logService.warn('[ChipOS Agent] editingSession.stop() failed during runtime dispose:', String(err));
 			}
 		}
-	}
-
-	private _sessionBackendId(sessionResource: URI): string | undefined {
-		return this._getRuntime(sessionResource)?.backendSessionId;
 	}
 
 	private _setSessionBackendId(sessionResource: URI, backendSessionId: string | undefined): void {

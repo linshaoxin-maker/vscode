@@ -154,6 +154,6 @@ suite('ChipOSEditorEffects', () => {
 		assert.deepStrictEqual(effects.fileChanges, []);
 
 		effects.setActiveSession(sessionB);
-		assert.deepStrictEqual(effects.fileChanges.map(f => f.path), ['src/b.ts']);
+		assert.deepStrictEqual(effects.fileChanges.map((f: { path: string }) => f.path), ['src/b.ts']);
 	});
 });

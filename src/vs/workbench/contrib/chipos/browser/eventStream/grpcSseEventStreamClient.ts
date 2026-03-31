@@ -172,7 +172,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		query: string,
 		mentions: IMentionItem[],
 		mode: 'agent' | 'spec',
-		options: { thinking: boolean; autoApproveMode: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } },
+		options: { thinking: boolean; autoApproveMode: string; workspacePath?: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } },
 	): void {
 		// Clean up previous session state to prevent stale reconnect timers
 		// from racing with the new POST + EventSource.
@@ -190,6 +190,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			session_id: sessionId,
 			prompt: query,
 			mode,
+			workspace_path: options.workspacePath || '',
 			context_files: mentions.map(m => ({
 				path: m.path,
 				content: m.content ?? '',
@@ -236,12 +237,6 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	}
 
 	// ── SSE 连接管理 ────────────────────────────────────────────────────────
-
-	private _reopenEventSourceWithToken(): void {
-		if (this._state === ConnectionState.Connected || this._state === ConnectionState.Connecting) {
-			this._openEventSource();
-		}
-	}
 
 	private async _openEventSource(): Promise<void> {
 		this._closeEventSource();

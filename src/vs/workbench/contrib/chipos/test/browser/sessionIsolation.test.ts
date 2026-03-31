@@ -15,9 +15,9 @@
 
 import assert from 'assert';
 import { Emitter, Event } from '../../../../../base/common/event.js';
-import { URI } from '../../../../../base/common/uri.js';
 import {
 	AgentEventType,
+	ConnectionState,
 	type AgentEvent,
 	type ITextDeltaPayload,
 	type IDonePayload,
@@ -31,23 +31,29 @@ class StubEventStreamClient extends Disposable implements IEventStreamClient {
 	private readonly _onDidReceiveEvent = this._register(new Emitter<AgentEvent>());
 	readonly onDidReceiveEvent: Event<AgentEvent> = this._onDidReceiveEvent.event;
 
-	private readonly _onDidChangeConnectionState = this._register(new Emitter<string>());
-	readonly onDidChangeConnectionState: Event<string> = this._onDidChangeConnectionState.event;
+	private readonly _onDidChangeConnectionState = this._register(new Emitter<ConnectionState>());
+	readonly onDidChangeConnectionState: Event<ConnectionState> = this._onDidChangeConnectionState.event;
+
+	private _connectionState = ConnectionState.Disconnected;
+	get connectionState(): ConnectionState { return this._connectionState; }
 
 	connected = false;
 
-	connect(_url: string, _sessionId?: string): void {
+	async connect(): Promise<void> {
 		this.connected = true;
-		this._onDidChangeConnectionState.fire('connected');
+		this._connectionState = ConnectionState.Connected;
+		this._onDidChangeConnectionState.fire(ConnectionState.Connected);
 	}
 
 	disconnect(): void {
 		this.connected = false;
-		this._onDidChangeConnectionState.fire('disconnected');
+		this._connectionState = ConnectionState.Disconnected;
+		this._onDidChangeConnectionState.fire(ConnectionState.Disconnected);
 	}
 
-	sendTask(_task: string, _sessionId?: string): void { /* no-op */ }
-	sendConfirmResponse(_requestId: string, _action: string, _data?: unknown, _sessionId?: string): void { /* no-op */ }
+	sendTask(_sessionId: string, _query: string, _mentions: any[], _mode: 'agent' | 'spec', _options: any): void { /* no-op */ }
+	sendStop(_sessionId: string): void { /* no-op */ }
+	sendConfirmResponse(_requestId: string, _action: string, _comment?: string, _sessionId?: string): void { /* no-op */ }
 
 	/** Test helper: emit an event as if received from SSE */
 	simulateEvent(event: AgentEvent): void {

@@ -152,6 +152,74 @@ export class SshConnection {
 	}
 
 	/**
+	 * Execute a command and pipe data to its stdin.
+	 * Used for uploading files via `cat > remote_path`.
+	 * Handles large buffers by writing in chunks with backpressure.
+	 */
+	async execWithStdin(command: string, data: Buffer): Promise<string> {
+		if (!this._client) {
+			throw new Error('SSH not connected');
+		}
+
+		return new Promise<string>((resolve, reject) => {
+			this._client!.exec(command, (err, channel) => {
+				if (err) {
+					reject(err);
+					return;
+				}
+
+				let stdout = '';
+				let stderr = '';
+
+				channel.on('data', (chunk: Buffer) => {
+					stdout += chunk.toString();
+				});
+
+				channel.stderr.on('data', (chunk: Buffer) => {
+					stderr += chunk.toString();
+				});
+
+				channel.on('close', (code: number) => {
+					if (code === 0) {
+						resolve(stdout);
+					} else {
+						reject(new Error(`Command exited with code ${code}: ${stderr.trim()}`));
+					}
+				});
+
+				// Write data in chunks to handle backpressure
+				const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+				let offset = 0;
+
+				const writeNext = () => {
+					let canContinue = true;
+					while (canContinue && offset < data.length) {
+						const end = Math.min(offset + CHUNK_SIZE, data.length);
+						const chunk = data.subarray(offset, end);
+						offset = end;
+
+						if (offset >= data.length) {
+							// Last chunk — write and end
+							channel.write(chunk, () => {
+								channel.end();
+							});
+							return;
+						} else {
+							canContinue = channel.write(chunk);
+						}
+					}
+					if (offset < data.length) {
+						// Backpressure: wait for drain event
+						channel.once('drain', writeNext);
+					}
+				};
+
+				writeNext();
+			});
+		});
+	}
+
+	/**
 	 * Execute a long-running command on the remote host.
 	 * Returns the channel for streaming stdout/stderr.
 	 * The caller is responsible for handling the channel lifecycle.
