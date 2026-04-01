@@ -2273,12 +2273,38 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			command, cwd, isBackground, explanation,
 		);
 
-		return new Promise<string>((resolve) => {
-			const cp = require('child_process');
-			const proc = cp.exec(command, {
+		let cp: typeof import('child_process');
+		try {
+			cp = require('child_process');
+		} catch {
+			return 'child_process not available in this environment (web browser context)';
+		}
+
+		const terminalId = `term_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+		// 后台任务：启动后立即返回 terminal_id，回调写入缓存
+		if (isBackground) {
+			this._terminalOutputCache.set(terminalId, { output: '(running...)', exitCode: undefined });
+			cp.exec(command, {
 				cwd: cwd || undefined,
 				timeout: 120_000,
-				maxBuffer: 1024 * 1024, // 1MB
+				maxBuffer: 1024 * 1024,
+				shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash',
+			}, (error: any, stdout: string, stderr: string) => {
+				const result = error
+					? `Exit code: ${error.code ?? 1}\nstdout:\n${stdout}\nstderr:\n${stderr}`
+					: (stdout || '(no output)');
+				this._terminalOutputCache.set(terminalId, { output: result, exitCode: error?.code ?? 0 });
+			});
+			return `Background task started. Terminal ID: ${terminalId}`;
+		}
+
+		// 前台任务：等待执行完成
+		return new Promise<string>((resolve) => {
+			cp.exec(command, {
+				cwd: cwd || undefined,
+				timeout: 120_000,
+				maxBuffer: 1024 * 1024,
 				shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash',
 			}, (error: any, stdout: string, stderr: string) => {
 				let result: string;
@@ -2295,8 +2321,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					result = stdout || '(no output)';
 				}
 
-				// 缓存输出，供 get_terminal_output 使用
-				const terminalId = `term_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 				this._terminalOutputCache.set(terminalId, { output: result, exitCode });
 
 				// 限制缓存大小
@@ -2309,13 +2333,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 				resolve(result);
 			});
-
-			// 如果是后台任务，立即返回 terminal_id
-			if (isBackground) {
-				const terminalId = `term_bg_${Date.now()}`;
-				this._terminalOutputCache.set(terminalId, { output: '(running...)', exitCode: undefined });
-				resolve(`Background task started. Terminal ID: ${terminalId}`);
-			}
 		});
 	}
 

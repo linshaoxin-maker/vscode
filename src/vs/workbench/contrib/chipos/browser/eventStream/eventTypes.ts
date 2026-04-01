@@ -557,18 +557,6 @@ export interface IHeartbeatEvent extends IAgentEventBase {
 	readonly payload: IHeartbeatPayload;
 }
 
-// FEAT-R72: IDE 端工具调用 payload
-export interface IIdeToolCallPayload {
-	readonly call_id: string;
-	readonly name: string;
-	readonly args_json: string;
-}
-
-export interface IIdeToolCallEvent extends IAgentEventBase {
-	readonly event_type: AgentEventType.IdeToolCall;
-	readonly payload: IIdeToolCallPayload;
-}
-
 // ── Connection state ────────────────────────────────────────────────────────
 
 export const enum ConnectionState {
