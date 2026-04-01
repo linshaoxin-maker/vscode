@@ -82,6 +82,7 @@ import {
 	type IQueueUpdatePayload,
 	type IContextWarningPayload,
 	type IMentionItem,
+	type IIdeToolCallPayload,
 } from '../eventStream/eventTypes.js';
 
 interface IChatSessionRuntime {
@@ -951,6 +952,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// ── Skill tree (separate panel, not in chat) ──
 					case AgentEventType.SkillTree:
 						break;
+
+					// ── FEAT-R72: IDE 端工具调用（Reasoner → IDE 执行）──
+					case AgentEventType.IdeToolCall: {
+						const p = event.payload as IIdeToolCallPayload;
+						this._logService.info(
+							'[ChipOS Agent] IDE tool call: name=%s, call_id=%s',
+							p.name, p.call_id,
+						);
+						// 异步执行，不阻塞事件循环
+						this._executeIdeToolCall(p, runtime, streamClient).catch(err => {
+							this._logService.error('[ChipOS Agent] IDE tool execution failed:', err);
+						});
+						break;
+					}
 
 					case AgentEventType.Done:
 						// Close any dangling tool calls before finishing
@@ -2189,6 +2204,130 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const baseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') ?? '';
 		const model = this._configurationService.getValue<string>('chipos.model') ?? '';
 		return { provider, api_key: apiKey, base_url: baseUrl, model };
+	}
+
+	// ── FEAT-R72: IDE 端工具执行 ────────────────────────────────────────────
+
+	/**
+	 * IDE 端工具输出缓存（terminal_id → output）
+	 * 用于 get_terminal_output 工具读取之前 run_in_terminal 的输出
+	 */
+	private readonly _terminalOutputCache = new Map<string, { output: string; exitCode?: number }>();
+
+	/**
+	 * 处理 Reasoner 推送的 ide_tool_call 事件。
+	 * 根据工具名分发到对应的执行方法，执行完毕后回传结果。
+	 */
+	private async _executeIdeToolCall(
+		payload: IIdeToolCallPayload,
+		runtime: IChatSessionRuntime,
+		streamClient: IEventStreamClient,
+	): Promise<void> {
+		const { call_id, name, args_json } = payload;
+		let content: string;
+		let isError = false;
+
+		try {
+			const args = JSON.parse(args_json);
+
+			switch (name) {
+				case 'run_in_terminal': {
+					content = await this._runInTerminal(args);
+					break;
+				}
+				case 'get_terminal_output': {
+					content = this._getTerminalOutput(args);
+					break;
+				}
+				default: {
+					content = `Unknown IDE tool: ${name}`;
+					isError = true;
+				}
+			}
+		} catch (err: any) {
+			content = `IDE tool '${name}' failed: ${err.message || String(err)}`;
+			isError = true;
+		}
+
+		// 回传结果给 Reasoner
+		const sessionId = runtime.backendSessionId ?? '';
+		this._logService.info(
+			'[ChipOS Agent] IDE tool result: call_id=%s, is_error=%s, content_len=%d',
+			call_id, isError, content.length,
+		);
+		streamClient.sendIdeToolResult(sessionId, call_id, content, isError);
+	}
+
+	/**
+	 * FEAT-R72: 在 IDE 终端中执行 shell 命令。
+	 * MVP 实现：使用 child_process.exec()，后续 R74 接入 sandbox-runtime。
+	 */
+	private async _runInTerminal(
+		args: { command: string; explanation?: string; isBackground?: boolean },
+	): Promise<string> {
+		const { command, explanation, isBackground } = args;
+		const cwd = this._getWorkspaceRoot() ?? '';
+
+		this._logService.info(
+			'[ChipOS Agent] run_in_terminal: cmd=%s, cwd=%s, bg=%s, explanation=%s',
+			command, cwd, isBackground, explanation,
+		);
+
+		return new Promise<string>((resolve) => {
+			const cp = require('child_process');
+			const proc = cp.exec(command, {
+				cwd: cwd || undefined,
+				timeout: 120_000,
+				maxBuffer: 1024 * 1024, // 1MB
+				shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash',
+			}, (error: any, stdout: string, stderr: string) => {
+				let result: string;
+				let exitCode: number | undefined;
+
+				if (error && error.killed) {
+					result = `Command timed out after 120s\n${stderr}`;
+					exitCode = -1;
+				} else if (error) {
+					exitCode = error.code ?? 1;
+					result = `Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
+				} else {
+					exitCode = 0;
+					result = stdout || '(no output)';
+				}
+
+				// 缓存输出，供 get_terminal_output 使用
+				const terminalId = `term_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+				this._terminalOutputCache.set(terminalId, { output: result, exitCode });
+
+				// 限制缓存大小
+				if (this._terminalOutputCache.size > 50) {
+					const oldest = this._terminalOutputCache.keys().next().value;
+					if (oldest) {
+						this._terminalOutputCache.delete(oldest);
+					}
+				}
+
+				resolve(result);
+			});
+
+			// 如果是后台任务，立即返回 terminal_id
+			if (isBackground) {
+				const terminalId = `term_bg_${Date.now()}`;
+				this._terminalOutputCache.set(terminalId, { output: '(running...)', exitCode: undefined });
+				resolve(`Background task started. Terminal ID: ${terminalId}`);
+			}
+		});
+	}
+
+	/**
+	 * FEAT-R75: 获取之前终端执行的输出。
+	 */
+	private _getTerminalOutput(args: { terminal_id: string }): string {
+		const cached = this._terminalOutputCache.get(args.terminal_id);
+		if (!cached) {
+			return `Terminal '${args.terminal_id}' not found or expired`;
+		}
+		return cached.output;
 	}
 
 	private _warning(content: string): IChatWarningMessage {

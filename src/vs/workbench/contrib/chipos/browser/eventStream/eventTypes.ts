@@ -44,6 +44,8 @@ export const enum AgentEventType {
 	// Reasoner passthrough events
 	TimingHighlight = 'timing_highlight',
 	PreReviewReport = 'pre_review_report',
+	// FEAT-R72: IDE 端工具调用（Reasoner → IDE 执行）
+	IdeToolCall = 'ide_tool_call',
 }
 
 export interface IAgentEventBase {
@@ -282,6 +284,13 @@ export interface IWorktreeFilesAppliedPayload {
 	readonly files: Array<{ path: string; action: 'added' | 'modified' | 'deleted' }>;
 }
 
+/** FEAT-R72: IDE 端工具调用 payload（Reasoner → IDE 执行） */
+export interface IIdeToolCallPayload {
+	readonly call_id: string;
+	readonly name: string;
+	readonly args_json: string;
+}
+
 // ── Concrete AgentEvent types ───────────────────────────────────────────────
 
 export interface ITextDeltaEvent extends IAgentEventBase {
@@ -424,6 +433,12 @@ export interface IContextWarningEvent extends IAgentEventBase {
 	readonly payload: IContextWarningPayload;
 }
 
+/** FEAT-R72 */
+export interface IIdeToolCallEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.IdeToolCall;
+	readonly payload: IIdeToolCallPayload;
+}
+
 export type AgentEvent =
 	| ITextDeltaEvent
 	| IThinkingDeltaEvent
@@ -455,7 +470,8 @@ export type AgentEvent =
 	| IUsageEvent
 	| IHeartbeatEvent
 	| IQueueUpdateEvent
-	| IContextWarningEvent;
+	| IContextWarningEvent
+	| IIdeToolCallEvent;
 
 // ── Task request payload ────────────────────────────────────────────────────
 
@@ -539,6 +555,18 @@ export interface IHeartbeatPayload {
 export interface IHeartbeatEvent extends IAgentEventBase {
 	readonly event_type: AgentEventType.Heartbeat;
 	readonly payload: IHeartbeatPayload;
+}
+
+// FEAT-R72: IDE 端工具调用 payload
+export interface IIdeToolCallPayload {
+	readonly call_id: string;
+	readonly name: string;
+	readonly args_json: string;
+}
+
+export interface IIdeToolCallEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.IdeToolCall;
+	readonly payload: IIdeToolCallPayload;
 }
 
 // ── Connection state ────────────────────────────────────────────────────────

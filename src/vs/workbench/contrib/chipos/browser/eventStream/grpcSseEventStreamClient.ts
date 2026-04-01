@@ -78,6 +78,7 @@ const SSE_TYPE_MAP: Record<string, AgentEventType> = {
 	'context_warning': AgentEventType.ContextWarning,
 	'timing_highlight': AgentEventType.TimingHighlight,
 	'pre_review_report': AgentEventType.PreReviewReport,
+	'ide_tool_call': AgentEventType.IdeToolCall,  // FEAT-R72
 };
 
 /**
@@ -233,6 +234,20 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}).catch(err => {
 			console.error('[SseClient] sendConfirmResponse failed:', err);
 			this._emitError(`Confirm response failed: ${err}`, 'CONFIRM_FAILED', 'SESSION', false);
+		});
+	}
+
+	// ── FEAT-R73: sendIdeToolResult ─────────────────────────────────────────
+
+	sendIdeToolResult(sessionId: string, callId: string, content: string, isError: boolean): void {
+		this._post('/api/v1/ide-tool-result', {
+			session_id: sessionId,
+			call_id: callId,
+			content,
+			is_error: isError,
+		}).catch(err => {
+			console.error('[SseClient] sendIdeToolResult failed:', err);
+			this._emitError(`IDE tool result failed: ${err}`, 'IDE_TOOL_RESULT_FAILED', 'SESSION', false);
 		});
 	}
 

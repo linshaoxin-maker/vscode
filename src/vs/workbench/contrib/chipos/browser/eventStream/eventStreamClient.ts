@@ -28,6 +28,9 @@ export interface IEventStreamClient extends IDisposable {
 	sendTask(sessionId: string, query: string, mentions: IMentionItem[], mode: 'agent' | 'spec', options: { thinking: boolean; autoApproveMode: string; workspacePath?: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } }): void;
 	sendStop(sessionId: string): void;
 	sendConfirmResponse(requestId: string, action: string, comment?: string, sessionId?: string): void;
+
+	/** FEAT-R73: 回传 IDE 端工具执行结果 */
+	sendIdeToolResult(sessionId: string, callId: string, content: string, isError: boolean): void;
 }
 
 // ── MockEventStreamClient ──────────────────────────────────────────────────
@@ -90,6 +93,10 @@ export class MockEventStreamClient extends Disposable implements IEventStreamCli
 	}
 
 	sendConfirmResponse(_requestId: string, _action: string, _comment?: string): void {
+		// no-op in mock
+	}
+
+	sendIdeToolResult(_sessionId: string, _callId: string, _content: string, _isError: boolean): void {
 		// no-op in mock
 	}
 
