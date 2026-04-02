@@ -2285,8 +2285,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				config: {
 					name: `ChipOS: ${command.slice(0, 30)}`,
 					cwd: cwd || undefined,
+					isFeatureTerminal: true,
 				},
-				location: { parentTerminal: undefined } as any, // 不自动聚焦
 			});
 		} catch (e: any) {
 			this._logService.error('[ChipOS Agent] Failed to create terminal: %s', e?.message);
