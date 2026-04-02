@@ -13,6 +13,7 @@ import { INotificationService } from '../../../../../platform/notification/commo
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ITerminalService } from '../../../terminal/browser/terminal.js';
 import {
 	IChatAgentImplementation,
 	IChatAgentRequest,
@@ -130,6 +131,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatEditingService private readonly _chatEditingService: IChatEditingService,
 		@IChatService private readonly _chatService: IChatService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@ITerminalService private readonly _terminalService: ITerminalService,
 	) {
 		super();
 		this._register(this._chatService.onDidDisposeSession(e => {
@@ -2260,7 +2262,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	/**
 	 * FEAT-R72: 在 IDE 终端中执行 shell 命令。
-	 * MVP 实现：使用 child_process.exec()，后续 R74 接入 sandbox-runtime。
+	 * 使用 VS Code ITerminalService 创建终端实例，通过 sendText 执行命令，
+	 * 通过 onData 收集输出。支持前台（等待完成）和后台（立即返回）两种模式。
 	 */
 	private async _runInTerminal(
 		args: { command: string; explanation?: string; isBackground?: boolean },
@@ -2273,65 +2276,109 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			command, cwd, isBackground, explanation,
 		);
 
-		let cp: typeof import('child_process');
-		try {
-			cp = require('child_process');
-		} catch {
-			return 'child_process not available in this environment (web browser context)';
-		}
-
 		const terminalId = `term_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-		// 后台任务：启动后立即返回 terminal_id，回调写入缓存
+		// 创建隐藏终端实例
+		let terminal: import('../../terminal/browser/terminal.js').ITerminalInstance;
+		try {
+			terminal = await this._terminalService.createTerminal({
+				config: {
+					name: `ChipOS: ${command.slice(0, 30)}`,
+					cwd: cwd || undefined,
+				},
+				location: { parentTerminal: undefined } as any, // 不自动聚焦
+			});
+		} catch (e: any) {
+			this._logService.error('[ChipOS Agent] Failed to create terminal: %s', e?.message);
+			return `Failed to create terminal: ${e?.message ?? 'unknown error'}`;
+		}
+
+		// 收集输出
+		let output = '';
+		const dataListener = terminal.onData((data: string) => {
+			// 过滤 ANSI 转义序列
+			const clean = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+			output += clean;
+			// 限制输出大小
+			if (output.length > 50_000) {
+				output = output.slice(-40_000);
+			}
+		});
+
+		// 后台任务：发送命令后立即返回
 		if (isBackground) {
 			this._terminalOutputCache.set(terminalId, { output: '(running...)', exitCode: undefined });
-			cp.exec(command, {
-				cwd: cwd || undefined,
-				timeout: 120_000,
-				maxBuffer: 1024 * 1024,
-				shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash',
-			}, (error: any, stdout: string, stderr: string) => {
-				const result = error
-					? `Exit code: ${error.code ?? 1}\nstdout:\n${stdout}\nstderr:\n${stderr}`
-					: (stdout || '(no output)');
-				this._terminalOutputCache.set(terminalId, { output: result, exitCode: error?.code ?? 0 });
-			});
+			await terminal.sendText(command, true);
+
+			// 后台监听：命令完成后更新缓存
+			const bgTimeout = setTimeout(() => {
+				dataListener.dispose();
+				this._terminalOutputCache.set(terminalId, {
+					output: output || '(no output captured)',
+					exitCode: undefined,
+				});
+			}, 120_000);
+
+			// 尝试监听命令完成
+			const capabilities = terminal.capabilities;
+			const cmdDetection = capabilities?.get?.(2 /* TerminalCapability.CommandDetection */);
+			if (cmdDetection) {
+				const finishListener = (cmdDetection as any).onCommandFinished?.((e: any) => {
+					clearTimeout(bgTimeout);
+					dataListener.dispose();
+					finishListener?.dispose();
+					this._terminalOutputCache.set(terminalId, {
+						output: output || '(no output captured)',
+						exitCode: e?.exitCode,
+					});
+				});
+			}
+
 			return `Background task started. Terminal ID: ${terminalId}`;
 		}
 
-		// 前台任务：等待执行完成
+		// 前台任务：等待命令完成
 		return new Promise<string>((resolve) => {
-			cp.exec(command, {
-				cwd: cwd || undefined,
-				timeout: 120_000,
-				maxBuffer: 1024 * 1024,
-				shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash',
-			}, (error: any, stdout: string, stderr: string) => {
-				let result: string;
-				let exitCode: number | undefined;
+			const timeout = setTimeout(() => {
+				dataListener.dispose();
+				this._terminalOutputCache.set(terminalId, { output: `Command timed out after 120s\n${output}`, exitCode: -1 });
+				resolve(`Command timed out after 120s\n${output}`);
+			}, 120_000);
 
-				if (error && error.killed) {
-					result = `Command timed out after 120s\n${stderr}`;
-					exitCode = -1;
-				} else if (error) {
-					exitCode = error.code ?? 1;
-					result = `Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
-				} else {
-					exitCode = 0;
-					result = stdout || '(no output)';
-				}
+			// 监听命令完成
+			const capabilities = terminal.capabilities;
+			const cmdDetection = capabilities?.get?.(2 /* TerminalCapability.CommandDetection */);
 
-				this._terminalOutputCache.set(terminalId, { output: result, exitCode });
+			if (cmdDetection) {
+				const finishListener = (cmdDetection as any).onCommandFinished?.((e: any) => {
+					clearTimeout(timeout);
+					dataListener.dispose();
+					finishListener?.dispose();
+					const exitCode = e?.exitCode ?? 0;
+					const result = output || '(no output)';
+					this._terminalOutputCache.set(terminalId, { output: result, exitCode });
 
-				// 限制缓存大小
-				if (this._terminalOutputCache.size > 50) {
-					const oldest = this._terminalOutputCache.keys().next().value;
-					if (oldest) {
-						this._terminalOutputCache.delete(oldest);
+					// 限制缓存大小
+					if (this._terminalOutputCache.size > 50) {
+						const oldest = this._terminalOutputCache.keys().next().value;
+						if (oldest) { this._terminalOutputCache.delete(oldest); }
 					}
-				}
+					resolve(result);
+				});
+			}
 
-				resolve(result);
+			// 发送命令执行
+			terminal.sendText(command, true).then(() => {
+				// 如果没有 commandDetection，用简单的延时等待
+				if (!cmdDetection) {
+					setTimeout(() => {
+						clearTimeout(timeout);
+						dataListener.dispose();
+						const result = output || '(no output captured - command detection unavailable)';
+						this._terminalOutputCache.set(terminalId, { output: result, exitCode: undefined });
+						resolve(result);
+					}, 3000);
+				}
 			});
 		});
 	}

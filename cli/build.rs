@@ -23,7 +23,7 @@ fn main() {
 	apply_win32_version_resources();
 }
 
-fn camel_case_to_constant_case(key: &str) -> String {
+fn camel_case_to_constant_case(key: &str) -> String 
 	let mut output = String::new();
 	let mut prev_upper = false;
 	for c in key.chars() {
