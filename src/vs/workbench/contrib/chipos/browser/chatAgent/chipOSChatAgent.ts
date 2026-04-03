@@ -2296,8 +2296,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// 收集输出
 		let output = '';
 		const dataListener = terminal.onData((data: string) => {
-			// 过滤 ANSI 转义序列
-			const clean = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+			// 清洗终端控制序列：
+			// 1. CSI 序列: \x1b[ ... letter  (含 bracketed paste \x1b[?2004h/l)
+			// 2. OSC 序列: \x1b] ... \x07 或 \x1b] ... \x1b\\  (终端标题等)
+			// 3. 其他 ESC 序列: \x1b 后跟单字符
+			// 4. \r 回车符
+			const clean = data
+				.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')   // OSC
+				.replace(/\x1b\[[\x20-\x3f]*[\x30-\x7e]/g, '')       // CSI (broad)
+				.replace(/\x1b[^[\]]/g, '')                            // other ESC
+				.replace(/\r/g, '');                                    // CR
 			output += clean;
 			// 限制输出大小
 			if (output.length > 50_000) {
@@ -2314,7 +2322,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const bgTimeout = setTimeout(() => {
 				dataListener.dispose();
 				this._terminalOutputCache.set(terminalId, {
-					output: output || '(no output captured)',
+					output: this._cleanTerminalOutput(output, command) || '(no output captured)',
 					exitCode: undefined,
 				});
 			}, 120_000);
@@ -2328,7 +2336,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					dataListener.dispose();
 					finishListener?.dispose();
 					this._terminalOutputCache.set(terminalId, {
-						output: output || '(no output captured)',
+						output: this._cleanTerminalOutput(output, command) || '(no output captured)',
 						exitCode: e?.exitCode,
 					});
 				});
@@ -2355,7 +2363,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					dataListener.dispose();
 					finishListener?.dispose();
 					const exitCode = e?.exitCode ?? 0;
-					const result = output || '(no output)';
+					const result = this._cleanTerminalOutput(output, command) || '(no output)';
 					this._terminalOutputCache.set(terminalId, { output: result, exitCode });
 
 					// 限制缓存大小
@@ -2374,7 +2382,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					setTimeout(() => {
 						clearTimeout(timeout);
 						dataListener.dispose();
-						const result = output || '(no output captured - command detection unavailable)';
+						const result = this._cleanTerminalOutput(output, command) || '(no output captured - command detection unavailable)';
 						this._terminalOutputCache.set(terminalId, { output: result, exitCode: undefined });
 						resolve(result);
 					}, 3000);
@@ -2387,6 +2395,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * FEAT-R75: 获取之前终端执行的输出。
 	 */
 	private _getTerminalOutput(args: { terminal_id: string }): string {
+
+	/**
+	 * 清洗终端输出：去掉命令回显、shell prompt、空行。
+	 * 输入示例: "root@host:~/ws# echo hello world\nhello world\nroot@host:~/ws# "
+	 * 输出: "hello world"
+	 */
+	private _cleanTerminalOutput(raw: string, command: string): string {
+		const lines = raw.split('\n');
+		const cleaned: string[] = [];
+		// shell prompt 模式：user@host:path# 或 user@host:path$ 或 (venv) user@...
+		const promptRe = /^(\([\w.-]+\)\s*)?[\w.-]+@[\w.-]+[:#$%]\s*/;
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) { continue; }
+			// 跳过命令回显行（包含用户输入的命令）
+			if (trimmed.includes(command.trim())) { continue; }
+			// 跳过纯 prompt 行
+			if (promptRe.test(trimmed) && trimmed.replace(promptRe, '').trim() === '') { continue; }
+			// 去掉行首 prompt 前缀
+			const withoutPrompt = trimmed.replace(promptRe, '');
+			cleaned.push(withoutPrompt || trimmed);
+		}
+		return cleaned.join('\n').trim() || '(no output)';
+	}
+
+
 		const cached = this._terminalOutputCache.get(args.terminal_id);
 		if (!cached) {
 			return `Terminal '${args.terminal_id}' not found or expired`;
