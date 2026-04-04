@@ -142,7 +142,11 @@ export class ToolsTab extends Disposable {
 		stateText.style.color = 'var(--vscode-descriptionForeground)';
 		stateText.style.fontSize = '12px';
 		stateText.style.marginRight = '8px';
-		stateText.textContent = McpConnectionState.toString(connState);
+		const stateLabel = stateKind === McpConnectionState.Kind.Running ? 'Running'
+			: stateKind === McpConnectionState.Kind.Starting ? 'Starting'
+				: stateKind === McpConnectionState.Kind.Error ? 'Error'
+					: 'Stopped';
+		stateText.textContent = stateLabel;
 
 		// Tool count
 		const tools = server.tools.get();
