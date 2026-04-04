@@ -2006,7 +2006,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime: IChatSessionRuntime,
 		snapshotContent?: string,
 	): void {
-		// Filter out files in hidden directories (e.g. .cursor/, .git/, .vscode/)
+		// Filter out files in hidden directories (e.g. .chipos/, .git/, .vscode/)
 		// Only check the path relative to workspace root, not the full absolute path
 		const workspaceRoot = this._getWorkspaceRoot();
 		const relativePath = workspaceRoot && fileUri.path.startsWith(workspaceRoot)
@@ -2756,6 +2756,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	override dispose(): void {
+		// R62: 清理 debounce timer
+		if (this._mcpToolsReportDebounce) {
+			clearTimeout(this._mcpToolsReportDebounce);
+			this._mcpToolsReportDebounce = undefined;
+		}
 		for (const [sessionResource] of this._sessionRuntimes) {
 			this._disposeRuntime(sessionResource);
 		}

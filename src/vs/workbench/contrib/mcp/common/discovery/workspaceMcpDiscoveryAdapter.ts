@@ -50,7 +50,7 @@ export class ChipOSWorkspaceMcpDiscoveryAdapter extends FilesystemMcpDiscovery i
 	private watchFolder(folder: IWorkspaceFolder) {
 		const configFile = joinPath(folder.uri, '.chipos', 'mcp.json');
 		const collection: WritableMcpCollectionDefinition = {
-			id: `cursor-workspace.${folder.index}`,
+			id: `chipos-workspace.${folder.index}`,
 			label: `${folder.name}/.chipos/mcp.json`,
 			remoteAuthority: this._remoteAgentService.getConnection()?.remoteAuthority || null,
 			scope: StorageScope.WORKSPACE,
