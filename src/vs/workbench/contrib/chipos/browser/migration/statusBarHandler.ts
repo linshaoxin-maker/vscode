@@ -133,17 +133,17 @@ export class StatusBarHandler extends Disposable {
 	// ── MCP Status ────────────────────────────────────────────────────────
 
 	updateMcpStatus(serverCount: number, toolCount: number, hasError: boolean): void {
-		if (serverCount === 0) {
-			if (this._mcpEntry) {
-				this._mcpEntry.dispose();
-				this._mcpEntry = undefined;
-			}
-			return;
-		}
-
 		const icon = hasError ? '$(warning)' : '$(tools)';
-		const text = `${icon} MCP: ${toolCount} tool${toolCount !== 1 ? 's' : ''}`;
-		const tooltip = `${serverCount} MCP server${serverCount !== 1 ? 's' : ''}, ${toolCount} tool${toolCount !== 1 ? 's' : ''}\nClick to manage`;
+		let text: string;
+		let tooltip: string;
+
+		if (serverCount === 0) {
+			text = `${icon} MCP`;
+			tooltip = 'No MCP servers configured\nClick to add one';
+		} else {
+			text = `${icon} MCP: ${toolCount} tool${toolCount !== 1 ? 's' : ''}`;
+			tooltip = `${serverCount} MCP server${serverCount !== 1 ? 's' : ''}, ${toolCount} tool${toolCount !== 1 ? 's' : ''}\nClick to manage`;
+		}
 
 		if (this._mcpEntry) {
 			this._mcpEntry.update({
