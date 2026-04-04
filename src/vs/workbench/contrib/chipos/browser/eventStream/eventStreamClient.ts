@@ -31,6 +31,9 @@ export interface IEventStreamClient extends IDisposable {
 
 	/** FEAT-R73: 回传 IDE 端工具执行结果 */
 	sendIdeToolResult(sessionId: string, callId: string, content: string, isError: boolean): void;
+
+	/** FEAT-R55: 上报 IDE 侧 MCP 工具定义给 Reasoner */
+	registerIdeMcpTools(sessionId: string, tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }>): void;
 }
 
 // ── MockEventStreamClient ──────────────────────────────────────────────────
@@ -97,6 +100,10 @@ export class MockEventStreamClient extends Disposable implements IEventStreamCli
 	}
 
 	sendIdeToolResult(_sessionId: string, _callId: string, _content: string, _isError: boolean): void {
+		// no-op in mock
+	}
+
+	registerIdeMcpTools(_sessionId: string, _tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }>): void {
 		// no-op in mock
 	}
 

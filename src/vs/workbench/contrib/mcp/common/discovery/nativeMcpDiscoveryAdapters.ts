@@ -100,15 +100,15 @@ export class WindsurfDesktopMpcDiscoveryAdapter extends ClaudeDesktopMpcDiscover
 	}
 }
 
-export class CursorDesktopMpcDiscoveryAdapter extends ClaudeDesktopMpcDiscoveryAdapter {
-	public override readonly discoverySource: DiscoverySource = DiscoverySource.CursorGlobal;
+export class ChipOSDesktopMcpDiscoveryAdapter extends ClaudeDesktopMpcDiscoveryAdapter {
+	public override readonly discoverySource: DiscoverySource = DiscoverySource.ChipOSGlobal;
 
 	constructor(remoteAuthority: string | null) {
 		super(remoteAuthority);
-		this.id = `cursor.${this.remoteAuthority}`;
+		this.id = `chipos.${this.remoteAuthority}`;
 	}
 
 	override getFilePath({ homedir }: INativeMcpDiscoveryData): URI | undefined {
-		return URI.joinPath(homedir, '.cursor', 'mcp.json');
+		return URI.joinPath(homedir, '.chipos', 'mcp.json');
 	}
 }

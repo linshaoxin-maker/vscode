@@ -251,6 +251,18 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		});
 	}
 
+	// ── FEAT-R55: registerIdeMcpTools ──────────────────────────────────────
+
+	registerIdeMcpTools(sessionId: string, tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }>): void {
+		this._post('/api/v1/ide-mcp-tools', {
+			session_id: sessionId,
+			tools,
+		}).catch(err => {
+			console.error('[SseClient] registerIdeMcpTools failed:', err);
+			this._emitError(`MCP tools registration failed: ${err}`, 'MCP_TOOLS_REGISTER_FAILED', 'SESSION', false);
+		});
+	}
+
 	// ── SSE 连接管理 ────────────────────────────────────────────────────────
 
 	private async _openEventSource(): Promise<void> {

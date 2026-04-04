@@ -19,7 +19,7 @@ import { IMcpDiscovery } from './mcpDiscovery.js';
 import { FilesystemMcpDiscovery, WritableMcpCollectionDefinition } from './nativeMcpDiscoveryAbstract.js';
 import { claudeConfigToServerDefinition } from './nativeMcpDiscoveryAdapters.js';
 
-export class CursorWorkspaceMcpDiscoveryAdapter extends FilesystemMcpDiscovery implements IMcpDiscovery {
+export class ChipOSWorkspaceMcpDiscoveryAdapter extends FilesystemMcpDiscovery implements IMcpDiscovery {
 	private readonly _collections = this._register(new DisposableMap<string, IDisposable>());
 
 	constructor(
@@ -48,10 +48,10 @@ export class CursorWorkspaceMcpDiscoveryAdapter extends FilesystemMcpDiscovery i
 	}
 
 	private watchFolder(folder: IWorkspaceFolder) {
-		const configFile = joinPath(folder.uri, '.cursor', 'mcp.json');
+		const configFile = joinPath(folder.uri, '.chipos', 'mcp.json');
 		const collection: WritableMcpCollectionDefinition = {
 			id: `cursor-workspace.${folder.index}`,
-			label: `${folder.name}/.cursor/mcp.json`,
+			label: `${folder.name}/.chipos/mcp.json`,
 			remoteAuthority: this._remoteAgentService.getConnection()?.remoteAuthority || null,
 			scope: StorageScope.WORKSPACE,
 			trustBehavior: McpServerTrust.Kind.TrustedOnNonce,
@@ -64,9 +64,9 @@ export class CursorWorkspaceMcpDiscoveryAdapter extends FilesystemMcpDiscovery i
 		};
 
 		this._collections.set(folder.uri.toString(), this.watchFile(
-			URI.joinPath(folder.uri, '.cursor', 'mcp.json'),
+			URI.joinPath(folder.uri, '.chipos', 'mcp.json'),
 			collection,
-			DiscoverySource.CursorWorkspace,
+			DiscoverySource.ChipOSWorkspace,
 			async contents => {
 				const defs = await claudeConfigToServerDefinition(collection.id, contents, folder.uri);
 				defs?.forEach(d => d.roots = [folder.uri]);

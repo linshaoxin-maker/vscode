@@ -5,6 +5,7 @@
 
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { autorun } from '../../../../../base/common/observable.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
 import { localize } from '../../../../../nls.js';
@@ -15,6 +16,7 @@ import { IWorkspaceContextService } from '../../../../../platform/workspace/comm
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalService } from '../../../terminal/browser/terminal.js';
 import { ITerminalSandboxService } from '../../../terminalContrib/chatAgentTools/common/terminalSandboxService.js';
+import { IMcpService } from '../../../mcp/common/mcpTypes.js';
 import {
 	IChatAgentImplementation,
 	IChatAgentRequest,
@@ -134,6 +136,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
 		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
+		@IMcpService private readonly _mcpService: IMcpService,
 	) {
 		super();
 		this._register(this._chatService.onDidDisposeSession(e => {
@@ -141,6 +144,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				this._disposeRuntime(sessionResource);
 			}
 		}));
+
+		// R62: 监听 MCP 工具列表变更 → 通知 Reasoner
+		this._register(autorun(reader => {
+			const servers = this._mcpService.servers.read(reader);
+			// 读取每个 server 的 tools 以建立依赖追踪
+			for (const server of servers) {
+				server.tools.read(reader);
+			}
+			// 当 servers 或任何 server 的 tools 变化时，重新上报
+			this._onMcpToolsChanged();
+		}));
+	}
+
+	// ── R62: MCP 工具变更通知 ──────────────────────────────────────────────
+
+	private _mcpToolsReportDebounce: ReturnType<typeof setTimeout> | undefined;
+
+	private _onMcpToolsChanged(): void {
+		// 防抖 1s — 避免启动时大量 server 连接导致频繁上报
+		if (this._mcpToolsReportDebounce) {
+			clearTimeout(this._mcpToolsReportDebounce);
+		}
+		this._mcpToolsReportDebounce = setTimeout(() => {
+			this._mcpToolsReportDebounce = undefined;
+			// 找到当前活跃的 session 和 streamClient
+			const activeSession = this._findActiveSession();
+			if (activeSession) {
+				this._collectAndReportMcpTools(activeSession.streamClient, activeSession.sessionId);
+			}
+		}, 1000);
+	}
+
+	private _findActiveSession(): { streamClient: IEventStreamClient; sessionId: string } | null {
+		// 遍历 session runtimes 找到有 streamClient 的
+		for (const [, runtime] of this._sessionRuntimes) {
+			if (runtime.streamClient && runtime.backendSessionId) {
+				return { streamClient: runtime.streamClient, sessionId: runtime.backendSessionId };
+			}
+		}
+		return null;
 	}
 
 	async invoke(
@@ -1036,6 +1079,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					llmConfig: this._buildLlmConfig(),
 				},
 			);
+
+			// R55: 上报 IDE 侧 MCP 工具定义给 Reasoner
+			this._collectAndReportMcpTools(streamClient, sessionId);
 
 			// UX: Show "Thinking" indicator while waiting for first backend event
 			progress([this._progress('$(loading~spin) Waiting for backend response...', true)]);
@@ -2243,10 +2289,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					content = this._getTerminalOutput(args);
 					break;
 				}
-				default: {
+			default: {
+				// R56: 尝试路由到 MCP 工具
+				const mcpResult = await this._tryCallMcpTool(name, args);
+				if (mcpResult !== null) {
+					content = mcpResult.content;
+					isError = mcpResult.isError;
+				} else {
 					content = `Unknown IDE tool: ${name}`;
 					isError = true;
 				}
+			}
 			}
 		} catch (err: any) {
 			content = `IDE tool '${name}' failed: ${err.message || String(err)}`;
@@ -2408,6 +2461,69 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return `Terminal '${args.terminal_id}' not found or expired`;
 		}
 		return cached.output;
+	}
+
+	// ── R56: MCP 工具调用路由 ──────────────────────────────────────────────
+
+	/**
+	 * 尝试通过 Cursor 原生 IMcpService 调用 MCP 工具。
+	 * 返回 null 表示该工具不是 MCP 工具。
+	 */
+	private async _tryCallMcpTool(name: string, args: Record<string, any>): Promise<{ content: string; isError: boolean } | null> {
+		try {
+			const servers = this._mcpService.servers.get();
+			for (const server of servers) {
+				const tools = server.tools.get();
+				if (!tools) { continue; }
+				const tool = tools.find(t => t.definition.name === name);
+				if (tool) {
+					this._logService.info('[ChipOS Agent] MCP tool found: %s on server %s', name, server.definition.id);
+					const result = await tool.call(args);
+					const textParts = (result.content || [])
+						.filter((c: any) => c.type === 'text')
+						.map((c: any) => c.text);
+					return {
+						content: textParts.join('\n') || JSON.stringify(result),
+						isError: !!result.isError,
+					};
+				}
+			}
+			return null;
+		} catch (err: any) {
+			this._logService.warn('[ChipOS Agent] MCP tool call failed: %s — %s', name, err.message);
+			return { content: `MCP tool '${name}' failed: ${err.message}`, isError: true };
+		}
+	}
+
+	// ── R55: MCP 工具定义上报 Reasoner ────────────────────────────────────
+
+	/**
+	 * 收集所有 MCP 工具定义，上报给 Reasoner。
+	 * 在 session 开始时和 MCP 工具列表变更时调用。
+	 */
+	private _collectAndReportMcpTools(streamClient: IEventStreamClient, sessionId: string): void {
+		try {
+			const servers = this._mcpService.servers.get();
+			const tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }> = [];
+			for (const server of servers) {
+				const serverTools = server.tools.get();
+				if (!serverTools) { continue; }
+				for (const tool of serverTools) {
+					tools.push({
+						name: tool.definition.name,
+						description: tool.definition.description || '',
+						parameters_json_schema: JSON.stringify(tool.definition.inputSchema || {}),
+						source: `mcp:${server.definition.id}`,
+					});
+				}
+			}
+			if (tools.length > 0) {
+				this._logService.info('[ChipOS Agent] Reporting %d MCP tools to Reasoner', tools.length);
+				streamClient.registerIdeMcpTools(sessionId, tools);
+			}
+		} catch (err: any) {
+			this._logService.warn('[ChipOS Agent] Failed to collect MCP tools: %s', err.message);
+		}
 	}
 
 	private _cleanTerminalOutput(raw: string, command: string, effectiveCommand?: string): string {
