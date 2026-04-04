@@ -35,6 +35,8 @@ import { ChipOSChatAgent } from '../../../../workbench/contrib/chipos/browser/ch
 import { StatusBarHandler } from '../../../../workbench/contrib/chipos/browser/migration/statusBarHandler.js';
 import { ConnectionState } from '../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 import { IStatusbarService } from '../../../../workbench/services/statusbar/browser/statusbar.js';
+import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { autorun } from '../../../../base/common/observable.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Extensions as ViewContainerExtensions, IViewContainersRegistry, IViewsRegistry, ITreeViewDescriptor, TreeViewItemHandleArg, ViewContainerLocation } from '../../../../workbench/common/views.js';
@@ -460,6 +462,7 @@ class ChipOSContribution extends Disposable {
 		@IStatusbarService _statusbarService: IStatusbarService,
 		@IViewsService _viewsService: IViewsService,
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
+		@IMcpService private readonly _mcpService: IMcpService,
 	) {
 		super();
 
@@ -579,6 +582,24 @@ class ChipOSContribution extends Disposable {
 				this._statusBarHandler.updateFileChangeCount(files.length);
 			}
 		});
+
+		// ── R58: MCP Server 状态 → 状态栏 ──────────────────────────────────
+		this._register(autorun(reader => {
+			const servers = this._mcpService.servers.read(reader);
+			let toolCount = 0;
+			let hasError = false;
+			for (const server of servers) {
+				const tools = server.tools.read(reader);
+				toolCount += tools.length;
+				const state = server.connectionState.read(reader);
+				if (state.state === McpConnectionState.Kind.Error) {
+					hasError = true;
+				}
+			}
+			if (this._statusBarHandler) {
+				this._statusBarHandler.updateMcpStatus(servers.length, toolCount, hasError);
+			}
+		}));
 
 		this._logService.info('[ChipOS] Native chat agent registered successfully');
 	}

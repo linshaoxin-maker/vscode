@@ -20,6 +20,7 @@ import { FeaturesTab } from './tabs/featuresTab.js';
 import { ConnectionTab } from './tabs/connectionTab.js';
 import { RulesTab } from './tabs/rulesTab.js';
 import { BetaTab } from './tabs/betaTab.js';
+import { ToolsTab } from './tabs/toolsTab.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import * as dom from '../../../../../base/browser/dom.js';
@@ -39,6 +40,7 @@ const CATEGORIES: ICategoryDef[] = [
 	{ id: 'connection', label: localize('chipos.cat.connection', 'Connection'), icon: Codicon.plug },
 	{ id: 'rules', label: localize('chipos.cat.rules', 'Rules'), icon: Codicon.law },
 	{ id: 'beta', label: localize('chipos.cat.beta', 'Beta'), icon: Codicon.beaker },
+	{ id: 'tools', label: localize('chipos.cat.tools', 'Tools'), icon: Codicon.tools },
 ];
 
 export class ChipOSSettingsEditor extends EditorPane {
@@ -151,9 +153,12 @@ export class ChipOSSettingsEditor extends EditorPane {
 				case 'rules':
 					store.add(this._instantiationService.createInstance(RulesTab, this._contentArea));
 					break;
-				case 'beta':
-					store.add(this._instantiationService.createInstance(BetaTab, this._contentArea));
-					break;
+			case 'beta':
+				store.add(this._instantiationService.createInstance(BetaTab, this._contentArea));
+				break;
+			case 'tools':
+				store.add(this._instantiationService.createInstance(ToolsTab, this._contentArea));
+				break;
 			}
 		} catch (err) {
 			const errorEl = dom.append(this._contentArea, dom.$('.chipos-settings-empty'));

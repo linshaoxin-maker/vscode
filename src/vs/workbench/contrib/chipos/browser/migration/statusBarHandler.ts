@@ -18,12 +18,14 @@ const CONNECTION_LABELS: Record<string, string> = {
 const STATUSBAR_CONNECTION_ID = 'chipos.statusbar.connection';
 const STATUSBAR_AGENT_ID = 'chipos.statusbar.agent';
 const STATUSBAR_FILES_ID = 'chipos.statusbar.files';
+const STATUSBAR_MCP_ID = 'chipos.statusbar.mcp';
 
 export class StatusBarHandler extends Disposable {
 
 	private _connectionEntry: IStatusbarEntryAccessor | undefined;
 	private _agentEntry: IStatusbarEntryAccessor | undefined;
 	private _filesEntry: IStatusbarEntryAccessor | undefined;
+	private _mcpEntry: IStatusbarEntryAccessor | undefined;
 
 	constructor(
 		@IStatusbarService private readonly _statusbarService: IStatusbarService,
@@ -128,6 +130,46 @@ export class StatusBarHandler extends Disposable {
 		}
 	}
 
+	// ── MCP Status ────────────────────────────────────────────────────────
+
+	updateMcpStatus(serverCount: number, toolCount: number, hasError: boolean): void {
+		if (serverCount === 0) {
+			if (this._mcpEntry) {
+				this._mcpEntry.dispose();
+				this._mcpEntry = undefined;
+			}
+			return;
+		}
+
+		const icon = hasError ? '$(warning)' : '$(tools)';
+		const text = `${icon} MCP: ${toolCount} tool${toolCount !== 1 ? 's' : ''}`;
+		const tooltip = `${serverCount} MCP server${serverCount !== 1 ? 's' : ''}, ${toolCount} tool${toolCount !== 1 ? 's' : ''}\nClick to manage`;
+
+		if (this._mcpEntry) {
+			this._mcpEntry.update({
+				name: 'ChipOS MCP',
+				text,
+				ariaLabel: text,
+				command: 'workbench.mcp.listServer',
+				tooltip,
+			});
+		} else {
+			this._mcpEntry = this._statusbarService.addEntry(
+				{
+					name: 'ChipOS MCP',
+					text,
+					ariaLabel: text,
+					command: 'workbench.mcp.listServer',
+					tooltip,
+				},
+				STATUSBAR_MCP_ID,
+				StatusbarAlignment.LEFT,
+				{ location: { id: STATUSBAR_CONNECTION_ID, priority: 98 }, alignment: StatusbarAlignment.LEFT, compact: true },
+			);
+			this._register(this._mcpEntry);
+		}
+	}
+
 	override dispose(): void {
 		this._connectionEntry?.dispose();
 		this._connectionEntry = undefined;
@@ -135,6 +177,8 @@ export class StatusBarHandler extends Disposable {
 		this._agentEntry = undefined;
 		this._filesEntry?.dispose();
 		this._filesEntry = undefined;
+		this._mcpEntry?.dispose();
+		this._mcpEntry = undefined;
 		super.dispose();
 	}
 
