@@ -14,6 +14,7 @@ import { IConfigurationService } from '../../../../../platform/configuration/com
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalService } from '../../../terminal/browser/terminal.js';
+import { ITerminalSandboxService } from '../../../terminalContrib/chatAgentTools/common/terminalSandboxService.js';
 import {
 	IChatAgentImplementation,
 	IChatAgentRequest,
@@ -132,6 +133,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatService private readonly _chatService: IChatService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
+		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
 	) {
 		super();
 		this._register(this._chatService.onDidDisposeSession(e => {
@@ -2276,10 +2278,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			command, cwd, isBackground, explanation,
 		);
 
+		// sandbox-runtime: wrap command if sandbox is enabled
+		let effectiveCommand = command;
+		try {
+			if (await this._terminalSandboxService.isEnabled()) {
+				effectiveCommand = this._terminalSandboxService.wrapCommand(command);
+				this._logService.info('[ChipOS Agent] sandbox-runtime enabled, command wrapped');
+			}
+		} catch (e: any) {
+			this._logService.warn('[ChipOS Agent] sandbox-runtime check failed, running without sandbox: %s', e?.message);
+		}
+
 		const terminalId = `term_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-		// 创建隐藏终端实例
-		let terminal: import('../../terminal/browser/terminal.js').ITerminalInstance;
+		let terminal: import('../../../terminal/browser/terminal.js').ITerminalInstance;
 		try {
 			terminal = await this._terminalService.createTerminal({
 				config: {
@@ -2293,21 +2305,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return `Failed to create terminal: ${e?.message ?? 'unknown error'}`;
 		}
 
-		// 收集输出
 		let output = '';
 		const dataListener = terminal.onData((data: string) => {
-			// 清洗终端控制序列：
-			// 1. CSI 序列: \x1b[ ... letter  (含 bracketed paste \x1b[?2004h/l)
-			// 2. OSC 序列: \x1b] ... \x07 或 \x1b] ... \x1b\\  (终端标题等)
-			// 3. 其他 ESC 序列: \x1b 后跟单字符
-			// 4. \r 回车符
 			const clean = data
-				.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')   // OSC
-				.replace(/\x1b\[[\x20-\x3f]*[\x30-\x7e]/g, '')       // CSI (broad)
-				.replace(/\x1b[^[\]]/g, '')                            // other ESC
-				.replace(/\r/g, '');                                    // CR
+				.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')   // OSC (title, hyperlinks)
+				.replace(/\x1bP[^\x1b]*\x1b\\/g, '')                  // DCS
+				.replace(/\x1b\[[0-9;:?=]*[a-zA-Z~@`]/g, '')              // CSI (SGR, cursor, erase, etc.)
+				.replace(/\x1b[()][0-9A-B]/g, '')                      // charset switching
+				.replace(/\x1b[=>NOcn78]/g, '')                        // misc ESC sequences
+				.replace(/[\x00-\x08\x0e-\x1f]/g, '')                 // control chars (keep \t \n)
+				.replace(/\r/g, '');
 			output += clean;
-			// 限制输出大小
 			if (output.length > 50_000) {
 				output = output.slice(-40_000);
 			}
@@ -2316,13 +2324,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// 后台任务：发送命令后立即返回
 		if (isBackground) {
 			this._terminalOutputCache.set(terminalId, { output: '(running...)', exitCode: undefined });
-			await terminal.sendText(command, true);
+			await terminal.sendText(effectiveCommand, true);
 
 			// 后台监听：命令完成后更新缓存
 			const bgTimeout = setTimeout(() => {
 				dataListener.dispose();
 				this._terminalOutputCache.set(terminalId, {
-					output: this._cleanTerminalOutput(output, command) || '(no output captured)',
+					output: this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output captured)',
 					exitCode: undefined,
 				});
 			}, 120_000);
@@ -2336,7 +2344,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					dataListener.dispose();
 					finishListener?.dispose();
 					this._terminalOutputCache.set(terminalId, {
-						output: this._cleanTerminalOutput(output, command) || '(no output captured)',
+						output: this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output captured)',
 						exitCode: e?.exitCode,
 					});
 				});
@@ -2363,7 +2371,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					dataListener.dispose();
 					finishListener?.dispose();
 					const exitCode = e?.exitCode ?? 0;
-					const result = this._cleanTerminalOutput(output, command) || '(no output)';
+					const result = this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output)';
 					this._terminalOutputCache.set(terminalId, { output: result, exitCode });
 
 					// 限制缓存大小
@@ -2376,13 +2384,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			// 发送命令执行
-			terminal.sendText(command, true).then(() => {
+			terminal.sendText(effectiveCommand, true).then(() => {
 				// 如果没有 commandDetection，用简单的延时等待
 				if (!cmdDetection) {
 					setTimeout(() => {
 						clearTimeout(timeout);
 						dataListener.dispose();
-						const result = this._cleanTerminalOutput(output, command) || '(no output captured - command detection unavailable)';
+						const result = this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output captured - command detection unavailable)';
 						this._terminalOutputCache.set(terminalId, { output: result, exitCode: undefined });
 						resolve(result);
 					}, 3000);
@@ -2395,37 +2403,47 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * FEAT-R75: 获取之前终端执行的输出。
 	 */
 	private _getTerminalOutput(args: { terminal_id: string }): string {
-
-	/**
-	 * 清洗终端输出：去掉命令回显、shell prompt、空行。
-	 * 输入示例: "root@host:~/ws# echo hello world\nhello world\nroot@host:~/ws# "
-	 * 输出: "hello world"
-	 */
-	private _cleanTerminalOutput(raw: string, command: string): string {
-		const lines = raw.split('\n');
-		const cleaned: string[] = [];
-		// shell prompt 模式：user@host:path# 或 user@host:path$ 或 (venv) user@...
-		const promptRe = /^(\([\w.-]+\)\s*)?[\w.-]+@[\w.-]+[:#$%]\s*/;
-		for (const line of lines) {
-			const trimmed = line.trim();
-			if (!trimmed) { continue; }
-			// 跳过命令回显行（包含用户输入的命令）
-			if (trimmed.includes(command.trim())) { continue; }
-			// 跳过纯 prompt 行
-			if (promptRe.test(trimmed) && trimmed.replace(promptRe, '').trim() === '') { continue; }
-			// 去掉行首 prompt 前缀
-			const withoutPrompt = trimmed.replace(promptRe, '');
-			cleaned.push(withoutPrompt || trimmed);
-		}
-		return cleaned.join('\n').trim() || '(no output)';
-	}
-
-
 		const cached = this._terminalOutputCache.get(args.terminal_id);
 		if (!cached) {
 			return `Terminal '${args.terminal_id}' not found or expired`;
 		}
 		return cached.output;
+	}
+
+	private _cleanTerminalOutput(raw: string, command: string, effectiveCommand?: string): string {
+		const lines = raw.split('\n');
+		const cleaned: string[] = [];
+		const cmdTrimmed = command.trim();
+		const effectiveCmdTrimmed = effectiveCommand?.trim();
+		const promptPatterns = [
+			/^(\([\w.-]+\)\s*)?[\w.-]+@[\w.-]+[:#~\/$%>]\s*/,  // user@host:~$
+			/^[\w.-]+[#$%>]\s*/,                                 // simple: root#, user$
+			/^PS [A-Z]:\\[^>]*>\s*/,                             // PowerShell
+			/^\s*\$\s*$/,                                         // bare $
+			/^\s*[#%>]\s*$/,                                      // bare # % >
+		];
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) { continue; }
+			// 跳过原始命令回显
+			if (trimmed === cmdTrimmed || trimmed.endsWith(cmdTrimmed)) { continue; }
+			// 跳过 sandbox 包装后的命令回显
+			if (effectiveCmdTrimmed && (trimmed === effectiveCmdTrimmed || trimmed.endsWith(effectiveCmdTrimmed))) { continue; }
+			let isPromptOnly = false;
+			for (const pat of promptPatterns) {
+				if (pat.test(trimmed) && trimmed.replace(pat, '').trim() === '') {
+					isPromptOnly = true;
+					break;
+				}
+			}
+			if (isPromptOnly) { continue; }
+			let cleanLine = trimmed;
+			for (const pat of promptPatterns) {
+				cleanLine = cleanLine.replace(pat, '');
+			}
+			cleaned.push(cleanLine || trimmed);
+		}
+		return cleaned.join('\n').trim() || '(no output)';
 	}
 
 	private _warning(content: string): IChatWarningMessage {

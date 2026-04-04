@@ -4,34 +4,47 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * FEAT-R21: WorkerManager — 远端 Worker 生命周期管理。
- *
- * 与 ServerManager 平行，管理远端 Execution Worker 的安装/启动/停止/健康检查。
+ * FEAT-R21 + R48 + R51: WorkerManager — 远端 Worker 生命周期管理。
  *
  * 职责：
- * 1. 检查远端 Python 环境（>= 3.10）
- * 2. 检查 Worker 包是否已安装，未安装则调用 downloadAndInstallWorker()
- * 3. 启动 Worker 进程（nohup，SSH 断开后存活）
- * 4. 等待 Worker 健康检查通过（HTTP /health）
- * 5. 停止 Worker 进程
+ * 1. 优先使用二进制 Worker（~/.chipos/workers/{version}/）
+ * 2. 支持远端双模式部署：curl 直下 / IDE SCP 中转 (R51)
+ * 3. 多窗口隔离：instance.json + ref_count + 文件锁 (R48)
+ * 4. Fallback 到 Python Worker（.venv 或 pip install）
+ * 5. 健康检查（HTTP /health）
  */
 
 import { SshConnection } from './sshConnection';
 import { downloadAndInstallWorker } from './download';
+import { createHash } from 'crypto';
+
+interface InstanceMeta {
+	pid: number;
+	workspace: string;
+	http_port: number;
+	ref_count: number;
+	refs: string[];
+	started_at: string;
+	version: string;
+}
 
 export class WorkerManager {
 
 	private readonly _ssh: SshConnection;
 	private readonly _installPath: string;
 	private readonly _log: (msg: string) => void;
-	/** 远端实际可用的 Python 命令（由 _checkPythonEnv 探测） */
 	private _pythonCmd: string = 'python3.11';
 	private _workerPid: number | null = null;
+	private _instanceDir: string | null = null;
+	private _callerId: string;
+	private _isSharedInstance = false;
+	private _workerHttpPort = 8081;
 
 	constructor(ssh: SshConnection, installPath: string, log: (msg: string) => void) {
 		this._ssh = ssh;
 		this._installPath = installPath;
 		this._log = log;
+		this._callerId = `ssh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 	}
 
 	get workerPid(): number | null {
@@ -39,106 +52,376 @@ export class WorkerManager {
 	}
 
 	/**
-	 * 确保远端 Worker 正在运行。
-	 *
-	 * 流程：
-	 * 1. 检查 Python 环境（python3 --version >= 3.10）
-	 * 2. 检查 Worker 包是否已安装
-	 * 3. 如未安装，调用 downloadAndInstallWorker()
-	 * 4. 检查是否已有 Worker 进程在跑（PID 文件）
-	 * 5. 启动 Worker（nohup）
-	 * 6. 等待 Worker 健康检查通过
+	 * 启动策略（优先级从高到低）：
+	 *   1. 已有 Worker 实例在跑（instance.json + PID alive）→ acquire ref_count
+	 *   2. 远端有二进制缓存 → spawn 二进制
+	 *   3. 远端无二进制 → 尝试下载二进制（curl 直下 / IDE 无此能力则跳过）
+	 *   4. Fallback: Python .venv 启动
 	 */
 	async ensureWorkerRunning(reasonerGrpcTarget: string, workspacePath?: string): Promise<void> {
-		this._log('[WorkerManager] Ensuring worker is running...');
-		this._log(`[WorkerManager] installPath=${this._installPath}, grpcTarget=${reasonerGrpcTarget}`);
+		const ws = workspacePath || '/root/workspace';
+		const wsHash = createHash('sha256').update(ws).digest('hex').substring(0, 12);
+		this._instanceDir = `$HOME/.chipos/instances/${wsHash}`;
 
-		// 1. 检查 Python 环境
-		this._log('[WorkerManager] Step 1/5: Checking Python environment...');
-		await this._checkPythonEnv();
+		this._log(`[WorkerManager] ensureWorkerRunning workspace=${ws} hash=${wsHash}`);
 
-		// 2. 检查 Worker 包是否已安装
-		this._log('[WorkerManager] Step 2/5: Checking if Worker is installed...');
-		const installed = await this._isWorkerInstalled();
-		this._log(`[WorkerManager] Worker installed: ${installed}`);
-		if (!installed) {
-			this._log('[WorkerManager] Worker not installed, installing...');
-			await downloadAndInstallWorker(this._ssh, this._installPath, this._log);
+		// --- Step 1: Atomic check + acquire (flock protected) ---
+		const acquireResult = await this._tryAcquireExisting();
+		if (acquireResult) {
+			this._log(`[WorkerManager] Existing Worker found (pid=${acquireResult.pid}), ref acquired`);
+			this._workerPid = acquireResult.pid;
+			this._workerHttpPort = acquireResult.http_port || 8081;
+			this._isSharedInstance = true;
+			await this._waitForHealthy();
+			return;
 		}
 
-		// 3. 检查已有进程
-		this._log('[WorkerManager] Step 3/5: Checking existing PID...');
-		const existingPid = await this._readPidFile();
-		if (existingPid) {
-			const alive = await this._isProcessAlive(existingPid);
-			if (alive) {
-				this._log(`[WorkerManager] Worker already running (PID=${existingPid})`);
-				this._workerPid = existingPid;
+		// --- Step 2: Try binary Worker ---
+		const binaryPath = await this._findRemoteBinary();
+		if (binaryPath) {
+			this._log(`[WorkerManager] Using binary: ${binaryPath}`);
+			await this._startBinaryWorker(binaryPath, reasonerGrpcTarget, ws);
 				await this._waitForHealthy();
+			this._log('[WorkerManager] Binary Worker is healthy');
 				return;
 			}
-			this._log(`[WorkerManager] Stale PID file (PID=${existingPid}), cleaning up`);
-			await this._removePidFile();
+
+		// --- Step 3: Try downloading binary (curl on remote) ---
+		const downloaded = await this._tryDownloadBinary();
+		if (downloaded) {
+			this._log(`[WorkerManager] Downloaded binary: ${downloaded}`);
+			await this._startBinaryWorker(downloaded, reasonerGrpcTarget, ws);
+			await this._waitForHealthy();
+			this._log('[WorkerManager] Downloaded binary Worker is healthy');
+			return;
 		}
 
-		// 4. 启动 Worker
-		this._log('[WorkerManager] Step 4/5: Starting Worker...');
-		await this._startWorker(reasonerGrpcTarget, workspacePath);
-
-		// 5. 等待健康检查通过
-		this._log('[WorkerManager] Step 5/5: Waiting for health check...');
+		// --- Step 4: Fallback to Python ---
+		this._log('[WorkerManager] No binary available, falling back to Python');
+		await this._ensurePythonEnv();
+		await this._startPythonWorker(reasonerGrpcTarget, ws);
 		await this._waitForHealthy();
-		this._log('[WorkerManager] Worker is healthy');
+		this._log('[WorkerManager] Python Worker is healthy');
 	}
 
 	/**
-	 * 停止远端 Worker 进程。
-	 *
-	 * 流程：
-	 * 1. 发送 SIGTERM
-	 * 2. 等待进程退出（最多 5 秒）
-	 * 3. 如果还活着，发送 SIGKILL
-	 * 4. 清理 PID 文件
+	 * 停止远端 Worker（ref_count 感知）。
+	 * ref_count > 0 → 不杀进程（其他窗口还在用）
+	 * ref_count == 0 → SIGTERM → 等待 → SIGKILL → 清理
 	 */
 	async stopWorker(): Promise<void> {
+		if (this._isSharedInstance && this._instanceDir) {
+			const remaining = await this._releaseRef();
+			this._log(`[WorkerManager] Released ref, remaining=${remaining}`);
+			if (remaining > 0) {
+				this._workerPid = null;
+				this._log('[WorkerManager] Other windows still using this Worker, not killing');
+				return;
+			}
+			if (remaining < 0) {
+				// releaseRef failed (SSH error, no python3, etc.) — do NOT kill, safer to leave Worker alive
+				this._log('[WorkerManager] releaseRef failed, not killing Worker to avoid data loss');
+				this._workerPid = null;
+				return;
+			}
+		}
+
 		if (!this._workerPid) {
 			this._log('[WorkerManager] No worker PID, nothing to stop');
 			return;
 		}
 
 		this._log(`[WorkerManager] Stopping worker (PID=${this._workerPid})...`);
-
 		try {
 			await this._ssh.exec(`kill ${this._workerPid} 2>/dev/null || true`);
-
-			// 等待退出（最多 5 秒）
 			for (let i = 0; i < 10; i++) {
 				await delay(500);
-				if (!await this._isProcessAlive(this._workerPid)) {
-					break;
-				}
+				if (!await this._isProcessAlive(this._workerPid)) { break; }
 				if (i === 9) {
 					this._log('[WorkerManager] Worker did not exit, sending SIGKILL');
 					await this._ssh.exec(`kill -9 ${this._workerPid} 2>/dev/null || true`);
 				}
 			}
-		} catch {
-			// Best effort
-		}
+		} catch { /* best effort */ }
 
-		await this._removePidFile();
+		await this._cleanupInstance();
 		this._workerPid = null;
 		this._log('[WorkerManager] Worker stopped');
 	}
 
-	// ── Private ──────────────────────────────────────────────────────────
+	// ── Binary management ────────────────────────────────────────────────
+
+	private async _findRemoteBinary(): Promise<string | null> {
+		try {
+			const result = await this._ssh.exec(
+				'ls -d $HOME/.chipos/workers/*/chipos-worker-linux-x64 2>/dev/null | sort -V | tail -1'
+			);
+			const path = result.trim();
+			if (path && !path.includes('No such file')) {
+				const isExec = await this._ssh.exec(`test -x "${path}" && echo yes || echo no`);
+				if (isExec.trim() === 'yes') { return path; }
+			}
+		} catch { /* no binary cached */ }
+		return null;
+	}
 
 	/**
-	 * 检查远端 Python 版本 >= 3.10。
-	 * 按优先级探测: python3.11 → python3.12 → python3.10 → python3
-	 * 找到的命令存入 this._pythonCmd，后续 venv/启动都用它。
-	 * 如果全部探测失败，尝试自动安装 python3.11。
+	 * R51: 尝试在远端直接 curl 下载二进制（Mode A: 远端直下）。
+	 * 如果远端无外网访问，返回 null（由调用方 fallback 到 Python）。
 	 */
+	private async _tryDownloadBinary(): Promise<string | null> {
+		try {
+			const checkNet = await this._ssh.exec(
+				'curl -sf --max-time 5 https://api.github.com/repos/chip-os/coderust/releases/latest 2>/dev/null | head -c 200'
+			);
+			if (!checkNet.includes('tag_name')) {
+				this._log('[WorkerManager] Remote cannot reach GitHub, skipping binary download');
+				return null;
+			}
+
+			const versionMatch = checkNet.match(/"tag_name"\s*:\s*"v?([^"]+)"/);
+			if (!versionMatch) { return null; }
+			const version = versionMatch[1];
+			const binaryName = 'chipos-worker-linux-x64';
+			const targetDir = `$HOME/.chipos/workers/${version}`;
+			const targetPath = `${targetDir}/${binaryName}`;
+
+			this._log(`[WorkerManager] Downloading Worker v${version} on remote...`);
+			await this._ssh.exec(
+				`mkdir -p ${targetDir} && ` +
+				`curl -fSL --retry 2 --max-time 120 ` +
+				`"https://github.com/chip-os/coderust/releases/download/v${version}/${binaryName}.tar.gz" ` +
+				`| tar xz -C ${targetDir} && chmod +x ${targetPath}`
+			);
+
+			const verify = await this._ssh.exec(`test -x ${targetPath} && echo ok || echo fail`);
+			if (verify.trim() === 'ok') { return targetPath; }
+		} catch (err) {
+			this._log(`[WorkerManager] Binary download failed: ${err}`);
+		}
+		return null;
+	}
+
+	private async _startBinaryWorker(binaryPath: string, grpcTarget: string, workspace: string): Promise<void> {
+		const logFile = '$HOME/.chipos/logs/worker.log';
+		await this._ssh.exec('mkdir -p $HOME/.chipos/logs');
+
+		const startCmd = [
+			`setsid ${binaryPath}`,
+			`start --server "${grpcTarget}"`,
+			`--workspace "${workspace}"`,
+			`--http-port ${this._workerHttpPort}`,
+			`--instance-dir ${this._instanceDir}`,
+			`> ${logFile} 2>&1 < /dev/null &`,
+		].join(' ');
+
+		const fullCmd = `bash -c 'nohup ${startCmd} sleep 0.5; exit 0'`;
+		this._log(`[WorkerManager] _startBinaryWorker: ${fullCmd}`);
+		await this._ssh.exec(fullCmd);
+
+		await delay(1500);
+
+		const meta = await this._readInstanceJson();
+		if (meta) {
+			this._workerPid = meta.pid;
+			this._isSharedInstance = true;
+			this._log(`[WorkerManager] Binary Worker started (PID=${meta.pid})`);
+		} else {
+			const pid = await this._findWorkerPid(binaryPath);
+			this._workerPid = pid;
+			this._log(`[WorkerManager] Binary Worker started (PID=${pid}, no instance.json yet)`);
+		}
+	}
+
+	// ── Python fallback ──────────────────────────────────────────────────
+
+	private async _ensurePythonEnv(): Promise<void> {
+		await this._checkPythonEnv();
+		const installed = await this._isWorkerInstalled();
+		if (!installed) {
+			this._log('[WorkerManager] Python Worker not installed, installing...');
+			await downloadAndInstallWorker(this._ssh, this._installPath, this._log);
+		}
+	}
+
+	private async _startPythonWorker(grpcTarget: string, workspace: string): Promise<void> {
+		const logFile = `${this._installPath}/worker.log`;
+
+		let workerDir = this._installPath;
+		let venvPython = `${this._installPath}/.venv/bin/python`;
+		let needPythonPath = false;
+		try {
+			await this._ssh.exec(`test -f ${this._installPath}/packages/execution/.venv/bin/python`);
+			workerDir = `${this._installPath}/packages/execution`;
+			venvPython = `${workerDir}/.venv/bin/python`;
+			needPythonPath = true;
+		} catch { /* standalone layout */ }
+
+		const envVars = [`CHIPOS_REASONING_SERVER="${grpcTarget}"`];
+		if (needPythonPath) {
+			const pythonPath = [
+				`${this._installPath}/packages/shared/src`,
+				`${this._installPath}/packages/execution/src`,
+			].join(':');
+			envVars.push(`PYTHONPATH="${pythonPath}"`);
+		}
+
+		const exportLine = envVars.map(v => `export ${v}`).join('; ');
+		const startCmd = [
+			`bash -c '${exportLine}; cd ${workerDir};`,
+			`setsid bash -c "exec ${venvPython} -m execution.server.cli start`,
+			`--server \\"${grpcTarget}\\"`,
+			`--workspace \\"${workspace}\\"`,
+			`--http-port ${this._workerHttpPort}`,
+			`--instance-dir ${this._instanceDir}`,
+			`> ${logFile} 2>&1 < /dev/null" &`,
+			`sleep 0.5; exit 0'`,
+		].join(' ');
+
+		await this._ssh.exec(startCmd);
+		await delay(1500);
+
+		const meta = await this._readInstanceJson();
+		if (meta) {
+			this._workerPid = meta.pid;
+			this._isSharedInstance = true;
+		} else {
+			this._workerPid = await this._findWorkerPid('execution.server.cli');
+		}
+		this._log(`[WorkerManager] Python Worker started (PID=${this._workerPid})`);
+	}
+
+	// ── instance.json lifecycle (R48) ────────────────────────────────────
+
+	private async _readInstanceJson(): Promise<InstanceMeta | null> {
+		if (!this._instanceDir) { return null; }
+		try {
+			const raw = await this._ssh.exec(`cat ${this._instanceDir}/instance.json 2>/dev/null`);
+			const trimmed = raw.trim();
+			if (!trimmed || trimmed.startsWith('cat:')) { return null; }
+			return JSON.parse(trimmed);
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Atomic check + acquire: within flock, read instance.json, verify PID alive,
+	 * and increment ref_count. Returns instance meta if successful, null otherwise.
+	 * This eliminates the TOCTOU race between _readInstanceJson and _acquireRef.
+	 */
+	private async _tryAcquireExisting(): Promise<InstanceMeta | null> {
+		if (!this._instanceDir) { return null; }
+		const script = [
+			`flock -w 10 ${this._instanceDir}/instance.lock bash -c '`,
+			`META=$(cat ${this._instanceDir}/instance.json 2>/dev/null) || exit 1;`,
+			`echo "$META" | python3 -c "`,
+			`import sys,json,os,signal;`,
+			`m=json.load(sys.stdin);`,
+			`pid=m.get(\\\"pid\\\",0);`,
+			// Check if PID is alive
+			`try: os.kill(pid,0)`,
+			`except (OSError,ProcessLookupError): sys.exit(1);`,
+			// PID alive → acquire ref
+			`m[\\\"ref_count\\\"]=m.get(\\\"ref_count\\\",1)+1;`,
+			`refs=m.get(\\\"refs\\\",[]);`,
+			`refs.append(\\\"${this._callerId}\\\");`,
+			`m[\\\"refs\\\"]=refs;`,
+			`json.dump(m,open(\\\"${this._instanceDir}/instance.json\\\",\\\"w\\\"),indent=2);`,
+			`json.dump(m,sys.stdout)`,
+			`"'`,
+		].join('');
+		try {
+			const result = await this._ssh.exec(script);
+			const trimmed = result.trim();
+			if (!trimmed) { return null; }
+			return JSON.parse(trimmed);
+		} catch {
+			// flock failed, instance.json missing, PID dead, or python3 unavailable
+			// Clean up stale instance if exists
+			await this._cleanupInstance();
+			return null;
+		}
+	}
+
+	private async _acquireRef(): Promise<void> {
+		if (!this._instanceDir) { return; }
+		const script = [
+			`flock -w 10 ${this._instanceDir}/instance.lock bash -c '`,
+			`META=$(cat ${this._instanceDir}/instance.json 2>/dev/null) || exit 0;`,
+			`echo "$META" | python3 -c "`,
+			`import sys,json; m=json.load(sys.stdin);`,
+			`m[\\\"ref_count\\\"]=m.get(\\\"ref_count\\\",1)+1;`,
+			`refs=m.get(\\\"refs\\\",[]);`,
+			`refs.append(\\\"${this._callerId}\\\");`,
+			`m[\\\"refs\\\"]=refs;`,
+			`json.dump(m,open(\\\"${this._instanceDir}/instance.json\\\",\\\"w\\\"),indent=2)`,
+			`"'`,
+		].join('');
+		try {
+			await this._ssh.exec(script);
+			this._log(`[WorkerManager] Acquired ref (caller=${this._callerId})`);
+		} catch (err) {
+			this._log(`[WorkerManager] acquireRef failed: ${err}`);
+		}
+	}
+
+	private async _releaseRef(): Promise<number> {
+		if (!this._instanceDir) { return -1; }
+		const script = [
+			`flock -w 10 ${this._instanceDir}/instance.lock bash -c '`,
+			`META=$(cat ${this._instanceDir}/instance.json 2>/dev/null) || { echo 0; exit 0; };`,
+			`echo "$META" | python3 -c "`,
+			`import sys,json; m=json.load(sys.stdin);`,
+			`rc=max(0,m.get(\\\"ref_count\\\",1)-1);`,
+			`m[\\\"ref_count\\\"]=rc;`,
+			`refs=m.get(\\\"refs\\\",[]);`,
+			`refs=[r for r in refs if r!=\\\"${this._callerId}\\\"];`,
+			`m[\\\"refs\\\"]=refs;`,
+			`json.dump(m,open(\\\"${this._instanceDir}/instance.json\\\",\\\"w\\\"),indent=2);`,
+			`print(rc)`,
+			`"'`,
+		].join('');
+		try {
+			const result = await this._ssh.exec(script);
+			const remaining = parseInt(result.trim(), 10);
+			return isNaN(remaining) ? -1 : remaining;
+		} catch (e) {
+			this._log(`[WorkerManager] _releaseRef failed: ${e}`);
+			return -1; // -1 = operation failed, caller must NOT kill Worker
+		}
+	}
+
+	private async _cleanupInstance(): Promise<void> {
+		if (!this._instanceDir) { return; }
+		try {
+			await this._ssh.exec(`rm -f ${this._instanceDir}/instance.json ${this._instanceDir}/instance.lock 2>/dev/null`);
+		} catch { /* ignore */ }
+	}
+
+	// ── Health check ─────────────────────────────────────────────────────
+
+	private async _waitForHealthy(timeoutMs: number = 30000): Promise<void> {
+		const start = Date.now();
+		let attempt = 0;
+		while (Date.now() - start < timeoutMs) {
+			attempt++;
+			try {
+				const result = await this._ssh.exec(
+					`curl -sf http://localhost:${this._workerHttpPort}/health`
+				);
+				if (result.includes('"status"')) {
+					this._log(`[WorkerManager] Health check passed (attempt ${attempt})`);
+					return;
+				}
+			} catch { /* retry */ }
+			await delay(1000);
+		}
+		throw new Error(`Worker health check timed out after ${timeoutMs}ms (${attempt} attempts)`);
+	}
+
+	// ── Python env ───────────────────────────────────────────────────────
+
 	private async _checkPythonEnv(): Promise<void> {
 		const candidates = ['python3.11', 'python3.12', 'python3.10', 'python3'];
 		for (const cmd of candidates) {
@@ -150,223 +433,81 @@ export class WorkerManager {
 					const minor = parseInt(match[2], 10);
 					if (major >= 3 && minor >= 10) {
 						this._pythonCmd = cmd;
-						this._log(`[WorkerManager] Found ${cmd} → Python ${major}.${minor} ✓`);
+						this._log(`[WorkerManager] Found ${cmd} → Python ${major}.${minor}`);
 						return;
 					}
-					this._log(`[WorkerManager] ${cmd} → Python ${major}.${minor} (too old, need >=3.10)`);
 				}
-			} catch {
-				// cmd not found, try next
-			}
+			} catch { /* try next */ }
 		}
 
-		// 没有找到合适的 Python，尝试自动安装
 		this._log('[WorkerManager] Python >= 3.10 not found, attempting auto-install...');
-		try {
 			await this._autoInstallPython();
-			return;
-		} catch (installErr) {
-			const msg = installErr instanceof Error ? installErr.message : String(installErr);
-			throw new Error(
-				'Python >= 3.10 not found on remote. Tried: ' + candidates.join(', ') +
-				'. Auto-install also failed: ' + msg +
-				'. Please install Python 3.10+ manually on the remote server.'
-			);
-		}
 	}
 
-	/**
-	 * 尝试在远端自动安装 Python 3.11。
-	 * 支持 apt (Debian/Ubuntu) 和 yum/dnf (CentOS/RHEL)。
-	 */
 	private async _autoInstallPython(): Promise<void> {
-		// 检测包管理器
 		let pkgManager: 'apt' | 'yum' | 'dnf' | null = null;
 		for (const pm of ['apt', 'dnf', 'yum'] as const) {
 			try {
 				await this._ssh.exec(`which ${pm}`);
 				pkgManager = pm;
 				break;
-			} catch {
-				// not found
-			}
+			} catch { /* not found */ }
 		}
 
 		if (!pkgManager) {
-			throw new Error('No supported package manager found (apt/dnf/yum)');
+			throw new Error('No supported package manager found (apt/dnf/yum). Please install Python 3.10+ manually.');
 		}
 
-		this._log(`[WorkerManager] Detected package manager: ${pkgManager}`);
-
 		if (pkgManager === 'apt') {
-			// Debian/Ubuntu: 先尝试直接安装，失败则添加 deadsnakes PPA
 			try {
 				await this._ssh.exec('apt-get update -qq && apt-get install -y -qq python3.11 python3.11-venv 2>&1');
-				this._log('[WorkerManager] python3.11 installed via apt');
 			} catch {
-				this._log('[WorkerManager] Direct apt install failed, trying deadsnakes PPA...');
 				await this._ssh.exec(
 					'apt-get install -y -qq software-properties-common && ' +
 					'add-apt-repository -y ppa:deadsnakes/ppa && ' +
 					'apt-get update -qq && ' +
 					'apt-get install -y -qq python3.11 python3.11-venv 2>&1'
 				);
-				this._log('[WorkerManager] python3.11 installed via deadsnakes PPA');
 			}
 		} else {
-			// CentOS/RHEL
 			await this._ssh.exec(`${pkgManager} install -y python3.11 2>&1`);
-			this._log(`[WorkerManager] python3.11 installed via ${pkgManager}`);
 		}
 
-		// 验证安装
-		const result = await this._ssh.exec('python3.11 --version');
-		const match = result.match(/Python (\d+)\.(\d+)/);
-		if (match && parseInt(match[1], 10) >= 3 && parseInt(match[2], 10) >= 10) {
 			this._pythonCmd = 'python3.11';
-			this._log(`[WorkerManager] Auto-installed Python ${match[1]}.${match[2]} ✓`);
-		} else {
-			throw new Error(`python3.11 installed but version check failed: ${result}`);
-		}
+		this._log('[WorkerManager] Auto-installed python3.11');
 	}
 
-	/**
-	 * 检查 Worker 包是否已安装。
-	 * 优先检查 .venv（R22 安装目标），fallback 检查系统 python3。
-	 */
 	private async _isWorkerInstalled(): Promise<boolean> {
 		try {
-			// 检查两种布局：
-			// 1. rsync 部署: installPath/packages/execution/.venv/bin/python
-			// 2. 独立安装: installPath/.venv/bin/python
 			const cmd = [
 				`(cd ${this._installPath}/packages/execution 2>/dev/null && .venv/bin/python -c "import execution; print('ok')" 2>/dev/null)`,
 				`|| (cd ${this._installPath} 2>/dev/null && .venv/bin/python -c "import execution; print('ok')" 2>/dev/null)`,
 			].join(' ');
-			this._log(`[WorkerManager] _isWorkerInstalled cmd: ${cmd}`);
 			const result = await this._ssh.exec(cmd);
-			this._log(`[WorkerManager] _isWorkerInstalled result: "${result.trim()}"`);
 			return result.trim() === 'ok';
-		} catch (err) {
-			this._log(`[WorkerManager] _isWorkerInstalled error: ${err}`);
+		} catch {
 			return false;
 		}
 	}
 
-	/**
-	 * 启动 Worker 进程（nohup，SSH 断开后存活）。
-	 */
-	private async _startWorker(grpcTarget: string, workspacePath?: string): Promise<void> {
-		const pidFile = `${this._installPath}/worker.pid`;
-		const logFile = `${this._installPath}/worker.log`;
-
-		// 探测 venv 位置：rsync 布局 vs pip_wheel 布局
-		let workerDir = this._installPath;
-		let venvPython = `${this._installPath}/.venv/bin/python`;
-		let needPythonPath = false;
-		try {
-			await this._ssh.exec(`test -f ${this._installPath}/packages/execution/.venv/bin/python`);
-			// rsync 布局：需要 PYTHONPATH
-			workerDir = `${this._installPath}/packages/execution`;
-			venvPython = `${workerDir}/.venv/bin/python`;
-			needPythonPath = true;
-			this._log(`[WorkerManager] Detected rsync layout, workerDir=${workerDir}`);
-		} catch {
-			this._log(`[WorkerManager] Using standalone/pip_wheel layout, workerDir=${workerDir}`);
-		}
-
-		const envVars = [`CHIPOS_REASONING_SERVER="${grpcTarget}"`];
-		if (needPythonPath) {
-			// rsync 布局需要 PYTHONPATH 指向 src/ 目录
-			const pythonPath = [
-				`${this._installPath}/packages/shared/src`,
-				`${this._installPath}/packages/execution/src`,
-			].join(':');
-			envVars.push(`PYTHONPATH="${pythonPath}"`);
-		}
-
-		// 启动 Worker 后台进程：
-		// 1. 用 bash -c + setsid 彻底脱离 SSH session
-		// 2. 不依赖 $! 获取 PID（在 setsid 下不可靠），
-		//    而是让启动命令自己用 bash 的 exec 写 PID
-		const exportLine = envVars.map(v => `export ${v}`).join('; ');
-		const wsArg = workspacePath ? ` --workspace \\"${workspacePath}\\"` : '';
-		const mcpConfigArg = ` --mcp-config \\"$HOME/.chipos-worker/mcp_servers.json\\"`;
-		const startCmd = [
-			`bash -c '${exportLine}; cd ${workerDir};`,
-			`setsid bash -c "echo \\$\\$ > ${pidFile};`,
-			`exec ${venvPython} -m execution.server.cli start --server \\"${grpcTarget}\\"${wsArg}${mcpConfigArg}`,
-			`> ${logFile} 2>&1 < /dev/null" &`,
-			`sleep 0.3; exit 0'`,
-		].join(' ');
-
-		this._log(`[WorkerManager] _startWorker cmd: ${startCmd}`);
-		try {
-			await this._ssh.exec(startCmd);
-		} catch (err) {
-			throw new Error(`Failed to start worker: ${err}`);
-		}
-
-		this._workerPid = await this._readPidFile();
-		if (!this._workerPid) {
-			throw new Error('Worker started but PID file not found');
-		}
-		this._log(`[WorkerManager] Worker started (PID=${this._workerPid})`);
-	}
-
-	/**
-	 * 等待 Worker 健康检查通过（HTTP /health）。
-	 */
-	private async _waitForHealthy(timeoutMs: number = 30000): Promise<void> {
-		this._log(`[WorkerManager] _waitForHealthy: timeout=${timeoutMs}ms`);
-		const start = Date.now();
-		let attempt = 0;
-		while (Date.now() - start < timeoutMs) {
-			attempt++;
-			try {
-				const result = await this._ssh.exec(
-					'curl -sf http://localhost:8081/health'
-				);
-				this._log(`[WorkerManager] Health check attempt ${attempt}: ${result.trim()}`);
-				if (result.includes('"status"')) {
-					return;
-				}
-			} catch (err) {
-				this._log(`[WorkerManager] Health check attempt ${attempt} failed: ${err}`);
-			}
-			await delay(1000);
-		}
-		this._log(`[WorkerManager] Health check timed out after ${timeoutMs}ms (${attempt} attempts)`);
-		throw new Error('Worker health check timed out');
-	}
-
-	private async _readPidFile(): Promise<number | null> {
-		const pidFile = `${this._installPath}/worker.pid`;
-		try {
-			const content = (await this._ssh.exec(`cat ${pidFile} 2>/dev/null`)).trim();
-			const pid = parseInt(content, 10);
-			return isNaN(pid) ? null : pid;
-		} catch {
-			return null;
-		}
-	}
-
-	private async _removePidFile(): Promise<void> {
-		try {
-			await this._ssh.exec(`rm -f ${this._installPath}/worker.pid`);
-		} catch {
-			// ignore
-		}
-	}
+	// ── Utilities ────────────────────────────────────────────────────────
 
 	private async _isProcessAlive(pid: number): Promise<boolean> {
 		try {
-			const result = await this._ssh.exec(
-				`kill -0 ${pid} 2>/dev/null && echo alive || echo dead`
-			);
+			const result = await this._ssh.exec(`kill -0 ${pid} 2>/dev/null && echo alive || echo dead`);
 			return result.trim() === 'alive';
 		} catch {
 			return false;
+		}
+	}
+
+	private async _findWorkerPid(pattern: string): Promise<number | null> {
+		try {
+			const result = await this._ssh.exec(`pgrep -f "${pattern}" | head -1`);
+			const pid = parseInt(result.trim(), 10);
+			return isNaN(pid) ? null : pid;
+		} catch {
+			return null;
 		}
 	}
 }

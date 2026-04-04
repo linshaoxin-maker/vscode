@@ -155,6 +155,20 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.worker.downloadUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.worker.downloadUrl.desc', 'Custom download URL for the Worker binary (e.g. a private mirror or file:// for local testing). Leave empty to download from the official GitHub Releases.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.worker.version': {
+			type: 'string',
+			default: 'latest',
+			description: localize('chipos.worker.version.desc', "Worker binary version to use. Set to 'latest' to auto-detect, or pin to a specific version like '0.3.0'."),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		'chipos.backend.pythonPath': {
 			type: 'string',
 			default: '',

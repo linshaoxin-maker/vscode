@@ -5,7 +5,9 @@
 
 import { ChildProcess, spawn as cpSpawn } from 'child_process';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { createHash } from 'crypto';
+import { homedir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -14,6 +16,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISidecarManagerService, SidecarState, BackendMode, WorkerState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { findCachedWorkerBinary, isWorkerBinaryCached, downloadWorkerBinary, checkLatestVersion, binaryName, chiposHome } from './downloadWorkerBinary.js';
 
 const HEALTH_CHECK_INTERVAL_MS = 500;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
@@ -301,65 +304,201 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		}
 	}
 
+	/** Instance dir for the current workspace (for ref_count tracking). */
+	private _instanceDir: string | undefined;
+	private _callerId: string | undefined;
+
 	/**
 	 * 启动 Worker 进程（execution 层）
+	 *
+	 * 启动策略（优先级从高到低）：
+	 *   1. 已有 Worker 实例在跑（instance.json 存在且 PID 活着） → acquire ref_count
+	 *   2. 本地缓存的 Worker 二进制 → spawn 二进制
+	 *   3. Python 开发环境 → spawn python -m execution.server.cli
 	 */
 	private async _spawnWorker(): Promise<void> {
+		const grpcTarget = this.grpcAddress;
+		const folders = this._workspaceContextService.getWorkspace().folders;
 		const backendDir = this._resolveBackendDir();
-		const pythonPath = this._resolveWorkerPython(backendDir);
+		const workspaceRoot = folders.length > 0 ? folders[0].uri.fsPath : backendDir;
+		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		const token = this._configurationService.getValue<string>('chipos.backend.token') || '';
+		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') || false;
 
+		this._workerId = `worker-${generateUuid().substring(0, 12)}`;
+		this._callerId = `vscode-${generateUuid().substring(0, 8)}`;
+		this._setWorkerState(WorkerState.Starting);
+
+		const wsHash = createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
+		this._instanceDir = join(chiposHome(), 'instances', wsHash);
+
+		// --- Step 1: Check if a Worker is already running for this workspace ---
+		const existingMeta = this._readInstanceJson(this._instanceDir);
+		if (existingMeta && this._isPidAlive(existingMeta.pid)) {
+			this._logService.info('[ChipOS Worker] Existing Worker found (pid:', existingMeta.pid, '), acquiring ref');
+			this._acquireRef(this._instanceDir, this._callerId);
+			this._setWorkerState(WorkerState.Connected);
+			return;
+		}
+
+		this._logService.info('[ChipOS Worker] Starting, id:', this._workerId, 'gRPC target:', grpcTarget);
+
+		// --- Step 2: Try binary (check cache, then auto-download if configured) ---
+		const configDownloadUrl = this._configurationService.getValue<string>('chipos.worker.downloadUrl') || '';
+		const configVersion = this._configurationService.getValue<string>('chipos.worker.version') || 'latest';
+
+		let binaryInfo = findCachedWorkerBinary();
+
+		if (!binaryInfo && configVersion !== 'latest') {
+			binaryInfo = isWorkerBinaryCached(configVersion) || undefined;
+		}
+
+		if (!binaryInfo) {
+			try {
+				const resolvedVersion = configVersion === 'latest'
+					? await checkLatestVersion()
+					: configVersion;
+
+				if (resolvedVersion) {
+					this._logService.info('[ChipOS Worker] Auto-downloading Worker v' + resolvedVersion);
+					binaryInfo = await downloadWorkerBinary(
+						resolvedVersion,
+						undefined,
+						(msg) => this._logService.info('[ChipOS Worker Download]', msg),
+						configDownloadUrl || undefined,
+					);
+				}
+			} catch (downloadErr) {
+				this._logService.warn('[ChipOS Worker] Auto-download failed:', String(downloadErr));
+			}
+		}
+		if (binaryInfo) {
+			this._logService.info('[ChipOS Worker] Using binary:', binaryInfo.binaryPath, 'v' + binaryInfo.version);
+			try {
+				this._workerProcess = cpSpawn(
+					binaryInfo.binaryPath,
+					['start', '--server', grpcTarget, '--workspace', workspaceRoot,
+					 '--http-port', String(workerHttpPort), '--instance-dir', this._instanceDir],
+					{
+						cwd: workspaceRoot,
+						stdio: ['ignore', 'pipe', 'pipe'],
+						env: {
+							...process.env,
+							CHIPOS_REASONING_SERVER: grpcTarget,
+							CHIPOS_REASONING_URL: this.reasoningUrl,
+							CHIPOS_WORKER_ID: this._workerId,
+							CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
+							...(token ? { CHIPOS_API_KEY: token } : {}),
+							CHIPOS_TLS_ENABLED: String(tlsEnabled),
+						},
+					}
+				);
+				this._attachHandlers(this._workerProcess, 'Worker');
+				await this._finalizeWorkerStart(workerHttpPort);
+				return;
+			} catch (err) {
+				this._logService.warn('[ChipOS Worker] Binary spawn failed, falling back to Python:', String(err));
+			}
+		}
+
+		// --- Step 3: Fallback to Python ---
+		const pythonPath = this._resolveWorkerPython(backendDir);
 		if (!existsSync(pythonPath)) {
-			this._logService.error('[ChipOS Worker] Python not found:', pythonPath);
+			this._logService.error('[ChipOS Worker] No binary cached and Python not found:', pythonPath);
 			this._setWorkerState(WorkerState.Error);
 			return;
 		}
 
-		this._workerId = `worker-${generateUuid().substring(0, 12)}`;
-		this._setWorkerState(WorkerState.Starting);
-
-		const grpcTarget = this.grpcAddress;
-		const folders = this._workspaceContextService.getWorkspace().folders;
-		const workspaceRoot = folders.length > 0 ? folders[0].uri.fsPath : backendDir;
-
-		// Fix J: inject auth + TLS config into Worker process environment
-		const token = this._configurationService.getValue<string>('chipos.backend.token') || '';
-		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') || false;
-
-		this._logService.info('[ChipOS Worker] Starting, id:', this._workerId, 'gRPC target:', grpcTarget);
-
+		this._logService.info('[ChipOS Worker] Using Python:', pythonPath);
 		try {
-		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
-		this._workerProcess = cpSpawn(
-			pythonPath,
-			['-m', 'execution.server.cli', 'start', '--server', grpcTarget, '--workspace', workspaceRoot],
-			{
-				cwd: backendDir,
-				stdio: ['ignore', 'pipe', 'pipe'],
-				env: {
-					...this._buildEnv(backendDir),
-					CHIPOS_REASONING_SERVER: grpcTarget,
-					CHIPOS_REASONING_URL: this.reasoningUrl,
-					CHIPOS_WORKER_ID: this._workerId,
-					CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
-					...(token ? { CHIPOS_API_KEY: token } : {}),
-					CHIPOS_TLS_ENABLED: String(tlsEnabled),
-				},
-			}
-		);
-
+			this._workerProcess = cpSpawn(
+				pythonPath,
+				['-m', 'execution.server.cli', 'start', '--server', grpcTarget,
+				 '--workspace', workspaceRoot, '--http-port', String(workerHttpPort),
+				 '--instance-dir', this._instanceDir],
+				{
+					cwd: backendDir,
+					stdio: ['ignore', 'pipe', 'pipe'],
+					env: {
+						...this._buildEnv(backendDir),
+						CHIPOS_REASONING_SERVER: grpcTarget,
+						CHIPOS_REASONING_URL: this.reasoningUrl,
+						CHIPOS_WORKER_ID: this._workerId,
+						CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
+						...(token ? { CHIPOS_API_KEY: token } : {}),
+						CHIPOS_TLS_ENABLED: String(tlsEnabled),
+					},
+				}
+			);
 			this._attachHandlers(this._workerProcess, 'Worker');
-
-			const registered = await this._waitForWorkerRegistered(this._workerId!, 15000);
-			if (registered) {
-				this._setWorkerState(WorkerState.Connected);
-				this._logService.info('[ChipOS Worker] Registered at Reasoner');
-			} else if (this._workerProcess && !this._workerProcess.killed) {
-				this._setWorkerState(WorkerState.Connected);
-				this._logService.warn('[ChipOS Worker] Registration check unavailable, assuming connected');
-			}
+			await this._finalizeWorkerStart(workerHttpPort);
 		} catch (err) {
 			this._logService.error('[ChipOS Worker] Spawn failed:', String(err));
 			this._setWorkerState(WorkerState.Error);
+		}
+	}
+
+	private async _finalizeWorkerStart(_workerHttpPort: number): Promise<void> {
+		const registered = await this._waitForWorkerRegistered(this._workerId!, 15000);
+		if (registered) {
+			this._setWorkerState(WorkerState.Connected);
+			this._logService.info('[ChipOS Worker] Registered at Reasoner');
+		} else if (this._workerProcess && !this._workerProcess.killed) {
+			this._setWorkerState(WorkerState.Connected);
+			this._logService.warn('[ChipOS Worker] Registration check unavailable, assuming connected');
+		}
+	}
+
+	// --- instance.json helpers (R46 ref_count) ---
+
+	private _readInstanceJson(instanceDir: string): { pid: number; ref_count: number; http_port: number } | undefined {
+		const f = join(instanceDir, 'instance.json');
+		if (!existsSync(f)) {
+			return undefined;
+		}
+		try {
+			const data = JSON.parse(readFileSync(f, 'utf-8'));
+			return { pid: data.pid, ref_count: data.ref_count ?? 1, http_port: data.http_port ?? 8081 };
+		} catch {
+			return undefined;
+		}
+	}
+
+	private _acquireRef(instanceDir: string, callerId: string): void {
+		const f = join(instanceDir, 'instance.json');
+		try {
+			const data = JSON.parse(readFileSync(f, 'utf-8'));
+			data.ref_count = (data.ref_count ?? 1) + 1;
+			if (!data.refs) { data.refs = []; }
+			data.refs.push({ caller_id: callerId, acquired_at: new Date().toISOString() });
+			writeFileSync(f, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+			this._logService.info('[ChipOS Worker] ref_count incremented to', data.ref_count);
+		} catch (err) {
+			this._logService.warn('[ChipOS Worker] Failed to acquire ref:', String(err));
+		}
+	}
+
+	private _releaseRef(instanceDir: string, callerId: string): number {
+		const f = join(instanceDir, 'instance.json');
+		if (!existsSync(f)) { return 0; }
+		try {
+			const data = JSON.parse(readFileSync(f, 'utf-8'));
+			data.refs = (data.refs ?? []).filter((r: any) => r.caller_id !== callerId);
+			data.ref_count = Math.max((data.ref_count ?? 1) - 1, 0);
+			writeFileSync(f, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+			this._logService.info('[ChipOS Worker] ref_count decremented to', data.ref_count);
+			return data.ref_count;
+		} catch {
+			return 0;
+		}
+	}
+
+	private _isPidAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
 		}
 	}
 
@@ -369,6 +508,16 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		this._disposed = true;
 		this._clearTimer();
 		this._clearWorkerTimer();
+
+		// R46: release ref_count — only kill Worker if we're the last reference
+		if (this._instanceDir && this._callerId) {
+			const remaining = this._releaseRef(this._instanceDir, this._callerId);
+			if (remaining > 0) {
+				this._logService.info('[ChipOS Worker] Other windows still using Worker (ref_count:', remaining, '), not killing');
+				this._workerProcess = undefined;
+			}
+		}
+
 		const proc = this._process;
 		const workerProc = this._workerProcess;
 		this._process = undefined;
