@@ -342,16 +342,46 @@
 
 /* ── Disabled / Greyed-out Feature ───────────────────────────── */
 
-.chipos-setting-row.greyed-out {
+.chipos-setting-row.greyed-out,
+.chipos-toggle-row.greyed-out {
 	opacity: 0.45;
+	pointer-events: none;
 }
 
-.chipos-setting-row.greyed-out .chipos-setting-label::after {
+.chipos-setting-row.greyed-out .chipos-setting-label::after,
+.chipos-toggle-row.greyed-out .chipos-setting-label::after {
 	content: ' (Coming Soon)';
 	font-size: 11px;
 	font-weight: 400;
 	color: var(--vscode-descriptionForeground);
 	font-style: italic;
+}
+
+/* ── Secondary Button ───────────────────────────────────────── */
+
+.chipos-btn-secondary {
+	padding: 4px 12px;
+	font-size: 12px;
+	border: 1px solid var(--vscode-button-secondaryBorder, var(--vscode-panel-border));
+	background: var(--vscode-button-secondaryBackground, transparent);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.chipos-btn-secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
+}
+
+/* ── Section Header (flex row with title + action) ──────────── */
+
+.chipos-settings-section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 12px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid var(--vscode-panel-border);
 }
 
 /* ── Empty State ─────────────────────────────────────────────── */

@@ -125,7 +125,7 @@ export class ModelsTab extends Disposable {
 	private _renderVerifyRow(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-verify-row'));
 
-		this._verifyButton = dom.append(row, dom.$<HTMLButtonElement>('button.chipos-button', undefined, localize('chipos.settings.verify', 'Verify & Fetch Models')));
+		this._verifyButton = dom.append(row, dom.$<HTMLButtonElement>('button.chipos-verify-button', undefined, localize('chipos.settings.verify', 'Verify & Fetch Models')));
 		this._verifyStatus = dom.append(row, dom.$('.chipos-verify-status'));
 
 		this._disposables.add(dom.addDisposableListener(this._verifyButton, 'click', () => {

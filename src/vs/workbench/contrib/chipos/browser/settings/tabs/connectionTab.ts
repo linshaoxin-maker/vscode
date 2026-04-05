@@ -62,7 +62,7 @@ export class ConnectionTab extends Disposable {
 		));
 
 		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const select = dom.append(selectContainer, dom.$('select.chipos-mode-select')) as HTMLSelectElement;
+		const select = dom.append(selectContainer, dom.$('select.chipos-setting-select')) as HTMLSelectElement;
 
 		const modes: { value: string; label: string }[] = [
 			{ value: 'local', label: localize('chipos.mode.local', 'Local (reasoning + execution in one process)') },
