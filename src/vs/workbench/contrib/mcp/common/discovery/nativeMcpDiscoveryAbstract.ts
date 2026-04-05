@@ -50,6 +50,13 @@ export abstract class FilesystemMcpDiscovery extends Disposable implements IMcpD
 		if (discoverySource && fsDiscovery?.[discoverySource] === true) {
 			return true;
 		}
+		// ChipOS: default-enable our own discovery sources
+		if (fsDiscovery === undefined && (
+			discoverySource === DiscoverySource.ChipOSGlobal ||
+			discoverySource === DiscoverySource.ChipOSWorkspace
+		)) {
+			return true;
+		}
 		return false;
 	}
 
