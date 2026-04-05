@@ -96,17 +96,17 @@ export class FeaturesTab extends Disposable {
 	}
 
 	private _renderToggle(parent: HTMLElement, setting: ToggleSetting): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
+		const row = dom.append(parent, dom.$('.chipos-toggle-row'));
 
-		const toggle = dom.append(row, dom.$('.chipos-toggle'));
+		const info = dom.append(row, dom.$('.chipos-toggle-info'));
+		dom.append(info, dom.$('.chipos-setting-label', undefined, setting.label));
+		dom.append(info, dom.$('.chipos-setting-description', undefined, setting.description));
+
+		const toggle = dom.append(row, dom.$('.chipos-toggle-switch'));
 		const input = dom.append(toggle, dom.$<HTMLInputElement>('input'));
 		input.type = 'checkbox';
 		input.checked = this._configurationService.getValue<boolean>(setting.key) ?? false;
 		dom.append(toggle, dom.$('.chipos-toggle-slider'));
-
-		const textContainer = dom.append(row, dom.$('div'));
-		dom.append(textContainer, dom.$('.chipos-setting-label', undefined, setting.label));
-		dom.append(textContainer, dom.$('.chipos-setting-description', undefined, setting.description));
 
 		this._disposables.add(dom.addDisposableListener(input, 'change', () => {
 			this._configurationService.updateValue(setting.key, input.checked, ConfigurationTarget.USER);

@@ -46,6 +46,8 @@ export const enum AgentEventType {
 	PreReviewReport = 'pre_review_report',
 	// FEAT-R72: IDE 端工具调用（Reasoner → IDE 执行）
 	IdeToolCall = 'ide_tool_call',
+	// PPA 优化报告（时序/综合/功耗报告 + 优化前后对比）
+	PpaReport = 'ppa_report',
 }
 
 export interface IAgentEventBase {
@@ -221,6 +223,30 @@ export interface ILintReportPayload {
 	readonly tool?: string;
 }
 
+// PPA 优化报告
+export interface IPpaMetrics {
+	readonly area?: number;
+	readonly delay_ns?: number;
+	readonly power_w?: number;
+	readonly wns?: number;
+	readonly tns?: number;
+}
+
+export interface IPpaReportPayload {
+	readonly stage: 'baseline' | 'eval_round' | 'improved' | 'not_improved';
+	readonly round?: number;
+	readonly ppa?: IPpaMetrics;
+	readonly baseline_ppa?: IPpaMetrics;
+	readonly previous_best_ppa?: IPpaMetrics;
+	readonly current_ppa?: IPpaMetrics;
+	readonly best_ppa?: IPpaMetrics;
+	readonly improvement?: Record<string, number>;
+	readonly strategy?: string;
+	readonly sta_report?: string;
+	readonly power_report?: string;
+	readonly pareto_front_size?: number;
+}
+
 export interface INegotiationPerspective {
 	readonly agent: string;
 	readonly position: string;
@@ -383,6 +409,11 @@ export interface ILintReportEvent extends IAgentEventBase {
 	readonly payload: ILintReportPayload;
 }
 
+export interface IPpaReportEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.PpaReport;
+	readonly payload: IPpaReportPayload;
+}
+
 export interface INegotiationViewEvent extends IAgentEventBase {
 	readonly event_type: AgentEventType.NegotiationView;
 	readonly payload: INegotiationViewPayload;
@@ -459,6 +490,7 @@ export type AgentEvent =
 	| ISimReportEvent
 	| ICoverageReportEvent
 	| ILintReportEvent
+	| IPpaReportEvent
 	| INegotiationViewEvent
 	| IParallelProgressEvent
 	| ILoopProgressEvent
