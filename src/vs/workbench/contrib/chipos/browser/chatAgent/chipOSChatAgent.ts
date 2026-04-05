@@ -36,6 +36,7 @@ import {
 	IChatEdaSimReport,
 	IChatEdaCoverageReport,
 	IChatEdaLintReport,
+	IChatEdaPpaReport,
 	IChatEdaParallelProgress,
 	IChatEdaNegotiationView,
 	IChatEdaSpecReview,
@@ -75,6 +76,7 @@ import {
 	type ISimReportPayload,
 	type ICoverageReportPayload,
 	type ILintReportPayload,
+	type IPpaReportPayload,
 	type INegotiationViewPayload,
 	type IParallelProgressPayload,
 	type ILoopProgressPayload,
@@ -672,6 +674,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							auto_fixable: p.auto_fixable,
 							tool: p.tool,
 						} satisfies IChatEdaLintReport]);
+						break;
+					}
+
+					// ── PPA report → EDA content part ──
+					case AgentEventType.PpaReport: {
+						const p = event.payload as IPpaReportPayload;
+						trackFirstProgress();
+						progress([{
+							kind: 'edaPpaReport',
+							stage: p.stage,
+							round: p.round,
+							ppa: p.ppa,
+							baseline_ppa: p.baseline_ppa,
+							previous_best_ppa: p.previous_best_ppa,
+							current_ppa: p.current_ppa,
+							best_ppa: p.best_ppa,
+							improvement: p.improvement,
+							strategy: p.strategy,
+							sta_report: p.sta_report,
+							power_report: p.power_report,
+							pareto_front_size: p.pareto_front_size,
+						} satisfies IChatEdaPpaReport]);
 						break;
 					}
 
@@ -1611,6 +1635,25 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							auto_fixable: p.auto_fixable,
 							tool: p.tool,
 						} satisfies IChatEdaLintReport]);
+						break;
+					}
+					case AgentEventType.PpaReport: {
+						const p = event.payload as IPpaReportPayload;
+						progress([{
+							kind: 'edaPpaReport',
+							stage: p.stage,
+							round: p.round,
+							ppa: p.ppa,
+							baseline_ppa: p.baseline_ppa,
+							previous_best_ppa: p.previous_best_ppa,
+							current_ppa: p.current_ppa,
+							best_ppa: p.best_ppa,
+							improvement: p.improvement,
+							strategy: p.strategy,
+							sta_report: p.sta_report,
+							power_report: p.power_report,
+							pareto_front_size: p.pareto_front_size,
+						} satisfies IChatEdaPpaReport]);
 						break;
 					}
 					case AgentEventType.NegotiationView: {

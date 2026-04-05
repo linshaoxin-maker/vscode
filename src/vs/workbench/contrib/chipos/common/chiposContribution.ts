@@ -61,6 +61,7 @@ import { ChatEdaNegotiationViewContentPart } from '../../../../workbench/contrib
 import { ChatEdaSpecReviewContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaSpecReviewPart.js';
 import { ChatRoundProgressContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatRoundProgressPart.js';
 import { ChatAgentErrorContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatAgentErrorPart.js';
+import { ChatEdaPpaReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaPpaReportPart.js';
 
 import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos/browser/settings/chiposQuickToggles.js';
 
@@ -682,7 +683,8 @@ class ChipOSContribution extends Disposable {
 		registry.registerContentPart('edaSpecReview', (content, inst) => inst.createInstance(ChatEdaSpecReviewContentPart, content as any));
 		registry.registerContentPart('roundProgress', (content, inst) => inst.createInstance(ChatRoundProgressContentPart, content as any));
 		registry.registerContentPart('agentError', (content, inst) => inst.createInstance(ChatAgentErrorContentPart, content as any));
-		this._logService.info('[ChipOS] Registered 8 EDA content part renderers');
+		registry.registerContentPart('edaPpaReport', (content, inst) => inst.createInstance(ChatEdaPpaReportContentPart, content as any));
+		this._logService.info('[ChipOS] Registered 9 EDA content part renderers');
 	}
 
 	private _registerFileChangeCommands(agent: ChipOSChatAgent): void {

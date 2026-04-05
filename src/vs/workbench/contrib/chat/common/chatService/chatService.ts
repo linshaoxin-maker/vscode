@@ -1037,6 +1037,7 @@ export type IChatProgress =
 	| IChatEdaSimReport
 	| IChatEdaCoverageReport
 	| IChatEdaLintReport
+	| IChatEdaPpaReport
 	| IChatEdaParallelProgress
 	| IChatEdaNegotiationView
 	| IChatEdaSpecReview
@@ -1051,6 +1052,7 @@ export {
 	type IChatEdaCoverageReport,
 	type IChatEdaLintError,
 	type IChatEdaLintReport,
+	type IChatEdaPpaReport,
 	type IChatEdaParallelTrack,
 	type IChatEdaParallelProgress,
 	type IChatEdaNegotiationPerspective,
@@ -1064,7 +1066,7 @@ export {
 	isEdaContentKind,
 } from '../chatEdaTypes.js';
 
-import type { IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview, IChatRoundProgress, IChatAgentError } from '../chatEdaTypes.js';
+import type { IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaPpaReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview, IChatRoundProgress, IChatAgentError } from '../chatEdaTypes.js';
 
 export interface IChatFollowup {
 	kind: 'reply';

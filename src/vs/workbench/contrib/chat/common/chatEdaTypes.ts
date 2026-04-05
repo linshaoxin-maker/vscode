@@ -112,6 +112,32 @@ export interface IChatAgentError {
 	suggestion?: string;
 }
 
+// ── EDA PPA Report ─────────────────────────────────────────────────────────
+
+export interface IChatEdaPpaMetrics {
+	area?: number;
+	delay_ns?: number;
+	power_w?: number;
+	wns?: number;
+	tns?: number;
+}
+
+export interface IChatEdaPpaReport {
+	kind: 'edaPpaReport';
+	stage: 'baseline' | 'eval_round' | 'improved' | 'not_improved';
+	round?: number;
+	ppa?: IChatEdaPpaMetrics;
+	baseline_ppa?: IChatEdaPpaMetrics;
+	previous_best_ppa?: IChatEdaPpaMetrics;
+	current_ppa?: IChatEdaPpaMetrics;
+	best_ppa?: IChatEdaPpaMetrics;
+	improvement?: Record<string, number>;
+	strategy?: string;
+	sta_report?: string;
+	power_report?: string;
+	pareto_front_size?: number;
+}
+
 // ── Union type for all EDA content parts ────────────────────────────────────
 
 export type IChatEdaProgress =
@@ -122,7 +148,8 @@ export type IChatEdaProgress =
 	| IChatEdaNegotiationView
 	| IChatEdaSpecReview
 	| IChatRoundProgress
-	| IChatAgentError;
+	| IChatAgentError
+	| IChatEdaPpaReport;
 
 // ── EDA kind constants ──────────────────────────────────────────────────────
 
@@ -135,6 +162,7 @@ export const EDA_CONTENT_KINDS = [
 	'edaSpecReview',
 	'roundProgress',
 	'agentError',
+	'edaPpaReport',
 ] as const;
 
 export type EdaContentKind = typeof EDA_CONTENT_KINDS[number];
