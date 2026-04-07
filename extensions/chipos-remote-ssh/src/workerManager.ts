@@ -337,9 +337,10 @@ export class WorkerManager {
 			if (!trimmed) { return null; }
 			return JSON.parse(trimmed);
 		} catch {
-			// flock failed, instance.json missing, PID dead, or python3 unavailable
-			// Clean up stale instance if exists
-			await this._cleanupInstance();
+			// flock failed, instance.json missing, PID dead, or python3 unavailable.
+			// Do NOT clean up unconditionally — if python3 is missing we can't tell
+			// whether the Worker PID is alive; deleting instance.json would orphan a
+			// running Worker and cause port conflicts on next start.
 			return null;
 		}
 	}

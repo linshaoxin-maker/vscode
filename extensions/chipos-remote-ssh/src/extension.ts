@@ -49,8 +49,8 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 }
 
-export function deactivate() {
-	disconnect();
+export function deactivate(): Promise<void> {
+	return disconnect();
 }
 
 // ── Resolver ────────────────────────────────────────────────────────────────
@@ -92,10 +92,10 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 			},
 			async (progress, cancelToken) => {
 				let sshConn: SshConnection | undefined;
-			let serverMgr: ServerManager | undefined;
-			let workerMgr: WorkerManager | undefined;
+				let serverMgr: ServerManager | undefined;
+				let workerMgr: WorkerManager | undefined;
 
-			try {
+				try {
 				// 1. Establish SSH connection
 				progress.report({ message: 'Establishing SSH connection...' });
 				const sshOptions = await buildSshOptions(sshTarget);
@@ -174,6 +174,8 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					localReasoningPort = await sshConn.forwardPort(0, '127.0.0.1', reasoningPort);
 					log(`Reasoning port forwarding: 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
 					if (localReasoningPort !== reasoningPort) {
+						// TODO(P2-12): Global config may conflict with a concurrent B2/Local window.
+						// Migrate to Workspace or memento-scoped config in a future iteration.
 						await vscode.workspace.getConfiguration('chipos.backend').update(
 							'reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, vscode.ConfigurationTarget.Global);
 					}
@@ -229,6 +231,7 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 						const localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
 						log(`[Step 5] Worker HTTP port forwarding: 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
 						if (localWorkerPort !== workerHttpPort) {
+							// TODO(P2-12): Same Global scope caveat as reasoningUrl above.
 							await vscode.workspace.getConfiguration('chipos.backend').update(
 								'workerHttpUrl', `http://127.0.0.1:${localWorkerPort}`, vscode.ConfigurationTarget.Global);
 						}
@@ -355,13 +358,17 @@ async function connectToHost(reuseWindow: boolean): Promise<void> {
 }
 
 async function disconnect(): Promise<void> {
-	// Tear down ALL active remote sessions
+	// Tear down ALL active remote sessions (fault-tolerant per session)
 	for (const [authority, session] of activeSessions) {
 		log(`Disconnecting ${authority}...`);
-		if (session.worker) {
-			await session.worker.stopWorker();
+		try {
+			if (session.worker) {
+				await session.worker.stopWorker();
+			}
+			await session.server.stopServer();
+		} catch (err) {
+			log(`[WARN] Cleanup error for ${authority}: ${err}`);
 		}
-		await session.server.stopServer();
 		session.ssh.dispose();
 	}
 	activeSessions.clear();

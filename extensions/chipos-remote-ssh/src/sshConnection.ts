@@ -274,7 +274,12 @@ export class SshConnection {
 
 		return new Promise<number>((resolve, reject) => {
 			const server = net.createServer((localSocket) => {
-				this._client!.forwardOut(
+				if (!this._client) {
+					this._log('[SSH] Port forward: SSH client gone, dropping connection');
+					localSocket.destroy();
+					return;
+				}
+				this._client.forwardOut(
 					'127.0.0.1', localPort,
 					remoteHost, remotePort,
 					(err, remoteSocket) => {
