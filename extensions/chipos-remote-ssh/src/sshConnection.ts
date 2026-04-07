@@ -29,13 +29,28 @@ export interface SshConnectionOptions {
 	useAgent?: boolean;
 }
 
+interface PortForwardConfig {
+	localPort: number;
+	remoteHost: string;
+	remotePort: number;
+}
+
 export class SshConnection {
 
 	private _client: Client | undefined;
 	private _connected = false;
+	private _disposed = false;
+	private _reconnecting = false;
+	private _reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private _forwardedPorts: Map<number, net.Server> = new Map();
+	private _portForwardConfigs: Map<number, PortForwardConfig> = new Map();
+
+	private _onDisconnect: (() => void) | undefined;
+	private _onReconnect: (() => void) | undefined;
 
 	get connected(): boolean { return this._connected; }
+	set onDisconnect(cb: () => void) { this._onDisconnect = cb; }
+	set onReconnect(cb: () => void) { this._onReconnect = cb; }
 
 	constructor(
 		private readonly _options: SshConnectionOptions,
@@ -49,11 +64,13 @@ export class SshConnection {
 		return new Promise<void>((resolve, reject) => {
 			const client = new Client();
 
-			const config: ConnectConfig = {
-				host: this._options.host,
-				port: this._options.port ?? 22,
-				username: this._options.username,
-			};
+		const config: ConnectConfig = {
+			host: this._options.host,
+			port: this._options.port ?? 22,
+			username: this._options.username,
+			keepaliveInterval: 30_000,
+			keepaliveCountMax: 3,
+		};
 
 			// Authentication: private key > agent > password
 			if (this._options.privateKeyPath) {
@@ -101,11 +118,15 @@ export class SshConnection {
 				reject(err);
 			});
 
-			client.on('close', () => {
-				this._log('[SSH] Connection closed');
-				this._connected = false;
-				this._client = undefined;
-			});
+		client.on('close', () => {
+			this._log('[SSH] Connection closed');
+			this._connected = false;
+			this._client = undefined;
+			if (!this._disposed) {
+				this._onDisconnect?.();
+				this._scheduleReconnect();
+			}
+		});
 
 			this._log(`[SSH] Connecting to ${this._options.username}@${this._options.host}:${config.port}...`);
 			client.connect(config);
@@ -268,12 +289,13 @@ export class SshConnection {
 				);
 			});
 
-			server.listen(localPort, '127.0.0.1', () => {
-				const actualPort = (server.address() as net.AddressInfo).port;
-				this._log(`[SSH] Port forward: localhost:${actualPort} → ${remoteHost}:${remotePort}`);
-				this._forwardedPorts.set(actualPort, server);
-				resolve(actualPort);
-			});
+		server.listen(localPort, '127.0.0.1', () => {
+			const actualPort = (server.address() as net.AddressInfo).port;
+			this._log(`[SSH] Port forward: localhost:${actualPort} → ${remoteHost}:${remotePort}`);
+			this._forwardedPorts.set(actualPort, server);
+			this._portForwardConfigs.set(actualPort, { localPort: actualPort, remoteHost, remotePort });
+			resolve(actualPort);
+		});
 
 			server.on('error', (err) => {
 				reject(err);
@@ -285,19 +307,69 @@ export class SshConnection {
 	 * Disconnect and clean up all resources.
 	 */
 	dispose(): void {
-		// Close all port forwards
+		this._disposed = true;
+		if (this._reconnectTimer) {
+			clearTimeout(this._reconnectTimer);
+			this._reconnectTimer = undefined;
+		}
+
 		for (const [port, server] of this._forwardedPorts) {
 			this._log(`[SSH] Closing port forward on localhost:${port}`);
 			server.close();
 		}
 		this._forwardedPorts.clear();
+		this._portForwardConfigs.clear();
 
-		// Close SSH connection
 		if (this._client) {
 			this._client.end();
 			this._client = undefined;
 		}
 		this._connected = false;
+	}
+
+	// ── Auto-reconnect (exponential backoff) ────────────────────────────
+
+	private _scheduleReconnect(attempt: number = 0): void {
+		if (this._disposed || this._reconnecting) { return; }
+
+		const MAX_ATTEMPTS = 5;
+		if (attempt >= MAX_ATTEMPTS) {
+			this._log(`[SSH] Reconnect failed after ${MAX_ATTEMPTS} attempts, giving up`);
+			return;
+		}
+
+		const delayMs = Math.min(1000 * Math.pow(2, attempt), 30_000);
+		this._log(`[SSH] Scheduling reconnect attempt ${attempt + 1}/${MAX_ATTEMPTS} in ${delayMs}ms`);
+
+		this._reconnectTimer = setTimeout(async () => {
+			if (this._disposed) { return; }
+			this._reconnecting = true;
+			try {
+				await this.connect();
+				this._log('[SSH] Reconnected successfully');
+				await this._rebuildPortForwards();
+				this._onReconnect?.();
+			} catch (err) {
+				this._log(`[SSH] Reconnect attempt ${attempt + 1} failed: ${err}`);
+				this._reconnecting = false;
+				this._scheduleReconnect(attempt + 1);
+				return;
+			}
+			this._reconnecting = false;
+		}, delayMs);
+	}
+
+	private async _rebuildPortForwards(): Promise<void> {
+		const configs = [...this._portForwardConfigs.values()];
+		this._portForwardConfigs.clear();
+		for (const cfg of configs) {
+			try {
+				await this.forwardPort(cfg.localPort, cfg.remoteHost, cfg.remotePort);
+				this._log(`[SSH] Restored port forward: localhost:${cfg.localPort} → ${cfg.remoteHost}:${cfg.remotePort}`);
+			} catch (err) {
+				this._log(`[SSH] Failed to restore port forward ${cfg.localPort}: ${err}`);
+			}
+		}
 	}
 }
 

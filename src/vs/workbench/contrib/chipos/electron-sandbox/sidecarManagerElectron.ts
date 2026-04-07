@@ -385,7 +385,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	private async _healthCheckLoop(): Promise<void> {
 		this._setState(SidecarState.HealthChecking);
-		const timeout = 15_000;
+		const timeout = this._mode === BackendMode.Cloud ? 60_000 : 15_000;
 		const interval = 500;
 		const start = Date.now();
 
