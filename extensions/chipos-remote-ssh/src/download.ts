@@ -19,6 +19,7 @@ import { SshConnection } from './sshConnection';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as childProcess from 'child_process';
+import * as vscode from 'vscode';
 
 export interface ProductInfo {
 	commit: string;
@@ -33,8 +34,17 @@ export interface ProductInfo {
  */
 export function getProductInfo(): ProductInfo {
 	try {
-		// In extension context, we can read the product info from the running IDE
-		const product = require('../../../../product.json');
+		// Prefer runtime product metadata from the running client.
+		// This avoids packaging a stale product.json and prevents client/server version drift.
+		const env = vscode.env as unknown as {
+			appRoot?: string;
+			appHost?: string;
+		};
+		const appRoot = env.appRoot;
+		const productPath = appRoot ? path.join(appRoot, 'product.json') : undefined;
+		const product = (productPath && fs.existsSync(productPath))
+			? JSON.parse(fs.readFileSync(productPath, 'utf-8'))
+			: require('../../../../product.json');
 		return {
 			commit: product.commit || '',
 			quality: product.quality || 'insider',
@@ -230,8 +240,9 @@ export function getWorkerInstallPath(): string {
 function _tryGetConfig(section: string, key: string): string | undefined {
 	try {
 		// 在扩展上下文中可以访问 vscode API
-		const vscode = require('vscode');
-		return vscode.workspace.getConfiguration(section).get<string>(key);
+		const vscode = require('vscode') as { workspace?: { getConfiguration?: (s: string) => { get?: (k: string) => unknown } } };
+		const value = vscode.workspace?.getConfiguration?.(section)?.get?.(key);
+		return typeof value === 'string' ? value : undefined;
 	} catch {
 		return undefined;
 	}
@@ -300,36 +311,6 @@ export async function downloadAndInstallWorker(
 	}
 
 	log('[Worker Deploy] Worker installed successfully');
-
-	// 确保远端有 mcp_servers.json（MCP 工具配置文件）
-	// wheel 包不包含此文件，需要在安装后创建默认配置
-	// MCP Server 代码已随 wheel 安装到 site-packages/execution/mcp_server/
-	const mcpConfigPath = `${installPath}/mcp_servers.json`;
-	try {
-		await ssh.exec(`test -f ${mcpConfigPath}`);
-		log('[Worker Deploy] mcp_servers.json already exists');
-	} catch {
-		// 先获取远端 HOME 目录，避免写入 ~ 导致 Python subprocess 无法解析
-		let resolvedInstallPath = installPath;
-		if (installPath.startsWith('~')) {
-			try {
-				const home = (await ssh.exec('echo $HOME')).trim();
-				resolvedInstallPath = installPath.replace('~', home);
-			} catch { /* fallback to original */ }
-		}
-		const defaultConfig = JSON.stringify({
-			mcpServers: {
-				'coderust-eda-tools': {
-					command: `${resolvedInstallPath}/.venv/bin/python`,
-					args: ['-m', 'execution.mcp_server.server'],
-					cwd: '.',
-					env: {},
-				},
-			},
-		}, null, 2);
-		await ssh.exec(`cat > ${mcpConfigPath} << 'MCPEOF'\n${defaultConfig}\nMCPEOF`);
-		log('[Worker Deploy] Created mcp_servers.json with default EDA tools config');
-	}
 
 	return installPath;
 }

@@ -305,7 +305,9 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			await this._invokeIpc('chipos:acquireRef', { workspaceRoot, callerId: this._callerId });
 			this._workerPid = existing.pid;
 			this._isSharedInstance = true;
-			this._setWorkerState(WorkerState.Connected);
+			// Don't blindly trust PID alive = HTTP ready; verify the Worker
+			// is actually serving before declaring Connected.
+			this._setWorkerState(WorkerState.Starting);
 			return;
 		}
 
@@ -347,15 +349,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 		// --- Fallback: Python ---
 		const pythonPath = this._configurationService.getValue<string>('chipos.backend.pythonPath') ?? 'python3';
-		const mcpConfigPath = join(backendDir, 'mcp_servers.json');
-		env.CHIPOS_WORKER_MCP_CONFIG_PATH = mcpConfigPath;
 
 		try {
 			const result = await this._invokeIpc('chipos:spawnProcess', {
 				pythonPath,
 				moduleArgs: ['-m', 'execution.server.cli', 'start', '--server', grpcTarget,
-					'--workspace', workspaceRoot, '--http-port', String(workerHttpPort),
-					'--mcp-config', mcpConfigPath],
+					'--workspace', workspaceRoot, '--http-port', String(workerHttpPort)],
 				env,
 				cwd: backendDir,
 				role: 'worker',
@@ -385,7 +384,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	private async _healthCheckLoop(): Promise<void> {
 		this._setState(SidecarState.HealthChecking);
-		const timeout = this._mode === BackendMode.Cloud ? 60_000 : 15_000;
+		const timeout = this._mode === BackendMode.CloudReasoning ? 60_000 : 15_000;
 		const interval = 500;
 		const start = Date.now();
 

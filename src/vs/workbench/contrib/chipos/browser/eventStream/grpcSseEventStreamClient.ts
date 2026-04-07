@@ -420,6 +420,8 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 	// ── HTTP POST ───────────────────────────────────────────────────────────
 
+	private static readonly _POST_TIMEOUT_MS = 30_000;
+
 	private async _post(path: string, body: unknown): Promise<Response> {
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
@@ -428,16 +430,36 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			headers['Authorization'] = `Bearer ${this._config.token}`;
 		}
 
-		const resp = await fetch(`${this._config.baseUrl}${path}`, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(body),
-		});
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), GrpcSseEventStreamClient._POST_TIMEOUT_MS);
 
-		if (!resp.ok) {
-			throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+		try {
+			const resp = await fetch(`${this._config.baseUrl}${path}`, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(body),
+				signal: controller.signal,
+			});
+
+			if (!resp.ok) {
+				let detail = resp.statusText;
+				try {
+					const errBody = await resp.json();
+					if (errBody?.error?.message) {
+						detail = `${errBody.error.code || resp.status}: ${errBody.error.message}`;
+					}
+				} catch { /* body may not be JSON */ }
+				throw new Error(`HTTP ${resp.status}: ${detail}`);
+			}
+			return resp;
+		} catch (err: any) {
+			if (err.name === 'AbortError') {
+				throw new Error(`POST ${path} timed out after ${GrpcSseEventStreamClient._POST_TIMEOUT_MS}ms`);
+			}
+			throw err;
+		} finally {
+			clearTimeout(timer);
 		}
-		return resp;
 	}
 
 	// ── 辅助 ────────────────────────────────────────────────────────────────

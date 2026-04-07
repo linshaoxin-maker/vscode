@@ -122,7 +122,7 @@ export class SshConnection {
 			this._log('[SSH] Connection closed');
 			this._connected = false;
 			this._client = undefined;
-			if (!this._disposed) {
+			if (!this._disposed && !this._reconnecting) {
 				this._onDisconnect?.();
 				this._scheduleReconnect();
 			}
@@ -360,6 +360,13 @@ export class SshConnection {
 	}
 
 	private async _rebuildPortForwards(): Promise<void> {
+		// Close old TCP servers first to free the ports — prevents EADDRINUSE
+		for (const [port, server] of this._forwardedPorts) {
+			this._log(`[SSH] Closing stale port forward on localhost:${port}`);
+			server.close();
+		}
+		this._forwardedPorts.clear();
+
 		const configs = [...this._portForwardConfigs.values()];
 		this._portForwardConfigs.clear();
 		for (const cfg of configs) {

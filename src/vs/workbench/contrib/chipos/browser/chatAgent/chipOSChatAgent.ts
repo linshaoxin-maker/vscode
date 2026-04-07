@@ -170,22 +170,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 		this._mcpToolsReportDebounce = setTimeout(() => {
 			this._mcpToolsReportDebounce = undefined;
-			// 找到当前活跃的 session 和 streamClient
-			const activeSession = this._findActiveSession();
-			if (activeSession) {
-				this._collectAndReportMcpTools(activeSession.streamClient, activeSession.sessionId);
+			// Notify ALL active sessions so every Reasoner sees the updated tool list
+			const activeSessions = this._findAllActiveSessions();
+			for (const s of activeSessions) {
+				this._collectAndReportMcpTools(s.streamClient, s.sessionId);
 			}
 		}, 1000);
 	}
 
-	private _findActiveSession(): { streamClient: IEventStreamClient; sessionId: string } | null {
-		// 遍历 session runtimes 找到有 streamClient 的
+	private _findAllActiveSessions(): Array<{ streamClient: IEventStreamClient; sessionId: string }> {
+		const result: Array<{ streamClient: IEventStreamClient; sessionId: string }> = [];
 		for (const [, runtime] of this._sessionRuntimes) {
 			if (runtime.streamClient && runtime.backendSessionId) {
-				return { streamClient: runtime.streamClient, sessionId: runtime.backendSessionId };
+				result.push({ streamClient: runtime.streamClient, sessionId: runtime.backendSessionId });
 			}
 		}
-		return null;
+		return result;
 	}
 
 	async invoke(

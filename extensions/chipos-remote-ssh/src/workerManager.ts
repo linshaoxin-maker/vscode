@@ -316,12 +316,12 @@ export class WorkerManager {
 			`flock -w 10 ${this._instanceDir}/instance.lock bash -c '`,
 			`META=$(cat ${this._instanceDir}/instance.json 2>/dev/null) || exit 1;`,
 			`echo "$META" | python3 -c "`,
-			`import sys,json,os,signal;`,
+			`import sys,json,os;`,
 			`m=json.load(sys.stdin);`,
-			`pid=m.get(\\\"pid\\\",0);`,
-			// Check if PID is alive
-			`try: os.kill(pid,0)`,
-			`except (OSError,ProcessLookupError): sys.exit(1);`,
+			`pid=int(m.get(\\\"pid\\\",0) or 0);`,
+			// Check if PID is alive (avoid inline try/except syntax issues)
+			`alive = (pid > 0 and os.system(f\"kill -0 {pid} >/dev/null 2>&1\") == 0);`,
+			`alive or sys.exit(1);`,
 			// PID alive → acquire ref
 			`m[\\\"ref_count\\\"]=m.get(\\\"ref_count\\\",1)+1;`,
 			`refs=m.get(\\\"refs\\\",[]);`,
@@ -341,28 +341,6 @@ export class WorkerManager {
 			// Clean up stale instance if exists
 			await this._cleanupInstance();
 			return null;
-		}
-	}
-
-	private async _acquireRef(): Promise<void> {
-		if (!this._instanceDir) { return; }
-		const script = [
-			`flock -w 10 ${this._instanceDir}/instance.lock bash -c '`,
-			`META=$(cat ${this._instanceDir}/instance.json 2>/dev/null) || exit 0;`,
-			`echo "$META" | python3 -c "`,
-			`import sys,json; m=json.load(sys.stdin);`,
-			`m[\\\"ref_count\\\"]=m.get(\\\"ref_count\\\",1)+1;`,
-			`refs=m.get(\\\"refs\\\",[]);`,
-			`refs.append(\\\"${this._callerId}\\\");`,
-			`m[\\\"refs\\\"]=refs;`,
-			`json.dump(m,open(\\\"${this._instanceDir}/instance.json\\\",\\\"w\\\"),indent=2)`,
-			`"'`,
-		].join('');
-		try {
-			await this._ssh.exec(script);
-			this._log(`[WorkerManager] Acquired ref (caller=${this._callerId})`);
-		} catch (err) {
-			this._log(`[WorkerManager] acquireRef failed: ${err}`);
 		}
 	}
 

@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { SshConnection, SshConnectionOptions } from './sshConnection';
@@ -13,9 +12,15 @@ import { WorkerManager } from './workerManager';
 import { getWorkerInstallPath } from './download';
 
 let outputChannel: vscode.OutputChannel;
-let activeSshConnection: SshConnection | undefined;
-let activeServerManager: ServerManager | undefined;
-let activeWorkerManager: WorkerManager | undefined;
+
+interface RemoteSession {
+	ssh: SshConnection;
+	server: ServerManager;
+	worker: WorkerManager | undefined;
+}
+
+const activeSessions = new Map<string, RemoteSession>();
+const pendingWorkspacePaths = new Map<string, string>();
 
 // ── Activation ──────────────────────────────────────────────────────────────
 
@@ -86,7 +91,11 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				cancellable: true,
 			},
 			async (progress, cancelToken) => {
-				try {
+				let sshConn: SshConnection | undefined;
+			let serverMgr: ServerManager | undefined;
+			let workerMgr: WorkerManager | undefined;
+
+			try {
 				// 1. Establish SSH connection
 				progress.report({ message: 'Establishing SSH connection...' });
 				const sshOptions = await buildSshOptions(sshTarget);
@@ -108,16 +117,16 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					throw new Error('Connection cancelled');
 				}
 
-				activeSshConnection = new SshConnection(sshOptions, log);
+				sshConn = new SshConnection(sshOptions, log);
 				try {
-					await activeSshConnection.connect();
+					await sshConn.connect();
 				} catch (firstErr) {
 					// Key/agent auth failed — fallback to password
 					const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
 					if (msg.includes('authentication') || msg.includes('auth')) {
 						log(`[SSH] Key/agent auth failed, prompting for password...`);
-						activeSshConnection.dispose();
-						activeSshConnection = undefined;
+						sshConn.dispose();
+						sshConn = undefined;
 
 						const password = await vscode.window.showInputBox({
 							prompt: `Key auth failed. Enter password for ${sshOptions.username}@${sshOptions.host}`,
@@ -130,44 +139,42 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 						sshOptions.privateKeyPath = undefined;
 						sshOptions.useAgent = false;
 
-						activeSshConnection = new SshConnection(sshOptions, log);
-						await activeSshConnection.connect();
+						sshConn = new SshConnection(sshOptions, log);
+						await sshConn.connect();
 					} else {
 						throw firstErr;
 					}
 				}
-					log('SSH connection established');
+				log('SSH connection established');
 
-					// 2. Start ChipOS Server on remote
-					progress.report({ message: 'Starting ChipOS Server on remote...' });
-					const installPath = vscode.workspace.getConfiguration('chipos.remote.ssh')
-						.get<string>('serverInstallPath', '~/.chipos-server');
+				// 2. Start ChipOS Server on remote
+				progress.report({ message: 'Starting ChipOS Server on remote...' });
+				const installPath = vscode.workspace.getConfiguration('chipos.remote.ssh')
+					.get<string>('serverInstallPath', '~/.chipos-server');
 
-					if (cancelToken.isCancellationRequested) {
-						throw new Error('Connection cancelled');
-					}
+				if (cancelToken.isCancellationRequested) {
+					throw new Error('Connection cancelled');
+				}
 
-					activeServerManager = new ServerManager(activeSshConnection, installPath, log);
-					const { port, connectionToken } = await activeServerManager.ensureServerRunning();
-					log(`ChipOS Server running on remote port ${port}`);
+				serverMgr = new ServerManager(sshConn, installPath, log);
+				const { port, connectionToken } = await serverMgr.ensureServerRunning();
+				log(`ChipOS Server running on remote port ${port}`);
 
-					// 3. Create a local TCP tunnel to the remote VS Code Server port
-					progress.report({ message: 'Setting up port forwarding...' });
-					const localPort = await activeSshConnection.forwardPort(0, '127.0.0.1', port);
-					log(`Local port forwarding: 127.0.0.1:${localPort} → remote:${port}`);
+				// 3. Create a local TCP tunnel to the remote VS Code Server port
+				progress.report({ message: 'Setting up port forwarding...' });
+				const localPort = await sshConn.forwardPort(0, '127.0.0.1', port);
+				log(`Local port forwarding: 127.0.0.1:${localPort} → remote:${port}`);
 
 				// 4. Forward the Reasoning HTTP port so the local renderer's
 				//    SSE client (browser fetch/EventSource) can reach the remote backend.
 				const reasoningPort = vscode.workspace.getConfiguration('chipos.backend')
 					.get<number>('httpPort', 8080);
-				let localReasoningPort = reasoningPort; // fallback if forwarding fails
+				let localReasoningPort = reasoningPort;
 				try {
-					localReasoningPort = await activeSshConnection.forwardPort(
-						0, '127.0.0.1', reasoningPort);
+					localReasoningPort = await sshConn.forwardPort(0, '127.0.0.1', reasoningPort);
 					log(`Reasoning port forwarding: 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
-					// Update config so frontend components use the actual local port
 					if (localReasoningPort !== reasoningPort) {
-						vscode.workspace.getConfiguration('chipos.backend').update(
+						await vscode.workspace.getConfiguration('chipos.backend').update(
 							'reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, vscode.ConfigurationTarget.Global);
 					}
 				} catch (fwdErr) {
@@ -205,28 +212,30 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				log(`[Step 5] workerInstallPath=${workerInstallPath}`);
 				const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 				log(`[Step 5] reasonerGrpcTarget=${reasonerGrpcTarget}`);
-				activeWorkerManager = new WorkerManager(activeSshConnection, workerInstallPath, log);
+				workerMgr = new WorkerManager(sshConn, workerInstallPath, log);
 				try {
-					// Determine remote workspace path from VS Code workspace folders
 					const folders = vscode.workspace.workspaceFolders;
-					const remoteWorkspacePath = folders && folders.length > 0 ? folders[0].uri.path : undefined;
+					const remoteWorkspacePath =
+						pendingWorkspacePaths.get(authority)
+						|| (folders && folders.length > 0 ? folders[0].uri.path : undefined);
+					pendingWorkspacePaths.delete(authority);
 					log(`[Step 5] remoteWorkspacePath=${remoteWorkspacePath}`);
-					await activeWorkerManager.ensureWorkerRunning(reasonerGrpcTarget, remoteWorkspacePath);
+					await workerMgr.ensureWorkerRunning(reasonerGrpcTarget, remoteWorkspacePath);
 					log('[Step 5] Execution Worker started on remote');
 
-					// Forward Worker HTTP port (8081) for UI direct access
 					const workerHttpPort = vscode.workspace.getConfiguration('chipos.backend')
 						.get<number>('workerHttpPort', 8081);
 					try {
-						const localWorkerPort = await activeSshConnection.forwardPort(
-							0, '127.0.0.1', workerHttpPort);
+						const localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
 						log(`[Step 5] Worker HTTP port forwarding: 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
 						if (localWorkerPort !== workerHttpPort) {
-							vscode.workspace.getConfiguration('chipos.backend').update(
+							await vscode.workspace.getConfiguration('chipos.backend').update(
 								'workerHttpUrl', `http://127.0.0.1:${localWorkerPort}`, vscode.ConfigurationTarget.Global);
 						}
 					} catch (fwdErr) {
 						log(`[Step 5][WARN] Could not forward worker HTTP port: ${fwdErr}`);
+						vscode.window.showWarningMessage(
+							`ChipOS: Failed to forward Worker HTTP port ${workerHttpPort}. Remote execution UI may not work.`);
 					}
 				} catch (workerErr) {
 					const workerMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
@@ -235,32 +244,34 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 						`ChipOS: Worker deployment failed: ${workerMsg}. Chat still works, but remote execution won't be available.`);
 				}
 
+				// P1-7: Store per-authority session — multiple remote servers can coexist
+				activeSessions.set(authority, { ssh: sshConn, server: serverMgr, worker: workerMgr });
+
 				return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 
 			} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					log(`Resolution failed: ${message}`);
+				const message = err instanceof Error ? err.message : String(err);
+				log(`Resolution failed: ${message}`);
 
-					// Clean up on failure
-					if (activeSshConnection) {
-						activeSshConnection.dispose();
-						activeSshConnection = undefined;
-					}
+				// Clean up on failure — only this authority's resources
+				if (sshConn) {
+					sshConn.dispose();
+				}
 
-					if (message.includes('cancelled')) {
-						throw vscode.RemoteAuthorityResolverError.NotAvailable('Connection cancelled', true);
-					}
-					if (message.includes('ECONNREFUSED') || message.includes('timeout')) {
-						throw vscode.RemoteAuthorityResolverError.TemporarilyNotAvailable(
-							`Cannot connect to ${sshTarget}: ${message}`
-						);
-					}
-
-					throw vscode.RemoteAuthorityResolverError.NotAvailable(
-						`SSH connection failed: ${message}`,
-						true
+				if (message.includes('cancelled')) {
+					throw vscode.RemoteAuthorityResolverError.NotAvailable('Connection cancelled', true);
+				}
+				if (message.includes('ECONNREFUSED') || message.includes('timeout')) {
+					throw vscode.RemoteAuthorityResolverError.TemporarilyNotAvailable(
+						`Cannot connect to ${sshTarget}: ${message}`
 					);
 				}
+
+				throw vscode.RemoteAuthorityResolverError.NotAvailable(
+					`SSH connection failed: ${message}`,
+					true
+				);
+			}
 			}
 		);
 	}
@@ -336,29 +347,32 @@ async function connectToHost(reuseWindow: boolean): Promise<void> {
 		value: '/root/workspace',
 	});
 
-	if (folderPath) {
-		const folderUri = vscode.Uri.parse(`vscode-remote://${remoteAuthority}${folderPath}`);
-		await vscode.commands.executeCommand('vscode.openFolder', folderUri, { forceNewWindow: !reuseWindow });
-	} else {
-		const uri = vscode.Uri.parse(`vscode-remote://${remoteAuthority}/`);
-		await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: !reuseWindow });
-	}
+	const effectivePath = folderPath || '/';
+	pendingWorkspacePaths.set(remoteAuthority, effectivePath);
+
+	const folderUri = vscode.Uri.parse(`vscode-remote://${remoteAuthority}${effectivePath}`);
+	await vscode.commands.executeCommand('vscode.openFolder', folderUri, { forceNewWindow: !reuseWindow });
 }
 
 async function disconnect(): Promise<void> {
-	if (activeWorkerManager) {
-		await activeWorkerManager.stopWorker();
-		activeWorkerManager = undefined;
+	// Tear down ALL active remote sessions
+	for (const [authority, session] of activeSessions) {
+		log(`Disconnecting ${authority}...`);
+		if (session.worker) {
+			await session.worker.stopWorker();
+		}
+		await session.server.stopServer();
+		session.ssh.dispose();
 	}
-	if (activeServerManager) {
-		await activeServerManager.stopServer();
-		activeServerManager = undefined;
-	}
-	if (activeSshConnection) {
-		activeSshConnection.dispose();
-		activeSshConnection = undefined;
-	}
-	log('Disconnected from SSH host');
+	activeSessions.clear();
+
+	// P1-6: Revert Global config overrides written during resolve(),
+	// so B2/Local modes don't inherit stale SSH-tunnel URLs.
+	const cfg = vscode.workspace.getConfiguration('chipos.backend');
+	await cfg.update('reasoningUrl', undefined, vscode.ConfigurationTarget.Global);
+	await cfg.update('workerHttpUrl', undefined, vscode.ConfigurationTarget.Global);
+
+	log('Disconnected from all SSH hosts');
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
