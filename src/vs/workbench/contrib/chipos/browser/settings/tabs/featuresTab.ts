@@ -111,18 +111,41 @@ export class FeaturesTab extends Disposable {
 		dom.append(info, dom.$('.chipos-setting-description', undefined, setting.description));
 
 		const toggle = dom.append(row, dom.$('.chipos-toggle-switch'));
+		toggle.setAttribute('role', 'switch');
+		toggle.setAttribute('aria-label', setting.label);
+		toggle.tabIndex = 0;
+
 		const input = dom.append(toggle, dom.$<HTMLInputElement>('input'));
 		input.type = 'checkbox';
-		input.checked = this._configurationService.getValue<boolean>(setting.key) ?? false;
+		input.id = `chipos-toggle-${setting.key}`;
+		const initialChecked = this._configurationService.getValue<boolean>(setting.key) ?? false;
+		input.checked = initialChecked;
+		toggle.setAttribute('aria-checked', String(initialChecked));
 		dom.append(toggle, dom.$('.chipos-toggle-slider'));
 
+		const updateValue = (checked: boolean) => {
+			input.checked = checked;
+			toggle.setAttribute('aria-checked', String(checked));
+			this._configurationService.updateValue(setting.key, checked, ConfigurationTarget.USER);
+		};
+
 		this._disposables.add(dom.addDisposableListener(input, 'change', () => {
+			toggle.setAttribute('aria-checked', String(input.checked));
 			this._configurationService.updateValue(setting.key, input.checked, ConfigurationTarget.USER);
+		}));
+
+		this._disposables.add(dom.addDisposableListener(toggle, 'keydown', (e: KeyboardEvent) => {
+			if (e.key === ' ' || e.key === 'Enter') {
+				e.preventDefault();
+				updateValue(!input.checked);
+			}
 		}));
 
 		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(setting.key)) {
-				input.checked = this._configurationService.getValue<boolean>(setting.key) ?? false;
+				const val = this._configurationService.getValue<boolean>(setting.key) ?? false;
+				input.checked = val;
+				toggle.setAttribute('aria-checked', String(val));
 			}
 		}));
 	}

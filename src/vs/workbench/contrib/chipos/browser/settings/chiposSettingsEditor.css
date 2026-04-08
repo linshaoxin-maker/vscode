@@ -242,6 +242,12 @@
 	transition: transform 0.2s;
 }
 
+.chipos-toggle-switch:focus-visible {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+	border-radius: 10px;
+}
+
 .chipos-toggle-switch input:checked + .chipos-toggle-slider {
 	background: var(--vscode-focusBorder);
 }
