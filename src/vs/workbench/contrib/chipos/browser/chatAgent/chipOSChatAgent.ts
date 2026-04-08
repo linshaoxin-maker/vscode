@@ -110,8 +110,6 @@ interface IChatSessionRuntime {
 	terminalCommandLines: Map<string, string>;
 	/** Stores terminal artifacts (theme, URI) captured after _runInTerminal completes, for ToolResult handler */
 	terminalArtifacts: Map<string, { theme?: { background?: string; foreground?: string }; commandUri?: UriComponents }>;
-	/** Redirects duplicate ToolCall keys to the original block key (dedup InferenceHandler + ExecutionHandler) */
-	shellToolKeyRedirects: Map<string, string>;
 }
 
 /**
@@ -319,7 +317,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.terminalSessionMap.clear();
 		runtime.terminalCommandLines.clear();
 		runtime.terminalArtifacts.clear();
-		runtime.shellToolKeyRedirects.clear();
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -429,43 +426,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							progress([toolUpdate]);
 						} else if (ChipOSChatAgent._isShellTool(p.tool_name)) {
 							// Shell execution tools → terminal-style inline block
-							const rawPayload = event.payload as unknown as Record<string, unknown>;
-							const cmdLine = ChipOSChatAgent._extractShellCommand(rawPayload);
+							const cmdLine = typeof args?.command === 'string' ? args.command as string : '';
 							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
 							this._logService.info('[ChipOS Agent] ToolCall shell: tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
-
-							// T-02 guard: if command is empty, just record the key and wait.
-							// A subsequent ToolCall (from ExecutionHandler) or IdeToolCall
-							// will arrive with the real command and create the block then.
-							if (!cmdLine) {
-								runtime.terminalCommandLines.set(key, '');
-								this._logService.info('[ChipOS Agent] ToolCall shell: deferred (empty cmd), key=%s', key);
-								break;
-							}
-
-							// Dedup (T-01/T-04): merge with any pending block for the same
-							// tool_name that has an empty command (created by a prior empty ToolCall)
-							let isDuplicate = false;
-							for (const [existingKey, existingCmd] of runtime.terminalCommandLines) {
-								if (existingKey !== key) {
-									const exactMatch = existingCmd === cmdLine;
-									const emptyMerge = !existingCmd && cmdLine;
-									if (exactMatch || emptyMerge) {
-										runtime.shellToolKeyRedirects.set(key, existingKey);
-										runtime.terminalCommandLines.set(key, cmdLine);
-										if (emptyMerge) {
-											// Promote: the deferred block now gets a real command
-											runtime.terminalCommandLines.set(existingKey, cmdLine);
-										}
-										stepCount--;
-										isDuplicate = true;
-										this._logService.info('[ChipOS Agent] ToolCall shell dedup: %s → %s (merge=%s)', key, existingKey, emptyMerge ? 'empty' : 'exact');
-										break;
-									}
-								}
-							}
-							if (isDuplicate) { break; }
-
 							runtime.terminalCommandLines.set(key, cmdLine);
 							const cwdPath = (cmdArgs.cwd as string) || this._getWorkspaceRoot() || '';
 							const cwdUri = cwdPath ? URI.file(cwdPath) : undefined;
@@ -546,14 +509,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 				case AgentEventType.ToolResult: {
 						const p = event.payload as IToolResultPayload;
-						let key = p.call_id || p.tool_name;
-						// Follow dedup redirect if this key was merged into an existing block
-						const redirectTarget = runtime.shellToolKeyRedirects.get(key);
-						if (redirectTarget) {
-							this._logService.info('[ChipOS Agent] ToolResult key redirect: %s → %s', key, redirectTarget);
-							runtime.shellToolKeyRedirects.delete(key);
-							key = redirectTarget;
-						}
+						const key = p.call_id || p.tool_name;
 						const friendly = this._friendlyToolName(p.tool_name);
 						const startTs = runtime.toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
@@ -566,14 +522,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						let toolComplete: IChatExternalToolInvocationUpdate;
 
 					if (ChipOSChatAgent._isShellTool(p.tool_name) && typeof p.result === 'string') {
-							let cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
+							const cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
 							runtime.terminalCommandLines.delete(key);
-							// Fallback: if call_id mismatch, scan for most recent non-empty command
-							if (!cachedCmd) {
-								for (const [k, v] of runtime.terminalCommandLines) {
-									if (v) { cachedCmd = v; runtime.terminalCommandLines.delete(k); break; }
-								}
-							}
 							this._logService.info('[ChipOS Agent] ToolResult shell: tool=%s, key=%s, cachedCmd=%s', p.tool_name, key, cachedCmd || '(empty)');
 							const termSession = runtime.terminalSessionMap.get(key);
 							runtime.terminalSessionMap.delete(key);
@@ -1193,38 +1143,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// ── FEAT-R72: IDE 端工具调用（Reasoner → IDE 执行）──
 					case AgentEventType.IdeToolCall: {
 						const p = event.payload as IIdeToolCallPayload;
-						this._logService.info(
-							'[ChipOS Agent] IDE tool call: name=%s, call_id=%s',
-							p.name, p.call_id,
-						);
-						// Backfill: if a pending terminal block has empty command, fill it from IdeToolCall's args
-						if (ChipOSChatAgent._isShellTool(p.name) && p.args_json) {
-							try {
-								const ideArgs = JSON.parse(p.args_json);
-								const ideCmd = typeof ideArgs.command === 'string' ? ideArgs.command : '';
-								if (ideCmd) {
-									for (const [k, v] of runtime.terminalCommandLines) {
-										if (!v) {
-											runtime.terminalCommandLines.set(k, ideCmd);
-											progress([{
-												kind: 'externalToolInvocationUpdate',
-												toolCallId: k,
-												toolName: p.name,
-												isComplete: false,
-												toolSpecificData: {
-													kind: 'terminal',
-													commandLine: { original: ideCmd },
-													language: 'shellscript',
-												} satisfies IChatTerminalToolInvocationData,
-											}]);
-											this._logService.info('[ChipOS Agent] IdeToolCall backfill: key=%s, cmd=%s', k, ideCmd);
-											break;
-										}
-									}
-								}
-							} catch { /* ignore parse failures */ }
-						}
-						// 异步执行，不阻塞事件循环
+						this._logService.info('[ChipOS Agent] IDE tool call: name=%s, call_id=%s', p.name, p.call_id);
 						this._executeIdeToolCall(p, runtime, streamClient).catch(err => {
 							this._logService.error('[ChipOS Agent] IDE tool execution failed:', err);
 						});
@@ -1327,10 +1246,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				subagentParentMap: new Map<string, string>(),
 				externalEditOps: new Map<string, number>(),
 				pendingStartEdits: new Map<string, Promise<void>>(),
+				disposeController: new AbortController(),
 				terminalSessionMap: new Map<string, { sessionId: string; commandId: string }>(),
 				terminalCommandLines: new Map<string, string>(),
 				terminalArtifacts: new Map(),
-				shellToolKeyRedirects: new Map<string, string>(),
 			  } as IChatSessionRuntime;
 
 		return new Promise<IChatAgentResult>((resolve) => {
@@ -1420,38 +1339,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							};
 							progress([toolUpdate]);
 						} else if (ChipOSChatAgent._isShellTool(p.tool_name)) {
-							const rawPayload = event.payload as unknown as Record<string, unknown>;
-							const cmdLine = ChipOSChatAgent._extractShellCommand(rawPayload);
+							const cmdLine = typeof args?.command === 'string' ? args.command as string : '';
 							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
 							this._logService.info('[ChipOS Agent] ToolCall shell (cont): tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
-
-							// T-02 guard: defer empty-command ToolCalls
-							if (!cmdLine) {
-								runtime.terminalCommandLines.set(key, '');
-								this._logService.info('[ChipOS Agent] ToolCall shell (cont): deferred (empty cmd), key=%s', key);
-								break;
-							}
-
-							// Dedup (T-01/T-04): merge with pending empty block
-							let isDuplicate = false;
-							for (const [existingKey, existingCmd] of runtime.terminalCommandLines) {
-								if (existingKey !== key) {
-									const exactMatch = existingCmd === cmdLine;
-									const emptyMerge = !existingCmd && cmdLine;
-									if (exactMatch || emptyMerge) {
-										runtime.shellToolKeyRedirects.set(key, existingKey);
-										runtime.terminalCommandLines.set(key, cmdLine);
-										if (emptyMerge) {
-											runtime.terminalCommandLines.set(existingKey, cmdLine);
-										}
-										isDuplicate = true;
-										this._logService.info('[ChipOS Agent] ToolCall shell dedup (cont): %s → %s', key, existingKey);
-										break;
-									}
-								}
-							}
-							if (isDuplicate) { break; }
-
 							runtime.terminalCommandLines.set(key, cmdLine);
 							const cwdPath = (cmdArgs.cwd as string) || this._getWorkspaceRoot() || '';
 							const cwdUri = cwdPath ? URI.file(cwdPath) : undefined;
@@ -1529,13 +1419,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 				case AgentEventType.ToolResult: {
 						const p = event.payload as IToolResultPayload;
-						let key = p.call_id || p.tool_name;
-						const redirectTarget = runtime.shellToolKeyRedirects.get(key);
-						if (redirectTarget) {
-							this._logService.info('[ChipOS Agent] ToolResult key redirect (cont): %s → %s', key, redirectTarget);
-							runtime.shellToolKeyRedirects.delete(key);
-							key = redirectTarget;
-						}
+						const key = p.call_id || p.tool_name;
 						const friendly = this._friendlyToolName(p.tool_name);
 						const startTs = runtime.toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
@@ -1548,13 +1432,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						let toolComplete: IChatExternalToolInvocationUpdate;
 
 					if (ChipOSChatAgent._isShellTool(p.tool_name) && typeof p.result === 'string') {
-							let cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
+							const cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
 							runtime.terminalCommandLines.delete(key);
-							if (!cachedCmd) {
-								for (const [k, v] of runtime.terminalCommandLines) {
-									if (v) { cachedCmd = v; runtime.terminalCommandLines.delete(k); break; }
-								}
-							}
 							this._logService.info('[ChipOS Agent] ToolResult shell (cont): tool=%s, key=%s, cachedCmd=%s', p.tool_name, key, cachedCmd || '(empty)');
 							const termSession = runtime.terminalSessionMap.get(key);
 							runtime.terminalSessionMap.delete(key);
@@ -2133,6 +2012,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						)]);
 						break;
 					}
+					// ── FEAT-R72: IDE 端工具调用（continuation path）──
+					case AgentEventType.IdeToolCall: {
+						const p = event.payload as IIdeToolCallPayload;
+						this._logService.info('[ChipOS Agent] IDE tool call (cont): name=%s, call_id=%s', p.name, p.call_id);
+						this._executeIdeToolCall(p, runtime, streamClient).catch(err => {
+							this._logService.error('[ChipOS Agent] IDE tool execution failed (cont):', err);
+						});
+						break;
+					}
 					default:
 						this._logService.trace('[ChipOS Agent] Unhandled event in continuation:', event.event_type);
 						break;
@@ -2365,24 +2253,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private static _isShellTool(toolName: string): boolean {
 		return ChipOSChatAgent._shellTools.has(toolName);
-	}
-
-	/**
-	 * Robustly extract the shell command from a ToolCall payload.
-	 * Tries `arguments.command` first, falls back to parsing `args_json`.
-	 */
-	private static _extractShellCommand(payload: Record<string, unknown>): string {
-		const args = payload.arguments as Record<string, unknown> | undefined;
-		const cmd = (args?.command ?? '') as string;
-		if (cmd) { return cmd; }
-		const argsJson = payload.args_json as string | undefined;
-		if (argsJson) {
-			try {
-				const parsed = JSON.parse(argsJson);
-				if (typeof parsed?.command === 'string') { return parsed.command; }
-			} catch { /* ignore parse failures */ }
-		}
-		return '';
 	}
 
 	/**
@@ -2682,6 +2552,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime: IChatSessionRuntime,
 		streamClient: IEventStreamClient,
 	): Promise<void> {
+		// T-08: Skip if session already disposed
+		if (runtime.disposeController.signal.aborted) {
+			this._logService.warn('[ChipOS Agent] IDE tool call skipped (session disposed): call_id=%s, name=%s', payload.call_id, payload.name);
+			return;
+		}
+
 		const { call_id, name, args_json } = payload;
 		let content: string;
 		let isError = false;
@@ -2692,7 +2568,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			switch (name) {
 			case 'run_in_terminal': {
 				const termKey = call_id || name;
-				const termSession = runtime.terminalSessionMap.get(termKey);
+				let termSession = runtime.terminalSessionMap.get(termKey);
+
+				// T-09: IdeToolCall call_id (LLM's tool_call.id) differs from
+				// ToolCall key (ExecutionHandler's run_id). Fall back to
+				// command matching, then single-entry heuristic.
+				if (!termSession) {
+					const cmdFromArgs = typeof args.command === 'string' ? args.command : '';
+					if (cmdFromArgs) {
+						for (const [k, cmd] of runtime.terminalCommandLines) {
+							if (cmd === cmdFromArgs && runtime.terminalSessionMap.has(k)) {
+								termSession = runtime.terminalSessionMap.get(k);
+								this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (cmd match): %s → %s', termKey, k);
+								break;
+							}
+						}
+					}
+				}
+				if (!termSession && runtime.terminalSessionMap.size === 1) {
+					const entry = runtime.terminalSessionMap.entries().next();
+					if (!entry.done) {
+						termSession = entry.value[1];
+						this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (single entry): %s → %s', termKey, entry.value[0]);
+					}
+				}
+
 				content = await this._runInTerminal(args, termSession?.sessionId, termSession?.commandId, termKey, runtime);
 				break;
 			}
@@ -3084,7 +2984,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalSessionMap: new Map<string, { sessionId: string; commandId: string }>(),
 				terminalCommandLines: new Map<string, string>(),
 				terminalArtifacts: new Map(),
-				shellToolKeyRedirects: new Map<string, string>(),
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
 		}
@@ -3117,7 +3016,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.terminalSessionMap.clear();
 		runtime.terminalCommandLines.clear();
 		runtime.terminalArtifacts.clear();
-		runtime.shellToolKeyRedirects.clear();
 		this._ensureEditorEffects().clearSessionState(sessionResource);
 		this._sessionRuntimes.delete(sessionResource);
 	}
