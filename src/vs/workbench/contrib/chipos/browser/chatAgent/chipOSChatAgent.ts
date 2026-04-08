@@ -316,6 +316,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.lastSubagentToolCallId = undefined;
 		runtime.externalEditOps.clear();
 		runtime.pendingStartEdits.clear();
+		runtime.terminalSessionMap.clear();
+		runtime.terminalCommandLines.clear();
+		runtime.terminalArtifacts.clear();
+		runtime.shellToolKeyRedirects.clear();
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -430,27 +434,34 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
 							this._logService.info('[ChipOS Agent] ToolCall shell: tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
 
-							// Dedup: if a pending shell tool block already exists with matching command, redirect this key
+							// T-02 guard: if command is empty, just record the key and wait.
+							// A subsequent ToolCall (from ExecutionHandler) or IdeToolCall
+							// will arrive with the real command and create the block then.
+							if (!cmdLine) {
+								runtime.terminalCommandLines.set(key, '');
+								this._logService.info('[ChipOS Agent] ToolCall shell: deferred (empty cmd), key=%s', key);
+								break;
+							}
+
+							// Dedup (T-01/T-04): merge with any pending block for the same
+							// tool_name that has an empty command (created by a prior empty ToolCall)
 							let isDuplicate = false;
 							for (const [existingKey, existingCmd] of runtime.terminalCommandLines) {
-								if (existingKey !== key && existingCmd === cmdLine) {
-									runtime.shellToolKeyRedirects.set(key, existingKey);
-									runtime.terminalCommandLines.set(key, cmdLine);
-									// If new event has a better (non-empty) command, update the existing block
-									if (cmdLine && !existingCmd) {
-										runtime.terminalCommandLines.set(existingKey, cmdLine);
-										progress([{
-											kind: 'externalToolInvocationUpdate',
-											toolCallId: existingKey,
-											toolName: p.tool_name,
-											isComplete: false,
-											toolSpecificData: { kind: 'terminal', commandLine: { original: cmdLine }, language: 'shellscript' } satisfies IChatTerminalToolInvocationData,
-										}]);
+								if (existingKey !== key) {
+									const exactMatch = existingCmd === cmdLine;
+									const emptyMerge = !existingCmd && cmdLine;
+									if (exactMatch || emptyMerge) {
+										runtime.shellToolKeyRedirects.set(key, existingKey);
+										runtime.terminalCommandLines.set(key, cmdLine);
+										if (emptyMerge) {
+											// Promote: the deferred block now gets a real command
+											runtime.terminalCommandLines.set(existingKey, cmdLine);
+										}
+										stepCount--;
+										isDuplicate = true;
+										this._logService.info('[ChipOS Agent] ToolCall shell dedup: %s → %s (merge=%s)', key, existingKey, emptyMerge ? 'empty' : 'exact');
+										break;
 									}
-									stepCount--;
-									isDuplicate = true;
-									this._logService.info('[ChipOS Agent] ToolCall shell dedup: %s → %s', key, existingKey);
-									break;
 								}
 							}
 							if (isDuplicate) { break; }
@@ -481,7 +492,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								};
 								progress([toolUpdate]);
 							} else {
-								// Worker execute_command / execute → snapshot-only terminal block
 								const toolUpdate: IChatExternalToolInvocationUpdate = {
 									kind: 'externalToolInvocationUpdate',
 									toolCallId: key,
@@ -1415,24 +1425,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
 							this._logService.info('[ChipOS Agent] ToolCall shell (cont): tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
 
-							// Dedup: same as invoke path
+							// T-02 guard: defer empty-command ToolCalls
+							if (!cmdLine) {
+								runtime.terminalCommandLines.set(key, '');
+								this._logService.info('[ChipOS Agent] ToolCall shell (cont): deferred (empty cmd), key=%s', key);
+								break;
+							}
+
+							// Dedup (T-01/T-04): merge with pending empty block
 							let isDuplicate = false;
 							for (const [existingKey, existingCmd] of runtime.terminalCommandLines) {
-								if (existingKey !== key && existingCmd === cmdLine) {
-									runtime.shellToolKeyRedirects.set(key, existingKey);
-									runtime.terminalCommandLines.set(key, cmdLine);
-									if (cmdLine && !existingCmd) {
-										runtime.terminalCommandLines.set(existingKey, cmdLine);
-										progress([{
-											kind: 'externalToolInvocationUpdate',
-											toolCallId: existingKey,
-											toolName: p.tool_name,
-											isComplete: false,
-											toolSpecificData: { kind: 'terminal', commandLine: { original: cmdLine }, language: 'shellscript' } satisfies IChatTerminalToolInvocationData,
-										}]);
+								if (existingKey !== key) {
+									const exactMatch = existingCmd === cmdLine;
+									const emptyMerge = !existingCmd && cmdLine;
+									if (exactMatch || emptyMerge) {
+										runtime.shellToolKeyRedirects.set(key, existingKey);
+										runtime.terminalCommandLines.set(key, cmdLine);
+										if (emptyMerge) {
+											runtime.terminalCommandLines.set(existingKey, cmdLine);
+										}
+										isDuplicate = true;
+										this._logService.info('[ChipOS Agent] ToolCall shell dedup (cont): %s → %s', key, existingKey);
+										break;
 									}
-									isDuplicate = true;
-									break;
 								}
 							}
 							if (isDuplicate) { break; }
