@@ -49,6 +49,7 @@ export class SshConnection {
 	private _onReconnect: (() => void) | undefined;
 
 	get connected(): boolean { return this._connected; }
+	get host(): string { return `${this._options.username}@${this._options.host}`; }
 	set onDisconnect(cb: () => void) { this._onDisconnect = cb; }
 	set onReconnect(cb: () => void) { this._onReconnect = cb; }
 

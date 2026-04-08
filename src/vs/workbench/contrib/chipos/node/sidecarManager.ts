@@ -5,9 +5,8 @@
 
 import { ChildProcess, spawn as cpSpawn } from 'child_process';
 import { join } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
-import { homedir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -16,7 +15,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISidecarManagerService, SidecarState, BackendMode, WorkerState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { findCachedWorkerBinary, isWorkerBinaryCached, downloadWorkerBinary, checkLatestVersion, binaryName, chiposHome } from './downloadWorkerBinary.js';
+import { findCachedWorkerBinary, isWorkerBinaryCached, downloadWorkerBinary, checkLatestVersion, chiposHome } from './downloadWorkerBinary.js';
 
 const HEALTH_CHECK_INTERVAL_MS = 500;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;

@@ -54,6 +54,8 @@ class StubEventStreamClient extends Disposable implements IEventStreamClient {
 	sendTask(_sessionId: string, _query: string, _mentions: any[], _mode: 'agent' | 'spec', _options: any): void { /* no-op */ }
 	sendStop(_sessionId: string): void { /* no-op */ }
 	sendConfirmResponse(_requestId: string, _action: string, _comment?: string, _sessionId?: string): void { /* no-op */ }
+	sendIdeToolResult(_sessionId: string, _callId: string, _content: string, _isError: boolean): void { /* no-op */ }
+	registerIdeMcpTools(_sessionId: string, _tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }>): void { /* no-op */ }
 
 	/** Test helper: emit an event as if received from SSE */
 	simulateEvent(event: AgentEvent): void {

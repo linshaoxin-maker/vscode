@@ -24,7 +24,7 @@ export const enum SidecarState {
 /**
  * 后端部署模式（3 种，与 Remote-SSH 正交）
  */
-export const enum BackendMode {
+export enum BackendMode {
 	/** 场景 A / B1: 推理+执行同进程（本地或 Remote-SSH 远程） */
 	Local = 'local',
 	/** 场景 B2 / E: 本地执行 + 云端推理 */

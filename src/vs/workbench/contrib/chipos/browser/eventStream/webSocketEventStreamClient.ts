@@ -686,6 +686,10 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 		}
 	}
 
+	sendIdeToolResult(_sessionId: string, _callId: string, _content: string, _isError: boolean): void { /* no-op: V1 WebSocket protocol does not support IDE tool results */ }
+
+	registerIdeMcpTools(_sessionId: string, _tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }>): void { /* no-op: V1 WebSocket protocol does not support MCP tool registration */ }
+
 	override dispose(): void {
 		this._disposed = true;
 		this.disconnect();

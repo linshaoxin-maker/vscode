@@ -14,7 +14,7 @@ import { INotificationService } from '../../../../../platform/notification/commo
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
-import { ITerminalService } from '../../../terminal/browser/terminal.js';
+import { ITerminalService, ITerminalChatService } from '../../../terminal/browser/terminal.js';
 import { ITerminalSandboxService } from '../../../terminalContrib/chatAgentTools/common/terminalSandboxService.js';
 import { IMcpService } from '../../../mcp/common/mcpTypes.js';
 import {
@@ -23,7 +23,7 @@ import {
 	IChatAgentResult,
 	IChatAgentHistoryEntry,
 } from '../../../../contrib/chat/common/participants/chatAgents.js';
-import { URI } from '../../../../../base/common/uri.js';
+import { URI, type UriComponents } from '../../../../../base/common/uri.js';
 import { Range } from '../../../../../editor/common/core/range.js';
 import { TextEdit } from '../../../../../editor/common/languages.js';
 import {
@@ -45,6 +45,7 @@ import {
 	IChatExternalToolInvocationUpdate,
 	IChatToolInputInvocationData,
 	IChatSubagentToolInvocationData,
+	IChatTerminalToolInvocationData,
 	IChatTextEdit,
 	IChatRoundProgress,
 	IChatAgentError,
@@ -103,6 +104,14 @@ interface IChatSessionRuntime {
 	pendingStartEdits: Map<string, Promise<void>>;
 	/** Aborted when the session is disposed, so pending invoke/continuation can reject. */
 	disposeController: AbortController;
+	/** Maps tool call key → terminal session/command IDs for ChatTerminalToolProgressPart rendering */
+	terminalSessionMap: Map<string, { sessionId: string; commandId: string }>;
+	/** Caches tool call key → command line string for ToolResult to reuse in terminal snapshot */
+	terminalCommandLines: Map<string, string>;
+	/** Stores terminal artifacts (theme, URI) captured after _runInTerminal completes, for ToolResult handler */
+	terminalArtifacts: Map<string, { theme?: { background?: string; foreground?: string }; commandUri?: UriComponents }>;
+	/** Redirects duplicate ToolCall keys to the original block key (dedup InferenceHandler + ExecutionHandler) */
+	shellToolKeyRedirects: Map<string, string>;
 }
 
 /**
@@ -137,6 +146,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatService private readonly _chatService: IChatService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
+		@ITerminalChatService private readonly _terminalChatService: ITerminalChatService,
 		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
 		@IMcpService private readonly _mcpService: IMcpService,
 	) {
@@ -413,6 +423,81 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								} satisfies IChatSubagentToolInvocationData,
 							};
 							progress([toolUpdate]);
+						} else if (ChipOSChatAgent._isShellTool(p.tool_name)) {
+							// Shell execution tools → terminal-style inline block
+							const rawPayload = event.payload as unknown as Record<string, unknown>;
+							const cmdLine = ChipOSChatAgent._extractShellCommand(rawPayload);
+							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
+							this._logService.info('[ChipOS Agent] ToolCall shell: tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
+
+							// Dedup: if a pending shell tool block already exists with matching command, redirect this key
+							let isDuplicate = false;
+							for (const [existingKey, existingCmd] of runtime.terminalCommandLines) {
+								if (existingKey !== key && existingCmd === cmdLine) {
+									runtime.shellToolKeyRedirects.set(key, existingKey);
+									runtime.terminalCommandLines.set(key, cmdLine);
+									// If new event has a better (non-empty) command, update the existing block
+									if (cmdLine && !existingCmd) {
+										runtime.terminalCommandLines.set(existingKey, cmdLine);
+										progress([{
+											kind: 'externalToolInvocationUpdate',
+											toolCallId: existingKey,
+											toolName: p.tool_name,
+											isComplete: false,
+											toolSpecificData: { kind: 'terminal', commandLine: { original: cmdLine }, language: 'shellscript' } satisfies IChatTerminalToolInvocationData,
+										}]);
+									}
+									stepCount--;
+									isDuplicate = true;
+									this._logService.info('[ChipOS Agent] ToolCall shell dedup: %s → %s', key, existingKey);
+									break;
+								}
+							}
+							if (isDuplicate) { break; }
+
+							runtime.terminalCommandLines.set(key, cmdLine);
+							const cwdPath = (cmdArgs.cwd as string) || this._getWorkspaceRoot() || '';
+							const cwdUri = cwdPath ? URI.file(cwdPath) : undefined;
+
+							if (p.tool_name === 'run_in_terminal') {
+								const termSessionId = `chipos_${key}`;
+								const termCommandId = `chipos_cmd_${key}`;
+								runtime.terminalSessionMap.set(key, { sessionId: termSessionId, commandId: termCommandId });
+								const toolUpdate: IChatExternalToolInvocationUpdate = {
+									kind: 'externalToolInvocationUpdate',
+									toolCallId: key,
+									toolName: p.tool_name,
+									isComplete: false,
+									invocationMessage: invocationMsg,
+									toolSpecificData: {
+										kind: 'terminal',
+										terminalToolSessionId: termSessionId,
+										terminalCommandId: termCommandId,
+										commandLine: { original: cmdLine },
+										cwd: cwdUri,
+										language: 'shellscript',
+										isBackground: cmdArgs.isBackground ?? false,
+									} satisfies IChatTerminalToolInvocationData,
+								};
+								progress([toolUpdate]);
+							} else {
+								// Worker execute_command / execute → snapshot-only terminal block
+								const toolUpdate: IChatExternalToolInvocationUpdate = {
+									kind: 'externalToolInvocationUpdate',
+									toolCallId: key,
+									toolName: p.tool_name,
+									isComplete: false,
+									invocationMessage: invocationMsg,
+									toolSpecificData: {
+										kind: 'terminal',
+										commandLine: { original: cmdLine },
+										cwd: cwdUri,
+										language: 'shellscript',
+										isBackground: false,
+									} satisfies IChatTerminalToolInvocationData,
+								};
+								progress([toolUpdate]);
+							}
 						} else {
 							// Regular tools — show input data
 							const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
@@ -449,9 +534,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break;
 					}
 
-					case AgentEventType.ToolResult: {
+				case AgentEventType.ToolResult: {
 						const p = event.payload as IToolResultPayload;
-						const key = p.call_id || p.tool_name;
+						let key = p.call_id || p.tool_name;
+						// Follow dedup redirect if this key was merged into an existing block
+						const redirectTarget = runtime.shellToolKeyRedirects.get(key);
+						if (redirectTarget) {
+							this._logService.info('[ChipOS Agent] ToolResult key redirect: %s → %s', key, redirectTarget);
+							runtime.shellToolKeyRedirects.delete(key);
+							key = redirectTarget;
+						}
 						const friendly = this._friendlyToolName(p.tool_name);
 						const startTs = runtime.toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
@@ -460,19 +552,83 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const pastMsg = p.summary
 							? `${p.summary}${timeSuffix}`
 							: `${friendly}${timeSuffix}`;
-						const toolComplete: IChatExternalToolInvocationUpdate = {
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: key,
-							toolName: p.tool_name,
-							isComplete: true,
-							pastTenseMessage: pastMsg,
-							errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
-							resultDetails: typeof p.result === 'string' ? {
-								input: p.tool_name,
-								output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
-								isError: !p.success,
-							} satisfies IToolResultInputOutputDetails : undefined,
-						};
+
+						let toolComplete: IChatExternalToolInvocationUpdate;
+
+					if (ChipOSChatAgent._isShellTool(p.tool_name) && typeof p.result === 'string') {
+							let cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
+							runtime.terminalCommandLines.delete(key);
+							// Fallback: if call_id mismatch, scan for most recent non-empty command
+							if (!cachedCmd) {
+								for (const [k, v] of runtime.terminalCommandLines) {
+									if (v) { cachedCmd = v; runtime.terminalCommandLines.delete(k); break; }
+								}
+							}
+							this._logService.info('[ChipOS Agent] ToolResult shell: tool=%s, key=%s, cachedCmd=%s', p.tool_name, key, cachedCmd || '(empty)');
+							const termSession = runtime.terminalSessionMap.get(key);
+							runtime.terminalSessionMap.delete(key);
+							const termArtifacts = runtime.terminalArtifacts.get(key);
+							runtime.terminalArtifacts.delete(key);
+
+							let outputText = p.result;
+							let exitCode: number | undefined;
+
+							if (p.tool_name === 'execute_command' || p.tool_name === 'execute') {
+								try {
+									const parsed = JSON.parse(p.result) as { exit_code?: number; stdout?: string; stderr?: string };
+									outputText = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n') || '(no output)';
+									exitCode = parsed.exit_code;
+								} catch { /* not JSON — use raw result */ }
+							}
+
+							// Prepend command line to output for visibility
+							if (cachedCmd) {
+								outputText = `$ ${cachedCmd}\n${outputText}`;
+							}
+
+							toolComplete = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: true,
+								pastTenseMessage: pastMsg,
+								errorMessage: !p.success ? p.result : undefined,
+								toolSpecificData: {
+									kind: 'terminal',
+									commandLine: { original: cachedCmd },
+									language: 'shellscript',
+									...(termSession ? {
+										terminalToolSessionId: termSession.sessionId,
+										terminalCommandId: termSession.commandId,
+									} : {}),
+									terminalCommandOutput: {
+										text: outputText,
+										truncated: outputText.length > 10_000,
+										lineCount: outputText.split('\n').length,
+									},
+									terminalCommandState: {
+										exitCode: exitCode ?? (p.success ? 0 : 1),
+										duration: startTs ? Date.now() - startTs : undefined,
+									},
+									...(termArtifacts?.theme ? { terminalTheme: termArtifacts.theme } : {}),
+									...(termArtifacts?.commandUri ? { terminalCommandUri: termArtifacts.commandUri } : {}),
+								} satisfies IChatTerminalToolInvocationData,
+							};
+						} else {
+							toolComplete = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: true,
+								pastTenseMessage: pastMsg,
+								errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
+								resultDetails: typeof p.result === 'string' ? {
+									input: p.tool_name,
+									output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
+									isError: !p.success,
+								} satisfies IToolResultInputOutputDetails : undefined,
+							};
+						}
 						progress([toolComplete]);
 
 						// ── Stop external edit tracking and emit file reference ──
@@ -1031,6 +1187,33 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							'[ChipOS Agent] IDE tool call: name=%s, call_id=%s',
 							p.name, p.call_id,
 						);
+						// Backfill: if a pending terminal block has empty command, fill it from IdeToolCall's args
+						if (ChipOSChatAgent._isShellTool(p.name) && p.args_json) {
+							try {
+								const ideArgs = JSON.parse(p.args_json);
+								const ideCmd = typeof ideArgs.command === 'string' ? ideArgs.command : '';
+								if (ideCmd) {
+									for (const [k, v] of runtime.terminalCommandLines) {
+										if (!v) {
+											runtime.terminalCommandLines.set(k, ideCmd);
+											progress([{
+												kind: 'externalToolInvocationUpdate',
+												toolCallId: k,
+												toolName: p.name,
+												isComplete: false,
+												toolSpecificData: {
+													kind: 'terminal',
+													commandLine: { original: ideCmd },
+													language: 'shellscript',
+												} satisfies IChatTerminalToolInvocationData,
+											}]);
+											this._logService.info('[ChipOS Agent] IdeToolCall backfill: key=%s, cmd=%s', k, ideCmd);
+											break;
+										}
+									}
+								}
+							} catch { /* ignore parse failures */ }
+						}
 						// 异步执行，不阻塞事件循环
 						this._executeIdeToolCall(p, runtime, streamClient).catch(err => {
 							this._logService.error('[ChipOS Agent] IDE tool execution failed:', err);
@@ -1134,6 +1317,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				subagentParentMap: new Map<string, string>(),
 				externalEditOps: new Map<string, number>(),
 				pendingStartEdits: new Map<string, Promise<void>>(),
+				terminalSessionMap: new Map<string, { sessionId: string; commandId: string }>(),
+				terminalCommandLines: new Map<string, string>(),
+				terminalArtifacts: new Map(),
+				shellToolKeyRedirects: new Map<string, string>(),
 			  } as IChatSessionRuntime;
 
 		return new Promise<IChatAgentResult>((resolve) => {
@@ -1222,6 +1409,76 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								} satisfies IChatSubagentToolInvocationData,
 							};
 							progress([toolUpdate]);
+						} else if (ChipOSChatAgent._isShellTool(p.tool_name)) {
+							const rawPayload = event.payload as unknown as Record<string, unknown>;
+							const cmdLine = ChipOSChatAgent._extractShellCommand(rawPayload);
+							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
+							this._logService.info('[ChipOS Agent] ToolCall shell (cont): tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
+
+							// Dedup: same as invoke path
+							let isDuplicate = false;
+							for (const [existingKey, existingCmd] of runtime.terminalCommandLines) {
+								if (existingKey !== key && existingCmd === cmdLine) {
+									runtime.shellToolKeyRedirects.set(key, existingKey);
+									runtime.terminalCommandLines.set(key, cmdLine);
+									if (cmdLine && !existingCmd) {
+										runtime.terminalCommandLines.set(existingKey, cmdLine);
+										progress([{
+											kind: 'externalToolInvocationUpdate',
+											toolCallId: existingKey,
+											toolName: p.tool_name,
+											isComplete: false,
+											toolSpecificData: { kind: 'terminal', commandLine: { original: cmdLine }, language: 'shellscript' } satisfies IChatTerminalToolInvocationData,
+										}]);
+									}
+									isDuplicate = true;
+									break;
+								}
+							}
+							if (isDuplicate) { break; }
+
+							runtime.terminalCommandLines.set(key, cmdLine);
+							const cwdPath = (cmdArgs.cwd as string) || this._getWorkspaceRoot() || '';
+							const cwdUri = cwdPath ? URI.file(cwdPath) : undefined;
+
+							if (p.tool_name === 'run_in_terminal') {
+								const termSessionId = `chipos_${key}`;
+								const termCommandId = `chipos_cmd_${key}`;
+								runtime.terminalSessionMap.set(key, { sessionId: termSessionId, commandId: termCommandId });
+								const toolUpdate: IChatExternalToolInvocationUpdate = {
+									kind: 'externalToolInvocationUpdate',
+									toolCallId: key,
+									toolName: p.tool_name,
+									isComplete: false,
+									invocationMessage: invocationMsg,
+									toolSpecificData: {
+										kind: 'terminal',
+										terminalToolSessionId: termSessionId,
+										terminalCommandId: termCommandId,
+										commandLine: { original: cmdLine },
+										cwd: cwdUri,
+										language: 'shellscript',
+										isBackground: cmdArgs.isBackground ?? false,
+									} satisfies IChatTerminalToolInvocationData,
+								};
+								progress([toolUpdate]);
+							} else {
+								const toolUpdate: IChatExternalToolInvocationUpdate = {
+									kind: 'externalToolInvocationUpdate',
+									toolCallId: key,
+									toolName: p.tool_name,
+									isComplete: false,
+									invocationMessage: invocationMsg,
+									toolSpecificData: {
+										kind: 'terminal',
+										commandLine: { original: cmdLine },
+										cwd: cwdUri,
+										language: 'shellscript',
+										isBackground: false,
+									} satisfies IChatTerminalToolInvocationData,
+								};
+								progress([toolUpdate]);
+							}
 						} else {
 							const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
 							const toolUpdate: IChatExternalToolInvocationUpdate = {
@@ -1255,9 +1512,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						}
 						break;
 					}
-					case AgentEventType.ToolResult: {
+				case AgentEventType.ToolResult: {
 						const p = event.payload as IToolResultPayload;
-						const key = p.call_id || p.tool_name;
+						let key = p.call_id || p.tool_name;
+						const redirectTarget = runtime.shellToolKeyRedirects.get(key);
+						if (redirectTarget) {
+							this._logService.info('[ChipOS Agent] ToolResult key redirect (cont): %s → %s', key, redirectTarget);
+							runtime.shellToolKeyRedirects.delete(key);
+							key = redirectTarget;
+						}
 						const friendly = this._friendlyToolName(p.tool_name);
 						const startTs = runtime.toolStartTimes.get(key);
 						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
@@ -1266,19 +1529,81 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const pastMsg = p.summary
 							? `${p.summary}${timeSuffix}`
 							: `${friendly}${timeSuffix}`;
-						const toolComplete: IChatExternalToolInvocationUpdate = {
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: key,
-							toolName: p.tool_name,
-							isComplete: true,
-							pastTenseMessage: pastMsg,
-							errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
-							resultDetails: typeof p.result === 'string' ? {
-								input: p.tool_name,
-								output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
-								isError: !p.success,
-							} satisfies IToolResultInputOutputDetails : undefined,
-						};
+
+						let toolComplete: IChatExternalToolInvocationUpdate;
+
+					if (ChipOSChatAgent._isShellTool(p.tool_name) && typeof p.result === 'string') {
+							let cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
+							runtime.terminalCommandLines.delete(key);
+							if (!cachedCmd) {
+								for (const [k, v] of runtime.terminalCommandLines) {
+									if (v) { cachedCmd = v; runtime.terminalCommandLines.delete(k); break; }
+								}
+							}
+							this._logService.info('[ChipOS Agent] ToolResult shell (cont): tool=%s, key=%s, cachedCmd=%s', p.tool_name, key, cachedCmd || '(empty)');
+							const termSession = runtime.terminalSessionMap.get(key);
+							runtime.terminalSessionMap.delete(key);
+							const termArtifacts = runtime.terminalArtifacts.get(key);
+							runtime.terminalArtifacts.delete(key);
+
+							let outputText = p.result;
+							let exitCode: number | undefined;
+
+							if (p.tool_name === 'execute_command' || p.tool_name === 'execute') {
+								try {
+									const parsed = JSON.parse(p.result) as { exit_code?: number; stdout?: string; stderr?: string };
+									outputText = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n') || '(no output)';
+									exitCode = parsed.exit_code;
+								} catch { /* not JSON — use raw result */ }
+							}
+
+							if (cachedCmd) {
+								outputText = `$ ${cachedCmd}\n${outputText}`;
+							}
+
+							toolComplete = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: true,
+								pastTenseMessage: pastMsg,
+								errorMessage: !p.success ? p.result : undefined,
+								toolSpecificData: {
+									kind: 'terminal',
+									commandLine: { original: cachedCmd },
+									language: 'shellscript',
+									...(termSession ? {
+										terminalToolSessionId: termSession.sessionId,
+										terminalCommandId: termSession.commandId,
+									} : {}),
+									terminalCommandOutput: {
+										text: outputText,
+										truncated: outputText.length > 10_000,
+										lineCount: outputText.split('\n').length,
+									},
+									terminalCommandState: {
+										exitCode: exitCode ?? (p.success ? 0 : 1),
+										duration: startTs ? Date.now() - startTs : undefined,
+									},
+									...(termArtifacts?.theme ? { terminalTheme: termArtifacts.theme } : {}),
+									...(termArtifacts?.commandUri ? { terminalCommandUri: termArtifacts.commandUri } : {}),
+								} satisfies IChatTerminalToolInvocationData,
+							};
+						} else {
+							toolComplete = {
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: key,
+								toolName: p.tool_name,
+								isComplete: true,
+								pastTenseMessage: pastMsg,
+								errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
+								resultDetails: typeof p.result === 'string' ? {
+									input: p.tool_name,
+									output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
+									isError: !p.success,
+								} satisfies IToolResultInputOutputDetails : undefined,
+							};
+						}
 						progress([toolComplete]);
 
 						// ── Stop external edit tracking and emit file reference ──
@@ -2019,6 +2344,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return ChipOSChatAgent._fileWriteTools.has(toolName);
 	}
 
+	private static readonly _shellTools = new Set([
+		'run_in_terminal', 'execute_command', 'execute',
+	]);
+
+	private static _isShellTool(toolName: string): boolean {
+		return ChipOSChatAgent._shellTools.has(toolName);
+	}
+
+	/**
+	 * Robustly extract the shell command from a ToolCall payload.
+	 * Tries `arguments.command` first, falls back to parsing `args_json`.
+	 */
+	private static _extractShellCommand(payload: Record<string, unknown>): string {
+		const args = payload.arguments as Record<string, unknown> | undefined;
+		const cmd = (args?.command ?? '') as string;
+		if (cmd) { return cmd; }
+		const argsJson = payload.args_json as string | undefined;
+		if (argsJson) {
+			try {
+				const parsed = JSON.parse(argsJson);
+				if (typeof parsed?.command === 'string') { return parsed.command; }
+			} catch { /* ignore parse failures */ }
+		}
+		return '';
+	}
+
 	/**
 	 * Get the current editing session for a chat session resource.
 	 */
@@ -2324,10 +2675,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const args = JSON.parse(args_json);
 
 			switch (name) {
-				case 'run_in_terminal': {
-					content = await this._runInTerminal(args);
-					break;
-				}
+			case 'run_in_terminal': {
+				const termKey = call_id || name;
+				const termSession = runtime.terminalSessionMap.get(termKey);
+				content = await this._runInTerminal(args, termSession?.sessionId, termSession?.commandId, termKey, runtime);
+				break;
+			}
 				case 'get_terminal_output': {
 					content = this._getTerminalOutput(args);
 					break;
@@ -2360,11 +2713,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	/**
 	 * FEAT-R72: 在 IDE 终端中执行 shell 命令。
-	 * 使用 VS Code ITerminalService 创建终端实例，通过 sendText 执行命令，
+	 * 使用 VS Code ITerminalService 创建终端实例，通过 runCommand/sendText 执行命令，
 	 * 通过 onData 收集输出。支持前台（等待完成）和后台（立即返回）两种模式。
 	 */
 	private async _runInTerminal(
 		args: { command: string; explanation?: string; isBackground?: boolean },
+		terminalToolSessionId?: string,
+		terminalCommandId?: string,
+		toolCallKey?: string,
+		runtime?: IChatSessionRuntime,
 	): Promise<string> {
 		const { command, explanation, isBackground } = args;
 		const cwd = this._getWorkspaceRoot() ?? '';
@@ -2401,6 +2758,44 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return `Failed to create terminal: ${e?.message ?? 'unknown error'}`;
 		}
 
+		// Register with ITerminalChatService so ChatTerminalToolProgressPart can find & mirror it
+		if (terminalToolSessionId) {
+			this._terminalChatService.registerTerminalInstanceWithToolSession(terminalToolSessionId, terminal);
+			this._logService.info('[ChipOS Agent] Registered terminal for tool session: %s', terminalToolSessionId);
+		}
+
+		// Helper: capture terminal artifacts (theme, URI) for ToolResult handler
+		const captureArtifacts = () => {
+			if (!toolCallKey || !runtime) {
+				return;
+			}
+			const artifacts: { theme?: { background?: string; foreground?: string }; commandUri?: UriComponents } = {};
+			try {
+				const xterm = terminal.xterm;
+				if (xterm) {
+					const xtermTheme = xterm.getXtermTheme();
+					artifacts.theme = { background: xtermTheme.background, foreground: xtermTheme.foreground };
+				}
+			} catch { /* theme capture is best-effort */ }
+			try {
+				if (terminalCommandId) {
+					const params = new URLSearchParams(terminal.resource.query);
+					params.set('command', terminalCommandId);
+					artifacts.commandUri = terminal.resource.with({ query: params.toString() });
+				}
+			} catch { /* URI construction is best-effort */ }
+			runtime.terminalArtifacts.set(toolCallKey, artifacts);
+		};
+
+		// Helper: execute command via runCommand (enables CommandDetection ID linkage) with sendText fallback
+		const executeCommand = async (cmd: string): Promise<void> => {
+			if (terminalCommandId && typeof terminal.runCommand === 'function') {
+				await terminal.runCommand(cmd, true, terminalCommandId);
+			} else {
+				await terminal.sendText(cmd, true);
+			}
+		};
+
 		let output = '';
 		const dataListener = terminal.onData((data: string) => {
 			const clean = data
@@ -2420,11 +2815,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// 后台任务：发送命令后立即返回
 		if (isBackground) {
 			this._terminalOutputCache.set(terminalId, { output: '(running...)', exitCode: undefined });
-			await terminal.sendText(effectiveCommand, true);
+			await executeCommand(effectiveCommand);
 
 			// 后台监听：命令完成后更新缓存
 			const bgTimeout = setTimeout(() => {
 				dataListener.dispose();
+				captureArtifacts();
 				this._terminalOutputCache.set(terminalId, {
 					output: this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output captured)',
 					exitCode: undefined,
@@ -2439,6 +2835,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					clearTimeout(bgTimeout);
 					dataListener.dispose();
 					finishListener?.dispose();
+					captureArtifacts();
 					this._terminalOutputCache.set(terminalId, {
 						output: this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output captured)',
 						exitCode: e?.exitCode,
@@ -2453,6 +2850,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return new Promise<string>((resolve) => {
 			const timeout = setTimeout(() => {
 				dataListener.dispose();
+				captureArtifacts();
 				this._terminalOutputCache.set(terminalId, { output: `Command timed out after 120s\n${output}`, exitCode: -1 });
 				resolve(`Command timed out after 120s\n${output}`);
 			}, 120_000);
@@ -2466,6 +2864,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					clearTimeout(timeout);
 					dataListener.dispose();
 					finishListener?.dispose();
+					captureArtifacts();
 					const exitCode = e?.exitCode ?? 0;
 					const result = this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output)';
 					this._terminalOutputCache.set(terminalId, { output: result, exitCode });
@@ -2480,12 +2879,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			// 发送命令执行
-			terminal.sendText(effectiveCommand, true).then(() => {
+			executeCommand(effectiveCommand).then(() => {
 				// 如果没有 commandDetection，用简单的延时等待
 				if (!cmdDetection) {
 					setTimeout(() => {
 						clearTimeout(timeout);
 						dataListener.dispose();
+						captureArtifacts();
 						const result = this._cleanTerminalOutput(output, command, effectiveCommand) || '(no output captured - command detection unavailable)';
 						this._terminalOutputCache.set(terminalId, { output: result, exitCode: undefined });
 						resolve(result);
@@ -2666,6 +3066,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				externalEditOps: new Map<string, number>(),
 				pendingStartEdits: new Map<string, Promise<void>>(),
 				disposeController: new AbortController(),
+				terminalSessionMap: new Map<string, { sessionId: string; commandId: string }>(),
+				terminalCommandLines: new Map<string, string>(),
+				terminalArtifacts: new Map(),
+				shellToolKeyRedirects: new Map<string, string>(),
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
 		}
@@ -2695,6 +3099,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.subagentParentMap.clear();
 		runtime.externalEditOps.clear();
 		runtime.pendingStartEdits.clear();
+		runtime.terminalSessionMap.clear();
+		runtime.terminalCommandLines.clear();
+		runtime.terminalArtifacts.clear();
+		runtime.shellToolKeyRedirects.clear();
 		this._ensureEditorEffects().clearSessionState(sessionResource);
 		this._sessionRuntimes.delete(sessionResource);
 	}

@@ -1067,7 +1067,7 @@ export {
 	isEdaContentKind,
 } from '../chatEdaTypes.js';
 
-import type { IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaPpaReport, IChatEdaPpaMetrics, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview, IChatRoundProgress, IChatAgentError } from '../chatEdaTypes.js';
+import type { IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaPpaReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview, IChatRoundProgress, IChatAgentError } from '../chatEdaTypes.js';
 
 export interface IChatFollowup {
 	kind: 'reply';

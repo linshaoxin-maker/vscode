@@ -62,6 +62,7 @@ import { ChatEdaSpecReviewContentPart } from '../../../../workbench/contrib/chat
 import { ChatRoundProgressContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatRoundProgressPart.js';
 import { ChatAgentErrorContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatAgentErrorPart.js';
 import { ChatEdaPpaReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaPpaReportPart.js';
+import { AgentSessionsPicker } from '../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsPicker.js';
 
 import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos/browser/settings/chiposQuickToggles.js';
 
@@ -160,7 +161,6 @@ CommandsRegistry.registerCommand(ChipOSCommandId.CloseAllSessions, accessor => {
 
 CommandsRegistry.registerCommand('chipos.pickSession', async accessor => {
 	const instantiationService = accessor.get(IInstantiationService);
-	const { AgentSessionsPicker } = await import('../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsPicker.js');
 	const picker = instantiationService.createInstance(AgentSessionsPicker, undefined, undefined);
 	await picker.pickAgentSession();
 });

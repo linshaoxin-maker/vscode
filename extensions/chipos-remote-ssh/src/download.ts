@@ -11,7 +11,11 @@
  * 2. 根据远程 OS/arch 构造下载 URL
  * 3. 通过 SSH 在远程下载并解压
  *
- * Dev 模式（无 commit）：使用本地 code-server.sh 脚本
+ * Dev 模式（无 commit）：
+ *   优先使用本地 `scripts/build-reh.sh` 构建的 REH 产物（rsync 到远程）。
+ *   如果本地无构建产物，才回退到微软 CDN 下载原版 VS Code Server（此时
+ *   MCP 等 ChipOS 自定义功能将不可用）。
+ *
  * Production 模式：下载对应版本的 server tarball
  */
 
@@ -96,12 +100,20 @@ export async function detectRemotePlatform(ssh: SshConnection): Promise<{ os: st
 /**
  * 构造 Server 下载 URL。
  *
- * URL 格式（参考 VSCode 的模式）：
- * https://update.chipos.ai/commit:{hash}/server-{os}-{arch}/stable
+ * 支持两种 URL 格式：
+ * 1. GitHub Releases: https://github.com/owner/repo/releases/download/v1.0.0/chipos-reh-linux-x64.tar.gz
+ *    (updateUrl 包含 "github.com" 时自动使用此格式)
+ * 2. 自建服务器: https://update.chipos.ai/commit:{hash}/server-{os}-{arch}/stable
  */
 export function buildDownloadUrl(product: ProductInfo, platform: { os: string; arch: string }): string {
 	if (!product.commit || !product.updateUrl) {
 		throw new Error('Cannot build download URL: missing commit or updateUrl in product.json');
+	}
+
+	if (product.updateUrl.includes('github.com')) {
+		// GitHub Releases: updateUrl = "https://github.com/owner/repo/releases/download"
+		// Artifact name: chipos-reh-{os}-{arch}.tar.gz
+		return `${product.updateUrl}/${product.commit}/chipos-reh-${platform.os}-${platform.arch}.tar.gz`;
 	}
 
 	return `${product.updateUrl}/commit:${product.commit}/server-${platform.os}-${platform.arch}/stable`;
@@ -130,13 +142,55 @@ export async function downloadAndInstallServer(
 ): Promise<void> {
 	const product = getProductInfo();
 
-	// Dev mode: no commit hash → download latest VS Code Server from CDN
+	// Dev mode: no commit hash
 	if (!product.commit) {
-		log('[Download] Dev mode: downloading VS Code Server from official CDN...');
-		onProgress?.('Downloading VS Code Server...');
-
 		const platform = await detectRemotePlatform(ssh);
-		log(`[Download] Remote platform: ${platform.os}-${platform.arch}`);
+		log(`[Download] Dev mode — remote platform: ${platform.os}-${platform.arch}`);
+
+		// Try local REH build first (produced by scripts/build-reh.sh)
+		const localReh = _findLocalRehBuild(platform.os, platform.arch);
+		if (localReh) {
+			log(`[Download] Found local REH build at ${localReh}`);
+			onProgress?.('Deploying local ChipOS Server build...');
+
+			try {
+				await ssh.exec(`mkdir -p ${installPath}`);
+				onProgress?.('Syncing files to remote...');
+
+				childProcess.execSync(
+					`rsync -az "${localReh}/" "${ssh.host}:${installPath}/"`,
+					{ stdio: 'pipe', timeout: 300_000 },
+				);
+
+				log('[Download] Local REH deployed successfully (dev mode)');
+
+				// Fix native modules if cross-compiled (e.g., built on macOS, deploying to Linux)
+				const needsNativeFix = await _checkNativeModuleMismatch(ssh, installPath, platform);
+				if (needsNativeFix) {
+					onProgress?.('Rebuilding native modules for remote platform...');
+					await _rebuildNativeModulesOnRemote(ssh, installPath, localReh, log);
+				}
+
+				onProgress?.('Server deployed');
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				log(`[Download] Local REH deploy failed: ${message}`);
+				throw new Error(`Failed to deploy local REH build: ${message}`);
+			}
+			return;
+		}
+
+		// No local build — fall back to Microsoft CDN with a warning
+		log('[Download] WARNING: No local REH build found, falling back to Microsoft CDN.');
+		log('[Download] ChipOS custom features (MCP, etc.) will NOT work.');
+		log('[Download] Run "scripts/build-reh.sh" to build the ChipOS REH.');
+		onProgress?.('Downloading VS Code Server (vanilla)...');
+
+		vscode.window.showWarningMessage(
+			'Using vanilla VS Code Server — ChipOS custom features (MCP tools, etc.) will not work. ' +
+			'Run `scripts/build-reh.sh` to build the ChipOS server.',
+			'OK',
+		);
 
 		const archStr = platform.arch === 'arm64' ? 'arm64' : (platform.arch === 'armhf' ? 'armhf' : 'x64');
 		const cdnUrl = `https://update.code.visualstudio.com/latest/server-${platform.os}-${archStr}/stable`;
@@ -154,12 +208,11 @@ export async function downloadAndInstallServer(
 			onProgress?.('Extracting...');
 			await ssh.exec(downloadCmd);
 
-			// Create symlink so ServerManager can find it by either name
 			const serverName = product.serverApplicationName || 'chipos-server';
 			await ssh.exec(`test -f ${installPath}/bin/${serverName} || ln -sf code-server ${installPath}/bin/${serverName}`);
 
-			log('[Download] VS Code Server installed successfully (dev mode)');
-			onProgress?.('Server installed');
+			log('[Download] VS Code Server installed successfully (dev mode, vanilla)');
+			onProgress?.('Server installed (vanilla)');
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			log(`[Download] Installation failed: ${message}`);
@@ -681,6 +734,43 @@ function _extractThirdPartyDeps(pyprojectPath: string): string[] {
 	return deps;
 }
 
+/**
+ * Locate a locally built REH directory (produced by `scripts/build-reh.sh` or `npx gulp vscode-reh-{os}-{arch}`).
+ * The build output sits at `<repo>/vscode-reh-{os}-{arch}/` — one level above the `vscode/` directory.
+ */
+function _findLocalRehBuild(os: string, arch: string): string | undefined {
+	const dirName = `vscode-reh-${os}-${arch}`;
+
+	// Strategy 1: relative to extension source (extensions/chipos-remote-ssh/src/ → ../../..)
+	let dir = __dirname;
+	for (let i = 0; i < 6; i++) {
+		const candidate = path.join(dir, dirName);
+		if (fs.existsSync(path.join(candidate, 'bin', 'chipos-server'))) {
+			return candidate;
+		}
+		const parent = path.dirname(dir);
+		if (parent === dir) { break; }
+		dir = parent;
+	}
+
+	// Strategy 2: workspace folders
+	try {
+		const folders = vscode.workspace.workspaceFolders;
+		if (folders) {
+			for (const folder of folders) {
+				const candidate = path.join(folder.uri.fsPath, dirName);
+				if (fs.existsSync(path.join(candidate, 'bin', 'chipos-server'))) {
+					return candidate;
+				}
+			}
+		}
+	} catch {
+		// vscode API not available
+	}
+
+	return undefined;
+}
+
 function _findBackendRoot(): string | undefined {
 	// 尝试从 __dirname 向上查找
 	let dir = __dirname;
@@ -713,4 +803,165 @@ function _findBackendRoot(): string | undefined {
 	}
 
 	return undefined;
+}
+
+// ── Cross-compilation: native module fixup ──────────────────────────────────
+
+/**
+ * Check if native modules in the deployed REH match the remote platform.
+ * Returns true if a rebuild is needed.
+ */
+async function _checkNativeModuleMismatch(
+	ssh: SshConnection,
+	installPath: string,
+	platform: { os: string; arch: string },
+): Promise<boolean> {
+	try {
+		const result = await ssh.exec(
+			`file ${installPath}/node_modules/@vscode/spdlog/build/Release/spdlog.node 2>/dev/null || echo "not found"`
+		);
+		const fileType = result.trim();
+
+		const expectedSignatures: Record<string, string> = {
+			'linux': 'ELF',
+			'darwin': 'Mach-O',
+		};
+		const expected = expectedSignatures[platform.os] || 'ELF';
+
+		if (fileType.includes(expected)) {
+			return false; // matches
+		}
+		return true; // mismatch
+	} catch {
+		return false; // can't check, skip
+	}
+}
+
+/**
+ * Rebuild native modules on the remote server.
+ *
+ * Strategy: create a temp package.json with just the native deps,
+ * run npm install on the remote (which compiles for the remote platform),
+ * then copy the resulting .node files into the deployed REH.
+ */
+async function _rebuildNativeModulesOnRemote(
+	ssh: SshConnection,
+	installPath: string,
+	localRehPath: string,
+	log: (msg: string) => void,
+): Promise<void> {
+	// Collect native module versions from local REH
+	const nativeDeps = _collectNativeModuleVersions(localRehPath);
+	if (Object.keys(nativeDeps).length === 0) {
+		log('[Download] No native modules found, skipping rebuild');
+		return;
+	}
+
+	log(`[Download] Rebuilding ${Object.keys(nativeDeps).length} native modules on remote...`);
+
+	const depsJson = JSON.stringify(nativeDeps, null, 2);
+	const pkgJson = JSON.stringify({ private: true, dependencies: nativeDeps }, null, 2);
+
+	try {
+		await ssh.exec(`
+			rm -rf /tmp/reh-native-rebuild
+			mkdir -p /tmp/reh-native-rebuild
+			cat > /tmp/reh-native-rebuild/package.json << 'PKGJSON'
+${pkgJson}
+PKGJSON
+			cd /tmp/reh-native-rebuild
+			export PATH="${installPath}:$PATH"
+			if command -v npm >/dev/null 2>&1; then
+				npm install --production 2>&1 | tail -5
+			else
+				echo "WARN: npm not available, cannot rebuild native modules"
+				exit 0
+			fi
+			find node_modules -name '*.node' -type f | while read f; do
+				target="${installPath}/$f"
+				if [ -f "$target" ]; then
+					cp -f "$f" "$target"
+					echo "Replaced: $f"
+				fi
+			done
+			if [ -f "node_modules/node-pty/build/Release/spawn-helper" ]; then
+				target="${installPath}/node_modules/node-pty/build/Release/spawn-helper"
+				if [ -d "$(dirname "$target")" ]; then
+					cp -f "node_modules/node-pty/build/Release/spawn-helper" "$target"
+					chmod +x "$target"
+				fi
+			fi
+			rm -rf /tmp/reh-native-rebuild
+		`);
+		log('[Download] Native modules rebuilt on remote');
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		log(`[Download] WARNING: Native module rebuild failed: ${message}`);
+		log('[Download] The server may not start. Use CI builds or --docker for reliable deployment.');
+		vscode.window.showWarningMessage(
+			`Native module rebuild failed on remote: ${message}. ` +
+			'Consider using CI builds for production deployment.',
+		);
+	}
+}
+
+/**
+ * Scan a local REH build directory for native modules (packages with .node files)
+ * and return a map of package name → version.
+ */
+function _collectNativeModuleVersions(rehPath: string): Record<string, string> {
+	const result: Record<string, string> = {};
+	const nmDir = path.join(rehPath, 'node_modules');
+
+	if (!fs.existsSync(nmDir)) {
+		return result;
+	}
+
+	function scanDir(dir: string, depth: number): void {
+		if (depth > 3) { return; }
+		try {
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				if (entry.name.startsWith('.')) { continue; }
+				const full = path.join(dir, entry.name);
+				if (!entry.isDirectory()) { continue; }
+
+				if (entry.name.startsWith('@')) {
+					scanDir(full, depth + 1);
+					continue;
+				}
+
+				// Check if this package has .node files
+				const hasNativeModule = _hasNodeFile(full);
+				if (hasNativeModule) {
+					try {
+						const pkg = JSON.parse(fs.readFileSync(path.join(full, 'package.json'), 'utf8'));
+						result[pkg.name] = pkg.version;
+					} catch {
+						// skip
+					}
+				}
+			}
+		} catch {
+			// skip
+		}
+	}
+
+	scanDir(nmDir, 0);
+	return result;
+}
+
+function _hasNodeFile(dir: string): boolean {
+	try {
+		const buildRelease = path.join(dir, 'build', 'Release');
+		if (fs.existsSync(buildRelease)) {
+			return fs.readdirSync(buildRelease).some(f => f.endsWith('.node'));
+		}
+		const prebuilds = path.join(dir, 'prebuilds');
+		if (fs.existsSync(prebuilds)) {
+			return true;
+		}
+	} catch {
+		// ignore
+	}
+	return false;
 }

@@ -172,7 +172,7 @@ export class ServerManager {
 		return { port, connectionToken };
 	}
 
-	private async _waitForServerPort(token: string): Promise<number> {
+	private async _waitForServerPort(_token: string): Promise<number> {
 		const maxAttempts = 30;  // 30 seconds timeout
 		const intervalMs = 1000;
 
@@ -180,18 +180,27 @@ export class ServerManager {
 			await new Promise(resolve => setTimeout(resolve, intervalMs));
 
 			try {
-				const logContent = await this._ssh.exec(`tail -20 ${this._installPath}/.server.log 2>/dev/null || echo ""`);
+				// Use grep to find the port line — it appears early in the log, and
+				// tail -N can miss it if non-fatal errors push it out of the window.
+				const portLine = await this._ssh.exec(
+					`grep -m1 'Extension host agent listening' ${this._installPath}/.server.log 2>/dev/null || echo ""`
+				);
 
-				// Look for the port announcement in the log
-				// VS Code Server outputs: "Extension host agent listening on <port>"
-				const portMatch = logContent.match(/Extension host agent listening on (\d+)/);
+				const portMatch = portLine.match(/Extension host agent listening on (\d+)/);
 				if (portMatch) {
 					return parseInt(portMatch[1], 10);
 				}
 
-				// Also check for error
-				if (logContent.includes('EADDRINUSE') || logContent.includes('Error:')) {
-					throw new Error(`Server failed to start: ${logContent.substring(0, 200)}`);
+				// Check for fatal startup errors only (EADDRINUSE, segfault, etc.).
+				// Non-fatal "[Error]" from extension scanning should NOT abort polling.
+				const tailContent = await this._ssh.exec(
+					`tail -5 ${this._installPath}/.server.log 2>/dev/null || echo ""`
+				);
+				if (tailContent.includes('EADDRINUSE')) {
+					throw new Error(`Server port already in use: ${tailContent.substring(0, 200)}`);
+				}
+				if (tailContent.includes('FATAL ERROR') || tailContent.includes('Segmentation fault')) {
+					throw new Error(`Server crashed: ${tailContent.substring(0, 200)}`);
 				}
 			} catch (err) {
 				if (i === maxAttempts - 1) {

@@ -9,8 +9,6 @@ import * as dom from '../../../../../../base/browser/dom.js';
 import { IMcpService, McpConnectionState } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { autorun } from '../../../../../../base/common/observable.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
-import { IOpenerService } from '../../../../../../platform/opener/common/opener.js';
-
 export class ToolsTab extends Disposable {
 
 	private readonly _disposables = this._register(new DisposableStore());
@@ -20,7 +18,6 @@ export class ToolsTab extends Disposable {
 		private readonly _container: HTMLElement,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@ICommandService private readonly _commandService: ICommandService,
-		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
 		super();
 		this._render();

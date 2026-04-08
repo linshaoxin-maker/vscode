@@ -174,10 +174,11 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					localReasoningPort = await sshConn.forwardPort(0, '127.0.0.1', reasoningPort);
 					log(`Reasoning port forwarding: 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
 					if (localReasoningPort !== reasoningPort) {
-						// TODO(P2-12): Global config may conflict with a concurrent B2/Local window.
-						// Migrate to Workspace or memento-scoped config in a future iteration.
-						await vscode.workspace.getConfiguration('chipos.backend').update(
-							'reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, vscode.ConfigurationTarget.Global);
+						// Fire-and-forget: do NOT await config writes inside resolve(),
+						// because the workspace is not loaded yet and awaiting can deadlock.
+						vscode.workspace.getConfiguration('chipos.backend').update(
+							'reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, vscode.ConfigurationTarget.Global
+						).then(undefined, err => log(`[WARN] Failed to update reasoningUrl: ${err}`));
 					}
 				} catch (fwdErr) {
 					log(`[WARN] Could not forward reasoning port ${reasoningPort}: ${fwdErr}`);
@@ -230,11 +231,11 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					try {
 						const localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
 						log(`[Step 5] Worker HTTP port forwarding: 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
-						if (localWorkerPort !== workerHttpPort) {
-							// TODO(P2-12): Same Global scope caveat as reasoningUrl above.
-							await vscode.workspace.getConfiguration('chipos.backend').update(
-								'workerHttpUrl', `http://127.0.0.1:${localWorkerPort}`, vscode.ConfigurationTarget.Global);
-						}
+					if (localWorkerPort !== workerHttpPort) {
+						vscode.workspace.getConfiguration('chipos.backend').update(
+							'workerHttpUrl', `http://127.0.0.1:${localWorkerPort}`, vscode.ConfigurationTarget.Global
+						).then(undefined, err => log(`[WARN] Failed to update workerHttpUrl: ${err}`));
+					}
 					} catch (fwdErr) {
 						log(`[Step 5][WARN] Could not forward worker HTTP port: ${fwdErr}`);
 						vscode.window.showWarningMessage(

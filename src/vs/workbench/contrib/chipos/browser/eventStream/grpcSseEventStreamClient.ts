@@ -431,7 +431,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}
 
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), GrpcSseEventStreamClient._POST_TIMEOUT_MS);
+		const timer = setTimeout(() => controller.abort(), SseEventStreamClient._POST_TIMEOUT_MS);
 
 		try {
 			const resp = await fetch(`${this._config.baseUrl}${path}`, {
@@ -454,7 +454,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			return resp;
 		} catch (err: any) {
 			if (err.name === 'AbortError') {
-				throw new Error(`POST ${path} timed out after ${GrpcSseEventStreamClient._POST_TIMEOUT_MS}ms`);
+				throw new Error(`POST ${path} timed out after ${SseEventStreamClient._POST_TIMEOUT_MS}ms`);
 			}
 			throw err;
 		} finally {

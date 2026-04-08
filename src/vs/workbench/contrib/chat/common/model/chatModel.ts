@@ -31,7 +31,7 @@ import { ChatRequestToolReferenceEntry, IChatRequestVariableEntry, isImplicitVar
 import { migrateLegacyTerminalToolSpecificData } from '../chat.js';
 import { ChatAgentVoteDirection, ChatAgentVoteDownReason, ChatRequestQueueKind, ChatResponseClearToPreviousToolInvocationReason, ElicitationState, IChatAgentMarkdownContentWithVulnerability, IChatClearToPreviousToolInvocation, IChatCodeCitation, IChatCommandButton, IChatConfirmation, IChatContentInlineReference, IChatContentReference, IChatDisabledClaudeHooksPart, IChatEditingSessionAction, IChatElicitationRequest, IChatElicitationRequestSerialized, IChatExternalToolInvocationUpdate, IChatExtensionsContent, IChatFollowup, IChatHookPart, IChatLocationData, IChatMarkdownContent, IChatMcpServersStarting, IChatMcpServersStartingSerialized, IChatModelReference, IChatMultiDiffData, IChatMultiDiffDataSerialized, IChatNotebookEdit, IChatProgress, IChatProgressMessage, IChatPullRequestContent, IChatQuestionCarousel, IChatResponseCodeblockUriPart, IChatResponseProgressFileTreeData, IChatSendRequestOptions, IChatService, IChatSessionContext, IChatSessionTiming, IChatTask, IChatTaskSerialized, IChatTextEdit, IChatThinkingPart, IChatToolInvocation, IChatToolInvocationSerialized, IChatTreeData, IChatUndoStop, IChatUsage, IChatUsedContext, IChatWarningMessage, IChatWorkspaceEdit, ResponseModelState, isIUsedContext, IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview } from '../chatService/chatService.js';
 import { ChatAgentLocation, ChatModeKind, ChatPermissionLevel } from '../constants.js';
-import { isEdaContentKind, IChatRoundProgress, IChatAgentError } from '../chatEdaTypes.js';
+import { isEdaContentKind, IChatRoundProgress, IChatAgentError, IChatEdaPpaReport } from '../chatEdaTypes.js';
 import { ChatToolInvocation } from './chatProgressTypes/chatToolInvocation.js';
 import { ToolDataSource, IToolData } from '../tools/languageModelToolsService.js';
 import { IChatEditingService, IChatEditingSession, ModifiedFileEntryState } from '../editing/chatEditingService.js';
@@ -201,7 +201,8 @@ export type IChatProgressHistoryResponseContent =
 	| IChatEdaNegotiationView
 	| IChatEdaSpecReview
 	| IChatRoundProgress
-	| IChatAgentError;
+	| IChatAgentError
+	| IChatEdaPpaReport;
 
 /**
  * "Normal" progress kinds that are rendered as parts of the stream of content.
@@ -219,7 +220,8 @@ export type IChatProgressResponseContent =
 	| IChatMcpServersStartingSerialized
 	| IChatDisabledClaudeHooksPart
 	| IChatRoundProgress
-	| IChatAgentError;
+	| IChatAgentError
+	| IChatEdaPpaReport;
 
 export type IChatProgressResponseContentSerialized = Exclude<IChatProgressResponseContent,
 	| IChatToolInvocation
@@ -860,6 +862,12 @@ export class Response extends AbstractResponse implements IDisposable {
 		);
 
 		if (existingInvocation) {
+			// Update toolSpecificData BEFORE didExecuteTool, because didExecuteTool
+			// triggers a state change that synchronously re-renders the UI part,
+			// which reads toolSpecificData for display (e.g. terminal command title).
+			if (progress.toolSpecificData !== undefined) {
+				existingInvocation.toolSpecificData = progress.toolSpecificData;
+			}
 			if (progress.isComplete) {
 				existingInvocation.didExecuteTool({
 					content: [],
@@ -867,9 +875,6 @@ export class Response extends AbstractResponse implements IDisposable {
 					toolResultError: progress.errorMessage,
 					toolResultDetails: progress.resultDetails
 				});
-			}
-			if (progress.toolSpecificData !== undefined) {
-				existingInvocation.toolSpecificData = progress.toolSpecificData;
 			}
 			return;
 		}
