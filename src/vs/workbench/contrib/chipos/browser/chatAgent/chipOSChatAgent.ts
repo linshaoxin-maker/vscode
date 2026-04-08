@@ -981,7 +981,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// Cache file path and start external edit for file-writing tools
 					if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 						const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
-						this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
+						this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!ctx.request}`);
 						if (filePath && ctx.request) {
 							// Dedup: skip if this file already has a pending external edit
 							const alreadyTracked = [...ctx.runtime.toolFileArgs.entries()].some(
@@ -1247,7 +1247,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				this._logService.trace('[ChipOS Agent] Unhandled event:', (event as AgentEvent).event_type);
 				break;
 		}
-		} catch (eventErr) {
 	}
 
 	// ── FEAT-23: Listen for backend events after sending confirm response ──

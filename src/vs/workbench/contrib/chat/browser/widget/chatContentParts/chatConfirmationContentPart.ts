@@ -44,7 +44,6 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 
 		const element = context.element;
 		this._sessionResource = isResponseVM(element) ? element.sessionResource : undefined;
-		const sessionId = this._sessionResource ? LocalChatSessionUri.parseLocalSessionId(this._sessionResource) : undefined;
 		const widget = isResponseVM(element) ? chatWidgetService.getWidgetBySessionResource(element.sessionResource) : undefined;
 
 		// ── Card DOM (title + preview, no buttons) ──
