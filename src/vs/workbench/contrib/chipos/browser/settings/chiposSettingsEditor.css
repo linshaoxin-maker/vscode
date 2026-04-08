@@ -160,25 +160,6 @@
 	margin-top: 2px;
 }
 
-.chipos-setting-input-container {
-	max-width: 400px;
-}
-
-.chipos-setting-input-container .monaco-inputbox {
-	width: 100%;
-}
-
-.chipos-setting-row-horizontal {
-	display: flex;
-	align-items: flex-start;
-	gap: 8px;
-	margin-bottom: 16px;
-}
-
-.chipos-setting-row-horizontal .monaco-custom-toggle {
-	margin-top: 2px;
-}
-
 .chipos-setting-input,
 .chipos-setting-select {
 	padding: 6px 10px;
@@ -382,6 +363,89 @@
 	margin-bottom: 12px;
 	padding-bottom: 6px;
 	border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+/* ── MCP Tools Tab ───────────────────────────────────────────── */
+
+.chipos-mcp-server-list {
+	margin-top: 8px;
+}
+
+.chipos-mcp-empty {
+	padding: 16px;
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+}
+
+.chipos-mcp-server-row {
+	display: flex;
+	align-items: center;
+	padding: 8px 12px;
+	border-radius: 4px;
+	margin-bottom: 4px;
+	background: var(--vscode-list-hoverBackground);
+}
+
+.chipos-mcp-server-row .chipos-mcp-dot {
+	flex-shrink: 0;
+}
+
+.chipos-mcp-dot.running { color: var(--vscode-testing-iconPassed); }
+.chipos-mcp-dot.error { color: var(--vscode-testing-iconFailed); }
+.chipos-mcp-dot.starting { color: var(--vscode-charts-yellow); }
+.chipos-mcp-dot.stopped { color: var(--vscode-descriptionForeground); }
+
+.chipos-mcp-server-name {
+	font-weight: 600;
+	flex: 1;
+	margin-left: 4px;
+}
+
+.chipos-mcp-server-state,
+.chipos-mcp-server-tools {
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	margin-right: 8px;
+}
+
+.chipos-mcp-server-actions {
+	background: none;
+	border: none;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	font-size: 16px;
+	padding: 2px 6px;
+}
+
+.chipos-config-link-row {
+	display: flex;
+	align-items: center;
+	padding: 6px 0;
+}
+
+.chipos-config-link-label {
+	flex: 1;
+	font-family: var(--vscode-editor-font-family);
+	font-size: 13px;
+}
+
+/* ── Tab Header Description ──────────────────────────────────── */
+
+.chipos-setting-description.chipos-tab-header-desc {
+	margin-bottom: 16px;
+}
+
+/* ── Rules Tab ───────────────────────────────────────────────── */
+
+.chipos-rules-list {
+	margin: 8px 0;
+	padding-left: 20px;
+	font-size: 12px;
+}
+
+.chipos-rules-list li {
+	color: var(--vscode-foreground);
+	margin-bottom: 2px;
 }
 
 /* ── Empty State ─────────────────────────────────────────────── */

@@ -62,8 +62,7 @@ export class BetaTab extends Disposable {
 
 	private _render(): void {
 		// ── Header description ──
-		const headerDesc = dom.append(this._container, dom.$('.chipos-setting-description'));
-		headerDesc.style.marginBottom = '16px';
+		const headerDesc = dom.append(this._container, dom.$('.chipos-setting-description.chipos-tab-header-desc'));
 		headerDesc.textContent = localize('chipos.beta.header',
 			'Experimental features that are still in development. Enable at your own risk — some may be unstable or incomplete.');
 

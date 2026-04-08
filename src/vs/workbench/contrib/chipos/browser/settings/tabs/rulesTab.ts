@@ -82,16 +82,11 @@ export class RulesTab extends Disposable {
 		try {
 			const stat = await this._fileService.resolve(rulesDir);
 			if (stat.children && stat.children.length > 0) {
-				const list = dom.append(container, dom.$('ul'));
-				list.style.margin = '8px 0';
-				list.style.paddingLeft = '20px';
-				list.style.fontSize = '12px';
+				const list = dom.append(container, dom.$('ul.chipos-rules-list'));
 				for (const child of stat.children) {
 					if (!child.isDirectory) {
 						const li = dom.append(list, dom.$('li'));
 						li.textContent = child.name;
-						li.style.color = 'var(--vscode-foreground)';
-						li.style.marginBottom = '2px';
 					}
 				}
 			} else {
