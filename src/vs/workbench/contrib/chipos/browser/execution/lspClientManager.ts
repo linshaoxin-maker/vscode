@@ -82,7 +82,6 @@ export class LSPClientManager extends Disposable {
 	 */
 	registerServer(config: ILanguageServerConfig): void {
 		if (this._clients.has(config.name)) {
-			console.warn(`[LSPClientManager] Server already registered: ${config.name}`);
 			return;
 		}
 
@@ -159,16 +158,13 @@ export class LSPClientManager extends Disposable {
 		//     { documentSelector: entry.config.languageIds.map(id => ({ language: id })) }
 		// );
 		// await client.start();
-		console.log(`[LSPClientManager] Starting local server: ${entry.config.name}`);
 	}
 
 	/**
 	 * 启动远程 Language Server（通过 SSH 隧道）
 	 */
-	private async _startRemoteServer(entry: ILspClientEntry): Promise<void> {
-		const remote = entry.config.remote!;
+	private async _startRemoteServer(_entry: ILspClientEntry): Promise<void> {
 		// TODO: 建立 SSH 隧道，然后通过 TCP 连接 Language Server
-		console.log(`[LSPClientManager] Starting remote server: ${entry.config.name} via ${remote.host}:${remote.port}`);
 	}
 
 	override dispose(): void {

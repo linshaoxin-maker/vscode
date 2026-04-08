@@ -45,7 +45,6 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		const element = context.element;
 		this._sessionResource = isResponseVM(element) ? element.sessionResource : undefined;
 		const sessionId = this._sessionResource ? LocalChatSessionUri.parseLocalSessionId(this._sessionResource) : undefined;
-		console.log('[ChatTempFile] ConfirmationContentPart created, sessionId:', sessionId, 'title:', confirmation.title);
 		const widget = isResponseVM(element) ? chatWidgetService.getWidgetBySessionResource(element.sessionResource) : undefined;
 
 		// ── Card DOM (title + preview, no buttons) ──
@@ -210,7 +209,8 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			sendConfirmation(selectedLabel, selectedIndex > 0);
 		}));
 
-		// Keyboard shortcuts
+		// Keyboard shortcuts — scoped to the overlay to avoid hijacking the chat input
+		overlay.setAttribute('tabindex', '-1');
 		const keyHandler = (e: KeyboardEvent) => {
 			if (confirmation.isUsed) {
 				return;
@@ -224,15 +224,13 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 				const selectedLabel = buttonLabels[selectedIndex];
 				sendConfirmation(selectedLabel, selectedIndex > 0);
 			} else if (e.key >= 'a' && e.key <= 'z') {
-				// Letter key selects option (a=0, b=1, ...)
 				const idx = e.key.charCodeAt(0) - 97;
 				if (idx >= 0 && idx < buttonLabels.length) {
 					updateSelection(idx);
 				}
 			}
 		};
-		document.addEventListener('keydown', keyHandler);
-		this._register({ dispose: () => document.removeEventListener('keydown', keyHandler) });
+		overlay.addEventListener('keydown', keyHandler);
 
 		// Insert overlay AFTER the list container (between list and input),
 		// so it participates in flex layout and the list shrinks automatically.
@@ -243,14 +241,17 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		// Also add bottom padding to the list's scroll area so content isn't
 		// hidden behind the overlay (similar to how Cursor handles it).
 		requestAnimationFrame(() => {
-			if (widget) {
-				const dim = (widget as any).bodyDimension;
-				if (dim) {
-					(widget as any).layout(dim.height, dim.width);
+			if (!widget) { return; }
+			try {
+				const w = widget as any;
+				if (typeof w.layout === 'function' && w.bodyDimension) {
+					w.layout(w.bodyDimension.height, w.bodyDimension.width);
 				}
-				// Scroll list to bottom so the confirmation context is visible
-				(widget as any).listWidget?.scrollToEnd?.();
-			}
+				if (typeof w.listWidget?.scrollToEnd === 'function') {
+					w.listWidget.scrollToEnd();
+				}
+			} catch { /* layout is best-effort; upstream API may change */ }
+			overlay.focus();
 		});
 
 		// Clean up on dispose
@@ -291,10 +292,8 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 
 		try {
 			await this.fileService.writeFile(fileUri, VSBuffer.fromString(`# ${title}\n\n${content}`));
-			console.log('[ChatTempFile] Wrote temp file:', fileUri.toString(), 'sessionId:', sessionId ?? '(none)');
 			return fileUri;
-		} catch (err) {
-			console.warn('[ChatTempFile] Failed to write temp file:', fileUri.toString(), err);
+		} catch {
 			return undefined;
 		}
 	}
@@ -310,7 +309,6 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 	override dispose(): void {
 		this._overlay?.remove();
 		if (this._tempFileUri) {
-			console.log('[ChatTempFile] Disposing, deleting temp file:', this._tempFileUri.toString());
 			this.fileService.del(this._tempFileUri).catch(() => { /* ignore */ });
 		}
 		super.dispose();

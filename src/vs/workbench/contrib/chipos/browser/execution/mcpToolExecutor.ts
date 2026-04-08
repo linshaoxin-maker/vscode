@@ -68,8 +68,8 @@ export class MCPToolExecutor extends Disposable implements IToolExecutor {
 		for (const config of this._serverConfigs) {
 			try {
 				await this._connectServer(config);
-			} catch (e) {
-				console.error(`[MCPToolExecutor] Failed to connect to ${config.name}:`, e);
+			} catch {
+				// connection failures are non-fatal; tool will be unavailable
 			}
 		}
 	}
@@ -121,8 +121,7 @@ export class MCPToolExecutor extends Disposable implements IToolExecutor {
 	 * 实际实现会通过 VSCode 的 IMcpService 接口。
 	 * 当前为骨架实现，FEAT-T13 集成时会接入真实的 MCP 基础设施。
 	 */
-	private async _connectServer(config: IMcpServerConfig): Promise<void> {
-		console.log(`[MCPToolExecutor] Connecting to MCP Server: ${config.name} (${config.transport})`);
+	private async _connectServer(_config: IMcpServerConfig): Promise<void> {
 
 		// TODO: 通过 VSCode IMcpService 连接
 		// const mcpService = accessor.get(IMcpService);

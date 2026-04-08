@@ -13,6 +13,7 @@
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { Emitter } from '../../../../../base/common/event.js';
+import type { ILogService } from '../../../../../platform/log/common/log.js';
 import {
 	AgentEvent,
 	AgentEventType,
@@ -104,7 +105,10 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	private readonly _onDidChangeConnectionState = this._register(new Emitter<ConnectionState>());
 	readonly onDidChangeConnectionState = this._onDidChangeConnectionState.event;
 
-	constructor(private readonly _config: ISseClientConfig) {
+	constructor(
+		private readonly _config: ISseClientConfig,
+		private readonly _logService?: ILogService,
+	) {
 		super();
 	}
 
@@ -137,7 +141,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		// avoiding the SESSION_NOT_FOUND → reconnect loop that causes event loss.
 		try {
 			const healthUrl = `${this._config.baseUrl}/health`;
-			console.log('[SseClient] connect() health check:', healthUrl);
+			this._logService?.debug('[SseClient] connect() health check: %s', healthUrl);
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), 5000);
 			const resp = await fetch(healthUrl, { signal: controller.signal });
@@ -145,10 +149,10 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			if (!resp.ok) {
 				throw new Error(`Health check returned ${resp.status}`);
 			}
-			console.log('[SseClient] Backend reachable, EventSource deferred until sendTask');
+			this._logService?.info('[SseClient] Backend reachable, EventSource deferred until sendTask');
 			this._setState(ConnectionState.Connected);
 		} catch (err) {
-			console.error('[SseClient] connect() health check failed:', String(err));
+			this._logService?.error('[SseClient] connect() health check failed: %s', String(err));
 			this._setState(ConnectionState.Error);
 			throw new Error(`Cannot reach backend at ${this._config.baseUrl}: ${String(err)}`);
 		}
@@ -209,7 +213,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			// Open EventSource AFTER the POST succeeds (session now exists on server).
 			this._openEventSource();
 		}).catch(err => {
-			console.error('[SseClient] sendTask failed:', err);
+			this._logService?.error('[SseClient] sendTask failed: %s', err);
 			this._emitError(`sendTask failed: ${err}`, 'TASK_SUBMIT_FAILED', 'SESSION', false);
 		});
 	}
@@ -218,7 +222,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 	sendStop(sessionId: string): void {
 		this._post('/api/v1/stop', { session_id: sessionId }).catch(err => {
-			console.error('[SseClient] sendStop failed:', err);
+			this._logService?.error('[SseClient] sendStop failed: %s', err);
 			this._emitError(`sendStop failed: ${err}`, 'STOP_FAILED', 'SESSION', true);
 		});
 	}
@@ -232,7 +236,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			action,
 			comment: comment ?? '',
 		}).catch(err => {
-			console.error('[SseClient] sendConfirmResponse failed:', err);
+			this._logService?.error('[SseClient] sendConfirmResponse failed: %s', err);
 			this._emitError(`Confirm response failed: ${err}`, 'CONFIRM_FAILED', 'SESSION', false);
 		});
 	}
@@ -246,7 +250,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			content,
 			is_error: isError,
 		}).catch(err => {
-			console.error('[SseClient] sendIdeToolResult failed:', err);
+			this._logService?.error('[SseClient] sendIdeToolResult failed: %s', err);
 			this._emitError(`IDE tool result failed: ${err}`, 'IDE_TOOL_RESULT_FAILED', 'SESSION', false);
 		});
 	}
@@ -258,7 +262,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			session_id: sessionId,
 			tools,
 		}).catch(err => {
-			console.error('[SseClient] registerIdeMcpTools failed:', err);
+			this._logService?.error('[SseClient] registerIdeMcpTools failed: %s', err);
 			this._emitError(`MCP tools registration failed: ${err}`, 'MCP_TOOLS_REGISTER_FAILED', 'SESSION', false);
 		});
 	}
@@ -269,7 +273,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		this._closeEventSource();
 
 		if (!this._sessionId) {
-			console.log('[SseClient] Skipping EventSource open: no session_id yet');
+			this._logService?.debug('[SseClient] Skipping EventSource open: no session_id yet');
 			return;
 		}
 
@@ -283,12 +287,12 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}
 
 		const url = `${this._config.baseUrl}/api/v1/events?${params.toString()}`;
-		console.log('[SseClient] Opening EventSource:', url);
+		this._logService?.info('[SseClient] Opening EventSource: %s', url);
 
 		this._eventSource = new EventSource(url);
 
 		this._eventSource.onopen = () => {
-			console.log('[SseClient] EventSource connected');
+			this._logService?.info('[SseClient] EventSource connected');
 			this._reconnectAttempts = 0;
 			this._setState(ConnectionState.Connected);
 		};
@@ -297,21 +301,21 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			try {
 				this._dispatchEvent(JSON.parse(ev.data));
 			} catch (e) {
-				console.error('[SseClient] Failed to parse SSE event:', e);
+				this._logService?.error('[SseClient] Failed to parse SSE event: %s', e);
 			}
 		};
 
-		this._eventSource.onerror = (ev: Event) => {
+		this._eventSource.onerror = () => {
 			const es = this._eventSource;
 			const readyState = es ? es.readyState : -1;
-			console.error('[SseClient] EventSource error, readyState:', readyState, '(0=CONNECTING, 1=OPEN, 2=CLOSED)', ev);
+			this._logService?.error('[SseClient] EventSource error, readyState=%d (0=CONNECTING, 1=OPEN, 2=CLOSED)', readyState);
 			if (this._sessionDone) {
-				console.log('[SseClient] Session done — not reconnecting');
+				this._logService?.info('[SseClient] Session done — not reconnecting');
 				this._closeEventSource();
 				return;
 			}
 			if (readyState === 2 && this._streamToken) {
-				console.warn('[SseClient] Connection closed with stream_token present — clearing stale token for next attempt');
+				this._logService?.warn('[SseClient] Connection closed with stream_token present — clearing stale token for next attempt');
 				this._streamToken = '';
 			}
 			this._closeEventSource();
@@ -363,7 +367,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 		const eventType = SSE_TYPE_MAP[type];
 		if (eventType === undefined) {
-			console.warn('[SseClient] Unknown event type:', type);
+			this._logService?.warn('[SseClient] Unknown event type: %s', type);
 			return;
 		}
 

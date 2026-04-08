@@ -279,15 +279,11 @@ KeybindingsRegistry.registerKeybindingRule({
 
 // ── Markdown Preview / Source Commands (delegate to built-in extension) ──────
 CommandsRegistry.registerCommand(ChipOSCommandId.MarkdownPreviewToSide, accessor => {
-	console.log('[ChipOS] MarkdownPreviewToSide command triggered');
-	const commandService = accessor.get(ICommandService);
-	commandService.executeCommand('markdown.showPreviewToSide');
+	accessor.get(ICommandService).executeCommand('markdown.showPreviewToSide');
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.MarkdownShowSource, accessor => {
-	console.log('[ChipOS] MarkdownShowSource command triggered');
-	const commandService = accessor.get(ICommandService);
-	commandService.executeCommand('markdown.showSource');
+	accessor.get(ICommandService).executeCommand('markdown.showSource');
 });
 
 // ── Menu Contributions ─────────────────────────────────────────────────────────

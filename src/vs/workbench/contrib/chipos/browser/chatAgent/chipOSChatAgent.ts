@@ -321,7 +321,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
 			let firstProgressTime: number | undefined;
-			const pendingConfirmations = new Map<string, IChatConfirmation>();
 			let stepCount = 0; // Track steps for thinking title
 
 			const trackFirstProgress = () => {
@@ -366,832 +365,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 
 				try {
-				switch (event.event_type) {
-					// ── Streaming text ──
-					case AgentEventType.TextDelta: {
-						const p = event.payload as ITextDeltaPayload;
-						trackFirstProgress();
-						if (p.role === 'thinking') {
-							progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
-						} else {
-							progress([this._markdown(p.content)]);
-						}
-						break;
-					}
-
-					case AgentEventType.ThinkingDelta: {
-						const p = event.payload as IThinkingDeltaPayload;
-						trackFirstProgress();
-						progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
-						break;
-					}
-
-					// ── Tool lifecycle via IChatExternalToolInvocationUpdate ──
-					case AgentEventType.ToolCall: {
-						const p = event.payload as IToolCallPayload;
-						const key = p.call_id || p.tool_name;
-						stepCount++;
-						runtime.toolStartTimes.set(key, Date.now());
-						// Save file_path from arguments for later reference emission
-						const args = p.arguments as Record<string, unknown> | undefined;
-						if (args) {
-							const fp = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							if (fp) { runtime.toolFileArgs.set(key, fp); }
-						}
-						const friendly = this._friendlyToolName(p.tool_name);
-						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
-						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
-
-						// Subagent tools get special rendering — Cursor-style collapsible card
-						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
-						if (isSubagent && args) {
-							runtime.lastSubagentToolCallId = key;
-							const desc = (args.description ?? args.prompt ?? '') as string;
-							// Extract first line or first 60 chars as short description for card title
-							const shortDesc = desc.split('\n')[0].slice(0, 60);
-							const agentType = (args.subagent_type ?? args.agent_type ?? '') as string;
-							const toolUpdate: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: false,
-								invocationMessage: invocationMsg,
-								toolSpecificData: {
-									kind: 'subagent',
-									description: shortDesc,
-									agentName: agentType || 'sub-agent',
-									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : desc.slice(0, 500),
-								} satisfies IChatSubagentToolInvocationData,
-							};
-							progress([toolUpdate]);
-						} else if (ChipOSChatAgent._isShellTool(p.tool_name)) {
-							// Shell execution tools → terminal-style inline block
-							const cmdLine = typeof args?.command === 'string' ? args.command as string : '';
-							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
-							this._logService.info('[ChipOS Agent] ToolCall shell: tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
-							runtime.terminalCommandLines.set(key, cmdLine);
-							const cwdPath = (cmdArgs.cwd as string) || this._getWorkspaceRoot() || '';
-							const cwdUri = cwdPath ? URI.file(cwdPath) : undefined;
-
-							if (p.tool_name === 'run_in_terminal') {
-								const termSessionId = `chipos_${key}`;
-								const termCommandId = `chipos_cmd_${key}`;
-								runtime.terminalSessionMap.set(key, { sessionId: termSessionId, commandId: termCommandId });
-								const toolUpdate: IChatExternalToolInvocationUpdate = {
-									kind: 'externalToolInvocationUpdate',
-									toolCallId: key,
-									toolName: p.tool_name,
-									isComplete: false,
-									invocationMessage: invocationMsg,
-									toolSpecificData: {
-										kind: 'terminal',
-										terminalToolSessionId: termSessionId,
-										terminalCommandId: termCommandId,
-										commandLine: { original: cmdLine },
-										cwd: cwdUri,
-										language: 'shellscript',
-										isBackground: cmdArgs.isBackground ?? false,
-									} satisfies IChatTerminalToolInvocationData,
-								};
-								progress([toolUpdate]);
-							} else {
-								const toolUpdate: IChatExternalToolInvocationUpdate = {
-									kind: 'externalToolInvocationUpdate',
-									toolCallId: key,
-									toolName: p.tool_name,
-									isComplete: false,
-									invocationMessage: invocationMsg,
-									toolSpecificData: {
-										kind: 'terminal',
-										commandLine: { original: cmdLine },
-										cwd: cwdUri,
-										language: 'shellscript',
-										isBackground: false,
-									} satisfies IChatTerminalToolInvocationData,
-								};
-								progress([toolUpdate]);
-							}
-						} else {
-							// Regular tools — show input data
-							const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
-							const toolUpdate: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: false,
-								invocationMessage: invocationMsg,
-								toolSpecificData: {
-									kind: 'input',
-									rawInput,
-								} satisfies IChatToolInputInvocationData,
-							};
-							progress([toolUpdate]);
-						}
-
-						// For file-writing tools, start external edit tracking
-						// so the editing session can snapshot the file before backend writes.
-						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
-							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							if (filePath) {
-								const workspaceRoot = this._getWorkspaceRoot();
-								const fileUri = filePath.startsWith('/')
-									? URI.file(filePath)
-									: workspaceRoot
-										? URI.joinPath(URI.file(workspaceRoot), filePath)
-										: URI.file(filePath);
-								runtime.toolFileArgs.set(key, filePath);
-								// Start external edit — snapshot file before backend writes
-								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
-							}
-						}
-						break;
-					}
-
-				case AgentEventType.ToolResult: {
-						const p = event.payload as IToolResultPayload;
-						const key = p.call_id || p.tool_name;
-						const friendly = this._friendlyToolName(p.tool_name);
-						const startTs = runtime.toolStartTimes.get(key);
-						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
-						runtime.toolStartTimes.delete(key);
-						const timeSuffix = elapsed ? ` (${elapsed})` : '';
-						const pastMsg = p.summary
-							? `${p.summary}${timeSuffix}`
-							: `${friendly}${timeSuffix}`;
-
-						let toolComplete: IChatExternalToolInvocationUpdate;
-
-					if (ChipOSChatAgent._isShellTool(p.tool_name) && typeof p.result === 'string') {
-							const cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
-							runtime.terminalCommandLines.delete(key);
-							this._logService.info('[ChipOS Agent] ToolResult shell: tool=%s, key=%s, cachedCmd=%s', p.tool_name, key, cachedCmd || '(empty)');
-							const termSession = runtime.terminalSessionMap.get(key);
-							runtime.terminalSessionMap.delete(key);
-							const termArtifacts = runtime.terminalArtifacts.get(key);
-							runtime.terminalArtifacts.delete(key);
-
-							let outputText = p.result;
-							let exitCode: number | undefined;
-
-							if (p.tool_name === 'execute_command' || p.tool_name === 'execute') {
-								try {
-									const parsed = JSON.parse(p.result) as { exit_code?: number; stdout?: string; stderr?: string };
-									outputText = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n') || '(no output)';
-									exitCode = parsed.exit_code;
-								} catch { /* not JSON — use raw result */ }
-							}
-
-							// Prepend command line to output for visibility
-							if (cachedCmd) {
-								outputText = `$ ${cachedCmd}\n${outputText}`;
-							}
-
-							toolComplete = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: true,
-								pastTenseMessage: pastMsg,
-								errorMessage: !p.success ? p.result : undefined,
-								toolSpecificData: {
-									kind: 'terminal',
-									commandLine: { original: cachedCmd },
-									language: 'shellscript',
-									...(termSession ? {
-										terminalToolSessionId: termSession.sessionId,
-										terminalCommandId: termSession.commandId,
-									} : {}),
-									terminalCommandOutput: {
-										text: outputText,
-										truncated: outputText.length > 10_000,
-										lineCount: outputText.split('\n').length,
-									},
-									terminalCommandState: {
-										exitCode: exitCode ?? (p.success ? 0 : 1),
-										duration: startTs ? Date.now() - startTs : undefined,
-									},
-									...(termArtifacts?.theme ? { terminalTheme: termArtifacts.theme } : {}),
-									...(termArtifacts?.commandUri ? { terminalCommandUri: termArtifacts.commandUri } : {}),
-								} satisfies IChatTerminalToolInvocationData,
-							};
-						} else {
-							toolComplete = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: true,
-								pastTenseMessage: pastMsg,
-								errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
-								resultDetails: typeof p.result === 'string' ? {
-									input: p.tool_name,
-									output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
-									isError: !p.success,
-								} satisfies IToolResultInputOutputDetails : undefined,
-							};
-						}
-						progress([toolComplete]);
-
-						// ── Stop external edit tracking and emit file reference ──
-						if (runtime.externalEditOps.has(key)) {
-							// External edit was started for this tool — stop it to compute diff
-							this._stopExternalEdit(key, request.sessionResource, runtime).then(editProgress => {
-								if (editProgress.length > 0) {
-									progress(editProgress);
-								}
-							}).catch(err => {
-								this._logService.warn('[ChipOS Agent] ToolResult: stopExternalEdit failed for', key, err);
-							});
-							runtime.toolFileArgs.delete(key);
-						} else if (p.success) {
-							// Fallback for tools not tracked via external edits
-							let filePath = runtime.toolFileArgs.get(key);
-							runtime.toolFileArgs.delete(key);
-							if (!filePath && typeof p.result === 'string') {
-								try {
-									const resultObj = JSON.parse(p.result);
-									filePath = resultObj.path ?? resultObj.file_path ?? resultObj.file_name;
-								} catch { /* not JSON, ignore */ }
-							}
-							if (filePath) {
-								const workspaceRoot = this._getWorkspaceRoot();
-								const absPath = filePath.startsWith('/') ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
-								const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file', 'str_replace']);
-								if (fileTools.has(p.tool_name)) {
-									const isDelete = p.tool_name === 'delete_file';
-									const fileUri = URI.file(absPath);
-									const ref: IChatContentReference = {
-										kind: 'reference',
-										reference: fileUri,
-										options: {
-											status: {
-												description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
-												kind: isDelete
-													? ChatResponseReferencePartStatusKind.Omitted
-													: ChatResponseReferencePartStatusKind.Complete,
-											},
-											isDeletion: isDelete,
-										},
-									};
-									progress([ref]);
-								}
-							}
-						}
-						break;
-					}
-
-					// ── Status / Progress ──
-					case AgentEventType.Status: {
-						const p = event.payload as IStatusPayload;
-						if (p.text) {
-							const shimmer = p.level === 'thinking' || p.tool_name !== undefined;
-							progress([this._progress(p.text, shimmer)]);
-						}
-						break;
-					}
-
-					// ── Round start ──
-					case AgentEventType.RoundStart: {
-						const p = event.payload as IRoundStartPayload;
-						progress([this._progress(`Step ${p.round}`, true)]);
-						break;
-					}
-
-					// ── FEAT-29: Rich confirm cards based on card_type ──
-					case AgentEventType.ConfirmRequest: {
-						const p = event.payload as IConfirmRequestPayload;
-						const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
-						const richMessage = this._renderConfirmMessage(p);
-						// Extract buttons from p.options or card_data.options
-						const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
-						const rawButtons = p.options?.map(o => o.label).filter((l): l is string => !!l)
-							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean) as string[] | undefined
-							?? ['Approve', 'Reject'];
-						const buttons = rawButtons.length > 0 ? rawButtons : ['Approve', 'Reject'];
-						const confirmation: IChatConfirmation = {
-							kind: 'confirmation',
-							title,
-							message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-							data: { requestId: p.request_id, sessionId, options: p.options ?? cardOpts },
-							buttons,
-						};
-						pendingConfirmations.set(p.request_id, confirmation);
-						progress([confirmation]);
-						// Finish the current request so the framework can accept
-						// the next invoke() when the user clicks a confirmation button.
-						finish({}, 'Awaiting confirmation');
-						break;
-					}
-
-					// ── Error → IChatAgentError content part ──
-					case AgentEventType.Error: {
-						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string; category?: string; details?: Record<string, unknown> };
-						trackFirstProgress();
-						const errorMsg = p.category ? `[${p.category}] ${p.message}` : p.message;
-						progress([{
-							kind: 'agentError',
-							error_code: p.error_code ?? 'AGENT_ERROR',
-							message: errorMsg,
-							retryable: p.retryable ?? true,
-							suggestion: p.suggestion,
-						} satisfies IChatAgentError]);
-						finish({ errorDetails: { message: errorMsg } });
-						break;
-					}
-
-					// ── Todo update → native ChatTodoListService ──
-					case AgentEventType.TodoUpdate: {
-						const p = event.payload as ITodoUpdatePayload;
-						if (p.todos.length > 0) {
-							const sessionRes = request.sessionResource;
-							const statusMap: Record<string, IChatTodo['status']> = {
-								done: 'completed',
-								completed: 'completed',
-								in_progress: 'in-progress',
-								'in-progress': 'in-progress',
-								pending: 'not-started',
-							};
-							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
-								const key = t.task_status || t.status || 'pending';
-								return {
-									id: idx,
-									title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
-									status: statusMap[key] ?? 'not-started',
-								};
-							});
-							this._todoListService.setTodos(sessionRes, nativeTodos);
-						}
-						break;
-					}
-
-					// ── Plan (FEAT-35: normalize backend 'active' → 'running') ──
-					case AgentEventType.Plan: {
-						const p = event.payload as IPlanPayload;
-						trackFirstProgress();
-						const lines = (p.milestones || []).map(m => {
-							const status = (m.status as string) === 'active' ? 'running' : m.status;
-							const icon = status === 'done' ? '- [x]' :
-								status === 'running' ? '- [ ] *(running)*' :
-									status === 'failed' ? '- [ ] *(failed)*' : '- [ ]';
-							return `${icon} ${m.title}`;
-						});
-						progress([this._markdown(`### Plan\n${lines.join('\n')}`)]);
-						break;
-					}
-
-					// ── Diff preview ──
-					case AgentEventType.DiffPreview: {
-						const p = event.payload as IDiffPreviewPayload;
-						trackFirstProgress();
-						const hunks = (p.hunks || []).map(h => {
-							const lines = h.lines.map(l => {
-								if (l.type === 'add') { return `+ ${l.content}`; }
-								if (l.type === 'del') { return `- ${l.content}`; }
-								return `  ${l.content}`;
-							}).join('\n');
-							return `${h.header}\n${lines}`;
-						}).join('\n\n');
-						progress([this._markdown(`**Diff: \`${p.file_path}\`**\n\`\`\`diff\n${hunks}\n\`\`\``)]);
-						break;
-					}
-
-					// ── Simulation report → EDA content part (FEAT-35: adapt string summary) ──
-					case AgentEventType.SimReport: {
-						const p = event.payload as ISimReportPayload;
-						trackFirstProgress();
-						const summary = ChipOSChatAgent._normalizeSimSummary(p.summary, p.tests);
-						progress([{
-							kind: 'edaSimReport',
-							tests: p.tests ?? [],
-							summary,
-						} satisfies IChatEdaSimReport]);
-						break;
-					}
-
-					// ── Coverage report → EDA content part ──
-					case AgentEventType.CoverageReport: {
-						const p = event.payload as ICoverageReportPayload;
-						trackFirstProgress();
-						progress([{
-							kind: 'edaCoverageReport',
-							line_cov: p.line_cov,
-							branch_cov: p.branch_cov,
-							gaps: p.gaps,
-						} satisfies IChatEdaCoverageReport]);
-						break;
-					}
-
-					// ── Lint report → EDA content part ──
-					case AgentEventType.LintReport: {
-						const p = event.payload as ILintReportPayload;
-						trackFirstProgress();
-						progress([{
-							kind: 'edaLintReport',
-							errors: p.errors ?? [],
-							auto_fixable: p.auto_fixable,
-							tool: p.tool,
-						} satisfies IChatEdaLintReport]);
-						break;
-					}
-
-					// ── PPA report → EDA content part ──
-					case AgentEventType.PpaReport: {
-						const p = event.payload as IPpaReportPayload;
-						trackFirstProgress();
-						progress([{
-							kind: 'edaPpaReport',
-							stage: p.stage,
-							round: p.round,
-							ppa: p.ppa,
-							baseline_ppa: p.baseline_ppa,
-							previous_best_ppa: p.previous_best_ppa,
-							current_ppa: p.current_ppa,
-							best_ppa: p.best_ppa,
-							improvement: p.improvement,
-							strategy: p.strategy,
-							sta_report: p.sta_report,
-							power_report: p.power_report,
-							pareto_front_size: p.pareto_front_size,
-						} satisfies IChatEdaPpaReport]);
-						break;
-					}
-
-					// ── Negotiation view → EDA content part (FEAT-35: map role/claim/confidence → agent/position/reasoning) ──
-					case AgentEventType.NegotiationView: {
-						const p = event.payload as INegotiationViewPayload;
-						trackFirstProgress();
-						const rawPerspectives = (p.perspectives ?? []) as unknown as Array<Record<string, string>>;
-						const perspectives = rawPerspectives.map(raw => ({
-							agent: raw.agent ?? raw.role ?? '',
-							position: raw.position ?? raw.claim ?? '',
-							reasoning: raw.reasoning ?? raw.confidence ?? '',
-						}));
-						progress([{
-							kind: 'edaNegotiationView',
-							issue: p.issue,
-							perspectives,
-							recommendation: p.recommendation,
-						} satisfies IChatEdaNegotiationView]);
-						break;
-					}
-
-					// ── Parallel progress → EDA content part ──
-					case AgentEventType.ParallelProgress: {
-						const p = event.payload as IParallelProgressPayload;
-						progress([{
-							kind: 'edaParallelProgress',
-							phase: p.phase,
-							tracks: p.tracks ?? [],
-							conflicts: p.conflicts,
-						} satisfies IChatEdaParallelProgress]);
-						break;
-					}
-
-					// ── FEAT-62: Loop progress → IChatRoundProgress content part ──
-					case AgentEventType.LoopProgress: {
-						const p = event.payload as ILoopProgressPayload;
-						trackFirstProgress();
-						progress([{
-							kind: 'roundProgress',
-							current_round: p.round,
-							max_rounds: p.max_rounds,
-							phase: p.phase,
-							status: p.status as IChatRoundProgress['status'],
-							tool: p.tool,
-						} satisfies IChatRoundProgress]);
-						break;
-					}
-
-					// ── Spec review → EDA content part ──
-					case AgentEventType.SpecReview: {
-						const p = event.payload as ISpecReviewPayload;
-						trackFirstProgress();
-						progress([{
-							kind: 'edaSpecReview',
-							spec_path: p.spec_path,
-							spec_name: p.spec_name,
-							summary: p.summary,
-							files: p.files,
-						} satisfies IChatEdaSpecReview]);
-						break;
-					}
-
-					// ── Task summary → formatted card ──
-					case AgentEventType.TaskSummary: {
-						const p = event.payload as ITaskSummaryPayload;
-						trackFirstProgress();
-						progress([this._progress('$(output) Task Summary')]);
-						progress([this._markdown(ChipOSChatAgent._formatTaskSummary(p))]);
-						break;
-					}
-
-					// ── FEAT-33: Subagent event — structured rendering ──
-					case AgentEventType.SubagentEvent: {
-						const p = event.payload as ISubagentEventPayload;
-						if (!runtime.subagentTimers.has(p.task_id)) {
-							runtime.subagentTimers.set(p.task_id, Date.now());
-							// Link task_id to the most recent subagent ToolCall
-							if (runtime.lastSubagentToolCallId) {
-								runtime.subagentParentMap.set(p.task_id, runtime.lastSubagentToolCallId);
-							}
-						}
-						const parentId = runtime.subagentParentMap.get(p.task_id) ?? p.task_id;
-						if (p.kind === 'text' && p.content) {
-							// Route text as a virtual tool inside the subagent card
-							const textKey = `sub_${p.task_id}_text_${this._subagentToolCounter++}`;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: textKey,
-								toolName: 'output',
-								isComplete: true,
-								invocationMessage: ChipOSChatAgent._renderSubagentText(p.content),
-								pastTenseMessage: ChipOSChatAgent._renderSubagentText(p.content),
-								subagentInvocationId: parentId,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						} else if (p.kind === 'tool_start' && p.tool_name) {
-							const subKey = `sub_${p.task_id}_${p.tool_name}_${this._subagentToolCounter++}`;
-							runtime.toolStartTimes.set(subKey, Date.now());
-							// Build a friendly invocation message with args summary
-							const argDetail = p.args ? ChipOSChatAgent._formatToolArgs(p.args as Record<string, unknown>) : '';
-							const invMsg = argDetail ? `${p.tool_name} ${argDetail}` : p.tool_name;
-							const toolUpdate: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: subKey,
-								toolName: p.tool_name,
-								isComplete: false,
-								invocationMessage: invMsg,
-								subagentInvocationId: parentId,
-							};
-							progress([toolUpdate]);
-
-							// Cache file path and start external edit for file-writing tools
-							if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
-								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
-								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
-								if (filePath && request) {
-									// Dedup: skip if this file already has a pending external edit
-									const alreadyTracked = [...runtime.toolFileArgs.entries()].some(
-										([k, v]) => v === filePath && runtime.externalEditOps.has(k)
-									);
-									if (alreadyTracked) {
-										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: SKIPPED (already tracked) file=${filePath}, subKey=${subKey}`);
-									} else {
-										const workspaceRoot = this._getWorkspaceRoot();
-										const fileUri = filePath.startsWith('/')
-											? URI.file(filePath)
-											: workspaceRoot
-												? URI.joinPath(URI.file(workspaceRoot), filePath)
-												: URI.file(filePath);
-										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
-										runtime.toolFileArgs.set(subKey, filePath);
-										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
-									}
-								}
-							} else {
-								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, isFileWrite=${ChipOSChatAgent._isFileWriteTool(p.tool_name)}, hasArgs=${!!p.args}`);
-							}
-						} else if (p.kind === 'tool_end' && p.tool_name) {
-							// Find the matching tool_start key for this tool_name (with counter suffix)
-							const matchPrefix = `sub_${p.task_id}_${p.tool_name}_`;
-							let subKey: string | undefined;
-							for (const [k] of runtime.toolStartTimes) {
-								if (k.startsWith(matchPrefix)) {
-									subKey = k;
-									break;
-								}
-							}
-							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: tool=${p.tool_name}, matchPrefix=${matchPrefix}, foundSubKey=${subKey}, file_path=${p.file_path}`);
-							if (!subKey) { break; }
-							const startTs = runtime.toolStartTimes.get(subKey);
-							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
-							runtime.toolStartTimes.delete(subKey);
-							const toolComplete: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: subKey,
-								toolName: p.tool_name,
-								isComplete: true,
-								pastTenseMessage: `${p.tool_name} done${elapsed}`,
-								subagentInvocationId: parentId,
-							};
-							progress([toolComplete]);
-
-							// Stop external edit — _stopExternalEdit awaits _startExternalEdit first
-							const hasOp = runtime.externalEditOps.has(subKey);
-							const hasPending = runtime.pendingStartEdits.has(subKey);
-							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: subKey=${subKey}, hasExternalEditOp=${hasOp}, hasPendingStart=${hasPending}, hasRequest=${!!request}`);
-							if (hasOp && request) {
-								this._stopExternalEdit(subKey, request.sessionResource, runtime).then(editProgress => {
-									this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit returned ${editProgress.length} progress items for ${subKey}`);
-									if (editProgress.length > 0) {
-										progress(editProgress);
-									}
-								}).catch(err => {
-									this._logService.error(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit failed for ${subKey}`, err);
-								});
-								runtime.toolFileArgs.delete(subKey);
-							}
-						} else if (p.kind === 'error' && p.content) {
-							// Route error inside the subagent card
-							const errKey = `sub_${p.task_id}_error_${this._subagentToolCounter++}`;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: errKey,
-								toolName: 'error',
-								isComplete: true,
-								invocationMessage: p.content,
-								pastTenseMessage: p.content,
-								subagentInvocationId: parentId,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						} else if (p.kind === 'status' && p.content) {
-							// Route status inside the subagent card
-							const statusKey = `sub_${p.task_id}_status_${this._subagentToolCounter++}`;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: statusKey,
-								toolName: 'status',
-								isComplete: true,
-								invocationMessage: p.content,
-								pastTenseMessage: p.content,
-								subagentInvocationId: parentId,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						} else if (p.kind === 'complete') {
-							const subStart = runtime.subagentTimers.get(p.task_id);
-							runtime.subagentTimers.delete(p.task_id);
-							// Close any dangling tool calls belonging to this subagent
-							const prefix = `sub_${p.task_id}_`;
-							for (const [k] of runtime.toolStartTimes) {
-								if (k.startsWith(prefix)) {
-									const toolName = k.slice(prefix.length).replace(/_\d+$/, '');
-									progress([{
-										kind: 'externalToolInvocationUpdate',
-										toolCallId: k,
-										toolName,
-										isComplete: true,
-										pastTenseMessage: `${toolName} done`,
-										subagentInvocationId: parentId,
-									} satisfies IChatExternalToolInvocationUpdate]);
-									runtime.toolStartTimes.delete(k);
-								}
-							}
-							// Mark the parent subagent tool call as complete
-							if (parentId && runtime.toolStartTimes.has(parentId)) {
-								const parentStart = runtime.toolStartTimes.get(parentId);
-								const elapsed = parentStart
-									? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)`
-									: subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
-								runtime.toolStartTimes.delete(parentId);
-								progress([{
-									kind: 'externalToolInvocationUpdate',
-									toolCallId: parentId,
-									toolName: 'task',
-									isComplete: true,
-									pastTenseMessage: `Sub-agent completed${elapsed}`,
-								} satisfies IChatExternalToolInvocationUpdate]);
-							}
-							runtime.subagentParentMap.delete(p.task_id);
-						}
-						break;
-					}
-
-					// ── Model turn boundaries ──
-					case AgentEventType.ModelTurnStart:
-					case AgentEventType.ModelTurnEnd:
-						break;
-
-					// ── FEAT-30: Worktree files applied → external edits for editing session ──
-					case AgentEventType.WorktreeFilesApplied: {
-						const p = event.payload as IWorktreeFilesAppliedPayload;
-						if (p.files && p.files.length > 0) {
-							// For files not already tracked via ToolCall external edits,
-							// start+stop external edits to register them in the editing session.
-							for (const f of p.files) {
-								if (f.action === 'deleted') { continue; }
-								const fileUri = URI.file(f.path);
-								// Check if this file is already being tracked by a tool call
-								const alreadyTracked = [...runtime.externalEditOps.keys()].some(k => {
-									const fp = runtime.toolFileArgs.get(k);
-									return fp && (fp === f.path || f.path.endsWith(fp));
-								});
-								if (!alreadyTracked) {
-									const opId = ++this._externalEditOpCounter;
-									const editingSession = this._getEditingSession(request.sessionResource);
-									const responseModel = this._getResponseModel(request.sessionResource);
-									if (editingSession && responseModel) {
-										// Start and immediately stop — file is already on disk
-										editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
-											return editingSession.stopExternalEdits(responseModel, opId);
-										}).then(editProgress => {
-											if (editProgress.length > 0) {
-												progress(editProgress);
-											}
-										}).catch(err => {
-											this._logService.error(`[ChipOS Agent] WorktreeFilesApplied external edit failed for ${f.path}`, err);
-										});
-									}
-								}
-							}
-						}
-						break;
-					}
-
-					// ── Task complete → resolve ──
-					case AgentEventType.TaskComplete: {
-						const p = event.payload as ITaskCompletePayload;
-						if (p.status === 'error' && p.message) {
-							progress([this._warning(p.message)]);
-							finish({ errorDetails: { message: p.message } });
-						} else {
-							finish({});
-						}
-						break;
-					}
-
-					// ── File edit → push IChatTextEdit to framework inline diff ──
-					case AgentEventType.FileEdit: {
-						const p = event.payload as IFileEditPayload;
-						const workspaceRoot = this._getWorkspaceRoot();
-						if (workspaceRoot && p.file_path && p.edits?.length) {
-							const fileUri = URI.file(
-								p.file_path.startsWith('/') ? p.file_path : `${workspaceRoot}/${p.file_path}`
-							);
-							const textEdits: TextEdit[] = p.edits.map(edit => ({
-								range: new Range(
-									edit.range.startLine,
-									edit.range.startCol,
-									edit.range.endLine,
-									edit.range.endCol
-								),
-								text: edit.newText,
-							}));
-							progress([{
-								uri: fileUri,
-								edits: textEdits,
-								kind: 'textEdit',
-								done: true,
-							} satisfies IChatTextEdit]);
-						}
-						break;
-					}
-
-					// ── Confirm (legacy hook card) ──
-					case AgentEventType.Confirm:
-						break;
-
-					// ── Skill tree (separate panel, not in chat) ──
-					case AgentEventType.SkillTree:
-						break;
-
-					// ── FEAT-R72: IDE 端工具调用（Reasoner → IDE 执行）──
-					case AgentEventType.IdeToolCall: {
-						const p = event.payload as IIdeToolCallPayload;
-						this._logService.info('[ChipOS Agent] IDE tool call: name=%s, call_id=%s', p.name, p.call_id);
-						this._executeIdeToolCall(p, runtime, streamClient).catch(err => {
-							this._logService.error('[ChipOS Agent] IDE tool execution failed:', err);
-						});
-						break;
-					}
-
-					case AgentEventType.Done:
-						// Close any dangling tool calls before finishing
-						for (const [k] of runtime.toolStartTimes) {
-							const toolName = k.includes('_') ? k.split('_').pop()! : k;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: k,
-								toolName,
-								isComplete: true,
-								pastTenseMessage: `${toolName} done`,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						}
-						runtime.toolStartTimes.clear();
-						finish({});
-						break;
-
-					// ── FEAT-61: Queue position update ──
-					case AgentEventType.QueueUpdate: {
-						const p = event.payload as IQueueUpdatePayload;
-						const waitInfo = p.estimated_wait_seconds ? ` — est. ${p.estimated_wait_seconds}s` : '';
-						progress([this._progress(
-							`$(clock) Queue position: ${p.position}${waitInfo}`,
-							true
-						)]);
-						break;
-					}
-
-					// ── FEAT-65: Context window usage warning ──
-					case AgentEventType.ContextWarning: {
-						const p = event.payload as IContextWarningPayload;
-						const pct = p.usage_percent > 0 ? Math.round(p.usage_percent) : (p.tokens_max > 0 ? Math.round((p.tokens_used / p.tokens_max) * 100) : 0);
-						const suggestion = p.suggestion ? ` ${p.suggestion}` : '';
-						progress([this._warning(
-							`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
-						)]);
-						break;
-					}
-
-					default:
-						this._logService.trace('[ChipOS Agent] Unhandled event:', (event as AgentEvent).event_type);
-						break;
-				}
+					this._handleAgentEvent(event, {
+						runtime,
+						progress,
+						finish,
+						request,
+						streamClient,
+						sessionId,
+						trackFirstProgress,
+						onToolStep: () => { stepCount++; },
+					});
 				} catch (eventErr) {
 					this._logService.error('[ChipOS Agent] Event handler error for', event.event_type, eventErr);
 				}
@@ -1222,6 +405,849 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// UX: Show "Thinking" indicator while waiting for first backend event
 			progress([this._progress('$(loading~spin) Waiting for backend response...', true)]);
 		});
+	}
+
+	// ── Shared event handler: eliminates invoke/continuation duplication ──
+
+	private _handleAgentEvent(
+		event: AgentEvent,
+		ctx: {
+			runtime: IChatSessionRuntime;
+			progress: (parts: IChatProgress[]) => void;
+			finish: (result: IChatAgentResult, thinkingTitle?: string) => void;
+			request: IChatAgentRequest | undefined;
+			streamClient: IEventStreamClient;
+			sessionId: string;
+			trackFirstProgress?: () => void;
+			onToolStep?: () => void;
+		},
+	): void {
+		switch (event.event_type) {
+			// ── Streaming text ──
+			case AgentEventType.TextDelta: {
+				const p = event.payload as ITextDeltaPayload;
+				ctx.trackFirstProgress?.();
+				if (p.role === 'thinking') {
+					ctx.progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
+				} else {
+					ctx.progress([this._markdown(p.content)]);
+				}
+				break;
+			}
+
+			case AgentEventType.ThinkingDelta: {
+				const p = event.payload as IThinkingDeltaPayload;
+				ctx.trackFirstProgress?.();
+				ctx.progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
+				break;
+			}
+
+			// ── Tool lifecycle via IChatExternalToolInvocationUpdate ──
+			case AgentEventType.ToolCall: {
+				const p = event.payload as IToolCallPayload;
+				const key = p.call_id || p.tool_name;
+				ctx.onToolStep?.();
+				ctx.runtime.toolStartTimes.set(key, Date.now());
+				// Save file_path from arguments for later reference emission
+				const args = p.arguments as Record<string, unknown> | undefined;
+				if (args) {
+					const fp = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
+					if (fp) { ctx.runtime.toolFileArgs.set(key, fp); }
+				}
+				const friendly = this._friendlyToolName(p.tool_name);
+				const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
+				const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
+
+				// Subagent tools get special rendering — Cursor-style collapsible card
+				const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
+				if (isSubagent && args) {
+					ctx.runtime.lastSubagentToolCallId = key;
+					const desc = (args.description ?? args.prompt ?? '') as string;
+					// Extract first line or first 60 chars as short description for card title
+					const shortDesc = desc.split('\n')[0].slice(0, 60);
+					const agentType = (args.subagent_type ?? args.agent_type ?? '') as string;
+					const toolUpdate: IChatExternalToolInvocationUpdate = {
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: key,
+						toolName: p.tool_name,
+						isComplete: false,
+						invocationMessage: invocationMsg,
+						toolSpecificData: {
+							kind: 'subagent',
+							description: shortDesc,
+							agentName: agentType || 'sub-agent',
+							prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : desc.slice(0, 500),
+						} satisfies IChatSubagentToolInvocationData,
+					};
+					ctx.progress([toolUpdate]);
+				} else if (ChipOSChatAgent._isShellTool(p.tool_name)) {
+					// Shell execution tools → terminal-style inline block
+					const cmdLine = typeof args?.command === 'string' ? args.command as string : '';
+					const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
+					this._logService.info('[ChipOS Agent] ToolCall shell: tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
+					ctx.runtime.terminalCommandLines.set(key, cmdLine);
+					const cwdPath = (cmdArgs.cwd as string) || this._getWorkspaceRoot() || '';
+					const cwdUri = cwdPath ? URI.file(cwdPath) : undefined;
+
+					if (p.tool_name === 'run_in_terminal') {
+						const termSessionId = `chipos_${key}`;
+						const termCommandId = `chipos_cmd_${key}`;
+						ctx.runtime.terminalSessionMap.set(key, { sessionId: termSessionId, commandId: termCommandId });
+						const toolUpdate: IChatExternalToolInvocationUpdate = {
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: key,
+							toolName: p.tool_name,
+							isComplete: false,
+							invocationMessage: invocationMsg,
+							toolSpecificData: {
+								kind: 'terminal',
+								terminalToolSessionId: termSessionId,
+								terminalCommandId: termCommandId,
+								commandLine: { original: cmdLine },
+								cwd: cwdUri,
+								language: 'shellscript',
+								isBackground: cmdArgs.isBackground ?? false,
+							} satisfies IChatTerminalToolInvocationData,
+						};
+						ctx.progress([toolUpdate]);
+					} else {
+						const toolUpdate: IChatExternalToolInvocationUpdate = {
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: key,
+							toolName: p.tool_name,
+							isComplete: false,
+							invocationMessage: invocationMsg,
+							toolSpecificData: {
+								kind: 'terminal',
+								commandLine: { original: cmdLine },
+								cwd: cwdUri,
+								language: 'shellscript',
+								isBackground: false,
+							} satisfies IChatTerminalToolInvocationData,
+						};
+						ctx.progress([toolUpdate]);
+					}
+				} else {
+					// Regular tools — show input data
+					const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
+					const toolUpdate: IChatExternalToolInvocationUpdate = {
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: key,
+						toolName: p.tool_name,
+						isComplete: false,
+						invocationMessage: invocationMsg,
+						toolSpecificData: {
+							kind: 'input',
+							rawInput,
+						} satisfies IChatToolInputInvocationData,
+					};
+					ctx.progress([toolUpdate]);
+				}
+
+				// For file-writing tools, start external edit tracking
+				// so the editing session can snapshot the file before backend writes.
+				if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
+					const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
+					if (filePath) {
+						const workspaceRoot = this._getWorkspaceRoot();
+						const fileUri = filePath.startsWith('/')
+							? URI.file(filePath)
+							: workspaceRoot
+								? URI.joinPath(URI.file(workspaceRoot), filePath)
+								: URI.file(filePath);
+						ctx.runtime.toolFileArgs.set(key, filePath);
+						// Start external edit — snapshot file before backend writes
+						this._startExternalEdit(key, fileUri, ctx.request!.sessionResource, ctx.request!.requestId, ctx.runtime, p.snapshot_content);
+					}
+				}
+				break;
+			}
+
+		case AgentEventType.ToolResult: {
+				const p = event.payload as IToolResultPayload;
+				const key = p.call_id || p.tool_name;
+				const friendly = this._friendlyToolName(p.tool_name);
+				const startTs = ctx.runtime.toolStartTimes.get(key);
+				const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
+				ctx.runtime.toolStartTimes.delete(key);
+				const timeSuffix = elapsed ? ` (${elapsed})` : '';
+				const pastMsg = p.summary
+					? `${p.summary}${timeSuffix}`
+					: `${friendly}${timeSuffix}`;
+
+				let toolComplete: IChatExternalToolInvocationUpdate;
+
+			if (ChipOSChatAgent._isShellTool(p.tool_name) && typeof p.result === 'string') {
+					const cachedCmd = ctx.runtime.terminalCommandLines.get(key) ?? '';
+					ctx.runtime.terminalCommandLines.delete(key);
+					this._logService.info('[ChipOS Agent] ToolResult shell: tool=%s, key=%s, cachedCmd=%s', p.tool_name, key, cachedCmd || '(empty)');
+					const termSession = ctx.runtime.terminalSessionMap.get(key);
+					ctx.runtime.terminalSessionMap.delete(key);
+					const termArtifacts = ctx.runtime.terminalArtifacts.get(key);
+					ctx.runtime.terminalArtifacts.delete(key);
+
+					let outputText = p.result;
+					let exitCode: number | undefined;
+
+					if (p.tool_name === 'execute_command' || p.tool_name === 'execute') {
+						try {
+							const parsed = JSON.parse(p.result) as { exit_code?: number; stdout?: string; stderr?: string };
+							outputText = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n') || '(no output)';
+							exitCode = parsed.exit_code;
+						} catch { /* not JSON — use raw result */ }
+					}
+
+					// Prepend command line to output for visibility
+					if (cachedCmd) {
+						outputText = `$ ${cachedCmd}\n${outputText}`;
+					}
+
+					toolComplete = {
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: key,
+						toolName: p.tool_name,
+						isComplete: true,
+						pastTenseMessage: pastMsg,
+						errorMessage: !p.success ? p.result : undefined,
+						toolSpecificData: {
+							kind: 'terminal',
+							commandLine: { original: cachedCmd },
+							language: 'shellscript',
+							...(termSession ? {
+								terminalToolSessionId: termSession.sessionId,
+								terminalCommandId: termSession.commandId,
+							} : {}),
+							terminalCommandOutput: {
+								text: outputText,
+								truncated: outputText.length > 10_000,
+								lineCount: outputText.split('\n').length,
+							},
+							terminalCommandState: {
+								exitCode: exitCode ?? (p.success ? 0 : 1),
+								duration: startTs ? Date.now() - startTs : undefined,
+							},
+							...(termArtifacts?.theme ? { terminalTheme: termArtifacts.theme } : {}),
+							...(termArtifacts?.commandUri ? { terminalCommandUri: termArtifacts.commandUri } : {}),
+						} satisfies IChatTerminalToolInvocationData,
+					};
+				} else {
+					toolComplete = {
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: key,
+						toolName: p.tool_name,
+						isComplete: true,
+						pastTenseMessage: pastMsg,
+						errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
+						resultDetails: typeof p.result === 'string' ? {
+							input: p.tool_name,
+							output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
+							isError: !p.success,
+						} satisfies IToolResultInputOutputDetails : undefined,
+					};
+				}
+				ctx.progress([toolComplete]);
+
+				// ── Stop external edit tracking and emit file reference ──
+				if (ctx.runtime.externalEditOps.has(key)) {
+					// External edit was started for this tool — stop it to compute diff
+					this._stopExternalEdit(key, ctx.request!.sessionResource, ctx.runtime).then(editProgress => {
+						if (editProgress.length > 0) {
+							ctx.progress(editProgress);
+						}
+					}).catch(err => {
+						this._logService.warn('[ChipOS Agent] ToolResult: stopExternalEdit failed for', key, err);
+					});
+					ctx.runtime.toolFileArgs.delete(key);
+				} else if (p.success) {
+					// Fallback for tools not tracked via external edits
+					let filePath = ctx.runtime.toolFileArgs.get(key);
+					ctx.runtime.toolFileArgs.delete(key);
+					if (!filePath && typeof p.result === 'string') {
+						try {
+							const resultObj = JSON.parse(p.result);
+							filePath = resultObj.path ?? resultObj.file_path ?? resultObj.file_name;
+						} catch { /* not JSON, ignore */ }
+					}
+					if (filePath) {
+						const workspaceRoot = this._getWorkspaceRoot();
+						const absPath = filePath.startsWith('/') ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
+						const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file', 'str_replace']);
+						if (fileTools.has(p.tool_name)) {
+							const isDelete = p.tool_name === 'delete_file';
+							const fileUri = URI.file(absPath);
+							const ref: IChatContentReference = {
+								kind: 'reference',
+								reference: fileUri,
+								options: {
+									status: {
+										description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
+										kind: isDelete
+											? ChatResponseReferencePartStatusKind.Omitted
+											: ChatResponseReferencePartStatusKind.Complete,
+									},
+									isDeletion: isDelete,
+								},
+							};
+							ctx.progress([ref]);
+						}
+					}
+				}
+				break;
+			}
+
+			// ── Status / Progress ──
+			case AgentEventType.Status: {
+				const p = event.payload as IStatusPayload;
+				if (p.text) {
+					const shimmer = p.level === 'thinking' || p.tool_name !== undefined;
+					ctx.progress([this._progress(p.text, shimmer)]);
+				}
+				break;
+			}
+
+			// ── Round start ──
+			case AgentEventType.RoundStart: {
+				const p = event.payload as IRoundStartPayload;
+				ctx.progress([this._progress(`Step ${p.round}`, true)]);
+				break;
+			}
+
+			// ── FEAT-29: Rich confirm cards based on card_type ──
+			case AgentEventType.ConfirmRequest: {
+				const p = event.payload as IConfirmRequestPayload;
+				const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
+				const richMessage = this._renderConfirmMessage(p);
+				// Extract buttons from p.options or card_data.options
+				const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
+				const rawButtons = p.options?.map(o => o.label).filter((l): l is string => !!l)
+					?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean) as string[] | undefined
+					?? ['Approve', 'Reject'];
+				const buttons = rawButtons.length > 0 ? rawButtons : ['Approve', 'Reject'];
+				const confirmation: IChatConfirmation = {
+					kind: 'confirmation',
+					title,
+					message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
+					data: { requestId: p.request_id, sessionId: ctx.sessionId, options: p.options ?? cardOpts },
+					buttons,
+				};
+				ctx.progress([confirmation]);
+				// Finish the current request so the framework can accept
+				// the next invoke() when the user clicks a confirmation button.
+				ctx.finish({}, 'Awaiting confirmation');
+				break;
+			}
+
+			// ── Error → IChatAgentError content part ──
+			case AgentEventType.Error: {
+				const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string; category?: string; details?: Record<string, unknown> };
+				ctx.trackFirstProgress?.();
+				const errorMsg = p.category ? `[${p.category}] ${p.message}` : p.message;
+				ctx.progress([{
+					kind: 'agentError',
+					error_code: p.error_code ?? 'AGENT_ERROR',
+					message: errorMsg,
+					retryable: p.retryable ?? true,
+					suggestion: p.suggestion,
+				} satisfies IChatAgentError]);
+				ctx.finish({ errorDetails: { message: errorMsg } });
+				break;
+			}
+
+			// ── Todo update → native ChatTodoListService ──
+			case AgentEventType.TodoUpdate: {
+				const p = event.payload as ITodoUpdatePayload;
+				if (p.todos.length > 0 && ctx.request) {
+					const sessionRes = ctx.request.sessionResource;
+					const statusMap: Record<string, IChatTodo['status']> = {
+						done: 'completed',
+						completed: 'completed',
+						in_progress: 'in-progress',
+						'in-progress': 'in-progress',
+						pending: 'not-started',
+					};
+					const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
+						const key = t.task_status || t.status || 'pending';
+						return {
+							id: idx,
+							title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
+							status: statusMap[key] ?? 'not-started',
+						};
+					});
+					this._todoListService.setTodos(sessionRes, nativeTodos);
+				}
+				break;
+			}
+
+			// ── Plan (FEAT-35: normalize backend 'active' → 'running') ──
+			case AgentEventType.Plan: {
+				const p = event.payload as IPlanPayload;
+				ctx.trackFirstProgress?.();
+				const lines = (p.milestones || []).map(m => {
+					const status = (m.status as string) === 'active' ? 'running' : m.status;
+					const icon = status === 'done' ? '- [x]' :
+						status === 'running' ? '- [ ] *(running)*' :
+							status === 'failed' ? '- [ ] *(failed)*' : '- [ ]';
+					return `${icon} ${m.title}`;
+				});
+				ctx.progress([this._markdown(`### Plan\n${lines.join('\n')}`)]);
+				break;
+			}
+
+			// ── Diff preview ──
+			case AgentEventType.DiffPreview: {
+				const p = event.payload as IDiffPreviewPayload;
+				ctx.trackFirstProgress?.();
+				const hunks = (p.hunks || []).map(h => {
+					const lines = h.lines.map(l => {
+						if (l.type === 'add') { return `+ ${l.content}`; }
+						if (l.type === 'del') { return `- ${l.content}`; }
+						return `  ${l.content}`;
+					}).join('\n');
+					return `${h.header}\n${lines}`;
+				}).join('\n\n');
+				ctx.progress([this._markdown(`**Diff: \`${p.file_path}\`**\n\`\`\`diff\n${hunks}\n\`\`\``)]);
+				break;
+			}
+
+			// ── Simulation report → EDA content part (FEAT-35: adapt string summary) ──
+			case AgentEventType.SimReport: {
+				const p = event.payload as ISimReportPayload;
+				ctx.trackFirstProgress?.();
+				const summary = ChipOSChatAgent._normalizeSimSummary(p.summary, p.tests);
+				ctx.progress([{
+					kind: 'edaSimReport',
+					tests: p.tests ?? [],
+					summary,
+				} satisfies IChatEdaSimReport]);
+				break;
+			}
+
+			// ── Coverage report → EDA content part ──
+			case AgentEventType.CoverageReport: {
+				const p = event.payload as ICoverageReportPayload;
+				ctx.trackFirstProgress?.();
+				ctx.progress([{
+					kind: 'edaCoverageReport',
+					line_cov: p.line_cov,
+					branch_cov: p.branch_cov,
+					gaps: p.gaps,
+				} satisfies IChatEdaCoverageReport]);
+				break;
+			}
+
+			// ── Lint report → EDA content part ──
+			case AgentEventType.LintReport: {
+				const p = event.payload as ILintReportPayload;
+				ctx.trackFirstProgress?.();
+				ctx.progress([{
+					kind: 'edaLintReport',
+					errors: p.errors ?? [],
+					auto_fixable: p.auto_fixable,
+					tool: p.tool,
+				} satisfies IChatEdaLintReport]);
+				break;
+			}
+
+			// ── PPA report → EDA content part ──
+			case AgentEventType.PpaReport: {
+				const p = event.payload as IPpaReportPayload;
+				ctx.trackFirstProgress?.();
+				ctx.progress([{
+					kind: 'edaPpaReport',
+					stage: p.stage,
+					round: p.round,
+					ppa: p.ppa,
+					baseline_ppa: p.baseline_ppa,
+					previous_best_ppa: p.previous_best_ppa,
+					current_ppa: p.current_ppa,
+					best_ppa: p.best_ppa,
+					improvement: p.improvement,
+					strategy: p.strategy,
+					sta_report: p.sta_report,
+					power_report: p.power_report,
+					pareto_front_size: p.pareto_front_size,
+				} satisfies IChatEdaPpaReport]);
+				break;
+			}
+
+			// ── Negotiation view → EDA content part (FEAT-35: map role/claim/confidence → agent/position/reasoning) ──
+			case AgentEventType.NegotiationView: {
+				const p = event.payload as INegotiationViewPayload;
+				ctx.trackFirstProgress?.();
+				const rawPerspectives = (p.perspectives ?? []) as unknown as Array<Record<string, string>>;
+				const perspectives = rawPerspectives.map(raw => ({
+					agent: raw.agent ?? raw.role ?? '',
+					position: raw.position ?? raw.claim ?? '',
+					reasoning: raw.reasoning ?? raw.confidence ?? '',
+				}));
+				ctx.progress([{
+					kind: 'edaNegotiationView',
+					issue: p.issue,
+					perspectives,
+					recommendation: p.recommendation,
+				} satisfies IChatEdaNegotiationView]);
+				break;
+			}
+
+			// ── Parallel progress → EDA content part ──
+			case AgentEventType.ParallelProgress: {
+				const p = event.payload as IParallelProgressPayload;
+				ctx.progress([{
+					kind: 'edaParallelProgress',
+					phase: p.phase,
+					tracks: p.tracks ?? [],
+					conflicts: p.conflicts,
+				} satisfies IChatEdaParallelProgress]);
+				break;
+			}
+
+			// ── FEAT-62: Loop progress → IChatRoundProgress content part ──
+			case AgentEventType.LoopProgress: {
+				const p = event.payload as ILoopProgressPayload;
+				ctx.trackFirstProgress?.();
+				ctx.progress([{
+					kind: 'roundProgress',
+					current_round: p.round,
+					max_rounds: p.max_rounds,
+					phase: p.phase,
+					status: p.status as IChatRoundProgress['status'],
+					tool: p.tool,
+				} satisfies IChatRoundProgress]);
+				break;
+			}
+
+			// ── Spec review → EDA content part ──
+			case AgentEventType.SpecReview: {
+				const p = event.payload as ISpecReviewPayload;
+				ctx.trackFirstProgress?.();
+				ctx.progress([{
+					kind: 'edaSpecReview',
+					spec_path: p.spec_path,
+					spec_name: p.spec_name,
+					summary: p.summary,
+					files: p.files,
+				} satisfies IChatEdaSpecReview]);
+				break;
+			}
+
+			// ── Task summary → formatted card ──
+			case AgentEventType.TaskSummary: {
+				const p = event.payload as ITaskSummaryPayload;
+				ctx.trackFirstProgress?.();
+				ctx.progress([this._progress('$(output) Task Summary')]);
+				ctx.progress([this._markdown(ChipOSChatAgent._formatTaskSummary(p))]);
+				break;
+			}
+
+			// ── FEAT-33: Subagent event — structured rendering ──
+			case AgentEventType.SubagentEvent: {
+				const p = event.payload as ISubagentEventPayload;
+				if (!ctx.runtime.subagentTimers.has(p.task_id)) {
+					ctx.runtime.subagentTimers.set(p.task_id, Date.now());
+					// Link task_id to the most recent subagent ToolCall
+					if (ctx.runtime.lastSubagentToolCallId) {
+						ctx.runtime.subagentParentMap.set(p.task_id, ctx.runtime.lastSubagentToolCallId);
+					}
+				}
+				const parentId = ctx.runtime.subagentParentMap.get(p.task_id) ?? p.task_id;
+				if (p.kind === 'text' && p.content) {
+					// Route text as a virtual tool inside the subagent card
+					const textKey = `sub_${p.task_id}_text_${this._subagentToolCounter++}`;
+					ctx.progress([{
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: textKey,
+						toolName: 'output',
+						isComplete: true,
+						invocationMessage: ChipOSChatAgent._renderSubagentText(p.content),
+						pastTenseMessage: ChipOSChatAgent._renderSubagentText(p.content),
+						subagentInvocationId: parentId,
+					} satisfies IChatExternalToolInvocationUpdate]);
+				} else if (p.kind === 'tool_start' && p.tool_name) {
+					const subKey = `sub_${p.task_id}_${p.tool_name}_${this._subagentToolCounter++}`;
+					ctx.runtime.toolStartTimes.set(subKey, Date.now());
+					// Build a friendly invocation message with args summary
+					const argDetail = p.args ? ChipOSChatAgent._formatToolArgs(p.args as Record<string, unknown>) : '';
+					const invMsg = argDetail ? `${p.tool_name} ${argDetail}` : p.tool_name;
+					const toolUpdate: IChatExternalToolInvocationUpdate = {
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: subKey,
+						toolName: p.tool_name,
+						isComplete: false,
+						invocationMessage: invMsg,
+						subagentInvocationId: parentId,
+					};
+					ctx.progress([toolUpdate]);
+
+					// Cache file path and start external edit for file-writing tools
+					if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
+						const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
+						this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
+						if (filePath && ctx.request) {
+							// Dedup: skip if this file already has a pending external edit
+							const alreadyTracked = [...ctx.runtime.toolFileArgs.entries()].some(
+								([k, v]) => v === filePath && ctx.runtime.externalEditOps.has(k)
+							);
+							if (alreadyTracked) {
+								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: SKIPPED (already tracked) file=${filePath}, subKey=${subKey}`);
+							} else {
+								const workspaceRoot = this._getWorkspaceRoot();
+								const fileUri = filePath.startsWith('/')
+									? URI.file(filePath)
+									: workspaceRoot
+										? URI.joinPath(URI.file(workspaceRoot), filePath)
+										: URI.file(filePath);
+								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
+								ctx.runtime.toolFileArgs.set(subKey, filePath);
+								this._startExternalEdit(subKey, fileUri, ctx.request!.sessionResource, ctx.request!.requestId, ctx.runtime, p.snapshot_content);
+							}
+						}
+					} else {
+						this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, isFileWrite=${ChipOSChatAgent._isFileWriteTool(p.tool_name)}, hasArgs=${!!p.args}`);
+					}
+				} else if (p.kind === 'tool_end' && p.tool_name) {
+					// Find the matching tool_start key for this tool_name (with counter suffix)
+					const matchPrefix = `sub_${p.task_id}_${p.tool_name}_`;
+					let subKey: string | undefined;
+					for (const [k] of ctx.runtime.toolStartTimes) {
+						if (k.startsWith(matchPrefix)) {
+							subKey = k;
+							break;
+						}
+					}
+					this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: tool=${p.tool_name}, matchPrefix=${matchPrefix}, foundSubKey=${subKey}, file_path=${p.file_path}`);
+					if (!subKey) { break; }
+					const startTs = ctx.runtime.toolStartTimes.get(subKey);
+					const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
+					ctx.runtime.toolStartTimes.delete(subKey);
+					const toolComplete: IChatExternalToolInvocationUpdate = {
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: subKey,
+						toolName: p.tool_name,
+						isComplete: true,
+						pastTenseMessage: `${p.tool_name} done${elapsed}`,
+						subagentInvocationId: parentId,
+					};
+					ctx.progress([toolComplete]);
+
+					// Stop external edit — _stopExternalEdit awaits _startExternalEdit first
+					const hasOp = ctx.runtime.externalEditOps.has(subKey);
+					const hasPending = ctx.runtime.pendingStartEdits.has(subKey);
+					this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: subKey=${subKey}, hasExternalEditOp=${hasOp}, hasPendingStart=${hasPending}, hasRequest=${!!ctx.request}`);
+					if (hasOp && ctx.request) {
+						this._stopExternalEdit(subKey, ctx.request!.sessionResource, ctx.runtime).then(editProgress => {
+							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit returned ${editProgress.length} progress items for ${subKey}`);
+							if (editProgress.length > 0) {
+								ctx.progress(editProgress);
+							}
+						}).catch(err => {
+							this._logService.error(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit failed for ${subKey}`, err);
+						});
+						ctx.runtime.toolFileArgs.delete(subKey);
+					}
+				} else if (p.kind === 'error' && p.content) {
+					// Route error inside the subagent card
+					const errKey = `sub_${p.task_id}_error_${this._subagentToolCounter++}`;
+					ctx.progress([{
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: errKey,
+						toolName: 'error',
+						isComplete: true,
+						invocationMessage: p.content,
+						pastTenseMessage: p.content,
+						subagentInvocationId: parentId,
+					} satisfies IChatExternalToolInvocationUpdate]);
+				} else if (p.kind === 'status' && p.content) {
+					// Route status inside the subagent card
+					const statusKey = `sub_${p.task_id}_status_${this._subagentToolCounter++}`;
+					ctx.progress([{
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: statusKey,
+						toolName: 'status',
+						isComplete: true,
+						invocationMessage: p.content,
+						pastTenseMessage: p.content,
+						subagentInvocationId: parentId,
+					} satisfies IChatExternalToolInvocationUpdate]);
+				} else if (p.kind === 'complete') {
+					const subStart = ctx.runtime.subagentTimers.get(p.task_id);
+					ctx.runtime.subagentTimers.delete(p.task_id);
+					// Close any dangling tool calls belonging to this subagent
+					const prefix = `sub_${p.task_id}_`;
+					for (const [k] of ctx.runtime.toolStartTimes) {
+						if (k.startsWith(prefix)) {
+							const toolName = k.slice(prefix.length).replace(/_\d+$/, '');
+							ctx.progress([{
+								kind: 'externalToolInvocationUpdate',
+								toolCallId: k,
+								toolName,
+								isComplete: true,
+								pastTenseMessage: `${toolName} done`,
+								subagentInvocationId: parentId,
+							} satisfies IChatExternalToolInvocationUpdate]);
+							ctx.runtime.toolStartTimes.delete(k);
+						}
+					}
+					// Mark the parent subagent tool call as complete
+					if (parentId && ctx.runtime.toolStartTimes.has(parentId)) {
+						const parentStart = ctx.runtime.toolStartTimes.get(parentId);
+						const elapsed = parentStart
+							? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)`
+							: subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
+						ctx.runtime.toolStartTimes.delete(parentId);
+						ctx.progress([{
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: parentId,
+							toolName: 'task',
+							isComplete: true,
+							pastTenseMessage: `Sub-agent completed${elapsed}`,
+						} satisfies IChatExternalToolInvocationUpdate]);
+					}
+					ctx.runtime.subagentParentMap.delete(p.task_id);
+				}
+				break;
+			}
+
+			// ── Model turn boundaries ──
+			case AgentEventType.ModelTurnStart:
+			case AgentEventType.ModelTurnEnd:
+				break;
+
+			// ── FEAT-30: Worktree files applied → external edits for editing session ──
+			case AgentEventType.WorktreeFilesApplied: {
+				const p = event.payload as IWorktreeFilesAppliedPayload;
+				if (p.files && p.files.length > 0) {
+					// For files not already tracked via ToolCall external edits,
+					// start+stop external edits to register them in the editing session.
+					for (const f of p.files) {
+						if (f.action === 'deleted') { continue; }
+						const fileUri = URI.file(f.path);
+						// Check if this file is already being tracked by a tool call
+						const alreadyTracked = [...ctx.runtime.externalEditOps.keys()].some(k => {
+							const fp = ctx.runtime.toolFileArgs.get(k);
+							return fp && (fp === f.path || f.path.endsWith(fp));
+						});
+						if (!alreadyTracked) {
+							const opId = ++this._externalEditOpCounter;
+							const editingSession = this._getEditingSession(ctx.request!.sessionResource);
+							const responseModel = this._getResponseModel(ctx.request!.sessionResource);
+							if (editingSession && responseModel) {
+								// Start and immediately stop — file is already on disk
+								editingSession.startExternalEdits(responseModel, opId, [fileUri], ctx.request!.requestId).then(() => {
+									return editingSession.stopExternalEdits(responseModel, opId);
+								}).then(editProgress => {
+									if (editProgress.length > 0) {
+										ctx.progress(editProgress);
+									}
+								}).catch(err => {
+									this._logService.error(`[ChipOS Agent] WorktreeFilesApplied external edit failed for ${f.path}`, err);
+								});
+							}
+						}
+					}
+				}
+				break;
+			}
+
+			// ── Task complete → resolve ──
+			case AgentEventType.TaskComplete: {
+				const p = event.payload as ITaskCompletePayload;
+				if (p.status === 'error' && p.message) {
+					ctx.progress([this._warning(p.message)]);
+					ctx.finish({ errorDetails: { message: p.message } });
+				} else {
+					ctx.finish({});
+				}
+				break;
+			}
+
+			// ── File edit → push IChatTextEdit to framework inline diff ──
+			case AgentEventType.FileEdit: {
+				const p = event.payload as IFileEditPayload;
+				const workspaceRoot = this._getWorkspaceRoot();
+				if (workspaceRoot && p.file_path && p.edits?.length) {
+					const fileUri = URI.file(
+						p.file_path.startsWith('/') ? p.file_path : `${workspaceRoot}/${p.file_path}`
+					);
+					const textEdits: TextEdit[] = p.edits.map(edit => ({
+						range: new Range(
+							edit.range.startLine,
+							edit.range.startCol,
+							edit.range.endLine,
+							edit.range.endCol
+						),
+						text: edit.newText,
+					}));
+					ctx.progress([{
+						uri: fileUri,
+						edits: textEdits,
+						kind: 'textEdit',
+						done: true,
+					} satisfies IChatTextEdit]);
+				}
+				break;
+			}
+
+			// ── Confirm (legacy hook card) ──
+			case AgentEventType.Confirm:
+				break;
+
+			// ── Skill tree (separate panel, not in chat) ──
+			case AgentEventType.SkillTree:
+				break;
+
+			// ── FEAT-R72: IDE 端工具调用（Reasoner → IDE 执行）──
+			case AgentEventType.IdeToolCall: {
+				const p = event.payload as IIdeToolCallPayload;
+				this._logService.info('[ChipOS Agent] IDE tool call: name=%s, call_id=%s', p.name, p.call_id);
+				this._executeIdeToolCall(p, ctx.runtime, ctx.streamClient).catch(err => {
+					this._logService.error('[ChipOS Agent] IDE tool execution failed:', err);
+				});
+				break;
+			}
+
+			case AgentEventType.Done:
+				// Close any dangling tool calls before finishing
+				for (const [k] of ctx.runtime.toolStartTimes) {
+					const toolName = k.includes('_') ? k.split('_').pop()! : k;
+					ctx.progress([{
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: k,
+						toolName,
+						isComplete: true,
+						pastTenseMessage: `${toolName} done`,
+					} satisfies IChatExternalToolInvocationUpdate]);
+				}
+				ctx.runtime.toolStartTimes.clear();
+				ctx.finish({});
+				break;
+
+			// ── FEAT-61: Queue position update ──
+			case AgentEventType.QueueUpdate: {
+				const p = event.payload as IQueueUpdatePayload;
+				const waitInfo = p.estimated_wait_seconds ? ` — est. ${p.estimated_wait_seconds}s` : '';
+				ctx.progress([this._progress(
+					`$(clock) Queue position: ${p.position}${waitInfo}`,
+					true
+				)]);
+				break;
+			}
+
+			// ── FEAT-65: Context window usage warning ──
+			case AgentEventType.ContextWarning: {
+				const p = event.payload as IContextWarningPayload;
+				const pct = p.usage_percent > 0 ? Math.round(p.usage_percent) : (p.tokens_max > 0 ? Math.round((p.tokens_used / p.tokens_max) * 100) : 0);
+				const suggestion = p.suggestion ? ` ${p.suggestion}` : '';
+				ctx.progress([this._warning(
+					`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
+				)]);
+				break;
+			}
+
+			default:
+				this._logService.trace('[ChipOS Agent] Unhandled event:', (event as AgentEvent).event_type);
+				break;
+		}
+		} catch (eventErr) {
 	}
 
 	// ── FEAT-23: Listen for backend events after sending confirm response ──
@@ -1288,743 +1314,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 
 				try {
-				switch (event.event_type) {
-					case AgentEventType.TextDelta: {
-						const p = event.payload as ITextDeltaPayload;
-						if (p.role === 'thinking') {
-							progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
-						} else {
-							progress([this._markdown(p.content)]);
-						}
-						break;
-					}
-					case AgentEventType.ThinkingDelta: {
-						const p = event.payload as IThinkingDeltaPayload;
-						progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
-						break;
-					}
-					case AgentEventType.ToolCall: {
-						const p = event.payload as IToolCallPayload;
-						const key = p.call_id || p.tool_name;
-						runtime.toolStartTimes.set(key, Date.now());
-						const args = p.arguments as Record<string, unknown> | undefined;
-						if (args) {
-							const fp = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							if (fp) { runtime.toolFileArgs.set(key, fp); }
-						}
-						const friendly = this._friendlyToolName(p.tool_name);
-						const argDetail = ChipOSChatAgent._formatToolArgs(p.arguments);
-						const invocationMsg = argDetail ? `${friendly} ${argDetail}` : friendly;
-
-						// Subagent tools get special rendering — Cursor-style collapsible card
-						const isSubagent = p.tool_name === 'task' || p.tool_name === 'run_subagent' || p.tool_name === 'transfer_to_agent';
-						if (isSubagent && args) {
-							runtime.lastSubagentToolCallId = key;
-							const desc = (args.description ?? args.prompt ?? '') as string;
-							// Extract first line or first 60 chars as short description for card title
-							const shortDesc = desc.split('\n')[0].slice(0, 60);
-							const agentType = (args.subagent_type ?? args.agent_type ?? '') as string;
-							const toolUpdate: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: false,
-								invocationMessage: invocationMsg,
-								toolSpecificData: {
-									kind: 'subagent',
-									description: shortDesc,
-									agentName: agentType || 'sub-agent',
-									prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : desc.slice(0, 500),
-								} satisfies IChatSubagentToolInvocationData,
-							};
-							progress([toolUpdate]);
-						} else if (ChipOSChatAgent._isShellTool(p.tool_name)) {
-							const cmdLine = typeof args?.command === 'string' ? args.command as string : '';
-							const cmdArgs = (args ?? {}) as { cwd?: string; isBackground?: boolean };
-							this._logService.info('[ChipOS Agent] ToolCall shell (cont): tool=%s, key=%s, cmdLine=%s', p.tool_name, key, cmdLine || '(empty)');
-							runtime.terminalCommandLines.set(key, cmdLine);
-							const cwdPath = (cmdArgs.cwd as string) || this._getWorkspaceRoot() || '';
-							const cwdUri = cwdPath ? URI.file(cwdPath) : undefined;
-
-							if (p.tool_name === 'run_in_terminal') {
-								const termSessionId = `chipos_${key}`;
-								const termCommandId = `chipos_cmd_${key}`;
-								runtime.terminalSessionMap.set(key, { sessionId: termSessionId, commandId: termCommandId });
-								const toolUpdate: IChatExternalToolInvocationUpdate = {
-									kind: 'externalToolInvocationUpdate',
-									toolCallId: key,
-									toolName: p.tool_name,
-									isComplete: false,
-									invocationMessage: invocationMsg,
-									toolSpecificData: {
-										kind: 'terminal',
-										terminalToolSessionId: termSessionId,
-										terminalCommandId: termCommandId,
-										commandLine: { original: cmdLine },
-										cwd: cwdUri,
-										language: 'shellscript',
-										isBackground: cmdArgs.isBackground ?? false,
-									} satisfies IChatTerminalToolInvocationData,
-								};
-								progress([toolUpdate]);
-							} else {
-								const toolUpdate: IChatExternalToolInvocationUpdate = {
-									kind: 'externalToolInvocationUpdate',
-									toolCallId: key,
-									toolName: p.tool_name,
-									isComplete: false,
-									invocationMessage: invocationMsg,
-									toolSpecificData: {
-										kind: 'terminal',
-										commandLine: { original: cmdLine },
-										cwd: cwdUri,
-										language: 'shellscript',
-										isBackground: false,
-									} satisfies IChatTerminalToolInvocationData,
-								};
-								progress([toolUpdate]);
-							}
-						} else {
-							const rawInput = ChipOSChatAgent._formatRawInput(p.tool_name, p.arguments);
-							const toolUpdate: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: false,
-								invocationMessage: invocationMsg,
-								toolSpecificData: {
-									kind: 'input',
-									rawInput,
-								} satisfies IChatToolInputInvocationData,
-							};
-							progress([toolUpdate]);
-						}
-
-						if (args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
-							const filePath = (args.file_path ?? args.path ?? args.file ?? args.file_name) as string | undefined;
-							this._logService.info(`[ChipOS Agent] ToolCall: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}, key=${key}`);
-							if (filePath && request) {
-								const workspaceRoot = this._getWorkspaceRoot();
-								const fileUri = filePath.startsWith('/')
-									? URI.file(filePath)
-									: workspaceRoot
-										? URI.joinPath(URI.file(workspaceRoot), filePath)
-										: URI.file(filePath);
-								runtime.toolFileArgs.set(key, filePath);
-								// Start external edit — snapshot file before backend writes
-								this._startExternalEdit(key, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
-							}
-						}
-						break;
-					}
-				case AgentEventType.ToolResult: {
-						const p = event.payload as IToolResultPayload;
-						const key = p.call_id || p.tool_name;
-						const friendly = this._friendlyToolName(p.tool_name);
-						const startTs = runtime.toolStartTimes.get(key);
-						const elapsed = startTs ? `${((Date.now() - startTs) / 1000).toFixed(1)}s` : '';
-						runtime.toolStartTimes.delete(key);
-						const timeSuffix = elapsed ? ` (${elapsed})` : '';
-						const pastMsg = p.summary
-							? `${p.summary}${timeSuffix}`
-							: `${friendly}${timeSuffix}`;
-
-						let toolComplete: IChatExternalToolInvocationUpdate;
-
-					if (ChipOSChatAgent._isShellTool(p.tool_name) && typeof p.result === 'string') {
-							const cachedCmd = runtime.terminalCommandLines.get(key) ?? '';
-							runtime.terminalCommandLines.delete(key);
-							this._logService.info('[ChipOS Agent] ToolResult shell (cont): tool=%s, key=%s, cachedCmd=%s', p.tool_name, key, cachedCmd || '(empty)');
-							const termSession = runtime.terminalSessionMap.get(key);
-							runtime.terminalSessionMap.delete(key);
-							const termArtifacts = runtime.terminalArtifacts.get(key);
-							runtime.terminalArtifacts.delete(key);
-
-							let outputText = p.result;
-							let exitCode: number | undefined;
-
-							if (p.tool_name === 'execute_command' || p.tool_name === 'execute') {
-								try {
-									const parsed = JSON.parse(p.result) as { exit_code?: number; stdout?: string; stderr?: string };
-									outputText = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n') || '(no output)';
-									exitCode = parsed.exit_code;
-								} catch { /* not JSON — use raw result */ }
-							}
-
-							if (cachedCmd) {
-								outputText = `$ ${cachedCmd}\n${outputText}`;
-							}
-
-							toolComplete = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: true,
-								pastTenseMessage: pastMsg,
-								errorMessage: !p.success ? p.result : undefined,
-								toolSpecificData: {
-									kind: 'terminal',
-									commandLine: { original: cachedCmd },
-									language: 'shellscript',
-									...(termSession ? {
-										terminalToolSessionId: termSession.sessionId,
-										terminalCommandId: termSession.commandId,
-									} : {}),
-									terminalCommandOutput: {
-										text: outputText,
-										truncated: outputText.length > 10_000,
-										lineCount: outputText.split('\n').length,
-									},
-									terminalCommandState: {
-										exitCode: exitCode ?? (p.success ? 0 : 1),
-										duration: startTs ? Date.now() - startTs : undefined,
-									},
-									...(termArtifacts?.theme ? { terminalTheme: termArtifacts.theme } : {}),
-									...(termArtifacts?.commandUri ? { terminalCommandUri: termArtifacts.commandUri } : {}),
-								} satisfies IChatTerminalToolInvocationData,
-							};
-						} else {
-							toolComplete = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: key,
-								toolName: p.tool_name,
-								isComplete: true,
-								pastTenseMessage: pastMsg,
-								errorMessage: !p.success && typeof p.result === 'string' ? p.result : undefined,
-								resultDetails: typeof p.result === 'string' ? {
-									input: p.tool_name,
-									output: [{ type: 'embed' as const, value: p.result, isText: true, mimeType: 'text/plain' }],
-									isError: !p.success,
-								} satisfies IToolResultInputOutputDetails : undefined,
-							};
-						}
-						progress([toolComplete]);
-
-						// ── Stop external edit tracking and emit file reference ──
-						const hasExternalOp = runtime.externalEditOps.has(key);
-						this._logService.info(`[ChipOS Agent] ToolResult: tool=${p.tool_name}, key=${key}, hasExternalOp=${hasExternalOp}, hasRequest=${!!request}, success=${p.success}`);
-						if (hasExternalOp && request) {
-							this._stopExternalEdit(key, request.sessionResource, runtime).then(editProgress => {
-								if (editProgress.length > 0) {
-									progress(editProgress);
-								}
-							}).catch(err => {
-								this._logService.warn('[ChipOS Agent] ToolResult (cont): stopExternalEdit failed for', key, err);
-							});
-							runtime.toolFileArgs.delete(key);
-						} else if (p.success) {
-							let filePath = runtime.toolFileArgs.get(key);
-							runtime.toolFileArgs.delete(key);
-							if (!filePath && typeof p.result === 'string') {
-								try {
-									const resultObj = JSON.parse(p.result);
-									filePath = resultObj.path ?? resultObj.file_path ?? resultObj.file_name;
-								} catch { /* not JSON */ }
-							}
-							if (filePath) {
-								const workspaceRoot = this._getWorkspaceRoot();
-								const absPath = filePath.startsWith('/') ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
-								const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file', 'str_replace']);
-								if (fileTools.has(p.tool_name)) {
-									const isDelete = p.tool_name === 'delete_file';
-									const fileUri = URI.file(absPath);
-									const ref: IChatContentReference = {
-										kind: 'reference',
-										reference: fileUri,
-										options: {
-											status: {
-												description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
-												kind: isDelete
-													? ChatResponseReferencePartStatusKind.Omitted
-													: ChatResponseReferencePartStatusKind.Complete,
-											},
-											isDeletion: isDelete,
-										},
-									};
-									progress([ref]);
-								}
-							}
-						}
-						break;
-					}
-					case AgentEventType.Status: {
-						const p = event.payload as IStatusPayload;
-						if (p.text) {
-							const shimmer = p.level === 'thinking' || p.tool_name !== undefined;
-							progress([this._progress(p.text, shimmer)]);
-						}
-						break;
-					}
-					case AgentEventType.RoundStart: {
-						const p = event.payload as IRoundStartPayload;
-						progress([this._progress(`Step ${p.round}`, true)]);
-						break;
-					}
-					case AgentEventType.TodoUpdate: {
-						const p = event.payload as ITodoUpdatePayload;
-						if (p.todos.length > 0 && request) {
-							const sessionRes = request.sessionResource;
-							const statusMap: Record<string, IChatTodo['status']> = {
-								done: 'completed',
-								completed: 'completed',
-								in_progress: 'in-progress',
-								'in-progress': 'in-progress',
-								pending: 'not-started',
-							};
-							const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
-								const key = t.task_status || t.status || 'pending';
-								return {
-									id: idx,
-									title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
-									status: statusMap[key] ?? 'not-started',
-								};
-							});
-							this._todoListService.setTodos(sessionRes, nativeTodos);
-						}
-						break;
-					}
-					case AgentEventType.WorktreeFilesApplied: {
-						const p = event.payload as IWorktreeFilesAppliedPayload;
-						this._logService.info(`[ChipOS Agent] WorktreeFilesApplied: files=${p.files?.length ?? 0}, hasRequest=${!!request}`);
-						if (p.files && p.files.length > 0 && request) {
-							// For files not already tracked via ToolCall external edits,
-							// start+stop external edits to register them in the editing session.
-							for (const f of p.files) {
-								if (f.action === 'deleted') { continue; }
-								const fileUri = URI.file(f.path);
-								const alreadyTracked = [...runtime.externalEditOps.keys()].some(k => {
-									const fp = runtime.toolFileArgs.get(k);
-									return fp && (fp === f.path || f.path.endsWith(fp));
-								});
-								this._logService.info(`[ChipOS Agent] WorktreeFilesApplied: file=${f.path}, action=${f.action}, alreadyTracked=${alreadyTracked}`);
-								if (!alreadyTracked) {
-									const opId = ++this._externalEditOpCounter;
-									const editingSession = this._getEditingSession(request.sessionResource);
-									const responseModel = this._getResponseModel(request.sessionResource);
-									if (editingSession && responseModel) {
-										editingSession.startExternalEdits(responseModel, opId, [fileUri], request.requestId).then(() => {
-											return editingSession.stopExternalEdits(responseModel, opId);
-										}).then(editProgress => {
-											if (editProgress.length > 0) {
-												progress(editProgress);
-											}
-										}).catch(err => {
-											this._logService.error(`[ChipOS Agent] WorktreeFilesApplied external edit failed for ${f.path}`, err);
-										});
-									}
-								}
-							}
-						}
-						break;
-					}
-					case AgentEventType.SubagentEvent: {
-						const p = event.payload as ISubagentEventPayload;
-						if (!runtime.subagentTimers.has(p.task_id)) {
-							runtime.subagentTimers.set(p.task_id, Date.now());
-							if (runtime.lastSubagentToolCallId) {
-								runtime.subagentParentMap.set(p.task_id, runtime.lastSubagentToolCallId);
-							}
-						}
-						const parentId = runtime.subagentParentMap.get(p.task_id) ?? p.task_id;
-						if (p.kind === 'text' && p.content) {
-							// Route text as a virtual tool inside the subagent card
-							const textKey = `sub_${p.task_id}_text_${this._subagentToolCounter++}`;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: textKey,
-								toolName: 'output',
-								isComplete: true,
-								invocationMessage: ChipOSChatAgent._renderSubagentText(p.content),
-								pastTenseMessage: ChipOSChatAgent._renderSubagentText(p.content),
-								subagentInvocationId: parentId,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						} else if (p.kind === 'tool_start' && p.tool_name) {
-							const subKey = `sub_${p.task_id}_${p.tool_name}_${this._subagentToolCounter++}`;
-							runtime.toolStartTimes.set(subKey, Date.now());
-							// Build a friendly invocation message with args summary
-							const argDetail = p.args ? ChipOSChatAgent._formatToolArgs(p.args as Record<string, unknown>) : '';
-							const invMsg = argDetail ? `${p.tool_name} ${argDetail}` : p.tool_name;
-							const toolUpdate: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: subKey,
-								toolName: p.tool_name,
-								isComplete: false,
-								invocationMessage: invMsg,
-								subagentInvocationId: parentId,
-							};
-							progress([toolUpdate]);
-
-							// Cache file path and start external edit for file-writing tools
-							if (p.args && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
-								const filePath = (p.args.file_path ?? p.args.path ?? p.args.file ?? p.args.file_name) as string | undefined;
-								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, filePath=${filePath}, hasRequest=${!!request}`);
-								if (filePath && request) {
-									// Dedup: skip if this file already has a pending external edit
-									const alreadyTracked = [...runtime.toolFileArgs.entries()].some(
-										([k, v]) => v === filePath && runtime.externalEditOps.has(k)
-									);
-									if (alreadyTracked) {
-										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: SKIPPED (already tracked) file=${filePath}, subKey=${subKey}`);
-									} else {
-										const workspaceRoot = this._getWorkspaceRoot();
-										const fileUri = filePath.startsWith('/')
-											? URI.file(filePath)
-											: workspaceRoot
-												? URI.joinPath(URI.file(workspaceRoot), filePath)
-												: URI.file(filePath);
-										this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: resolved fileUri=${fileUri.path}, subKey=${subKey}`);
-										runtime.toolFileArgs.set(subKey, filePath);
-										this._startExternalEdit(subKey, fileUri, request.sessionResource, request.requestId, runtime, p.snapshot_content);
-									}
-								}
-							} else {
-								this._logService.info(`[ChipOS Agent] SubagentEvent tool_start: tool=${p.tool_name}, isFileWrite=${ChipOSChatAgent._isFileWriteTool(p.tool_name)}, hasArgs=${!!p.args}`);
-							}
-						} else if (p.kind === 'tool_end' && p.tool_name) {
-							// Find the matching tool_start key for this tool_name (with counter suffix)
-							const matchPrefix = `sub_${p.task_id}_${p.tool_name}_`;
-							let subKey: string | undefined;
-							for (const [k] of runtime.toolStartTimes) {
-								if (k.startsWith(matchPrefix)) {
-									subKey = k;
-									break;
-								}
-							}
-							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: tool=${p.tool_name}, matchPrefix=${matchPrefix}, foundSubKey=${subKey}, file_path=${p.file_path}`);
-							if (!subKey) { break; }
-							const startTs = runtime.toolStartTimes.get(subKey);
-							const elapsed = startTs ? ` (${((Date.now() - startTs) / 1000).toFixed(1)}s)` : '';
-							runtime.toolStartTimes.delete(subKey);
-							const toolComplete: IChatExternalToolInvocationUpdate = {
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: subKey,
-								toolName: p.tool_name,
-								isComplete: true,
-								pastTenseMessage: `${p.tool_name} done${elapsed}`,
-								subagentInvocationId: parentId,
-							};
-							progress([toolComplete]);
-
-							// Stop external edit — _stopExternalEdit awaits _startExternalEdit first
-							const hasOp = runtime.externalEditOps.has(subKey);
-							const hasPending = runtime.pendingStartEdits.has(subKey);
-							this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: subKey=${subKey}, hasExternalEditOp=${hasOp}, hasPendingStart=${hasPending}, hasRequest=${!!request}`);
-							if (hasOp && request) {
-								this._stopExternalEdit(subKey, request.sessionResource, runtime).then(editProgress => {
-									this._logService.info(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit returned ${editProgress.length} progress items for ${subKey}`);
-									if (editProgress.length > 0) {
-										progress(editProgress);
-									}
-								}).catch(err => {
-									this._logService.error(`[ChipOS Agent] SubagentEvent tool_end: stopExternalEdit failed for ${subKey}`, err);
-								});
-								runtime.toolFileArgs.delete(subKey);
-							}
-						} else if (p.kind === 'error' && p.content) {
-							// Route error inside the subagent card
-							const errKey = `sub_${p.task_id}_error_${this._subagentToolCounter++}`;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: errKey,
-								toolName: 'error',
-								isComplete: true,
-								invocationMessage: p.content,
-								pastTenseMessage: p.content,
-								subagentInvocationId: parentId,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						} else if (p.kind === 'status' && p.content) {
-							// Route status inside the subagent card
-							const statusKey = `sub_${p.task_id}_status_${this._subagentToolCounter++}`;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: statusKey,
-								toolName: 'status',
-								isComplete: true,
-								invocationMessage: p.content,
-								pastTenseMessage: p.content,
-								subagentInvocationId: parentId,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						} else if (p.kind === 'complete') {
-							const subStart = runtime.subagentTimers.get(p.task_id);
-							runtime.subagentTimers.delete(p.task_id);
-							const prefix = `sub_${p.task_id}_`;
-							for (const [k] of runtime.toolStartTimes) {
-								if (k.startsWith(prefix)) {
-									const toolName = k.slice(prefix.length).replace(/_\d+$/, '');
-									progress([{
-										kind: 'externalToolInvocationUpdate',
-										toolCallId: k,
-										toolName,
-										isComplete: true,
-										pastTenseMessage: `${toolName} done`,
-										subagentInvocationId: parentId,
-									} satisfies IChatExternalToolInvocationUpdate]);
-									runtime.toolStartTimes.delete(k);
-								}
-							}
-							// Mark the parent subagent tool call as complete
-							if (parentId && runtime.toolStartTimes.has(parentId)) {
-								const parentStart = runtime.toolStartTimes.get(parentId);
-								const elapsed = parentStart
-									? ` (${((Date.now() - parentStart) / 1000).toFixed(1)}s)`
-									: subStart ? ` (${((Date.now() - subStart) / 1000).toFixed(1)}s)` : '';
-								runtime.toolStartTimes.delete(parentId);
-								progress([{
-									kind: 'externalToolInvocationUpdate',
-									toolCallId: parentId,
-									toolName: 'task',
-									isComplete: true,
-									pastTenseMessage: `Sub-agent completed${elapsed}`,
-								} satisfies IChatExternalToolInvocationUpdate]);
-							}
-							runtime.subagentParentMap.delete(p.task_id);
-						}
-						break;
-					}
-					case AgentEventType.ConfirmRequest: {
-						const p = event.payload as IConfirmRequestPayload;
-						const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
-						const richMessage = this._renderConfirmMessage(p);
-						const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
-						const rawButtons2 = p.options?.map(o => o.label).filter((l): l is string => !!l)
-							?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean) as string[] | undefined
-							?? ['Approve', 'Reject'];
-						const buttons2 = rawButtons2.length > 0 ? rawButtons2 : ['Approve', 'Reject'];
-						const confirmation: IChatConfirmation = {
-							kind: 'confirmation',
-							title,
-			message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-			data: { requestId: p.request_id, sessionId: runtime.backendSessionId, options: p.options ?? cardOpts },
-			buttons: buttons2,
-						};
-						progress([confirmation]);
-						finish({}, 'Awaiting confirmation');
-						break;
-					}
-					case AgentEventType.Plan: {
-						const p = event.payload as IPlanPayload;
-						const lines = (p.milestones || []).map(m => {
-							const status = (m.status as string) === 'active' ? 'running' : m.status;
-							const icon = status === 'done' ? '- [x]' :
-								status === 'running' ? '- [ ] *(running)*' :
-									status === 'failed' ? '- [ ] *(failed)*' : '- [ ]';
-							return `${icon} ${m.title}`;
-						});
-						progress([this._markdown(`### Plan\n${lines.join('\n')}`)]);
-						break;
-					}
-					case AgentEventType.DiffPreview: {
-						const p = event.payload as IDiffPreviewPayload;
-						const hunks = (p.hunks || []).map(h => {
-							const hunkLines = h.lines.map(l => {
-								if (l.type === 'add') { return `+ ${l.content}`; }
-								if (l.type === 'del') { return `- ${l.content}`; }
-								return `  ${l.content}`;
-							}).join('\n');
-							return `${h.header}\n${hunkLines}`;
-						}).join('\n\n');
-						progress([this._markdown(`**Diff: \`${p.file_path}\`**\n\`\`\`diff\n${hunks}\n\`\`\``)]);
-						break;
-					}
-					case AgentEventType.SimReport: {
-						const p = event.payload as ISimReportPayload;
-						const summary = ChipOSChatAgent._normalizeSimSummary(p.summary, p.tests);
-						progress([{
-							kind: 'edaSimReport',
-							tests: p.tests ?? [],
-							summary,
-						} satisfies IChatEdaSimReport]);
-						break;
-					}
-					case AgentEventType.CoverageReport: {
-						const p = event.payload as ICoverageReportPayload;
-						progress([{
-							kind: 'edaCoverageReport',
-							line_cov: p.line_cov,
-							branch_cov: p.branch_cov,
-							gaps: p.gaps,
-						} satisfies IChatEdaCoverageReport]);
-						break;
-					}
-					case AgentEventType.LintReport: {
-						const p = event.payload as ILintReportPayload;
-						progress([{
-							kind: 'edaLintReport',
-							errors: p.errors ?? [],
-							auto_fixable: p.auto_fixable,
-							tool: p.tool,
-						} satisfies IChatEdaLintReport]);
-						break;
-					}
-					case AgentEventType.PpaReport: {
-						const p = event.payload as IPpaReportPayload;
-						progress([{
-							kind: 'edaPpaReport',
-							stage: p.stage,
-							round: p.round,
-							ppa: p.ppa,
-							baseline_ppa: p.baseline_ppa,
-							previous_best_ppa: p.previous_best_ppa,
-							current_ppa: p.current_ppa,
-							best_ppa: p.best_ppa,
-							improvement: p.improvement,
-							strategy: p.strategy,
-							sta_report: p.sta_report,
-							power_report: p.power_report,
-							pareto_front_size: p.pareto_front_size,
-						} satisfies IChatEdaPpaReport]);
-						break;
-					}
-					case AgentEventType.NegotiationView: {
-						const p = event.payload as INegotiationViewPayload;
-						const rawPerspectives = (p.perspectives ?? []) as unknown as Array<Record<string, string>>;
-						const perspectives = rawPerspectives.map(raw => ({
-							agent: raw.agent ?? raw.role ?? '',
-							position: raw.position ?? raw.claim ?? '',
-							reasoning: raw.reasoning ?? raw.confidence ?? '',
-						}));
-						progress([{
-							kind: 'edaNegotiationView',
-							issue: p.issue,
-							perspectives,
-							recommendation: p.recommendation,
-						} satisfies IChatEdaNegotiationView]);
-						break;
-					}
-					case AgentEventType.ParallelProgress: {
-						const p = event.payload as IParallelProgressPayload;
-						progress([{
-							kind: 'edaParallelProgress',
-							phase: p.phase,
-							tracks: p.tracks ?? [],
-							conflicts: p.conflicts,
-						} satisfies IChatEdaParallelProgress]);
-						break;
-					}
-					case AgentEventType.LoopProgress: {
-						const p = event.payload as ILoopProgressPayload;
-						progress([{
-							kind: 'roundProgress',
-							current_round: p.round,
-							max_rounds: p.max_rounds,
-							phase: p.phase,
-							status: p.status as IChatRoundProgress['status'],
-							tool: p.tool,
-						} satisfies IChatRoundProgress]);
-						break;
-					}
-					case AgentEventType.SpecReview: {
-						const p = event.payload as ISpecReviewPayload;
-						progress([{
-							kind: 'edaSpecReview',
-							spec_path: p.spec_path,
-							spec_name: p.spec_name,
-							summary: p.summary,
-							files: p.files,
-						} satisfies IChatEdaSpecReview]);
-						break;
-					}
-					case AgentEventType.TaskSummary: {
-						const p = event.payload as ITaskSummaryPayload;
-						progress([this._progress('$(output) Task Summary')]);
-						progress([this._markdown(ChipOSChatAgent._formatTaskSummary(p))]);
-						break;
-					}
-					case AgentEventType.Error: {
-						const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string; category?: string; details?: Record<string, unknown> };
-						const errorMsg = p.category ? `[${p.category}] ${p.message}` : p.message;
-						progress([{
-							kind: 'agentError',
-							error_code: p.error_code ?? 'AGENT_ERROR',
-							message: errorMsg,
-							retryable: p.retryable ?? true,
-							suggestion: p.suggestion,
-						} satisfies IChatAgentError]);
-						finish({ errorDetails: { message: errorMsg } });
-						break;
-					}
-					case AgentEventType.TaskComplete: {
-						const p = event.payload as ITaskCompletePayload;
-						if (p.status === 'error' && p.message) {
-							progress([this._warning(p.message)]);
-							finish({ errorDetails: { message: p.message } });
-						} else {
-							finish({});
-						}
-						break;
-					}
-					case AgentEventType.Done:
-						for (const [k] of runtime.toolStartTimes) {
-							const toolName = k.includes('_') ? k.split('_').pop()! : k;
-							progress([{
-								kind: 'externalToolInvocationUpdate',
-								toolCallId: k,
-								toolName,
-								isComplete: true,
-								pastTenseMessage: `${toolName} done`,
-							} satisfies IChatExternalToolInvocationUpdate]);
-						}
-						runtime.toolStartTimes.clear();
-						finish({});
-						break;
-					case AgentEventType.FileEdit: {
-						const p = event.payload as IFileEditPayload;
-						const workspaceRoot = this._getWorkspaceRoot();
-						if (workspaceRoot && p.file_path && p.edits?.length) {
-							const fileUri = URI.file(
-								p.file_path.startsWith('/') ? p.file_path : `${workspaceRoot}/${p.file_path}`
-							);
-							const textEdits: TextEdit[] = p.edits.map(edit => ({
-								range: new Range(
-									edit.range.startLine,
-									edit.range.startCol,
-									edit.range.endLine,
-									edit.range.endCol
-								),
-								text: edit.newText,
-							}));
-							progress([{
-								uri: fileUri,
-								edits: textEdits,
-								kind: 'textEdit',
-								done: true,
-							} satisfies IChatTextEdit]);
-						}
-						break;
-					}
-					// ── FEAT-61: Queue position update ──
-					case AgentEventType.QueueUpdate: {
-						const p = event.payload as IQueueUpdatePayload;
-						const waitInfo = p.estimated_wait_seconds
-							? ` (~${Math.ceil(p.estimated_wait_seconds)}s)`
-							: '';
-						progress([this._progress(`$(clock) Queue position: ${p.position}${waitInfo}`, true)]);
-						break;
-					}
-
-					// ── FEAT-65: Context window warning ──
-					case AgentEventType.ContextWarning: {
-						const p = event.payload as IContextWarningPayload;
-						const pct = p.usage_percent > 0 ? Math.round(p.usage_percent) : (p.tokens_max > 0 ? Math.round((p.tokens_used / p.tokens_max) * 100) : 0);
-						const suggestion = p.suggestion ? ` ${p.suggestion}` : '';
-						progress([this._warning(
-							`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
-						)]);
-						break;
-					}
-					// ── FEAT-R72: IDE 端工具调用（continuation path）──
-					case AgentEventType.IdeToolCall: {
-						const p = event.payload as IIdeToolCallPayload;
-						this._logService.info('[ChipOS Agent] IDE tool call (cont): name=%s, call_id=%s', p.name, p.call_id);
-						this._executeIdeToolCall(p, runtime, streamClient).catch(err => {
-							this._logService.error('[ChipOS Agent] IDE tool execution failed (cont):', err);
-						});
-						break;
-					}
-					default:
-						this._logService.trace('[ChipOS Agent] Unhandled event in continuation:', event.event_type);
-						break;
-				}
+					this._handleAgentEvent(event, {
+						runtime,
+						progress,
+						finish,
+						request,
+						streamClient,
+						sessionId: runtime.backendSessionId ?? '',
+					});
 				} catch (eventErr) {
 					this._logService.error('[ChipOS Agent] Event handler error (continuation) for', event.event_type, eventErr);
 				}
@@ -2130,18 +1427,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	// ── FEAT-29: Render rich confirm message based on card_type ──
 
 	private _renderConfirmMessage(p: IConfirmRequestPayload): string {
-		console.log('[ConfirmMsg] card_type:', p.card_type, 'has p.message:', !!p.message, 'card_data keys:', Object.keys(p.card_data || {}));
-		if (p.message) {
-			console.log('[ConfirmMsg] Using p.message (first 200 chars):', p.message.slice(0, 200));
-		}
-
-		// If p.message exists but card_data also has full content, prefer the full content
-		// for spec_confirm and arch_confirm so the temp file has complete details.
 		const data = p.card_data;
 		switch (p.card_type) {
 			case 'spec_confirm': {
 				const specText = data?.spec_result ?? data?.analysis ?? data?.result;
-				console.log('[ConfirmMsg] spec_confirm: specText type:', typeof specText, 'length:', typeof specText === 'string' ? specText.length : 'N/A');
 				if (typeof specText === 'string' && specText.length > 0) {
 					return specText;
 				}
@@ -2152,7 +1441,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			case 'arch_confirm': {
 				const archText = data?.arch_result ?? data?.analysis ?? data?.result;
-				console.log('[ConfirmMsg] arch_confirm: archText type:', typeof archText, 'length:', typeof archText === 'string' ? archText.length : 'N/A');
 				if (typeof archText === 'string' && archText.length > 0) {
 					return archText;
 				}
@@ -3086,7 +2374,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._logService.trace('[ChipOS Agent] Reusing existing SSE client for reconnect');
 		} else {
 			runtime.streamClient?.dispose();
-			runtime.streamClient = new SseEventStreamClient({ baseUrl, token });
+			runtime.streamClient = new SseEventStreamClient({ baseUrl, token }, this._logService);
 
 			// Monitor connection state changes for user-facing notifications
 			runtime.streamClient.onDidChangeConnectionState((state) => {

@@ -114,7 +114,6 @@ export class ChipOSSettingsEditor extends EditorPane {
 	}
 
 	private _switchTab(tab: ChipOSSettingsTab): void {
-		console.log(`[ChipOS Settings] _switchTab called: tab=${tab}, activeTab=${this._activeTab}`);
 		if (this._activeTab === tab && this._activeTabDisposable) {
 			return; // already showing
 		}
@@ -133,11 +132,8 @@ export class ChipOSSettingsEditor extends EditorPane {
 
 		// Create tab content
 		if (!this._contentArea) {
-			console.warn('[ChipOS Settings] _contentArea is null, cannot render tab');
 			return;
 		}
-
-		console.log(`[ChipOS Settings] Creating tab content for: ${tab}`);
 		const store = new DisposableStore();
 		this._activeTabDisposable = store;
 		this._tabInstances.add(store);
@@ -163,9 +159,7 @@ export class ChipOSSettingsEditor extends EditorPane {
 					store.add(this._instantiationService.createInstance(ToolsTab, this._contentArea));
 					break;
 			}
-			console.log(`[ChipOS Settings] Tab '${tab}' created successfully`);
 		} catch (err) {
-			console.error(`[ChipOS Settings] Failed to load tab '${tab}':`, err);
 			const errorEl = dom.append(this._contentArea, dom.$('.chipos-settings-empty'));
 			const icon = dom.append(errorEl, dom.$('.codicon'));
 			icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.warning));
