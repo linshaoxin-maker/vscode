@@ -252,6 +252,22 @@ configurationRegistry.registerConfiguration({
 		},
 
 		// ── v1 Legacy (deprecated, kept for backward compatibility) ──
+		'chipos.sidecar.autoStart': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.sidecar.autoStart.desc', '[Deprecated] Auto-start the v1 Sidecar backend when the IDE launches.'),
+			scope: ConfigurationScope.APPLICATION,
+			deprecationMessage: localize('chipos.sidecar.autoStart.deprecated', 'v2 backend auto-starts based on chipos.backend.mode.'),
+		},
+
+		'chipos.sidecar.autoRestart': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.sidecar.autoRestart.desc', '[Deprecated] Auto-restart the v1 Sidecar backend on crash (up to 3 attempts).'),
+			scope: ConfigurationScope.APPLICATION,
+			deprecationMessage: localize('chipos.sidecar.autoRestart.deprecated', 'v2 backend handles restarts automatically.'),
+		},
+
 		'chipos.sidecar.manualUrl': {
 			type: 'string',
 			default: '',

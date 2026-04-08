@@ -213,6 +213,7 @@ export class ConnectionTab extends Disposable {
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderGrpcAddressInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
+				this._renderTlsEnabled(this._modeSpecificContainer);
 				this._renderWorkerHttpPortInput(this._modeSpecificContainer);
 				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
 				this._renderPythonPathInput(this._modeSpecificContainer);
@@ -222,6 +223,7 @@ export class ConnectionTab extends Disposable {
 			case 'manual':
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
+				this._renderTlsEnabled(this._modeSpecificContainer);
 				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
 				dom.append(this._modeSpecificContainer, dom.$('.chipos-setting-hint', undefined,
 					localize('chipos.mode.manual.hint', 'Worker is managed externally. Deploy it separately and point it to the Reasoning gRPC address.')
@@ -371,6 +373,28 @@ export class ConnectionTab extends Disposable {
 
 		this._disposables.add(inputBox.onDidChange(value => {
 			this._configurationService.updateValue('chipos.backend.dir', value, ConfigurationTarget.USER);
+		}));
+	}
+
+	// ── v2: TLS Enabled ─────────────────────────────────────────────────
+
+	private _renderTlsEnabled(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
+
+		const checkbox = this._disposables.add(new Checkbox(
+			localize('chipos.settings.tlsEnabled', 'Enable TLS for gRPC'),
+			this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false,
+			defaultCheckboxStyles,
+		));
+		dom.append(row, checkbox.domNode);
+
+		const textContainer = dom.append(row, dom.$('div'));
+		dom.append(textContainer, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.tlsEnabled.desc', 'Enable TLS encryption for gRPC connections between Worker and Reasoner.')
+		));
+
+		this._disposables.add(checkbox.onChange(() => {
+			this._configurationService.updateValue('chipos.backend.tlsEnabled', checkbox.checked, ConfigurationTarget.USER);
 		}));
 	}
 
