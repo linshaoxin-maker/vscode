@@ -2080,6 +2080,12 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		this.listWidget.scrollToEnd();
 	}
 
+	relayout(): void {
+		if (this.bodyDimension) {
+			this.layout(this.bodyDimension.height, this.bodyDimension.width);
+		}
+	}
+
 	revealElement(element: HTMLElement): void {
 		// Use native scrollIntoView to ensure the element is visible.
 		// The virtual list's scrollTop setter may be constrained by internal state,

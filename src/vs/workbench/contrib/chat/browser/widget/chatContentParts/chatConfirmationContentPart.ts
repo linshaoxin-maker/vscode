@@ -242,14 +242,9 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		requestAnimationFrame(() => {
 			if (!widget) { return; }
 			try {
-				const w = widget as any;
-				if (typeof w.layout === 'function' && w.bodyDimension) {
-					w.layout(w.bodyDimension.height, w.bodyDimension.width);
-				}
-				if (typeof w.listWidget?.scrollToEnd === 'function') {
-					w.listWidget.scrollToEnd();
-				}
-			} catch { /* layout is best-effort; upstream API may change */ }
+				widget.relayout();
+				widget.scrollToEnd();
+			} catch { /* layout is best-effort */ }
 			overlay.focus();
 		});
 
