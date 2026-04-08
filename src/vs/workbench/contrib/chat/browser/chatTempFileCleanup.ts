@@ -33,14 +33,14 @@ export class ChatTempFileCleanupContribution extends Disposable implements IWork
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		console.log('[ChatTempFile] Startup cleanup contribution initialized');
+		this.logService.trace('[ChatTempFile] Startup cleanup contribution initialized');
 		this._cleanupOrphanedTempDirs();
 	}
 
 	private async _cleanupOrphanedTempDirs(): Promise<void> {
 		const folders = this.workspaceContextService.getWorkspace().folders;
 		if (folders.length === 0) {
-			console.log('[ChatTempFile] Startup cleanup: no workspace folders, skipping');
+			this.logService.trace('[ChatTempFile] Startup cleanup: no workspace folders, skipping');
 			return;
 		}
 
@@ -49,7 +49,7 @@ export class ChatTempFileCleanupContribution extends Disposable implements IWork
 		try {
 			const stat = await this.fileService.resolve(tmpRoot);
 			if (!stat.children || stat.children.length === 0) {
-				console.log('[ChatTempFile] Startup cleanup: tmp dir is empty, nothing to do');
+				this.logService.trace('[ChatTempFile] Startup cleanup: tmp dir is empty, nothing to do');
 				return;
 			}
 
@@ -72,27 +72,27 @@ export class ChatTempFileCleanupContribution extends Disposable implements IWork
 				}
 			}
 
-			console.log('[ChatTempFile] Startup cleanup: found', stat.children.length, 'entries in tmp dir,', knownSessionIds.size, 'known sessions');
+			this.logService.trace('[ChatTempFile] Startup cleanup: found', stat.children.length, 'entries in tmp dir,', knownSessionIds.size, 'known sessions');
 
 			// Delete subdirectories that don't match any known session
 			for (const child of stat.children) {
 				if (!child.isDirectory) {
 					// Legacy flat temp files (no sessionId) — clean them up too
-					console.log('[ChatTempFile] Startup cleanup: removing legacy flat file:', child.name);
+					this.logService.trace('[ChatTempFile] Startup cleanup: removing legacy flat file:', child.name);
 					this.fileService.del(child.resource).catch(() => { });
 					continue;
 				}
 
 				if (!knownSessionIds.has(child.name)) {
-					console.log('[ChatTempFile] Startup cleanup: removing orphaned dir:', child.name);
+					this.logService.trace('[ChatTempFile] Startup cleanup: removing orphaned dir:', child.name);
 					this.logService.info(`[ChatTempFileCleanup] Removing orphaned temp dir: ${child.name}`);
 					this.fileService.del(child.resource, { recursive: true }).catch(() => { });
 				} else {
-					console.log('[ChatTempFile] Startup cleanup: keeping dir (session exists):', child.name);
+					this.logService.trace('[ChatTempFile] Startup cleanup: keeping dir (session exists):', child.name);
 				}
 			}
 		} catch {
-			console.log('[ChatTempFile] Startup cleanup: tmp dir does not exist yet, nothing to clean');
+			this.logService.trace('[ChatTempFile] Startup cleanup: tmp dir does not exist yet, nothing to clean');
 			// tmp dir doesn't exist yet — nothing to clean
 		}
 	}

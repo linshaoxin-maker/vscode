@@ -28,6 +28,7 @@ import { IConfigurationService } from '../../../../../platform/configuration/com
 import { ChatConfiguration } from '../../common/constants.js';
 import { ACTION_ID_NEW_CHAT } from '../actions/chatActions.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
 import { ChatViewPane } from '../widgetHosts/viewPane/chatViewPane.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -611,6 +612,7 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 		const widgetService = accessor.get(IChatWidgetService);
 		const fileService = accessor.get(IFileService);
 		const workspaceContextService = accessor.get(IWorkspaceContextService);
+		const logService = accessor.get(ILogService);
 
 		for (const session of sessions) {
 
@@ -623,13 +625,13 @@ export class DeleteAgentSessionAction extends BaseAgentSessionAction {
 				const folders = workspaceContextService.getWorkspace().folders;
 				if (folders.length > 0) {
 					const tmpSessionDir = URI.joinPath(folders[0].uri, '.coderust', 'tmp', localSessionId);
-					console.log('[ChatTempFile] DeleteSession: cleaning up tmp dir for sessionId:', localSessionId, 'path:', tmpSessionDir.toString());
+					logService.trace('[ChatTempFile] DeleteSession: cleaning up tmp dir for sessionId:', localSessionId, 'path:', tmpSessionDir.toString());
 					fileService.del(tmpSessionDir, { recursive: true }).catch((err) => {
-						console.log('[ChatTempFile] DeleteSession: tmp dir not found or already deleted:', localSessionId, err?.message);
+						logService.trace('[ChatTempFile] DeleteSession: tmp dir not found or already deleted:', localSessionId, err?.message);
 					});
 				}
 			} else {
-				console.log('[ChatTempFile] DeleteSession: no localSessionId for resource:', session.resource.toString());
+				logService.trace('[ChatTempFile] DeleteSession: no localSessionId for resource:', session.resource.toString());
 			}
 
 			// Remove from storage FIRST, before clearing the widget.
@@ -685,12 +687,13 @@ export class DeleteAllLocalSessionsAction extends Action2 {
 		}
 
 		// Clean up all temp files under .coderust/tmp/
+		const logService = accessor.get(ILogService);
 		const folders = workspaceContextService.getWorkspace().folders;
 		if (folders.length > 0) {
 			const tmpDir = URI.joinPath(folders[0].uri, '.coderust', 'tmp');
-			console.log('[ChatTempFile] DeleteAllSessions: cleaning up entire tmp dir:', tmpDir.toString());
+			logService.trace('[ChatTempFile] DeleteAllSessions: cleaning up entire tmp dir:', tmpDir.toString());
 			fileService.del(tmpDir, { recursive: true }).catch((err) => {
-				console.log('[ChatTempFile] DeleteAllSessions: tmp dir not found or already deleted:', err?.message);
+				logService.trace('[ChatTempFile] DeleteAllSessions: tmp dir not found or already deleted:', err?.message);
 			});
 		}
 

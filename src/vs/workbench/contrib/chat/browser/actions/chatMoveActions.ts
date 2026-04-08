@@ -139,7 +139,7 @@ export function registerMoveActions() {
 		async run(accessor: ServicesAccessor) {
 			const layoutService = accessor.get(IWorkbenchLayoutService);
 			layoutService.toggleMaximizedAuxiliaryBar();
-			console.log('[ChipOS] Chat: toggleMaximizedAuxiliaryBar called');
+			// toggleMaximizedAuxiliaryBar called
 		}
 	});
 }

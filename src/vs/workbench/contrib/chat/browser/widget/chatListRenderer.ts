@@ -348,7 +348,7 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		const normalizedHeight = Math.ceil(height);
 		const prevHeight = template.currentElement.currentRenderedHeight;
 		if (prevHeight && Math.abs(normalizedHeight - prevHeight) > 100) {
-			console.log('[ChatListHeight] BIG height change:', prevHeight, '->', normalizedHeight, 'delta:', normalizedHeight - prevHeight, 'element id:', (template.currentElement as any).id ?? 'unknown');
+			this.logService.trace('[ChatListHeight] BIG height change:', prevHeight, '->', normalizedHeight, 'delta:', normalizedHeight - prevHeight);
 		}
 		template.currentElement.currentRenderedHeight = normalizedHeight;
 		if (template.currentElement !== this._elementBeingRendered) {
@@ -2603,7 +2603,7 @@ export class ChatListDelegate extends CachedListVirtualDelegate<ChatTreeItem> {
 		const cached = element.currentRenderedHeight;
 		const estimated = cached ?? this.defaultElementHeight;
 		if (!cached) {
-			console.log('[ChatListHeight] estimateHeight: using DEFAULT', this.defaultElementHeight, 'for element id:', (element as any).id ?? 'unknown');
+			this.logService.trace('[ChatListHeight] estimateHeight: using DEFAULT', this.defaultElementHeight);
 		}
 		return estimated;
 	}
