@@ -7,6 +7,11 @@ import { Disposable, DisposableStore } from '../../../../../../base/common/lifec
 import { IConfigurationService, ConfigurationTarget } from '../../../../../../platform/configuration/common/configuration.js';
 import { localize } from '../../../../../../nls.js';
 import * as dom from '../../../../../../base/browser/dom.js';
+import { SelectBox, ISelectOptionItem } from '../../../../../../base/browser/ui/selectBox/selectBox.js';
+import { InputBox } from '../../../../../../base/browser/ui/inputbox/inputBox.js';
+import { defaultSelectBoxStyles, defaultInputBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
+import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
+import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
 
 interface ToggleSetting {
 	key: string;
@@ -69,12 +74,15 @@ const SELECT_SETTINGS: SelectSetting[] = [
 export class FeaturesTab extends Disposable {
 
 	private readonly _disposables = this._register(new DisposableStore());
+	private readonly _contextViewProvider: IContextViewProvider | undefined;
 
 	constructor(
 		private readonly _container: HTMLElement,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IContextViewService contextViewService: IContextViewService,
 	) {
 		super();
+		this._contextViewProvider = contextViewService ?? undefined;
 		this._render();
 	}
 
@@ -124,21 +132,28 @@ export class FeaturesTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-label', undefined, setting.label));
 		dom.append(row, dom.$('.chipos-setting-description', undefined, setting.description));
 
-		const select = dom.append(row, dom.$<HTMLSelectElement>('select.chipos-setting-select'));
-		for (const opt of setting.options) {
-			const option = dom.append(select, dom.$<HTMLOptionElement>('option'));
-			option.value = opt.value;
-			option.textContent = opt.label;
-		}
-		select.value = this._configurationService.getValue<string>(setting.key) || setting.options[0].value;
+		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const options: ISelectOptionItem[] = setting.options.map(o => ({ text: o.label }));
+		const values = setting.options.map(o => o.value);
+		const current = this._configurationService.getValue<string>(setting.key) || setting.options[0].value;
+		const selectedIndex = Math.max(0, values.indexOf(current));
 
-		this._disposables.add(dom.addDisposableListener(select, 'change', () => {
-			this._configurationService.updateValue(setting.key, select.value, ConfigurationTarget.USER);
+		const selectBox = this._disposables.add(new SelectBox(options, selectedIndex, this._contextViewProvider!, defaultSelectBoxStyles));
+		selectBox.render(selectContainer);
+
+		this._disposables.add(selectBox.onDidSelect(e => {
+			if (e.index < values.length) {
+				this._configurationService.updateValue(setting.key, values[e.index], ConfigurationTarget.USER);
+			}
 		}));
 
 		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(setting.key)) {
-				select.value = this._configurationService.getValue<string>(setting.key) || setting.options[0].value;
+				const val = this._configurationService.getValue<string>(setting.key) || setting.options[0].value;
+				const idx = values.indexOf(val);
+				if (idx >= 0) {
+					selectBox.select(idx);
+				}
 			}
 		}));
 	}
@@ -148,22 +163,22 @@ export class FeaturesTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.features.tokenBudget', 'Auto Context Token Budget')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.features.tokenBudget.desc', 'Maximum token budget for auto-collected context (1000–32000).')));
 
-		const input = dom.append(row, dom.$<HTMLInputElement>('input.chipos-setting-input'));
-		input.type = 'number';
-		input.min = '1000';
-		input.max = '32000';
-		input.step = '500';
-		input.value = String(this._configurationService.getValue<number>('chipos.autoContextTokenBudget') ?? 8000);
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: '8000',
+			type: 'number',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
+		inputBox.value = String(this._configurationService.getValue<number>('chipos.autoContextTokenBudget') ?? 8000);
 
-		this._disposables.add(dom.addDisposableListener(input, 'change', () => {
-			const val = Math.max(1000, Math.min(32000, parseInt(input.value) || 8000));
-			input.value = String(val);
+		this._disposables.add(inputBox.onDidChange(value => {
+			const val = Math.max(1000, Math.min(32000, parseInt(value) || 8000));
 			this._configurationService.updateValue('chipos.autoContextTokenBudget', val, ConfigurationTarget.USER);
 		}));
 
 		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('chipos.autoContextTokenBudget')) {
-				input.value = String(this._configurationService.getValue<number>('chipos.autoContextTokenBudget') ?? 8000);
+				inputBox.value = String(this._configurationService.getValue<number>('chipos.autoContextTokenBudget') ?? 8000);
 			}
 		}));
 	}

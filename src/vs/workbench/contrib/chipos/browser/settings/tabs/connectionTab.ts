@@ -10,7 +10,8 @@ import { localize } from '../../../../../../nls.js';
 import * as dom from '../../../../../../base/browser/dom.js';
 import { InputBox } from '../../../../../../base/browser/ui/inputbox/inputBox.js';
 import { Checkbox } from '../../../../../../base/browser/ui/toggle/toggle.js';
-import { defaultCheckboxStyles, defaultInputBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
+import { SelectBox, ISelectOptionItem } from '../../../../../../base/browser/ui/selectBox/selectBox.js';
+import { defaultCheckboxStyles, defaultInputBoxStyles, defaultSelectBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
 
@@ -61,31 +62,34 @@ export class ConnectionTab extends Disposable {
 			localize('chipos.settings.mode.desc', 'How the IDE connects to reasoning and execution layers. Remote-SSH is orthogonal — when connected via SSH, "local" mode runs on the remote server.')
 		));
 
-		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const select = dom.append(selectContainer, dom.$('select.chipos-setting-select')) as HTMLSelectElement;
-
-		const modes: { value: string; label: string }[] = [
-			{ value: 'local', label: localize('chipos.mode.local', 'Local (reasoning + execution in one process)') },
-			{ value: 'cloud-reasoning', label: localize('chipos.mode.cloud', 'Cloud Reasoning (local execution + cloud reasoning)') },
-			{ value: 'manual', label: localize('chipos.mode.manual', 'Manual (pre-deployed, specify URLs)') },
+		const modeValues = ['local', 'cloud-reasoning', 'manual'];
+		const modeOptions: ISelectOptionItem[] = [
+			{ text: localize('chipos.mode.local', 'Local (reasoning + execution in one process)') },
+			{ text: localize('chipos.mode.cloud', 'Cloud Reasoning (local execution + cloud reasoning)') },
+			{ text: localize('chipos.mode.manual', 'Manual (pre-deployed, specify URLs)') },
 		];
 
-		for (const mode of modes) {
-			const option = dom.append(select, dom.$('option')) as HTMLOptionElement;
-			option.value = mode.value;
-			option.textContent = mode.label;
-		}
+		const current = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+		const selectedIndex = Math.max(0, modeValues.indexOf(current));
 
-		select.value = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const selectBox = this._disposables.add(new SelectBox(modeOptions, selectedIndex, this._contextViewProvider!, defaultSelectBoxStyles));
+		selectBox.render(selectContainer);
 
-		this._disposables.add(dom.addDisposableListener(select, 'change', () => {
-			this._configurationService.updateValue('chipos.backend.mode', select.value, ConfigurationTarget.USER);
-			this._renderModeSpecificSettings();
+		this._disposables.add(selectBox.onDidSelect(e => {
+			if (e.index < modeValues.length) {
+				this._configurationService.updateValue('chipos.backend.mode', modeValues[e.index], ConfigurationTarget.USER);
+				this._renderModeSpecificSettings();
+			}
 		}));
 
 		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('chipos.backend.mode')) {
-				select.value = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+				const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+				const idx = modeValues.indexOf(mode);
+				if (idx >= 0) {
+					selectBox.select(idx);
+				}
 				this._renderModeSpecificSettings();
 			}
 		}));

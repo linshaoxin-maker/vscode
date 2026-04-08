@@ -8,6 +8,11 @@ import { IConfigurationService, ConfigurationTarget } from '../../../../../../pl
 import { IModelDiscoveryService, ModelInfo } from '../modelDiscoveryService.js';
 import { localize } from '../../../../../../nls.js';
 import * as dom from '../../../../../../base/browser/dom.js';
+import { SelectBox, ISelectOptionItem } from '../../../../../../base/browser/ui/selectBox/selectBox.js';
+import { InputBox } from '../../../../../../base/browser/ui/inputbox/inputBox.js';
+import { defaultSelectBoxStyles, defaultInputBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
+import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
+import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
 
 const PROVIDER_OPTIONS: { value: string; label: string }[] = [
 	{ value: 'zhipu', label: 'ZhiPu (智谱)' },
@@ -16,6 +21,8 @@ const PROVIDER_OPTIONS: { value: string; label: string }[] = [
 	{ value: 'deepseek', label: 'DeepSeek' },
 	{ value: 'custom', label: 'Custom' },
 ];
+
+const PROVIDER_VALUES = PROVIDER_OPTIONS.map(o => o.value);
 
 const PROVIDER_BASE_URLS: Record<string, string> = {
 	zhipu: 'https://open.bigmodel.cn/api/paas/v4',
@@ -26,22 +33,25 @@ const PROVIDER_BASE_URLS: Record<string, string> = {
 
 export class ModelsTab extends Disposable {
 
-	private _providerSelect!: HTMLSelectElement;
-	private _apiKeyInput!: HTMLInputElement;
-	private _baseUrlInput!: HTMLInputElement;
+	private _providerSelect!: SelectBox;
+	private _apiKeyInput!: InputBox;
+	private _baseUrlInput!: InputBox;
 	private _baseUrlRow!: HTMLElement;
-	private _modelSelect!: HTMLSelectElement;
+	private _modelSelect!: SelectBox;
 	private _verifyButton!: HTMLButtonElement;
 	private _verifyStatus!: HTMLElement;
 	private _models: ModelInfo[] = [];
 	private readonly _disposables = this._register(new DisposableStore());
+	private readonly _contextViewProvider: IContextViewProvider | undefined;
 
 	constructor(
 		private readonly _container: HTMLElement,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IModelDiscoveryService private readonly _modelDiscoveryService: IModelDiscoveryService,
+		@IContextViewService contextViewService: IContextViewService,
 	) {
 		super();
+		this._contextViewProvider = contextViewService ?? undefined;
 		this._render();
 		this._bindConfigListener();
 	}
@@ -64,18 +74,16 @@ export class ModelsTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.provider', 'Provider')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.provider.desc', 'Select the LLM provider for ChipOS.')));
 
-		this._providerSelect = dom.append(row, dom.$<HTMLSelectElement>('select.chipos-setting-select'));
-		for (const opt of PROVIDER_OPTIONS) {
-			const option = dom.append(this._providerSelect, dom.$<HTMLOptionElement>('option'));
-			option.value = opt.value;
-			option.textContent = opt.label;
-		}
-
+		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const options: ISelectOptionItem[] = PROVIDER_OPTIONS.map(o => ({ text: o.label }));
 		const current = this._configurationService.getValue<string>('chipos.provider') || 'zhipu';
-		this._providerSelect.value = current;
+		const selectedIndex = Math.max(0, PROVIDER_VALUES.indexOf(current));
 
-		this._disposables.add(dom.addDisposableListener(this._providerSelect, 'change', () => {
-			const provider = this._providerSelect.value;
+		this._providerSelect = this._disposables.add(new SelectBox(options, selectedIndex, this._contextViewProvider!, defaultSelectBoxStyles));
+		this._providerSelect.render(selectContainer);
+
+		this._disposables.add(this._providerSelect.onDidSelect(e => {
+			const provider = PROVIDER_VALUES[e.index];
 			this._configurationService.updateValue('chipos.provider', provider, ConfigurationTarget.USER);
 
 			if (provider !== 'custom' && PROVIDER_BASE_URLS[provider]) {
@@ -89,18 +97,27 @@ export class ModelsTab extends Disposable {
 		}));
 	}
 
+	private get _selectedProvider(): string {
+		return PROVIDER_VALUES[Math.max(0, PROVIDER_VALUES.indexOf(
+			this._configurationService.getValue<string>('chipos.provider') || 'zhipu'
+		))];
+	}
+
 	private _renderApiKeyRow(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-setting-row'));
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.apiKey', 'API Key')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.apiKey.desc', 'Your API key for the selected provider. Stored locally in settings.json.')));
 
-		this._apiKeyInput = dom.append(row, dom.$<HTMLInputElement>('input.chipos-setting-input'));
-		this._apiKeyInput.type = 'password';
-		this._apiKeyInput.placeholder = 'sk-...';
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		this._apiKeyInput = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: 'sk-...',
+			type: 'password',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
 		this._apiKeyInput.value = this._configurationService.getValue<string>('chipos.apiKey') || '';
 
-		this._disposables.add(dom.addDisposableListener(this._apiKeyInput, 'change', () => {
-			this._configurationService.updateValue('chipos.apiKey', this._apiKeyInput.value, ConfigurationTarget.USER);
+		this._disposables.add(this._apiKeyInput.onDidChange(value => {
+			this._configurationService.updateValue('chipos.apiKey', value, ConfigurationTarget.USER);
 			this._clearVerifyStatus();
 		}));
 	}
@@ -110,13 +127,15 @@ export class ModelsTab extends Disposable {
 		dom.append(this._baseUrlRow, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.baseUrl', 'API Base URL')));
 		dom.append(this._baseUrlRow, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.baseUrl.desc', 'Base URL for the LLM API endpoint.')));
 
-		this._baseUrlInput = dom.append(this._baseUrlRow, dom.$<HTMLInputElement>('input.chipos-setting-input'));
-		this._baseUrlInput.type = 'text';
-		this._baseUrlInput.placeholder = 'https://api.example.com/v1';
+		const inputContainer = dom.append(this._baseUrlRow, dom.$('.chipos-setting-input-container'));
+		this._baseUrlInput = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: 'https://api.example.com/v1',
+			inputBoxStyles: defaultInputBoxStyles,
+		}));
 		this._baseUrlInput.value = this._configurationService.getValue<string>('chipos.apiBaseUrl') || '';
 
-		this._disposables.add(dom.addDisposableListener(this._baseUrlInput, 'change', () => {
-			this._configurationService.updateValue('chipos.apiBaseUrl', this._baseUrlInput.value, ConfigurationTarget.USER);
+		this._disposables.add(this._baseUrlInput.onDidChange(value => {
+			this._configurationService.updateValue('chipos.apiBaseUrl', value, ConfigurationTarget.USER);
 		}));
 
 		this._updateBaseUrlVisibility();
@@ -138,28 +157,27 @@ export class ModelsTab extends Disposable {
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.model', 'Model')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.model.desc', 'Select the model to use. Click "Verify & Fetch Models" to refresh the list.')));
 
-		this._modelSelect = dom.append(row, dom.$<HTMLSelectElement>('select.chipos-setting-select'));
-
+		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
 		const currentModel = this._configurationService.getValue<string>('chipos.model') || '';
-		if (currentModel) {
-			const opt = dom.append(this._modelSelect, dom.$<HTMLOptionElement>('option'));
-			opt.value = currentModel;
-			opt.textContent = currentModel;
-			this._modelSelect.value = currentModel;
-		}
+		const initialOptions: ISelectOptionItem[] = currentModel ? [{ text: currentModel }] : [{ text: '—' }];
 
-		this._disposables.add(dom.addDisposableListener(this._modelSelect, 'change', () => {
-			this._configurationService.updateValue('chipos.model', this._modelSelect.value, ConfigurationTarget.USER);
+		this._modelSelect = this._disposables.add(new SelectBox(initialOptions, 0, this._contextViewProvider!, defaultSelectBoxStyles));
+		this._modelSelect.render(selectContainer);
+
+		this._disposables.add(this._modelSelect.onDidSelect(e => {
+			if (this._models.length > 0 && e.index < this._models.length) {
+				this._configurationService.updateValue('chipos.model', this._models[e.index].id, ConfigurationTarget.USER);
+			}
 		}));
 	}
 
 	private _updateBaseUrlVisibility(): void {
-		const provider = this._providerSelect.value;
+		const provider = this._selectedProvider;
 		this._baseUrlRow.style.display = provider === 'custom' ? '' : 'none';
 	}
 
 	private async _doVerify(): Promise<void> {
-		const provider = this._providerSelect.value;
+		const provider = this._selectedProvider;
 		const apiKey = this._apiKeyInput.value;
 		const baseUrl = provider === 'custom' ? this._baseUrlInput.value : undefined;
 
@@ -192,17 +210,12 @@ export class ModelsTab extends Disposable {
 		this._models = models;
 		const currentModel = this._configurationService.getValue<string>('chipos.model') || '';
 
-		dom.clearNode(this._modelSelect);
-		for (const model of models) {
-			const opt = dom.append(this._modelSelect, dom.$<HTMLOptionElement>('option'));
-			opt.value = model.id;
-			opt.textContent = model.displayName || model.id;
-		}
+		const options: ISelectOptionItem[] = models.map(m => ({ text: m.displayName || m.id }));
+		const selectedIndex = Math.max(0, models.findIndex(m => m.id === currentModel));
 
-		if (models.some(m => m.id === currentModel)) {
-			this._modelSelect.value = currentModel;
-		} else if (models.length > 0) {
-			this._modelSelect.value = models[0].id;
+		this._modelSelect.setOptions(options, selectedIndex);
+
+		if (!models.some(m => m.id === currentModel) && models.length > 0) {
 			this._configurationService.updateValue('chipos.model', models[0].id, ConfigurationTarget.USER);
 		}
 	}
@@ -215,22 +228,19 @@ export class ModelsTab extends Disposable {
 	private _clearModels(): void {
 		this._models = [];
 		const currentModel = this._configurationService.getValue<string>('chipos.model') || '';
-		dom.clearNode(this._modelSelect);
-		if (currentModel) {
-			const opt = dom.append(this._modelSelect, dom.$<HTMLOptionElement>('option'));
-			opt.value = currentModel;
-			opt.textContent = currentModel;
-		}
+		const options: ISelectOptionItem[] = currentModel ? [{ text: currentModel }] : [{ text: '—' }];
+		this._modelSelect.setOptions(options, 0);
 	}
 
 	private _bindConfigListener(): void {
 		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('chipos.provider')) {
 				const provider = this._configurationService.getValue<string>('chipos.provider') || 'zhipu';
-				if (this._providerSelect.value !== provider) {
-					this._providerSelect.value = provider;
-					this._updateBaseUrlVisibility();
+				const idx = PROVIDER_VALUES.indexOf(provider);
+				if (idx >= 0) {
+					this._providerSelect.select(idx);
 				}
+				this._updateBaseUrlVisibility();
 			}
 			if (e.affectsConfiguration('chipos.apiKey')) {
 				const key = this._configurationService.getValue<string>('chipos.apiKey') || '';
@@ -240,8 +250,9 @@ export class ModelsTab extends Disposable {
 			}
 			if (e.affectsConfiguration('chipos.model')) {
 				const model = this._configurationService.getValue<string>('chipos.model') || '';
-				if (this._modelSelect.value !== model && this._models.some(m => m.id === model)) {
-					this._modelSelect.value = model;
+				const idx = this._models.findIndex(m => m.id === model);
+				if (idx >= 0) {
+					this._modelSelect.select(idx);
 				}
 			}
 		}));
