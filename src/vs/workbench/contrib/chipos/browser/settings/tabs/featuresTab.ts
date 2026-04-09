@@ -89,18 +89,25 @@ export class FeaturesTab extends Disposable {
 	private _render(): void {
 		dom.clearNode(this._container);
 
-		const section = dom.append(this._container, dom.$('.chipos-settings-section'));
-		dom.append(section, dom.$('.chipos-settings-section-title', undefined, localize('chipos.settings.features', 'Feature Settings')));
+		// Group 1: Display
+		const displaySection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(displaySection, dom.$('.chipos-settings-section-title', undefined, localize('chipos.features.group.display', 'Display')));
+		this._renderToggle(displaySection, TOGGLE_SETTINGS[0]); // Show Thinking
 
-		for (const setting of TOGGLE_SETTINGS) {
-			this._renderToggle(section, setting);
-		}
+		// Group 2: Context & Tools
+		const contextSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(contextSection, dom.$('.chipos-settings-section-title', undefined, localize('chipos.features.group.context', 'Context & Tools')));
+		this._renderToggle(contextSection, TOGGLE_SETTINGS[1]); // Auto Context
+		this._renderTokenBudget(contextSection);
+		this._renderToggle(contextSection, TOGGLE_SETTINGS[2]); // Built-in Tools
+		this._renderToggle(contextSection, TOGGLE_SETTINGS[3]); // Dynamic Skills
 
+		// Group 3: Agent Behavior
+		const agentSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(agentSection, dom.$('.chipos-settings-section-title', undefined, localize('chipos.features.group.agent', 'Agent Behavior')));
 		for (const setting of SELECT_SETTINGS) {
-			this._renderSelect(section, setting);
+			this._renderSelect(agentSection, setting);
 		}
-
-		this._renderTokenBudget(section);
 	}
 
 	private _renderToggle(parent: HTMLElement, setting: ToggleSetting): void {

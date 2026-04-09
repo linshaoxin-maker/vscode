@@ -84,6 +84,20 @@
 .eda-badge-warning {
 	background: var(--vscode-editorWarning-foreground, #cca700);
 	color: #000;
+	text-shadow: 0 0 1px rgba(0,0,0,0.1);
+}
+
+/* Light theme: ensure badge text remains readable */
+.vs .eda-badge-pass,
+.vs .eda-badge-done {
+	background: var(--vscode-testing-iconPassed, #388a34);
+	color: #fff;
+}
+
+.vs .eda-badge-fail,
+.vs .eda-badge-error {
+	background: var(--vscode-testing-iconFailed, #f14c4c);
+	color: #fff;
 }
 
 .eda-badge-info {
@@ -260,4 +274,95 @@
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	font-family: var(--vscode-editor-font-family);
+}
+
+/* ── Agent Error Card ───────────────────────────────────────────────────────── */
+
+.chat-agent-error {
+	padding: 12px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);
+	background: var(--vscode-inputValidation-errorBackground, rgba(190, 17, 0, 0.1));
+	margin-bottom: 8px;
+}
+
+.chat-agent-error-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 6px;
+}
+
+.chat-agent-error-header .codicon-error {
+	color: var(--vscode-testing-iconFailed);
+}
+
+.chat-agent-error-code {
+	font-weight: 600;
+	font-size: 13px;
+	color: var(--vscode-foreground);
+}
+
+.chat-agent-error-message {
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	line-height: 1.4;
+}
+
+.chat-agent-error-suggestion {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 6px;
+	font-style: italic;
+}
+
+.chat-agent-error-actions {
+	margin-top: 8px;
+}
+
+.chat-agent-error-retry {
+	padding: 4px 12px;
+	font-size: 12px;
+	cursor: pointer;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: 4px;
+}
+
+.chat-agent-error-retry:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+/* ── Round Progress ─────────────────────────────────────────────────────────── */
+
+.chat-round-progress {
+	padding: 8px 0;
+}
+
+.chat-round-progress-header {
+	font-size: 12px;
+	font-weight: 500;
+	margin-bottom: 4px;
+	color: var(--vscode-foreground);
+}
+
+.chat-round-progress-track {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.2));
+	overflow: hidden;
+}
+
+.chat-round-progress-fill {
+	height: 100%;
+	border-radius: 2px;
+	background: var(--vscode-progressBar-background, #0078d4);
+	transition: width 0.3s ease;
+}
+
+.chat-round-progress-pct {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
 }

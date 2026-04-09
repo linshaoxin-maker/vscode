@@ -21,26 +21,30 @@ import { ConnectionTab } from './tabs/connectionTab.js';
 import { RulesTab } from './tabs/rulesTab.js';
 import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
+import { GeneralTab } from './tabs/generalTab.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import * as dom from '../../../../../base/browser/dom.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
+import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 
 interface ICategoryDef {
 	readonly id: ChipOSSettingsTab;
 	readonly label: string;
 	readonly icon: ThemeIcon;
+	readonly searchableTerms: string[];
 }
 
 const CATEGORIES: ICategoryDef[] = [
-	{ id: 'models', label: localize('chipos.cat.models', 'Models'), icon: Codicon.hubot },
-	{ id: 'features', label: localize('chipos.cat.features', 'Features'), icon: Codicon.extensions },
-	{ id: 'connection', label: localize('chipos.cat.connection', 'Connection'), icon: Codicon.plug },
-	{ id: 'rules', label: localize('chipos.cat.rules', 'Rules'), icon: Codicon.law },
-	{ id: 'beta', label: localize('chipos.cat.beta', 'Beta'), icon: Codicon.beaker },
-	{ id: 'tools', label: localize('chipos.cat.tools', 'Tools'), icon: Codicon.tools },
+	{ id: 'general', label: localize('chipos.cat.general', 'General'), icon: Codicon.gear, searchableTerms: ['privacy', 'telemetry', 'logging', 'log level', 'editor', 'hints'] },
+	{ id: 'models', label: localize('chipos.cat.models', 'Models'), icon: Codicon.hubot, searchableTerms: ['provider', 'api key', 'model', 'base url', 'zhipu', 'openai', 'anthropic', 'deepseek'] },
+	{ id: 'features', label: localize('chipos.cat.features', 'Features'), icon: Codicon.extensions, searchableTerms: ['thinking', 'context', 'tools', 'skills', 'approve', 'chat mode', 'token budget'] },
+	{ id: 'connection', label: localize('chipos.cat.connection', 'Connection'), icon: Codicon.plug, searchableTerms: ['backend', 'mode', 'reasoning', 'worker', 'grpc', 'tls', 'port', 'python', 'sidecar'] },
+	{ id: 'rules', label: localize('chipos.cat.rules', 'Rules'), icon: Codicon.law, searchableTerms: ['rules', 'global', 'project', 'hook'] },
+	{ id: 'beta', label: localize('chipos.cat.beta', 'Beta'), icon: Codicon.beaker, searchableTerms: ['inline chat', 'terminal agent', 'multi-agent', 'simulation', 'spec mode'] },
+	{ id: 'tools', label: localize('chipos.cat.tools', 'Tools'), icon: Codicon.tools, searchableTerms: ['mcp', 'server', 'configuration'] },
 ];
 
 export class ChipOSSettingsEditor extends EditorPane {
@@ -50,10 +54,13 @@ export class ChipOSSettingsEditor extends EditorPane {
 	private _rootElement: HTMLElement | undefined;
 	private _navList: HTMLElement | undefined;
 	private _contentArea: HTMLElement | undefined;
-	private _activeTab: ChipOSSettingsTab = 'models';
+	private _activeTab: ChipOSSettingsTab = 'general';
 	private _navItems = new Map<ChipOSSettingsTab, HTMLElement>();
+	private _navBadges = new Map<ChipOSSettingsTab, HTMLElement>();
 	private _tabInstances = new DisposableStore();
 	private _activeTabDisposable: IDisposable | undefined;
+	private _searchInput: HTMLInputElement | undefined;
+	private _currentFilter = '';
 
 	constructor(
 		group: IEditorGroup,
@@ -62,6 +69,7 @@ export class ChipOSSettingsEditor extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ICommandService private readonly _commandService: ICommandService,
+		@IKeybindingService private readonly _keybindingService: IKeybindingService,
 	) {
 		super(ChipOSSettingsEditor.ID, group, telemetryService, themeService, storageService);
 	}
@@ -72,12 +80,33 @@ export class ChipOSSettingsEditor extends EditorPane {
 
 		// ── Header ──
 		const header = dom.append(this._rootElement, dom.$('.chipos-settings-header'));
-		dom.append(header, dom.$('.chipos-settings-title', undefined, localize('chipos.settings.title', 'ChipOS Settings')));
+		const headerLeft = dom.append(header, dom.$('.chipos-settings-header-left'));
+		dom.append(headerLeft, dom.$('.chipos-settings-title', undefined, localize('chipos.settings.title', 'ChipOS Settings')));
+
+		// Search box
+		const searchContainer = dom.append(headerLeft, dom.$('.chipos-settings-search'));
+		this._searchInput = dom.append(searchContainer, dom.$<HTMLInputElement>('input.chipos-settings-search-input'));
+		this._searchInput.type = 'text';
+		this._searchInput.placeholder = localize('chipos.settings.search', 'Search settings...');
+		this._searchInput.addEventListener('input', () => {
+			this._currentFilter = this._searchInput!.value.toLowerCase().trim();
+			this._updateSearchBadges();
+			this._filterCurrentTab();
+		});
+
 		const customLink = dom.append(header, dom.$('.chipos-settings-customizations-link'));
 		customLink.textContent = localize('chipos.settings.openJson', 'Open JSON Settings');
 		customLink.addEventListener('click', () => {
 			this._commandService.executeCommand('workbench.action.openSettingsJson');
 		});
+
+		// ── Keyboard shortcut hint ──
+		const kb = this._keybindingService.lookupKeybinding('chipos.openSettings');
+		if (kb) {
+			const kbHint = dom.append(header, dom.$('.chipos-settings-keybinding-hint'));
+			kbHint.textContent = kb.getLabel() ?? '';
+			kbHint.title = localize('chipos.settings.keybindingHint', 'Keyboard shortcut to open this page');
+		}
 
 		// ── SplitView body ──
 		const body = dom.append(this._rootElement, dom.$('.chipos-settings-body'));
@@ -93,13 +122,17 @@ export class ChipOSSettingsEditor extends EditorPane {
 
 			dom.append(item, dom.$('.chipos-settings-nav-label', undefined, cat.label));
 
+			const badge = dom.append(item, dom.$('.chipos-settings-nav-badge'));
+			badge.style.display = 'none';
+			this._navBadges.set(cat.id, badge);
+
 			item.addEventListener('click', () => this._switchTab(cat.id));
 			this._navItems.set(cat.id, item);
 		}
 
 		// Right: content area
 		this._contentArea = dom.append(body, dom.$('.chipos-settings-content'));
-		this._contentArea.tabIndex = 0; // Ensure content area can receive focus for input interaction
+		this._contentArea.tabIndex = 0;
 	}
 
 	override async setInput(
@@ -109,28 +142,25 @@ export class ChipOSSettingsEditor extends EditorPane {
 		token: CancellationToken,
 	): Promise<void> {
 		await super.setInput(input, options, context, token);
-		const tab = (options as IChipOSSettingsEditorOptions | undefined)?.initialTab ?? 'models';
+		const tab = (options as IChipOSSettingsEditorOptions | undefined)?.initialTab ?? 'general';
 		this._switchTab(tab);
 	}
 
 	private _switchTab(tab: ChipOSSettingsTab): void {
 		if (this._activeTab === tab && this._activeTabDisposable) {
-			return; // already showing
+			return;
 		}
 		this._activeTab = tab;
 
-		// Update nav selection
 		for (const [id, el] of this._navItems) {
 			el.classList.toggle('active', id === tab);
 		}
 
-		// Clear content
 		if (this._contentArea) {
 			dom.clearNode(this._contentArea);
 		}
 		this._activeTabDisposable?.dispose();
 
-		// Create tab content
 		if (!this._contentArea) {
 			return;
 		}
@@ -140,6 +170,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 
 		try {
 			switch (tab) {
+				case 'general':
+					store.add(this._instantiationService.createInstance(GeneralTab, this._contentArea));
+					break;
 				case 'models':
 					store.add(this._instantiationService.createInstance(ModelsTab, this._contentArea));
 					break;
@@ -164,6 +197,52 @@ export class ChipOSSettingsEditor extends EditorPane {
 			const icon = dom.append(errorEl, dom.$('.codicon'));
 			icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.warning));
 			dom.append(errorEl, dom.$('span', undefined, localize('chipos.settings.tabError', 'Failed to load {0} tab: {1}', tab, String(err))));
+		}
+
+		this._filterCurrentTab();
+	}
+
+	private _updateSearchBadges(): void {
+		const q = this._currentFilter;
+		for (const cat of CATEGORIES) {
+			const badge = this._navBadges.get(cat.id);
+			if (!badge) { continue; }
+			if (!q) {
+				badge.style.display = 'none';
+				continue;
+			}
+			const matches = cat.searchableTerms.filter(t => t.includes(q)).length;
+			const labelMatch = cat.label.toLowerCase().includes(q) ? 1 : 0;
+			const total = matches + labelMatch;
+			if (total > 0) {
+				badge.textContent = String(total);
+				badge.style.display = '';
+			} else {
+				badge.style.display = 'none';
+			}
+		}
+	}
+
+	private _filterCurrentTab(): void {
+		if (!this._contentArea) { return; }
+		const q = this._currentFilter;
+		const rows = this._contentArea.querySelectorAll<HTMLElement>(
+			'.chipos-setting-row, .chipos-toggle-row, .chipos-setting-row-horizontal, .chipos-verify-row, .chipos-mcp-server-row, .chipos-config-link-row'
+		);
+		for (const row of rows) {
+			if (!q) {
+				row.style.display = '';
+				row.classList.remove('chipos-search-highlight');
+				continue;
+			}
+			const text = row.textContent?.toLowerCase() ?? '';
+			if (text.includes(q)) {
+				row.style.display = '';
+				row.classList.add('chipos-search-highlight');
+			} else {
+				row.style.display = 'none';
+				row.classList.remove('chipos-search-highlight');
+			}
 		}
 	}
 

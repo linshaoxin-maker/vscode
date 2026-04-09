@@ -26,39 +26,17 @@ export class ChatRoundProgressContentPart extends Disposable implements IChatCon
 		const { current_round, max_rounds, phase } = this._data;
 		const pct = max_rounds > 0 ? Math.min(100, Math.round((current_round / max_rounds) * 100)) : 0;
 
-		// Header: "Round 3/10 — Synthesis"
 		const header = dom.append(this.domNode, dom.$('.chat-round-progress-header'));
-		const label = phase
+		header.textContent = phase
 			? `Round ${current_round}/${max_rounds} — ${phase}`
 			: `Round ${current_round}/${max_rounds}`;
-		header.textContent = label;
 
-		// Progress bar
 		const track = dom.append(this.domNode, dom.$('.chat-round-progress-track'));
 		const fill = dom.append(track, dom.$('.chat-round-progress-fill'));
 		fill.style.width = `${pct}%`;
 
-		// Percentage
 		const pctLabel = dom.append(this.domNode, dom.$('.chat-round-progress-pct'));
 		pctLabel.textContent = `${pct}%`;
-
-		// Inline styles (will be moved to CSS in future)
-		this.domNode.style.padding = '8px 0';
-		header.style.fontSize = '12px';
-		header.style.fontWeight = '500';
-		header.style.marginBottom = '4px';
-		header.style.color = 'var(--vscode-foreground)';
-		track.style.height = '4px';
-		track.style.borderRadius = '2px';
-		track.style.background = 'var(--vscode-progressBar-background, rgba(128,128,128,0.2))';
-		track.style.overflow = 'hidden';
-		fill.style.height = '100%';
-		fill.style.borderRadius = '2px';
-		fill.style.background = 'var(--vscode-progressBar-background, #0078d4)';
-		fill.style.transition = 'width 0.3s ease';
-		pctLabel.style.fontSize = '11px';
-		pctLabel.style.color = 'var(--vscode-descriptionForeground)';
-		pctLabel.style.marginTop = '2px';
 	}
 
 	hasSameContent(other: IChatRendererContent, _followingContent: IChatRendererContent[], _element: unknown): boolean {
