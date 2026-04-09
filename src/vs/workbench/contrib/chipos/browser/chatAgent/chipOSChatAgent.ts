@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
@@ -90,12 +90,14 @@ import {
 	type IFileEditPayload,
 	type IQueueUpdatePayload,
 	type IContextWarningPayload,
+	type IUsagePayload,
 	type IMentionItem,
 	type IIdeToolCallPayload,
 } from '../eventStream/eventTypes.js';
 
 interface IChatSessionRuntime {
 	streamClient?: IEventStreamClient;
+	clientListeners: DisposableStore;  // listeners tied to the current streamClient lifetime
 	backendSessionId?: string;
 	toolStartTimes: Map<string, number>;
 	toolFileArgs: Map<string, string>;
@@ -1247,6 +1249,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				break;
 			}
 
+			case AgentEventType.Usage: {
+				// Feed token usage into VS Code's chat model so ChatContextUsageWidget can display it
+				const p = event.payload as IUsagePayload;
+				ctx.progress([{
+					kind: 'usage',
+					promptTokens: p.prompt_tokens,
+					completionTokens: p.completion_tokens,
+				}]);
+				break;
+			}
+
 			default:
 				this._logService.trace('[ChipOS Agent] Unhandled event:', (event as AgentEvent).event_type);
 				break;
@@ -2265,6 +2278,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		let runtime = this._sessionRuntimes.get(sessionResource);
 		if (!runtime) {
 			runtime = {
+				clientListeners: new DisposableStore(),
 				toolStartTimes: new Map<string, number>(),
 				toolFileArgs: new Map<string, string>(),
 				subagentTimers: new Map<string, number>(),
@@ -2295,6 +2309,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		void this._cleanupExternalEditsForSession(sessionResource, externalEditOps, pendingStartEdits);
 
 		runtime.streamClient?.dispose();
+		runtime.clientListeners.dispose();
 		runtime.streamClient = undefined;
 		runtime.backendSessionId = undefined;
 		runtime.lastSubagentToolCallId = undefined;
@@ -2417,10 +2432,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._logService.trace('[ChipOS Agent] Reusing existing SSE client for reconnect');
 		} else {
 			runtime.streamClient?.dispose();
+			runtime.clientListeners.clear();  // drop listeners from previous client
 			runtime.streamClient = new SseEventStreamClient({ baseUrl, token }, this._logService);
 
 			// Monitor connection state changes — show/hide banner in chat widget
-			runtime.streamClient.onDidChangeConnectionState((state) => {
+			// Tied to clientListeners so it's cleaned up when the client is replaced or disposed
+			runtime.clientListeners.add(runtime.streamClient.onDidChangeConnectionState((state) => {
 				if (state === ConnectionState.Reconnecting || state === ConnectionState.Error) {
 					this._showConnectionBanner(sessionResource, state);
 				} else if (state === ConnectionState.Connected) {
@@ -2429,7 +2446,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						this._logService.info('[ChipOS Agent] SSE reconnected');
 					}
 				}
-			});
+			}));
 		}
 
 		try {
