@@ -54,6 +54,8 @@ import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/com
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
 import { IChatEditingService, type IChatEditingSession } from '../../../../contrib/chat/common/editing/chatEditingService.js';
 import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
+import { IChatWidgetService } from '../../../../contrib/chat/browser/chat.js';
+import { ConnectionBannerHandler } from './connectionBannerHandler.js';
 import type { IChatResponseModel } from '../../../../contrib/chat/common/model/chatModel.js';
 import { SseEventStreamClient } from '../eventStream/grpcSseEventStreamClient.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
@@ -126,6 +128,7 @@ interface IChatSessionRuntime {
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
 	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
+	private readonly _connectionBanners = new ResourceMap<ConnectionBannerHandler>();
 	private _editorEffects: ChipOSEditorEffects | undefined;
 	private _contextCollector: ContextCollector | undefined;
 	private _sessionCounter = 0;
@@ -143,6 +146,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatEditingService private readonly _chatEditingService: IChatEditingService,
 		@IChatService private readonly _chatService: IChatService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
 		@ITerminalChatService private readonly _terminalChatService: ITerminalChatService,
 		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
@@ -2305,6 +2309,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.terminalArtifacts.clear();
 		this._ensureEditorEffects().clearSessionState(sessionResource);
 		this._sessionRuntimes.delete(sessionResource);
+		// Clean up any connection banner for this session
+		this._hideConnectionBanner(sessionResource);
+		this._connectionBanners.delete(sessionResource);
+	}
+
+	// ── Connection Banner ─────────────────────────────────────────────────────
+
+	private _showConnectionBanner(sessionResource: URI, state: ConnectionState): void {
+		// Find the chat widget for this session
+		const widget = this._chatWidgetService.getWidgetBySessionResource(sessionResource);
+		const listContainer = widget?.domNode?.querySelector<HTMLElement>('.interactive-list');
+		if (!listContainer) {
+			// Widget not visible — fall back to notification
+			if (state === ConnectionState.Error) {
+				this._notificationService.warn(
+					localize('chipos.agent.disconnected', 'ChipOS: Backend connection failed. Check if the Reasoner is running.')
+				);
+			}
+			return;
+		}
+
+		let banner = this._connectionBanners.get(sessionResource);
+		if (!banner) {
+			banner = new ConnectionBannerHandler(this._logService);
+			this._connectionBanners.set(sessionResource, banner);
+		}
+
+		banner.show(listContainer, state, () => {
+			// "Reconnect Now" clicked — re-run _ensureClient
+			this._ensureClient(sessionResource).catch(err => {
+				this._logService.error('[ChipOS Agent] Manual reconnect failed:', String(err));
+			});
+		});
+	}
+
+	private _hideConnectionBanner(sessionResource: URI): void {
+		const banner = this._connectionBanners.get(sessionResource);
+		if (banner) {
+			banner.hide();
+		}
 	}
 
 	private async _cleanupExternalEditsForSession(
@@ -2375,18 +2419,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			runtime.streamClient?.dispose();
 			runtime.streamClient = new SseEventStreamClient({ baseUrl, token }, this._logService);
 
-			// Monitor connection state changes for user-facing notifications
+			// Monitor connection state changes — show/hide banner in chat widget
 			runtime.streamClient.onDidChangeConnectionState((state) => {
-				if (state === ConnectionState.Reconnecting) {
-					this._notificationService.info(
-						localize('chipos.agent.reconnecting', 'ChipOS: Connection lost, reconnecting to backend...')
-					);
-				} else if (state === ConnectionState.Error) {
-					this._notificationService.warn(
-						localize('chipos.agent.disconnected', 'ChipOS: Backend connection failed. Check if the Reasoner is running.')
-					);
+				if (state === ConnectionState.Reconnecting || state === ConnectionState.Error) {
+					this._showConnectionBanner(sessionResource, state);
 				} else if (state === ConnectionState.Connected) {
-					// Only notify on reconnect (not initial connect)
+					this._hideConnectionBanner(sessionResource);
 					if (this._logService) {
 						this._logService.info('[ChipOS Agent] SSE reconnected');
 					}
@@ -2415,6 +2453,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		for (const [sessionResource] of this._sessionRuntimes) {
 			this._disposeRuntime(sessionResource);
 		}
+		for (const [, banner] of this._connectionBanners) {
+			banner.dispose();
+		}
+		this._connectionBanners.clear();
 		super.dispose();
 	}
 }

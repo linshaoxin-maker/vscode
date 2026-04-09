@@ -1,0 +1,114 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── Connection Banner ──────────────────────────────────────────────────────── */
+
+.chipos-connection-banner {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 12px;
+	margin: 0 8px 6px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+	background: var(--vscode-inputValidation-warningBackground, rgba(184, 149, 0, 0.1));
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	animation: chipos-banner-slide-in 0.2s ease-out;
+	position: relative;
+	z-index: 10;
+}
+
+.chipos-connection-banner--hiding {
+	animation: chipos-banner-slide-out 0.25s ease-in forwards;
+}
+
+@keyframes chipos-banner-slide-in {
+	from { opacity: 0; transform: translateY(6px); }
+	to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes chipos-banner-slide-out {
+	from { opacity: 1; transform: translateY(0); }
+	to   { opacity: 0; transform: translateY(6px); }
+}
+
+.chipos-connection-banner-left {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+}
+
+.chipos-connection-banner-icon {
+	font-size: 14px;
+	flex-shrink: 0;
+	color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.chipos-connection-banner-msg {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--vscode-foreground);
+}
+
+.chipos-connection-banner-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+.chipos-connection-banner-btn {
+	padding: 3px 10px;
+	font-size: 11px;
+	cursor: pointer;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: 4px;
+	white-space: nowrap;
+}
+
+.chipos-connection-banner-btn:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.chipos-connection-banner-btn:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.chipos-connection-banner-dismiss {
+	background: none;
+	border: none;
+	cursor: pointer;
+	padding: 2px;
+	color: var(--vscode-icon-foreground);
+	opacity: 0.7;
+	font-size: 14px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 3px;
+}
+
+.chipos-connection-banner-dismiss:hover {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* Error state — red tint */
+.chipos-connection-banner.chipos-connection-banner--error {
+	border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+	background: var(--vscode-inputValidation-errorBackground, rgba(190, 17, 0, 0.1));
+}
+
+.chipos-connection-banner.chipos-connection-banner--error .chipos-connection-banner-icon {
+	color: var(--vscode-testing-iconFailed, #f14c4c);
+}
