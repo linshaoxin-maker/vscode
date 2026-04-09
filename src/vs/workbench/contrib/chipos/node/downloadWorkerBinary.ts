@@ -19,9 +19,7 @@ import { join } from 'path';
 import { existsSync, mkdirSync, chmodSync, statSync, unlinkSync, readdirSync } from 'fs';
 import { homedir, platform, arch } from 'os';
 import { execSync, execFileSync } from 'child_process';
-
-const GITHUB_REPO = 'linshaoxin-maker/coderust';
-const GITHUB_RELEASE_BASE = `https://github.com/${GITHUB_REPO}/releases/download`;
+import { CHIPOS_RELEASE_BASE_URL, CHIPOS_RELEASE_API_URL } from '../common/releaseConfig.js';
 
 export interface WorkerBinaryInfo {
 	/** Full path to the executable binary */
@@ -130,7 +128,7 @@ export function downloadUrl(version: string, platformTag?: string, configUrl?: s
 
 	const tag = platformTag ?? detectPlatformTag();
 	const name = binaryName(tag);
-	return `${GITHUB_RELEASE_BASE}/v${version}/${name}.tar.gz`;
+	return `${CHIPOS_RELEASE_BASE_URL}/v${version}/${name}.tar.gz`;
 }
 
 /**
@@ -202,7 +200,7 @@ export async function downloadWorkerBinary(
  */
 export async function checkLatestVersion(): Promise<string | undefined> {
 	try {
-		const url = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+		const url = CHIPOS_RELEASE_API_URL;
 		const result = execFileSync('curl', ['-fsSL', '-H', 'Accept: application/vnd.github.v3+json', url], {
 			timeout: 10000,
 			encoding: 'utf-8',

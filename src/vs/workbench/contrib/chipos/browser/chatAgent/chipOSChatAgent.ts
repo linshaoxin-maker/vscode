@@ -1252,11 +1252,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case AgentEventType.Usage: {
 				// Feed token usage into VS Code's chat model so ChatContextUsageWidget can display it
 				const p = event.payload as IUsagePayload;
-				ctx.progress([{
-					kind: 'usage',
-					promptTokens: p.prompt_tokens,
-					completionTokens: p.completion_tokens,
-				}]);
+				if (ctx.request) {
+					const chatModel = this._chatService.getSession(ctx.request.sessionResource);
+					const reqModel = chatModel?.getRequests().find(r => r.id === ctx.request!.requestId);
+					reqModel?.response?.setUsage({
+						kind: 'usage',
+						promptTokens: p.prompt_tokens,
+						completionTokens: p.completion_tokens,
+					});
+				}
 				break;
 			}
 

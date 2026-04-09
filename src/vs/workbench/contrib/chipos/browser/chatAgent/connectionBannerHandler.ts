@@ -112,7 +112,7 @@ export class ConnectionBannerHandler extends Disposable {
 
 		if (state !== ConnectionState.Reconnecting) {
 			// Manual reconnect button — only shown when auto-reconnect has given up
-			const reconnectBtn = dom.append(actions, dom.$('button.chipos-connection-banner-btn'));
+			const reconnectBtn = dom.append(actions, dom.$<HTMLButtonElement>('button.chipos-connection-banner-btn'));
 			reconnectBtn.textContent = localize('chipos.banner.reconnect', 'Reconnect Now');
 			this._bannerDisposables.add(dom.addDisposableListener(reconnectBtn, 'click', () => {
 				// Switch to reconnecting state visually while the caller tries
