@@ -17,6 +17,7 @@
 import { SshConnection } from './sshConnection';
 import { downloadAndInstallWorker } from './download';
 import { createHash } from 'crypto';
+import { CHIPOS_RELEASE_REPO, CHIPOS_RELEASE_BASE_URL, CHIPOS_RELEASE_API_URL } from './releaseConfig';
 
 interface InstanceMeta {
 	pid: number;
@@ -172,7 +173,7 @@ export class WorkerManager {
 	private async _tryDownloadBinary(): Promise<string | null> {
 		try {
 			const checkNet = await this._ssh.exec(
-				'curl -sf --max-time 5 https://api.github.com/repos/chip-os/coderust/releases/latest 2>/dev/null | head -c 200'
+				`curl -sf --max-time 5 ${CHIPOS_RELEASE_API_URL} 2>/dev/null | head -c 200`
 			);
 			if (!checkNet.includes('tag_name')) {
 				this._log('[WorkerManager] Remote cannot reach GitHub, skipping binary download');
@@ -190,7 +191,7 @@ export class WorkerManager {
 			await this._ssh.exec(
 				`mkdir -p ${targetDir} && ` +
 				`curl -fSL --retry 2 --max-time 120 ` +
-				`"https://github.com/chip-os/coderust/releases/download/v${version}/${binaryName}.tar.gz" ` +
+				`"${CHIPOS_RELEASE_BASE_URL}/v${version}/${binaryName}.tar.gz" ` +
 				`| tar xz -C ${targetDir} && chmod +x ${targetPath}`
 			);
 

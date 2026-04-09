@@ -86,8 +86,8 @@
 	"defaultChatAgent": {},
 	"trustedExtensionAuthAccess": {},
 	"quality": "stable",
-	"updateUrl": "",
-	"downloadUrl": "",
+	"updateUrl": "https://github.com/linshaoxin-maker/chipos-releases/releases/download",
+	"downloadUrl": "https://github.com/linshaoxin-maker/chipos-releases/releases",
 	"configurationDefaults": {
 		"workbench.colorTheme": "Default Light+",
 		"workbench.preferredLightColorTheme": "Default Light+",
