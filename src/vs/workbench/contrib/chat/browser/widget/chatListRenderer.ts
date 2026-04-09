@@ -2600,12 +2600,7 @@ export class ChatListDelegate extends CachedListVirtualDelegate<ChatTreeItem> {
 	}
 
 	protected estimateHeight(element: ChatTreeItem): number {
-		const cached = element.currentRenderedHeight;
-		const estimated = cached ?? this.defaultElementHeight;
-		if (!cached) {
-			this.logService.trace('[ChatListHeight] estimateHeight: using DEFAULT', this.defaultElementHeight);
-		}
-		return estimated;
+		return element.currentRenderedHeight ?? this.defaultElementHeight;
 	}
 
 	getTemplateId(element: ChatTreeItem): string {

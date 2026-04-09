@@ -136,7 +136,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 		// [ChipOS] Hide the ViewPane header bar to avoid duplicate title/buttons with ChatViewTitleControl
 		this.headerVisible = false;
-		console.log('[ChipOS] ChatViewPane: headerVisible set to false — ViewPane title bar hidden');
+		this.logService.trace('[ChipOS] ChatViewPane: headerVisible set to false — ViewPane title bar hidden');
 
 		// View state for the ViewPane is currently global per-provider basically,
 		// but some other strictly per-model state will require a separate memento.
@@ -270,6 +270,9 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 							this._widget.setVisible(false);
 
 							await this.showModel(modelRef);
+						} catch (err) {
+							this.logService.error('[ChatViewPane] onDidChangeAgents: failed to restore session', err);
+							await this.showModel(undefined);
 						} finally {
 							this._widget.setVisible(wasVisible);
 						}
@@ -785,8 +788,13 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 	private async _applyModel(): Promise<void> {
 		const sessionResource = this.getTransferredOrPersistedSessionInfo();
-		const modelRef = sessionResource ? await this.chatService.acquireOrLoadSession(sessionResource, ChatAgentLocation.Chat, CancellationToken.None) : undefined;
-		await this.showModel(modelRef);
+		try {
+			const modelRef = sessionResource ? await this.chatService.acquireOrLoadSession(sessionResource, ChatAgentLocation.Chat, CancellationToken.None) : undefined;
+			await this.showModel(modelRef);
+		} catch (err) {
+			this.logService.error(`[ChatViewPane] _applyModel failed for '${sessionResource?.toString()}'`, err);
+			await this.showModel(undefined);
+		}
 	}
 
 	private async showModel(modelRef?: IChatModelReference | undefined, startNewSession = true): Promise<IChatModel | undefined> {
