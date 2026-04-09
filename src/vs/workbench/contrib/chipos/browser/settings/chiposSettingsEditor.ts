@@ -168,32 +168,35 @@ export class ChipOSSettingsEditor extends EditorPane {
 		this._activeTabDisposable = store;
 		this._tabInstances.add(store);
 
+		// Inner wrapper re-created on each switch to trigger fade-in animation
+		const inner = dom.append(this._contentArea, dom.$('.chipos-settings-content-inner'));
+
 		try {
 			switch (tab) {
 				case 'general':
-					store.add(this._instantiationService.createInstance(GeneralTab, this._contentArea));
+					store.add(this._instantiationService.createInstance(GeneralTab, inner));
 					break;
 				case 'models':
-					store.add(this._instantiationService.createInstance(ModelsTab, this._contentArea));
+					store.add(this._instantiationService.createInstance(ModelsTab, inner));
 					break;
 				case 'features':
-					store.add(this._instantiationService.createInstance(FeaturesTab, this._contentArea));
+					store.add(this._instantiationService.createInstance(FeaturesTab, inner));
 					break;
 				case 'connection':
-					store.add(this._instantiationService.createInstance(ConnectionTab, this._contentArea));
+					store.add(this._instantiationService.createInstance(ConnectionTab, inner));
 					break;
 				case 'rules':
-					store.add(this._instantiationService.createInstance(RulesTab, this._contentArea));
+					store.add(this._instantiationService.createInstance(RulesTab, inner));
 					break;
 				case 'beta':
-					store.add(this._instantiationService.createInstance(BetaTab, this._contentArea));
+					store.add(this._instantiationService.createInstance(BetaTab, inner));
 					break;
 				case 'tools':
-					store.add(this._instantiationService.createInstance(ToolsTab, this._contentArea));
+					store.add(this._instantiationService.createInstance(ToolsTab, inner));
 					break;
 			}
 		} catch (err) {
-			const errorEl = dom.append(this._contentArea, dom.$('.chipos-settings-empty'));
+			const errorEl = dom.append(inner, dom.$('.chipos-settings-empty'));
 			const icon = dom.append(errorEl, dom.$('.codicon'));
 			icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.warning));
 			dom.append(errorEl, dom.$('span', undefined, localize('chipos.settings.tabError', 'Failed to load {0} tab: {1}', tab, String(err))));
