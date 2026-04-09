@@ -209,7 +209,9 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 				if (data.stream_token) {
 					this._streamToken = data.stream_token;
 				}
-			} catch { /* response may not have JSON body */ }
+			} catch (parseErr) {
+				console.warn('[SseClient] Failed to parse stream_token from sendTask response:', parseErr);
+			}
 			// Open EventSource AFTER the POST succeeds (session now exists on server).
 			this._openEventSource();
 		}).catch(err => {
@@ -399,7 +401,8 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		const maxAttempts = this._config.maxReconnectAttempts ?? 10;
 		if (this._reconnectAttempts >= maxAttempts) {
 			this._setState(ConnectionState.Error);
-			this._emitError('Max reconnect attempts reached');
+			const hint = !this._streamToken ? ' (stream_token is empty — session may have expired)' : '';
+			this._emitError(`Max reconnect attempts reached${hint}`);
 			return;
 		}
 

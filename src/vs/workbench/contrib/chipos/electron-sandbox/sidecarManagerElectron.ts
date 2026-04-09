@@ -387,9 +387,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const timeout = this._mode === BackendMode.CloudReasoning ? 60_000 : 15_000;
 		const interval = 500;
 		const start = Date.now();
+		let attempts = 0;
+		let lastError = '';
 
 		while (Date.now() - start < timeout) {
 			if (this._store.isDisposed) { return; }
+			attempts++;
 			try {
 				const controller = new AbortController();
 				const timer = setTimeout(() => controller.abort(), 3000);
@@ -404,19 +407,25 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 						return;
 					}
 				}
-			} catch { /* retry */ }
+			} catch (e) {
+				lastError = e instanceof Error ? e.message : String(e);
+				if (attempts % 10 === 0) {
+					this._logService.info(`[ChipOS SidecarElectron] Health check attempt ${attempts}, last error: ${lastError}`);
+				}
+			}
 			await new Promise<void>(r => setTimeout(r, interval));
 		}
 
-		this._logService.warn('[ChipOS SidecarElectron] Health check timeout');
+		this._logService.warn(`[ChipOS SidecarElectron] Health check failed after ${attempts} attempts. Last error: ${lastError}`);
 		this._setState(SidecarState.Error);
 	}
 
 	private async _invokeIpc(channel: string, ...args: any[]): Promise<any> {
 		const bridge = (globalThis as any).chiposIpc;
 		if (!bridge) {
-			this._logService.warn(`[ChipOS SidecarElectron] IPC bridge not available, skipping ${channel}`);
-			return undefined;
+			const msg = `ChipOS IPC bridge not available for "${channel}". IDE installation may be incomplete.`;
+			this._logService.error(`[ChipOS SidecarElectron] ${msg}`);
+			throw new Error(msg);
 		}
 		return bridge.invoke(channel, ...args);
 	}

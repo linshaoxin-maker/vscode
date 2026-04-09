@@ -158,13 +158,17 @@ export class ServerManager {
 
 		// Fire-and-forget: exec may hang because SSH channel stays open after backgrounding.
 		// Start server command and immediately begin polling the log for the port.
-		const execDone = this._ssh.exec(startCmd).catch(() => { /* ignore */ });
+		let lastExecError: string | undefined;
+		const execDone = this._ssh.exec(startCmd).catch((err: unknown) => {
+			lastExecError = err instanceof Error ? err.message : String(err);
+			this._log(`[ServerManager] Server start exec failed: ${lastExecError}`);
+		});
 
 		// Poll the log for the port announcement (don't wait for exec to finish)
-		const port = await this._waitForServerPort(connectionToken);
+		const port = await this._waitForServerPort(connectionToken, lastExecError);
 
 		// If exec is still pending, we don't need it anymore — server is up
-		execDone.catch(() => { /* ignore */ });
+		execDone.catch(() => { /* ok */ });
 
 		// Save server info for reconnection
 		await this._ssh.exec(`echo "${port}:${connectionToken}" > ${this._installPath}/.server-info`);
@@ -172,7 +176,7 @@ export class ServerManager {
 		return { port, connectionToken };
 	}
 
-	private async _waitForServerPort(_token: string): Promise<number> {
+	private async _waitForServerPort(_token: string, execError?: string): Promise<number> {
 		const maxAttempts = 30;  // 30 seconds timeout
 		const intervalMs = 1000;
 
@@ -209,6 +213,18 @@ export class ServerManager {
 			}
 		}
 
-		throw new Error(`Server did not start within ${maxAttempts} seconds`);
+		let detail = `Server did not start within ${maxAttempts} seconds.`;
+		if (execError) {
+			detail += ` Exec error: ${execError}`;
+		}
+		try {
+			const logTail = await this._ssh.exec(
+				`tail -5 ${this._installPath}/.server.log 2>/dev/null || echo "(no log)"`
+			);
+			if (logTail.trim()) {
+				detail += `\nLast log lines:\n${logTail.trim()}`;
+			}
+		} catch { /* best-effort */ }
+		throw new Error(detail);
 	}
 }
