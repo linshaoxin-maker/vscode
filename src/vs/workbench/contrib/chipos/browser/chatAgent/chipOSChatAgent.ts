@@ -1246,6 +1246,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				ctx.progress([this._warning(
 					`$(warning) Context window ${pct}% used (${p.tokens_used}/${p.tokens_max}).${suggestion}`
 				)]);
+				// Also update the token usage widget with context window size
+				if (ctx.request && p.tokens_max > 0) {
+					const chatModel = this._chatService.getSession(ctx.request.sessionResource);
+					const reqModel = chatModel?.getRequests().find(r => r.id === ctx.request!.requestId);
+					if (reqModel?.response) {
+						const existing = reqModel.response.usage;
+						reqModel.response.setUsage({
+							kind: 'usage',
+							promptTokens: existing?.promptTokens ?? p.tokens_used,
+							completionTokens: existing?.completionTokens ?? 0,
+							contextWindow: p.tokens_max,
+						});
+					}
+				}
 				break;
 			}
 
@@ -1255,11 +1269,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (ctx.request) {
 					const chatModel = this._chatService.getSession(ctx.request.sessionResource);
 					const reqModel = chatModel?.getRequests().find(r => r.id === ctx.request!.requestId);
-					reqModel?.response?.setUsage({
-						kind: 'usage',
-						promptTokens: p.prompt_tokens,
-						completionTokens: p.completion_tokens,
-					});
+					if (reqModel?.response) {
+						const existing = reqModel.response.usage;
+						reqModel.response.setUsage({
+							kind: 'usage',
+							promptTokens: p.prompt_tokens,
+							completionTokens: p.completion_tokens,
+							// Preserve contextWindow from ContextWarning if already set
+							contextWindow: existing?.contextWindow,
+						});
+					}
 				}
 				break;
 			}

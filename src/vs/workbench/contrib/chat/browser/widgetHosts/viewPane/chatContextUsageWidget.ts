@@ -242,14 +242,17 @@ export class ChatContextUsageWidget extends Disposable {
 
 		if (!lastRequest.response || !lastRequest.modelId) {
 			// Pending request keep old data visible if available
-			if (!this.currentData) {
-				this.hide();
+			// Note: ChipOS requests may not have modelId — still try to update if response exists
+			if (!lastRequest.response) {
+				if (!this.currentData) {
+					this.hide();
+				}
+				return;
 			}
-			return;
 		}
 
 		const response = lastRequest.response;
-		const modelId = lastRequest.modelId;
+		const modelId = lastRequest.modelId ?? '';
 
 		// Update immediately if usage data is already available
 		this.updateFromResponse(response, modelId);
@@ -263,8 +266,8 @@ export class ChatContextUsageWidget extends Disposable {
 	private updateFromResponse(response: IChatResponseModel, modelId: string): void {
 		const usage = response.usage;
 		const modelMetadata = this.languageModelsService.lookupLanguageModel(modelId);
-		const maxInputTokens = modelMetadata?.maxInputTokens;
-		const maxOutputTokens = modelMetadata?.maxOutputTokens;
+		const maxInputTokens = modelMetadata?.maxInputTokens ?? (usage?.contextWindow ? Math.round(usage.contextWindow * 0.85) : undefined);
+		const maxOutputTokens = modelMetadata?.maxOutputTokens ?? (usage?.contextWindow ? Math.round(usage.contextWindow * 0.15) : undefined);
 
 		if (!usage || !maxInputTokens || maxInputTokens <= 0 || !maxOutputTokens || maxOutputTokens <= 0) {
 			if (!this.currentData) {

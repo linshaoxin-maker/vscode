@@ -153,6 +153,8 @@ export interface IChatUsage {
 	completionTokens: number;
 	outputBuffer?: number;
 	promptTokenDetails?: readonly IChatUsagePromptTokenDetail[];
+	/** Total context window size (input + output). Used as fallback when model metadata is unavailable. */
+	contextWindow?: number;
 	kind: 'usage';
 }
 
