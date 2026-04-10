@@ -737,9 +737,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					buttons,
 				};
 				ctx.progress([confirmation]);
-				// Finish the current request so the framework can accept
-				// the next invoke() when the user clicks a confirmation button.
-				ctx.finish({}, 'Awaiting confirmation');
+				// DO NOT call ctx.finish here — keep invoke() pending so the framework
+				// sets _modelState = NeedsInput and renders the floating confirmation buttons.
+				// The current invoke() will be resolved when the backend sends a subsequent
+				// event (e.g. Done/TaskComplete) after the user clicks a button and the
+				// continuation invoke() calls _listenForContinuation.
+				// If the backend sends no further events (timeout/error), the SSE client
+				// will eventually fire ConnectionState.Error which disposes the listener.
 				break;
 			}
 
@@ -1917,6 +1921,41 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					if (!entry.done) {
 						termSession = entry.value[1];
 						this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (single entry): %s → %s', termKey, entry.value[0]);
+					}
+				}
+
+				// Approval gate: require user confirmation unless full_auto mode
+				const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
+				if (approveMode !== 'full_auto') {
+					const cmd = typeof args.command === 'string' ? args.command : JSON.stringify(args);
+					const approved = await new Promise<boolean>(resolve => {
+						const handle = this._notificationService.prompt(
+							Severity.Info,
+							localize('chipos.terminal.approvalPrompt', 'ChipOS wants to run: {0}', cmd),
+							[
+								{
+									label: localize('chipos.terminal.approve', 'Run'),
+									run: () => resolve(true),
+								},
+								{
+									label: localize('chipos.terminal.reject', 'Reject'),
+									run: () => resolve(false),
+								},
+							],
+							{
+								onCancel: () => resolve(false),
+								sticky: true,
+							}
+						);
+						// If the notification is dismissed without clicking (e.g. closed via X),
+						// resolve false so the agent gets a clear rejection.
+						handle.onDidClose(() => resolve(false));
+					});
+
+					if (!approved) {
+						content = 'User rejected the terminal command.';
+						isError = true;
+						break;
 					}
 				}
 
