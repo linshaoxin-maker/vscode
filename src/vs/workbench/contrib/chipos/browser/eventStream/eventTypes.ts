@@ -573,6 +573,7 @@ export interface IUsagePayload {
 	readonly completion_tokens: number;
 	readonly total_tokens: number;
 	readonly model?: string;
+	readonly tokens_max?: number;
 }
 
 export interface IUsageEvent extends IAgentEventBase {

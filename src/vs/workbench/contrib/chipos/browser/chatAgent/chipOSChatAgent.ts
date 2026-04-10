@@ -1275,8 +1275,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							kind: 'usage',
 							promptTokens: p.prompt_tokens,
 							completionTokens: p.completion_tokens,
-							// Preserve contextWindow from ContextWarning if already set
-							contextWindow: existing?.contextWindow,
+							// tokens_max from backend payload takes priority; fall back to ContextWarning value
+							contextWindow: p.tokens_max ?? existing?.contextWindow,
 						});
 					}
 				}
