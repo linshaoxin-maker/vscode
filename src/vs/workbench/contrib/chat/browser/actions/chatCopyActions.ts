@@ -4,12 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as dom from '../../../../../base/browser/dom.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { ServicesAccessor } from '../../../../../editor/browser/editorExtensions.js';
 import { localize2 } from '../../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { ContextKeyExpr } from '../../../../../platform/contextkey/common/contextkey.js';
+import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { katexContainerClassName, katexContainerLatexAttributeName } from '../../../markdown/common/markedKatexExtension.js';
 import { ChatContextKeys } from '../../common/actions/chatContextKeys.js';
 import { IChatRequestViewModel, IChatResponseViewModel, isChatTreeItem, isRequestVM, isResponseVM } from '../../common/model/chatViewModel.js';
@@ -160,6 +163,58 @@ export function registerChatCopyActions() {
 			if (latexSource) {
 				await clipboardService.writeText(latexSource);
 			}
+		}
+	});
+
+	// ── Export Chat to File ──
+	registerAction2(class ExportChatAction extends Action2 {
+		constructor() {
+			super({
+				id: 'workbench.action.chat.exportToFile',
+				title: localize2('chat.exportToFile', "Export Chat to File"),
+				category: CHAT_CATEGORY,
+				icon: Codicon.export,
+				menu: [{
+					id: MenuId.ChatContext,
+					when: ChatContextKeys.responseIsFiltered.negate(),
+					group: 'copy',
+					order: 10,
+				}],
+			});
+		}
+
+		async run(accessor: ServicesAccessor) {
+			const chatWidgetService = accessor.get(IChatWidgetService);
+			const fileDialogService = accessor.get(IFileDialogService);
+			const fileService = accessor.get(IFileService);
+
+			const widget = chatWidgetService.lastFocusedWidget;
+			if (!widget?.viewModel) {
+				return;
+			}
+
+			const items = widget.viewModel.getItems();
+			const lines: string[] = [];
+			for (const item of items) {
+				if (isRequestVM(item) || isResponseVM(item)) {
+					lines.push(stringifyItem(item));
+					lines.push('');
+				}
+			}
+			const content = lines.join('\n');
+
+			const uri = await fileDialogService.showSaveDialog({
+				title: localize2('chat.exportToFile.title', "Export Chat").value,
+				filters: [
+					{ name: 'Markdown', extensions: ['md'] },
+					{ name: 'Text', extensions: ['txt'] },
+				],
+			});
+			if (!uri) {
+				return;
+			}
+
+			await fileService.writeFile(uri, VSBuffer.fromString(content));
 		}
 	});
 }
