@@ -11,6 +11,7 @@ import { ResourceMap } from '../../../../../base/common/map.js';
 import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -153,6 +154,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@ITerminalChatService private readonly _terminalChatService: ITerminalChatService,
 		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
 		@IMcpService private readonly _mcpService: IMcpService,
+		@IDialogService private readonly _dialogService: IDialogService,
 	) {
 		super();
 		this._register(this._chatService.onDidDisposeSession(e => {
@@ -1917,6 +1919,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					if (!entry.done) {
 						termSession = entry.value[1];
 						this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (single entry): %s → %s', termKey, entry.value[0]);
+					}
+				}
+
+				// Approval gate: require user confirmation unless full_auto mode
+				const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
+				const cmd = typeof args.command === 'string' ? args.command : '';
+				this._logService.info('[ChipOS Agent] run_in_terminal approval: mode=%s, cmd=%s', approveMode, cmd);
+				if (approveMode !== 'full_auto') {
+					const { confirmed } = await this._dialogService.confirm({
+						message: localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command'),
+						detail: cmd || '(empty command)',
+						primaryButton: localize('chipos.terminal.approval.run', 'Run'),
+						cancelButton: localize('chipos.terminal.approval.reject', 'Reject'),
+					});
+					if (!confirmed) {
+						content = 'User rejected the terminal command.';
+						isError = true;
+						break;
 					}
 				}
 
