@@ -681,7 +681,10 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 	 */
 	private async _httpHealthCheck(baseUrl: string): Promise<boolean> {
 		const deadline = Date.now() + HEALTH_CHECK_TIMEOUT_MS;
+		let attempt = 0;
+		let lastError = '';
 		while (Date.now() < deadline && !this._disposed) {
+			attempt++;
 			try {
 				const controller = new AbortController();
 				const timeout = setTimeout(() => controller.abort(), 3000);
@@ -694,12 +697,21 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 						return true;
 					}
 					this._logService.trace('[ChipOS] Health check: waiting for workers_connected > 0');
+				} else {
+					lastError = `HTTP ${resp.status}`;
+					if (attempt % 5 === 0) {
+						this._logService.info('[ChipOS] Health check attempt %d, last error: %s', attempt, lastError);
+					}
 				}
-			} catch {
-				// retry
+			} catch (err) {
+				lastError = (err as Error)?.message || String(err);
+				if (attempt % 5 === 0) {
+					this._logService.info('[ChipOS] Health check attempt %d, last error: %s', attempt, lastError);
+				}
 			}
 			await this._delay(HEALTH_CHECK_INTERVAL_MS);
 		}
+		this._logService.warn('[ChipOS] Health check timed out after %d attempts. Last error: %s', attempt, lastError || '(none)');
 		return false;
 	}
 
