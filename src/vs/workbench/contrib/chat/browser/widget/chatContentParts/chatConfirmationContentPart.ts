@@ -176,6 +176,10 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			options.userSelectedModelId = widget?.input.currentLanguageModel;
 			options.modeInfo = widget?.input.currentModeInfo;
 			options.location = widget?.location;
+			// queue: true — the current invoke() is still pending (waiting for user input),
+			// so a plain sendRequest would be rejected with 'Request already in progress'.
+			// Queuing lets the confirmation response run after the current invoke resolves.
+			options.queue = true;
 			Object.assign(options, widget?.getModeRequestOptions());
 
 			const result = await this.chatService.sendRequest(element.sessionResource, prompt, options);
