@@ -243,11 +243,34 @@ export class ConnectionTab extends Disposable {
 		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'https://reasoning.chipos.ai',
 			inputBoxStyles: defaultInputBoxStyles,
+			validationOptions: {
+				validation: (value) => {
+					if (!value) { return null; }
+					try {
+						const u = new URL(value);
+						if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+							return { content: localize('chipos.settings.reasoningUrl.invalid', 'Must start with http:// or https://'), type: 2 };
+						}
+					} catch {
+						return { content: localize('chipos.settings.reasoningUrl.invalid', 'Must start with http:// or https://'), type: 2 };
+					}
+					return null;
+				}
+			}
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.backend.reasoningUrl') || '';
 
 		this._disposables.add(inputBox.onDidChange(value => {
-			this._configurationService.updateValue('chipos.backend.reasoningUrl', value, ConfigurationTarget.USER);
+			if (!value) {
+				this._configurationService.updateValue('chipos.backend.reasoningUrl', value, ConfigurationTarget.USER);
+				return;
+			}
+			try {
+				const u = new URL(value);
+				if (u.protocol === 'http:' || u.protocol === 'https:') {
+					this._configurationService.updateValue('chipos.backend.reasoningUrl', value, ConfigurationTarget.USER);
+				}
+			} catch { /* invalid URL — don't save */ }
 		}));
 	}
 
@@ -262,11 +285,35 @@ export class ConnectionTab extends Disposable {
 		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'reasoning.chipos.ai:50051',
 			inputBoxStyles: defaultInputBoxStyles,
+			validationOptions: {
+				validation: (value) => {
+					if (!value) { return null; }
+					// host:port  or  host (port optional)
+					const m = value.match(/^([^:]+)(?::(\d+))?$/);
+					if (!m) {
+						return { content: localize('chipos.settings.grpcAddress.invalid', 'Format: host:port (e.g. reasoning.chipos.ai:50051)'), type: 2 };
+					}
+					if (m[2]) {
+						const port = parseInt(m[2]);
+						if (port < 1 || port > 65535) {
+							return { content: localize('chipos.settings.port.invalid', 'Port must be between 1024 and 65535'), type: 2 };
+						}
+					}
+					return null;
+				}
+			}
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.backend.grpcAddress') || '';
 
 		this._disposables.add(inputBox.onDidChange(value => {
-			this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
+			if (!value) {
+				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
+				return;
+			}
+			const m = value.match(/^([^:]+)(?::(\d+))?$/);
+			if (m && (!m[2] || (parseInt(m[2]) >= 1 && parseInt(m[2]) <= 65535))) {
+				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
+			}
 		}));
 	}
 
@@ -304,12 +351,23 @@ export class ConnectionTab extends Disposable {
 			placeholder: '8081',
 			type: 'number',
 			inputBoxStyles: defaultInputBoxStyles,
+			validationOptions: {
+				validation: (value) => {
+					const n = parseInt(value);
+					if (isNaN(n) || n < 1024 || n > 65535) {
+						return { content: localize('chipos.settings.port.invalid', 'Port must be between 1024 and 65535'), type: 2 };
+					}
+					return null;
+				}
+			}
 		}));
 		inputBox.value = String(this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081);
 
 		this._disposables.add(inputBox.onDidChange(value => {
-			const val = Math.max(1024, Math.min(65535, parseInt(value) || 8081));
-			this._configurationService.updateValue('chipos.backend.workerHttpPort', val, ConfigurationTarget.USER);
+			const n = parseInt(value);
+			if (!isNaN(n) && n >= 1024 && n <= 65535) {
+				this._configurationService.updateValue('chipos.backend.workerHttpPort', n, ConfigurationTarget.USER);
+			}
 		}));
 	}
 
@@ -326,11 +384,34 @@ export class ConnectionTab extends Disposable {
 		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'http://127.0.0.1:8081',
 			inputBoxStyles: defaultInputBoxStyles,
+			validationOptions: {
+				validation: (value) => {
+					if (!value) { return null; }
+					try {
+						const u = new URL(value);
+						if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+							return { content: localize('chipos.settings.reasoningUrl.invalid', 'Must start with http:// or https://'), type: 2 };
+						}
+					} catch {
+						return { content: localize('chipos.settings.reasoningUrl.invalid', 'Must start with http:// or https://'), type: 2 };
+					}
+					return null;
+				}
+			}
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.backend.workerHttpUrl') || '';
 
 		this._disposables.add(inputBox.onDidChange(value => {
-			this._configurationService.updateValue('chipos.backend.workerHttpUrl', value, ConfigurationTarget.USER);
+			if (!value) {
+				this._configurationService.updateValue('chipos.backend.workerHttpUrl', value, ConfigurationTarget.USER);
+				return;
+			}
+			try {
+				const u = new URL(value);
+				if (u.protocol === 'http:' || u.protocol === 'https:') {
+					this._configurationService.updateValue('chipos.backend.workerHttpUrl', value, ConfigurationTarget.USER);
+				}
+			} catch { /* invalid — don't save */ }
 		}));
 	}
 

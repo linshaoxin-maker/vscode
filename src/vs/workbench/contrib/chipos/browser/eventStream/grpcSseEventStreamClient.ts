@@ -21,6 +21,7 @@ import {
 	type IMentionItem,
 } from './eventTypes.js';
 import type { IEventStreamClient } from './eventStreamClient.js';
+import { CHIPOS_REASONER_VERSION } from '../../common/releaseConfig.js';
 
 /**
  * SSE + HTTP/2 配置
@@ -147,8 +148,26 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			const resp = await fetch(healthUrl, { signal: controller.signal });
 			clearTimeout(timer);
 			if (!resp.ok) {
+				if (resp.status === 401 || resp.status === 403) {
+					throw new Error(`Authentication failed (${resp.status}). Check your API token in ChipOS Settings → Connection.`);
+				}
 				throw new Error(`Health check returned ${resp.status}`);
 			}
+			// NEED-B03: version compatibility check
+			try {
+				const body = await resp.json() as { reasoner_version?: string };
+				if (body.reasoner_version && body.reasoner_version !== CHIPOS_REASONER_VERSION) {
+					this._logService?.warn(
+						`[SseClient] Version mismatch: IDE expects reasoner ${CHIPOS_REASONER_VERSION}, got ${body.reasoner_version}. Some features may not work correctly.`
+					);
+					this._emitError(
+						`Version mismatch: IDE expects Reasoner v${CHIPOS_REASONER_VERSION}, backend is v${body.reasoner_version}. Please update your backend.`,
+						'VERSION_MISMATCH',
+						'COMPAT',
+						false,  // not retryable — user must update
+					);
+				}
+			} catch { /* health body parse failure is non-fatal */ }
 			this._logService?.info('[SseClient] Backend reachable, EventSource deferred until sendTask');
 			this._setState(ConnectionState.Connected);
 		} catch (err) {
@@ -216,7 +235,19 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			this._openEventSource();
 		}).catch(err => {
 			this._logService?.error('[SseClient] sendTask failed: %s', err);
-			this._emitError(`sendTask failed: ${err}`, 'TASK_SUBMIT_FAILED', 'SESSION', false);
+			const status = (err as any).httpStatus as number | undefined;
+			if (status === 401 || status === 403) {
+				// Auth failure — do NOT retry, give actionable guidance
+				this._emitError(
+					`Authentication failed (${status}). Check your API token in ChipOS Settings → Connection.`,
+					'AUTH_FAILED',
+					'AUTH',
+					false,  // not retryable
+				);
+				this._setState(ConnectionState.Error);
+			} else {
+				this._emitError(`sendTask failed: ${err}`, 'TASK_SUBMIT_FAILED', 'SESSION', false);
+			}
 		});
 	}
 
@@ -456,7 +487,10 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 						detail = `${errBody.error.code || resp.status}: ${errBody.error.message}`;
 					}
 				} catch { /* body may not be JSON */ }
-				throw new Error(`HTTP ${resp.status}: ${detail}`);
+				// Tag auth errors so callers can give actionable guidance
+				const err = new Error(`HTTP ${resp.status}: ${detail}`);
+				(err as any).httpStatus = resp.status;
+				throw err;
 			}
 			return resp;
 		} catch (err: any) {

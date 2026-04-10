@@ -22,3 +22,10 @@ export const CHIPOS_RELEASE_BASE_URL = `https://github.com/${CHIPOS_RELEASE_REPO
 
 /** GitHub API — 查询最新 Release */
 export const CHIPOS_RELEASE_API_URL = `https://api.github.com/repos/${CHIPOS_RELEASE_REPO}/releases/latest`;
+
+/**
+ * Expected Reasoner backend version.
+ * Must match the `reasoner_version` field returned by GET /health.
+ * Bump this whenever the IDE <-> Reasoner protocol changes in a breaking way.
+ */
+export const CHIPOS_REASONER_VERSION = '0.1.0';
