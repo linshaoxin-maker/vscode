@@ -266,10 +266,12 @@ export class ChatContextUsageWidget extends Disposable {
 	private updateFromResponse(response: IChatResponseModel, modelId: string): void {
 		const usage = response.usage;
 		const modelMetadata = this.languageModelsService.lookupLanguageModel(modelId);
-		const maxInputTokens = modelMetadata?.maxInputTokens ?? (usage?.contextWindow ? Math.round(usage.contextWindow * 0.85) : undefined);
-		const maxOutputTokens = modelMetadata?.maxOutputTokens ?? (usage?.contextWindow ? Math.round(usage.contextWindow * 0.15) : undefined);
+		const contextWindow = usage?.contextWindow ?? (modelMetadata ? modelMetadata.maxInputTokens + modelMetadata.maxOutputTokens : undefined);
+		const maxInputTokens = modelMetadata?.maxInputTokens ?? (contextWindow ? Math.round(contextWindow * 0.85) : undefined);
+		const maxOutputTokens = modelMetadata?.maxOutputTokens ?? (contextWindow ? Math.round(contextWindow * 0.15) : undefined);
 
 		if (!usage || !maxInputTokens || maxInputTokens <= 0 || !maxOutputTokens || maxOutputTokens <= 0) {
+			// No data yet — keep showing previous data if available, otherwise hide
 			if (!this.currentData) {
 				this.hide();
 			}
@@ -281,7 +283,9 @@ export class ChatContextUsageWidget extends Disposable {
 		const promptTokenDetails = usage.promptTokenDetails;
 		const outputBuffer = usage.outputBuffer;
 		const totalContextWindow = maxInputTokens + maxOutputTokens;
-		const usedTokens = promptTokens + completionTokens;
+		// Context window usage = prompt tokens (what was sent to the model this turn)
+		// Completion tokens are output, they don't consume the input context window
+		const usedTokens = promptTokens;
 		const percentage = (usedTokens / totalContextWindow) * 100;
 
 		// Remaining reserve = whatever the model reserved minus what completions

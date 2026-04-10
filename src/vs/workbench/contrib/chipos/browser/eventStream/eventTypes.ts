@@ -574,6 +574,10 @@ export interface IUsagePayload {
 	readonly total_tokens: number;
 	readonly model?: string;
 	readonly tokens_max?: number;
+	// Accumulated session totals (for billing/analytics, not for context window display)
+	readonly accumulated_prompt_tokens?: number;
+	readonly accumulated_completion_tokens?: number;
+	readonly accumulated_total_tokens?: number;
 }
 
 export interface IUsageEvent extends IAgentEventBase {
