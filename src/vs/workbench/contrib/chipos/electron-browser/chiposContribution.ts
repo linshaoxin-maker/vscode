@@ -11,4 +11,10 @@ import { SidecarManagerElectron } from '../../../../workbench/contrib/chipos/ele
 // Web IDE 模式仍使用 SidecarManagerBrowser（在 workbench.web.main.ts 中注册）。
 registerSingleton(ISidecarManagerService, SidecarManagerElectron, InstantiationType.Delayed);
 
+// Phase 1 Unified Auth: register auth services
+import { IChipOSTokenManager, ChipOSTokenManager } from '../../../../workbench/contrib/chipos/browser/auth/chiposTokenManager.js';
+import { IChipOSAuthService, ChipOSAuthService } from '../../../../workbench/contrib/chipos/browser/auth/chiposAuthService.js';
+registerSingleton(IChipOSTokenManager, ChipOSTokenManager, InstantiationType.Delayed);
+registerSingleton(IChipOSAuthService, ChipOSAuthService, InstantiationType.Delayed);
+
 import '../../../../workbench/contrib/chipos/common/chiposContribution.js';

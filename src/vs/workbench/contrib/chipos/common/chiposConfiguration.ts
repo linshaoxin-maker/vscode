@@ -193,7 +193,7 @@ configurationRegistry.registerConfiguration({
 		'chipos.backend.token': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.backend.token.desc', 'JWT token for authenticating with the reasoning layer (cloud-reasoning and manual modes).'),
+			description: localize('chipos.backend.token.desc', '[Legacy fallback] Manual JWT token for authenticating with the reasoning layer. Prefer OAuth login via ChipOS: Login command.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
@@ -201,6 +201,22 @@ configurationRegistry.registerConfiguration({
 			type: 'boolean',
 			default: false,
 			description: localize('chipos.backend.tlsEnabled.desc', 'Enable TLS for gRPC connections between Worker and Reasoner.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		// ── Phase 1 Unified Auth ──
+
+		'chipos.auth.websiteUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.auth.websiteUrl.desc', 'ChipOS website URL for OAuth login (e.g. http://121.89.82.122:8001). Required for cloud-reasoning mode.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.worker.apiKey': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.worker.apiKey.desc', 'Independent API key for Worker → Reasoner gRPC authentication. Separate from user JWT.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 

@@ -282,7 +282,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		this._setWorkerState(WorkerState.Starting);
 
 		const grpcTarget = this.grpcAddress;
-		const token = this._configurationService.getValue<string>('chipos.backend.token') ?? '';
+		// Phase 1 Unified Auth: use independent worker API key, NOT user JWT
+		const workerApiKey = this._configurationService.getValue<string>('chipos.worker.apiKey') ?? '';
 		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
 		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false;
 		const workspaceRoot = this._resolveWorkspaceRoot();
@@ -294,7 +295,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			CHIPOS_REASONING_SERVER: grpcTarget,
 			CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
 			CHIPOS_TLS_ENABLED: String(tlsEnabled),
-			...(token ? { CHIPOS_API_KEY: token } : {}),
+			...(workerApiKey ? { CHIPOS_API_KEY: workerApiKey } : {}),
 			...(workspaceRoot ? { CHIPOS_WORKSPACE_ROOT: workspaceRoot } : {}),
 		};
 

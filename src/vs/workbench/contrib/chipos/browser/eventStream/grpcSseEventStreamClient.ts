@@ -24,13 +24,24 @@ import type { IEventStreamClient } from './eventStreamClient.js';
 import { CHIPOS_REASONER_VERSION } from '../../common/releaseConfig.js';
 
 /**
+ * Token provider interface for dynamic token resolution.
+ * Phase 1 Unified Auth: replaces static token string.
+ */
+export interface ITokenProvider {
+	getAccessToken(): Promise<string | undefined>;
+	refreshAccessToken(): Promise<string | undefined>;
+}
+
+/**
  * SSE + HTTP/2 配置
  */
 export interface ISseClientConfig {
 	/** 推理层 HTTP/2 基础 URL (e.g. http://localhost:8080) */
 	baseUrl: string;
-	/** JWT Token（remote 模式必填） */
+	/** @deprecated Use tokenProvider instead. Static JWT Token（legacy fallback） */
 	token?: string;
+	/** Dynamic token provider (Phase 1 Unified Auth) */
+	tokenProvider?: ITokenProvider;
 	/** 重连间隔基数 (ms)，默认 1000 */
 	reconnectBaseMs?: number;
 	/** 最大重连间隔 (ms)，默认 30000 */
@@ -92,7 +103,6 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 	private _eventSource: EventSource | null = null;
 	private _sessionId: string = '';
-	private _streamToken: string = '';
 	private _lastSequenceId: number = 0;
 	private _reconnectAttempts: number = 0;
 	private _sessionDone: boolean = false;
@@ -225,13 +235,14 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		}).then(async resp => {
 			try {
 				const data = await resp.json();
-				if (data.stream_token) {
-					this._streamToken = data.stream_token;
+				// Phase 1: stream_token removed. Session ID is the only needed response.
+				if (data.session_id) {
+					this._sessionId = data.session_id;
 				}
 			} catch (parseErr) {
-				console.warn('[SseClient] Failed to parse stream_token from sendTask response:', parseErr);
+				console.warn('[SseClient] Failed to parse sendTask response:', parseErr);
 			}
-			// Open EventSource AFTER the POST succeeds (session now exists on server).
+			// Open SSE AFTER the POST succeeds (session now exists on server).
 			this._openEventSource();
 		}).catch(err => {
 			this._logService?.error('[SseClient] sendTask failed: %s', err);
@@ -302,11 +313,17 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 	// ── SSE 连接管理 ────────────────────────────────────────────────────────
 
+	private _sseAbortController: AbortController | null = null;
+
+	/**
+	 * Phase 1 Unified Auth: fetch-based SSE with Bearer token in headers.
+	 * Replaces EventSource which cannot send custom headers.
+	 */
 	private async _openEventSource(): Promise<void> {
 		this._closeEventSource();
 
 		if (!this._sessionId) {
-			this._logService?.debug('[SseClient] Skipping EventSource open: no session_id yet');
+			this._logService?.debug('[SseClient] Skipping SSE open: no session_id yet');
 			return;
 		}
 
@@ -315,52 +332,141 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		if (this._lastSequenceId > 0) {
 			params.set('last_sequence_id', String(this._lastSequenceId));
 		}
-		if (this._streamToken) {
-			params.set('stream_token', this._streamToken);
-		}
 
 		const url = `${this._config.baseUrl}/api/v1/events?${params.toString()}`;
-		this._logService?.info('[SseClient] Opening EventSource: %s', url);
+		this._logService?.info('[SseClient] Opening fetch-based SSE: %s', url);
 
-		this._eventSource = new EventSource(url);
+		const token = await this._resolveToken();
+		const headers: Record<string, string> = { 'Accept': 'text/event-stream' };
+		if (token) {
+			headers['Authorization'] = `Bearer ${token}`;
+		}
 
-		this._eventSource.onopen = () => {
-			this._logService?.info('[SseClient] EventSource connected');
-			this._reconnectAttempts = 0;
-			this._setState(ConnectionState.Connected);
-		};
+		this._sseAbortController = new AbortController();
 
-		this._eventSource.onmessage = (ev: MessageEvent) => {
-			try {
-				this._dispatchEvent(JSON.parse(ev.data));
-			} catch (e) {
-				this._logService?.error('[SseClient] Failed to parse SSE event: %s', e);
-			}
-		};
+		try {
+			const resp = await fetch(url, {
+				headers,
+				signal: this._sseAbortController.signal,
+			});
 
-		this._eventSource.onerror = () => {
-			const es = this._eventSource;
-			const readyState = es ? es.readyState : -1;
-			this._logService?.error('[SseClient] EventSource error, readyState=%d (0=CONNECTING, 1=OPEN, 2=CLOSED)', readyState);
-			if (this._sessionDone) {
-				this._logService?.info('[SseClient] Session done — not reconnecting');
-				this._closeEventSource();
+			if (resp.status === 401) {
+				// Try refresh + retry once
+				const refreshed = await this._tryRefreshAndRetry();
+				if (refreshed) {
+					return; // _tryRefreshAndRetry will re-open SSE
+				}
+				this._logService?.error('[SseClient] SSE 401 and refresh failed');
+				this._emitError('Authentication failed for SSE', 'AUTH_TOKEN_EXPIRED', 'AUTH', true);
+				this._setState(ConnectionState.Disconnected);
 				return;
 			}
-			if (readyState === 2 && this._streamToken) {
-				this._logService?.warn('[SseClient] Connection closed with stream_token present — clearing stale token for next attempt');
-				this._streamToken = '';
+
+			if (!resp.ok || !resp.body) {
+				this._logService?.error('[SseClient] SSE response not ok: %d', resp.status);
+				this._closeEventSource();
+				this._scheduleReconnect();
+				return;
 			}
+
+			this._logService?.info('[SseClient] SSE connected');
+			this._reconnectAttempts = 0;
+			this._setState(ConnectionState.Connected);
+
+			// Read SSE stream
+			const reader = resp.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = '';
+
+			const processStream = async () => {
+				try {
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) {
+							break;
+						}
+						buffer += decoder.decode(value, { stream: true });
+
+						// Parse SSE lines
+						const lines = buffer.split('\n');
+						buffer = lines.pop() ?? ''; // keep incomplete line
+
+						for (const line of lines) {
+							if (line.startsWith('data: ')) {
+								try {
+									this._dispatchEvent(JSON.parse(line.slice(6)));
+								} catch (e) {
+									this._logService?.error('[SseClient] Failed to parse SSE event: %s', e);
+								}
+							}
+						}
+					}
+				} catch (err: any) {
+					if (err.name === 'AbortError') {
+						return; // intentional close
+					}
+					this._logService?.error('[SseClient] SSE stream error: %s', err);
+				}
+
+				// Stream ended
+				if (!this._sessionDone) {
+					this._logService?.info('[SseClient] SSE stream ended, scheduling reconnect');
+					this._closeEventSource();
+					this._scheduleReconnect();
+				} else {
+					this._logService?.info('[SseClient] Session done — not reconnecting');
+					this._closeEventSource();
+				}
+			};
+
+			processStream();
+
+		} catch (err: any) {
+			if (err.name === 'AbortError') {
+				return;
+			}
+			this._logService?.error('[SseClient] SSE fetch error: %s', err);
 			this._closeEventSource();
 			this._scheduleReconnect();
-		};
+		}
 	}
 
 	private _closeEventSource(): void {
+		if (this._sseAbortController) {
+			this._sseAbortController.abort();
+			this._sseAbortController = null;
+		}
 		if (this._eventSource) {
 			this._eventSource.close();
 			this._eventSource = null;
 		}
+	}
+
+	/**
+	 * Resolve token: prefer tokenProvider, fallback to static config.token
+	 */
+	private async _resolveToken(): Promise<string | undefined> {
+		if (this._config.tokenProvider) {
+			return this._config.tokenProvider.getAccessToken();
+		}
+		return this._config.token;
+	}
+
+	/**
+	 * On 401: try refresh once, then re-open SSE. Returns true if retry initiated.
+	 */
+	private async _tryRefreshAndRetry(): Promise<boolean> {
+		if (!this._config.tokenProvider) {
+			return false;
+		}
+		this._logService?.info('[SseClient] 401 received, attempting token refresh...');
+		const newToken = await this._config.tokenProvider.refreshAccessToken();
+		if (newToken) {
+			this._logService?.info('[SseClient] Token refreshed, re-opening SSE');
+			this._openEventSource(); // re-open with new token
+			return true;
+		}
+		return false;
 	}
 
 	// ── 事件分发 ────────────────────────────────────────────────────────────
@@ -460,12 +566,13 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 
 	private static readonly _POST_TIMEOUT_MS = 30_000;
 
-	private async _post(path: string, body: unknown): Promise<Response> {
+	private async _post(path: string, body: unknown, _isRetry: boolean = false): Promise<Response> {
+		const token = await this._resolveToken();
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
 		};
-		if (this._config.token) {
-			headers['Authorization'] = `Bearer ${this._config.token}`;
+		if (token) {
+			headers['Authorization'] = `Bearer ${token}`;
 		}
 
 		const controller = new AbortController();
@@ -479,6 +586,16 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 				signal: controller.signal,
 			});
 
+			// Phase 1 Unified Auth: 401 → refresh + retry once
+			if (resp.status === 401 && !_isRetry && this._config.tokenProvider) {
+				this._logService?.info('[SseClient] POST %s returned 401, attempting refresh...', path);
+				const newToken = await this._config.tokenProvider.refreshAccessToken();
+				if (newToken) {
+					this._logService?.info('[SseClient] Token refreshed, retrying POST %s', path);
+					return this._post(path, body, true);
+				}
+			}
+
 			if (!resp.ok) {
 				let detail = resp.statusText;
 				try {
@@ -487,7 +604,6 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 						detail = `${errBody.error.code || resp.status}: ${errBody.error.message}`;
 					}
 				} catch { /* body may not be JSON */ }
-				// Tag auth errors so callers can give actionable guidance
 				const err = new Error(`HTTP ${resp.status}: ${detail}`);
 				(err as any).httpStatus = resp.status;
 				throw err;

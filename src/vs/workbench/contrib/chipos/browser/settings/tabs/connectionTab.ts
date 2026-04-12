@@ -14,6 +14,8 @@ import { SelectBox, ISelectOptionItem } from '../../../../../../base/browser/ui/
 import { defaultCheckboxStyles, defaultInputBoxStyles, defaultSelectBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
+import { IChipOSTokenManager } from '../../../browser/auth/chiposTokenManager.js';
 
 export class ConnectionTab extends Disposable {
 
@@ -28,6 +30,8 @@ export class ConnectionTab extends Disposable {
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
 		@IContextViewService contextViewService: IContextViewService,
+		@ICommandService private readonly _commandService: ICommandService,
+		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 	) {
 		super();
 		this._contextViewProvider = contextViewService ?? undefined;
@@ -210,9 +214,12 @@ export class ConnectionTab extends Disposable {
 				break;
 
 			case 'cloud-reasoning':
+				// Phase 1 Unified Auth: login section
+				this._renderAuthSection(this._modeSpecificContainer);
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderGrpcAddressInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
+				this._renderWorkerApiKeyInput(this._modeSpecificContainer);
 				this._renderTlsEnabled(this._modeSpecificContainer);
 				this._renderWorkerHttpPortInput(this._modeSpecificContainer);
 				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
@@ -221,8 +228,11 @@ export class ConnectionTab extends Disposable {
 				break;
 
 			case 'manual':
+				// Phase 1 Unified Auth: login section
+				this._renderAuthSection(this._modeSpecificContainer);
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
+				this._renderWorkerApiKeyInput(this._modeSpecificContainer);
 				this._renderTlsEnabled(this._modeSpecificContainer);
 				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
 				dom.append(this._modeSpecificContainer, dom.$('.chipos-setting-hint', undefined,
@@ -317,11 +327,76 @@ export class ConnectionTab extends Disposable {
 		}));
 	}
 
+	// ── Phase 1 Unified Auth: Login/Logout section ──
+
+	private _renderAuthSection(parent: HTMLElement): void {
+		const section = dom.append(parent, dom.$('.chipos-auth-section'));
+		dom.append(section, dom.$('.chipos-setting-label', undefined,
+			localize('chipos.settings.auth', 'Authentication')));
+
+		const statusRow = dom.append(section, dom.$('.chipos-setting-row'));
+		const statusText = dom.append(statusRow, dom.$('.chipos-auth-status'));
+
+		const buttonRow = dom.append(section, dom.$('.chipos-setting-row'));
+
+		const updateStatus = () => {
+			const user = this._tokenManager?.getUser();
+			if (user) {
+				statusText.textContent = localize('chipos.auth.loggedIn', 'Logged in as {0}', user.email);
+			} else {
+				statusText.textContent = localize('chipos.auth.notLoggedIn', 'Not logged in');
+			}
+		};
+
+		updateStatus();
+
+		// Login button
+		const loginBtn = dom.append(buttonRow, dom.$('button.chipos-auth-button'));
+		loginBtn.textContent = localize('chipos.auth.login', 'Login via ChipOS');
+		this._disposables.add(dom.addDisposableListener(loginBtn, 'click', () => {
+			this._commandService.executeCommand('chipos.login');
+		}));
+
+		// Logout button
+		const logoutBtn = dom.append(buttonRow, dom.$('button.chipos-auth-button'));
+		logoutBtn.textContent = localize('chipos.auth.logout', 'Logout');
+		this._disposables.add(dom.addDisposableListener(logoutBtn, 'click', () => {
+			this._commandService.executeCommand('chipos.logout');
+		}));
+
+		// Listen for token changes
+		if (this._tokenManager) {
+			this._disposables.add(this._tokenManager.onDidChangeUser(() => {
+				updateStatus();
+			}));
+		}
+	}
+
+	// ── Phase 1 Unified Auth: Worker API Key input ──
+
+	private _renderWorkerApiKeyInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.workerApiKey', 'Worker API Key')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.workerApiKey.desc', 'Independent API key for Worker → Reasoner gRPC authentication. Separate from user login token.')));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, undefined, {
+			...defaultInputBoxStyles,
+			type: 'password',
+			placeholder: localize('chipos.settings.workerApiKey.placeholder', 'Worker API key (optional for local mode)'),
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.worker.apiKey') ?? '';
+		this._disposables.add(inputBox.onDidChange(value => {
+			this._configurationService.updateValue('chipos.worker.apiKey', value, ConfigurationTarget.USER);
+		}));
+	}
+
 	private _renderTokenInput(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.token', 'Authentication Token')));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.token', 'Manual Token (Legacy Fallback)')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.token.desc', 'JWT token for authenticating with the reasoning layer')
+			localize('chipos.settings.token.desc', 'Manual JWT token fallback. Prefer using the Login button above for OAuth authentication.')
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));

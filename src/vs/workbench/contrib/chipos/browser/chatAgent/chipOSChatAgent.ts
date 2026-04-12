@@ -62,6 +62,7 @@ import { SseEventStreamClient } from '../eventStream/grpcSseEventStreamClient.js
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
 import { ChipOSEditorEffects } from './editorEffects.js';
+import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import {
 	AgentEventType,
 	ConnectionState,
@@ -155,6 +156,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@IDialogService private readonly _dialogService: IDialogService,
+		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 	) {
 		super();
 		this._register(this._chatService.onDidDisposeSession(e => {
@@ -2465,7 +2467,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
 		const reasoningUrl = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
 		const baseUrl = reasoningUrl || `http://127.0.0.1:${httpPort}`;
-		const token = this._configurationService.getValue<string>('chipos.backend.token') ?? undefined;
 		const noProxy = this._configurationService.getValue<string[]>('http.noProxy') ?? [];
 
 		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl, '| http.noProxy:', JSON.stringify(noProxy));
@@ -2476,7 +2477,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		} else {
 			runtime.streamClient?.dispose();
 			runtime.clientListeners.clear();  // drop listeners from previous client
-			runtime.streamClient = new SseEventStreamClient({ baseUrl, token }, this._logService);
+
+			// Phase 1 Unified Auth: use TokenManager as dynamic token provider
+			const tokenProvider = this._tokenManager ? {
+				getAccessToken: () => this._tokenManager.getAccessToken(),
+				refreshAccessToken: () => this._tokenManager.refreshAccessToken(),
+			} : undefined;
+
+			runtime.streamClient = new SseEventStreamClient({ baseUrl, tokenProvider }, this._logService);
 
 			// Monitor connection state changes — show/hide banner in chat widget
 			// Tied to clientListeners so it's cleaned up when the client is replaced or disposed

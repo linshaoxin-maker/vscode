@@ -321,7 +321,8 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 		const backendDir = this._resolveBackendDir();
 		const workspaceRoot = folders.length > 0 ? folders[0].uri.fsPath : backendDir;
 		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
-		const token = this._configurationService.getValue<string>('chipos.backend.token') || '';
+		// Phase 1 Unified Auth: use independent worker API key, NOT user JWT
+		const workerApiKey = this._configurationService.getValue<string>('chipos.worker.apiKey') || '';
 		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') || false;
 
 		this._workerId = `worker-${generateUuid().substring(0, 12)}`;
@@ -385,50 +386,50 @@ export class SidecarManager extends Disposable implements ISidecarManagerService
 							...process.env,
 							CHIPOS_REASONING_SERVER: grpcTarget,
 							CHIPOS_REASONING_URL: this.reasoningUrl,
-							CHIPOS_WORKER_ID: this._workerId,
-							CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
-							...(token ? { CHIPOS_API_KEY: token } : {}),
-							CHIPOS_TLS_ENABLED: String(tlsEnabled),
-						},
-					}
-				);
-				this._attachHandlers(this._workerProcess, 'Worker');
-				await this._finalizeWorkerStart(workerHttpPort);
-				return;
-			} catch (err) {
-				this._logService.warn('[ChipOS Worker] Binary spawn failed, falling back to Python:', String(err));
-			}
-		}
-
-		// --- Step 3: Fallback to Python ---
-		const pythonPath = this._resolveWorkerPython(backendDir);
-		if (!existsSync(pythonPath)) {
-			this._logService.error('[ChipOS Worker] No binary cached and Python not found:', pythonPath);
-			this._setWorkerState(WorkerState.Error);
-			return;
-		}
-
-		this._logService.info('[ChipOS Worker] Using Python:', pythonPath);
-		try {
-			this._workerProcess = cpSpawn(
-				pythonPath,
-				['-m', 'execution.server.cli', 'start', '--server', grpcTarget,
-				 '--workspace', workspaceRoot, '--http-port', String(workerHttpPort),
-				 '--instance-dir', this._instanceDir],
-				{
-					cwd: backendDir,
-					stdio: ['ignore', 'pipe', 'pipe'],
-					env: {
-						...this._buildEnv(backendDir),
-						CHIPOS_REASONING_SERVER: grpcTarget,
-						CHIPOS_REASONING_URL: this.reasoningUrl,
 						CHIPOS_WORKER_ID: this._workerId,
 						CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
-						...(token ? { CHIPOS_API_KEY: token } : {}),
+						...(workerApiKey ? { CHIPOS_API_KEY: workerApiKey } : {}),
 						CHIPOS_TLS_ENABLED: String(tlsEnabled),
 					},
 				}
 			);
+			this._attachHandlers(this._workerProcess, 'Worker');
+			await this._finalizeWorkerStart(workerHttpPort);
+			return;
+		} catch (err) {
+			this._logService.warn('[ChipOS Worker] Binary spawn failed, falling back to Python:', String(err));
+		}
+	}
+
+	// --- Step 3: Fallback to Python ---
+	const pythonPath = this._resolveWorkerPython(backendDir);
+	if (!existsSync(pythonPath)) {
+		this._logService.error('[ChipOS Worker] No binary cached and Python not found:', pythonPath);
+		this._setWorkerState(WorkerState.Error);
+		return;
+	}
+
+	this._logService.info('[ChipOS Worker] Using Python:', pythonPath);
+	try {
+		this._workerProcess = cpSpawn(
+			pythonPath,
+			['-m', 'execution.server.cli', 'start', '--server', grpcTarget,
+			 '--workspace', workspaceRoot, '--http-port', String(workerHttpPort),
+			 '--instance-dir', this._instanceDir],
+			{
+				cwd: backendDir,
+				stdio: ['ignore', 'pipe', 'pipe'],
+				env: {
+					...this._buildEnv(backendDir),
+					CHIPOS_REASONING_SERVER: grpcTarget,
+					CHIPOS_REASONING_URL: this.reasoningUrl,
+					CHIPOS_WORKER_ID: this._workerId,
+					CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
+					...(workerApiKey ? { CHIPOS_API_KEY: workerApiKey } : {}),
+					CHIPOS_TLS_ENABLED: String(tlsEnabled),
+				},
+			}
+		);
 			this._attachHandlers(this._workerProcess, 'Worker');
 			await this._finalizeWorkerStart(workerHttpPort);
 		} catch (err) {

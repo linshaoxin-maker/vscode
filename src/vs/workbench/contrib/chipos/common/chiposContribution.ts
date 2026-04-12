@@ -20,6 +20,9 @@ import { IQuickInputService } from '../../../../platform/quickinput/common/quick
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { IChipOSTokenManager } from '../../../../workbench/contrib/chipos/browser/auth/chiposTokenManager.js';
+import { IChipOSAuthService } from '../../../../workbench/contrib/chipos/browser/auth/chiposAuthService.js';
+import { IURLService } from '../../../../platform/url/common/url.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
@@ -130,6 +133,8 @@ const enum ChipOSCommandId {
 	SaveContent = 'chipos.saveContent',
 	MarkdownPreviewToSide = 'chipos.markdownPreviewToSide',
 	MarkdownShowSource = 'chipos.markdownShowSource',
+	Login = 'chipos.login',
+	Logout = 'chipos.logout',
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────────
@@ -209,6 +214,25 @@ CommandsRegistry.registerCommand(ChipOSCommandId.RestartWorker, async accessor =
 	notifications.info('ChipOS: Restarting worker…');
 	await backend.restartWorker();
 	notifications.info('ChipOS: Worker restart initiated.');
+});
+
+// ── Phase 1 Unified Auth: Login / Logout commands ──
+
+CommandsRegistry.registerCommand(ChipOSCommandId.Login, async accessor => {
+	const authService = accessor.get(IChipOSAuthService);
+	const notifications = accessor.get(INotificationService);
+	try {
+		await authService.login();
+	} catch (err) {
+		notifications.error(`ChipOS Login failed: ${err}`);
+	}
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.Logout, async accessor => {
+	const authService = accessor.get(IChipOSAuthService);
+	const notifications = accessor.get(INotificationService);
+	await authService.logout();
+	notifications.info('ChipOS: Logged out.');
 });
 
 // ── Keybindings ────────────────────────────────────────────────────────────────
@@ -460,6 +484,7 @@ class ChipOSContribution extends Disposable {
 		@IViewsService _viewsService: IViewsService,
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
 		@IMcpService private readonly _mcpService: IMcpService,
+		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 	) {
 		super();
 
@@ -470,6 +495,16 @@ class ChipOSContribution extends Disposable {
 
 	private _initialize(): void {
 		this._logService.info('[ChipOS] Contribution initialized');
+
+		// ── Phase 1 Unified Auth: Initialize TokenManager ──
+		this._tokenManager.initialize().then(() => {
+			this._logService.info('[ChipOS] TokenManager initialized, logged in:', this._tokenManager.isLoggedIn());
+		}).catch(err => {
+			this._logService.error('[ChipOS] TokenManager initialization failed:', String(err));
+		});
+
+		// ── Phase 1 Unified Auth: Register URI handler for chipos://callback ──
+		this._registerAuthUriHandler();
 
 		// ── Bypass Copilot entitlement gates ──
 		// ChipOS doesn't use GitHub Copilot auth. Set context keys so all
@@ -753,6 +788,22 @@ class ChipOSContribution extends Disposable {
 				editor.dispose();
 			}
 		}
+	}
+
+	private _registerAuthUriHandler(): void {
+		const urlService = this._instantiationService.invokeFunction(accessor => accessor.get(IURLService));
+		const authService = this._instantiationService.invokeFunction(accessor => accessor.get(IChipOSAuthService));
+		this._register(urlService.registerHandler({
+			handleURL: async (uri: URI): Promise<boolean> => {
+				// Handle chipos://callback?code=...
+				if (uri.authority === 'callback' || uri.path === '/callback') {
+					this._logService.info('[ChipOS Auth] URI handler received callback:', uri.toString());
+					await authService.handleCallback(uri);
+					return true;
+				}
+				return false;
+			}
+		}));
 	}
 
 	private _registerWelcomeView(): void {
