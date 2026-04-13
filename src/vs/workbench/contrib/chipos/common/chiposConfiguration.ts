@@ -209,7 +209,7 @@ configurationRegistry.registerConfiguration({
 		'chipos.auth.websiteUrl': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.auth.websiteUrl.desc', 'ChipOS website URL for OAuth login (e.g. http://121.89.82.122:8001). Required for cloud-reasoning mode.'),
+			description: localize('chipos.auth.websiteUrl.desc', 'ChipOS website URL for OAuth login and token refresh (e.g. http://121.89.82.122:8001). Must be configured explicitly when using unified auth.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 

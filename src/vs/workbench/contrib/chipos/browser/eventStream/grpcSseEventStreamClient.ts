@@ -101,7 +101,6 @@ const SSE_TYPE_MAP: Record<string, AgentEventType> = {
  */
 export class SseEventStreamClient extends Disposable implements IEventStreamClient {
 
-	private _eventSource: EventSource | null = null;
 	private _sessionId: string = '';
 	private _lastSequenceId: number = 0;
 	private _reconnectAttempts: number = 0;
@@ -193,7 +192,6 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		this._closeEventSource();
 		this._clearReconnectTimer();
 		this._reconnectAttempts = 0;
-		this._streamToken = '';
 		this._sessionId = '';
 		this._seenEventIds.clear();
 		this._setState(ConnectionState.Disconnected);
@@ -351,13 +349,18 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			});
 
 			if (resp.status === 401) {
-				// Try refresh + retry once
-				const refreshed = await this._tryRefreshAndRetry();
-				if (refreshed) {
-					return; // _tryRefreshAndRetry will re-open SSE
+				const authCode = await this._readErrorCode(resp.clone());
+				if (authCode === 'AUTH_TOKEN_EXPIRED') {
+					const refreshed = await this._tryRefreshAndRetry();
+					if (refreshed) {
+						return; // _tryRefreshAndRetry will re-open SSE
+					}
+					this._logService?.error('[SseClient] SSE token expired and refresh failed');
+					this._emitError('Authentication token expired for SSE', 'AUTH_TOKEN_EXPIRED', 'AUTH', true);
+				} else {
+					this._logService?.error('[SseClient] SSE authentication failed: %s', authCode ?? 'unknown');
+					this._emitError('Authentication failed for SSE', authCode ?? 'AUTH_FAILED', 'AUTH', false);
 				}
-				this._logService?.error('[SseClient] SSE 401 and refresh failed');
-				this._emitError('Authentication failed for SSE', 'AUTH_TOKEN_EXPIRED', 'AUTH', true);
 				this._setState(ConnectionState.Disconnected);
 				return;
 			}
@@ -436,10 +439,6 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			this._sseAbortController.abort();
 			this._sseAbortController = null;
 		}
-		if (this._eventSource) {
-			this._eventSource.close();
-			this._eventSource = null;
-		}
 	}
 
 	/**
@@ -467,6 +466,15 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			return true;
 		}
 		return false;
+	}
+
+	private async _readErrorCode(resp: Response): Promise<string | undefined> {
+		try {
+			const body = await resp.json() as { error?: { code?: string } };
+			return body?.error?.code;
+		} catch {
+			return undefined;
+		}
 	}
 
 	// ── 事件分发 ────────────────────────────────────────────────────────────
@@ -538,8 +546,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		const maxAttempts = this._config.maxReconnectAttempts ?? 10;
 		if (this._reconnectAttempts >= maxAttempts) {
 			this._setState(ConnectionState.Error);
-			const hint = !this._streamToken ? ' (stream_token is empty — session may have expired)' : '';
-			this._emitError(`Max reconnect attempts reached${hint}`);
+			this._emitError('Max reconnect attempts reached');
 			return;
 		}
 
@@ -586,13 +593,16 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 				signal: controller.signal,
 			});
 
-			// Phase 1 Unified Auth: 401 → refresh + retry once
+			// Phase 1 Unified Auth: only refresh-retry on AUTH_TOKEN_EXPIRED
 			if (resp.status === 401 && !_isRetry && this._config.tokenProvider) {
-				this._logService?.info('[SseClient] POST %s returned 401, attempting refresh...', path);
-				const newToken = await this._config.tokenProvider.refreshAccessToken();
-				if (newToken) {
-					this._logService?.info('[SseClient] Token refreshed, retrying POST %s', path);
-					return this._post(path, body, true);
+				const authCode = await this._readErrorCode(resp.clone());
+				if (authCode === 'AUTH_TOKEN_EXPIRED') {
+					this._logService?.info('[SseClient] POST %s returned AUTH_TOKEN_EXPIRED, attempting refresh...', path);
+					const newToken = await this._config.tokenProvider.refreshAccessToken();
+					if (newToken) {
+						this._logService?.info('[SseClient] Token refreshed, retrying POST %s', path);
+						return this._post(path, body, true);
+					}
 				}
 			}
 

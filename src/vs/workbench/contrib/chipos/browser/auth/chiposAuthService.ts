@@ -20,8 +20,7 @@ import { createDecorator } from '../../../../../../platform/instantiation/common
 import { IOpenerService } from '../../../../../../platform/opener/common/opener.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
-import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
-import { IChipOSTokenManager, type IChipOSUserInfo } from './chiposTokenManager.js';
+import { IChipOSTokenManager, type ChipOSAuthUserResponse, type IChipOSUserInfo } from './chiposTokenManager.js';
 
 export interface IChipOSAuthService {
 	readonly _serviceBrand: undefined;
@@ -48,7 +47,6 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 	constructor(
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@ILogService private readonly _logService: ILogService,
-		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 	) {
 		super();
@@ -60,10 +58,10 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 	}
 
 	async login(): Promise<void> {
-		const websiteUrl = this._configurationService.getValue<string>('chipos.auth.websiteUrl');
+		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
 		if (!websiteUrl) {
 			this._logService.error('[ChipOS Auth] chipos.auth.websiteUrl not configured');
-			throw new Error('chipos.auth.websiteUrl is not configured. Please set it in settings.');
+			throw new Error('chipos.auth.websiteUrl is required for OAuth login. Please configure it in ChipOS Connection settings.');
 		}
 
 		// Generate a random challenge for PKCE-like verification
@@ -90,7 +88,7 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 
 		this._logService.info('[ChipOS Auth] Received callback, exchanging code...');
 
-		const websiteUrl = this._configurationService.getValue<string>('chipos.auth.websiteUrl');
+		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
 		if (!websiteUrl) {
 			this._logService.error('[ChipOS Auth] chipos.auth.websiteUrl not configured');
 			return;
@@ -115,10 +113,11 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 			const data = await resp.json() as {
 				access_token: string;
 				refresh_token: string;
-				user?: IChipOSUserInfo;
+				user?: ChipOSAuthUserResponse;
 			};
 
-			await this._tokenManager.storeTokens(data.access_token, data.refresh_token, data.user);
+			const mappedUser = this._tokenManager.mapAuthUser(data.user);
+			await this._tokenManager.storeTokens(data.access_token, data.refresh_token, mappedUser);
 			this._pendingChallenge = undefined;
 			this._logService.info('[ChipOS Auth] Login successful, user:', data.user?.email ?? 'unknown');
 		} catch (err) {

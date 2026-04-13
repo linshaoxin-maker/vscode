@@ -216,6 +216,7 @@ export class ConnectionTab extends Disposable {
 			case 'cloud-reasoning':
 				// Phase 1 Unified Auth: login section
 				this._renderAuthSection(this._modeSpecificContainer);
+				this._renderWebsiteUrlInput(this._modeSpecificContainer);
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderGrpcAddressInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
@@ -230,6 +231,7 @@ export class ConnectionTab extends Disposable {
 			case 'manual':
 				// Phase 1 Unified Auth: login section
 				this._renderAuthSection(this._modeSpecificContainer);
+				this._renderWebsiteUrlInput(this._modeSpecificContainer);
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
 				this._renderWorkerApiKeyInput(this._modeSpecificContainer);
@@ -342,10 +344,17 @@ export class ConnectionTab extends Disposable {
 		const updateStatus = () => {
 			const user = this._tokenManager?.getUser();
 			if (user) {
-				statusText.textContent = localize('chipos.auth.loggedIn', 'Logged in as {0}', user.email);
-			} else {
-				statusText.textContent = localize('chipos.auth.notLoggedIn', 'Not logged in');
+				const displayName = user.display_name?.trim() || user.email;
+				statusText.textContent = localize('chipos.auth.loggedIn', 'Logged in as {0}', displayName);
+				return;
 			}
+
+			if (this._tokenManager?.isUsingManualTokenFallback()) {
+				statusText.textContent = localize('chipos.auth.manualFallback', 'Using manual token fallback');
+				return;
+			}
+
+			statusText.textContent = localize('chipos.auth.notLoggedIn', 'Not logged in');
 		};
 
 		updateStatus();
@@ -369,10 +378,57 @@ export class ConnectionTab extends Disposable {
 			this._disposables.add(this._tokenManager.onDidChangeUser(() => {
 				updateStatus();
 			}));
+			this._disposables.add(this._tokenManager.onDidChangeToken(() => {
+				updateStatus();
+			}));
 		}
 	}
 
 	// ── Phase 1 Unified Auth: Worker API Key input ──
+
+	private _renderWebsiteUrlInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.websiteUrl', 'ChipOS Website URL')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.websiteUrl.desc', 'Required for OAuth login and token refresh. Example: http://121.89.82.122:8001')));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: 'http://121.89.82.122:8001',
+			inputBoxStyles: defaultInputBoxStyles,
+			validationOptions: {
+				validation: (value) => {
+					if (!value) {
+						return { content: localize('chipos.settings.websiteUrl.required', 'Required for OAuth login and refresh'), type: 1 };
+					}
+					try {
+						const u = new URL(value);
+						if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+							return { content: localize('chipos.settings.websiteUrl.invalid', 'Must start with http:// or https://'), type: 2 };
+						}
+					} catch {
+						return { content: localize('chipos.settings.websiteUrl.invalid', 'Must start with http:// or https://'), type: 2 };
+					}
+					return null;
+				}
+			}
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.auth.websiteUrl') || '';
+		this._disposables.add(inputBox.onDidChange(value => {
+			if (!value) {
+				this._configurationService.updateValue('chipos.auth.websiteUrl', value, ConfigurationTarget.USER);
+				return;
+			}
+			try {
+				const u = new URL(value);
+				if (u.protocol === 'http:' || u.protocol === 'https:') {
+					this._configurationService.updateValue('chipos.auth.websiteUrl', value, ConfigurationTarget.USER);
+				}
+			} catch {
+				// invalid URL — don't save
+			}
+		}));
+	}
 
 	private _renderWorkerApiKeyInput(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-setting-row'));

@@ -33,7 +33,21 @@ export interface IChipOSUserInfo {
 	user_id: string;
 	email: string;
 	role: string;
+	org_id?: string;
+	display_name?: string;
+	status?: string;
+	created_at?: string;
 }
+
+export type ChipOSAuthUserResponse = {
+	user_id?: string;
+	email?: string;
+	role?: string;
+	org_id?: string;
+	display_name?: string;
+	status?: string;
+	created_at?: string;
+};
 
 export interface IChipOSTokenManager {
 	readonly _serviceBrand: undefined;
@@ -48,6 +62,9 @@ export interface IChipOSTokenManager {
 	clearTokens(): Promise<void>;
 	getUser(): IChipOSUserInfo | undefined;
 	isLoggedIn(): boolean;
+	isUsingManualTokenFallback(): boolean;
+	resolveWebsiteUrl(): string | undefined;
+	mapAuthUser(user: ChipOSAuthUserResponse | undefined): IChipOSUserInfo | undefined;
 }
 
 export const IChipOSTokenManager = createDecorator<IChipOSTokenManager>('chipOSTokenManager');
@@ -58,6 +75,7 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 	private _accessToken: string | undefined;
 	private _refreshToken: string | undefined;
 	private _user: IChipOSUserInfo | undefined;
+	private _usingManualTokenFallback: boolean = false;
 	private _tokenExpiry: number = 0; // epoch ms
 	private _refreshPromise: Promise<string | undefined> | undefined;
 	private _refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -79,6 +97,8 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 	// ── Lifecycle ──
 
 	async initialize(): Promise<void> {
+		this._usingManualTokenFallback = false;
+
 		// 1. Try SecretStorage first
 		const stored = await this._secretStorage.get(KEY_ACCESS_TOKEN);
 		if (stored) {
@@ -86,7 +106,11 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 			this._refreshToken = await this._secretStorage.get(KEY_REFRESH_TOKEN) ?? undefined;
 			const userJson = await this._secretStorage.get(KEY_USER_INFO);
 			if (userJson) {
-				try { this._user = JSON.parse(userJson); } catch { /* ignore */ }
+				try {
+					this._user = this.mapAuthUser(JSON.parse(userJson) as ChipOSAuthUserResponse);
+				} catch {
+					this._user = undefined;
+				}
 			}
 			this._parseTokenExpiry(stored);
 			this._scheduleAutoRefresh();
@@ -98,6 +122,7 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		const legacyToken = this._configurationService.getValue<string>('chipos.backend.token');
 		if (legacyToken) {
 			this._accessToken = legacyToken;
+			this._usingManualTokenFallback = true;
 			this._parseTokenExpiry(legacyToken);
 			this._logService.info('[ChipOS Auth] Using legacy chipos.backend.token as fallback');
 		}
@@ -142,12 +167,15 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		this._accessToken = accessToken;
 		this._refreshToken = refreshToken;
 		this._user = user;
+		this._usingManualTokenFallback = false;
 		this._parseTokenExpiry(accessToken);
 
 		await this._secretStorage.set(KEY_ACCESS_TOKEN, accessToken);
 		await this._secretStorage.set(KEY_REFRESH_TOKEN, refreshToken);
 		if (user) {
 			await this._secretStorage.set(KEY_USER_INFO, JSON.stringify(user));
+		} else {
+			await this._secretStorage.delete(KEY_USER_INFO);
 		}
 
 		this._scheduleAutoRefresh();
@@ -160,6 +188,7 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		this._accessToken = undefined;
 		this._refreshToken = undefined;
 		this._user = undefined;
+		this._usingManualTokenFallback = false;
 		this._tokenExpiry = 0;
 		this._clearRefreshTimer();
 
@@ -180,12 +209,43 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		return !!this._accessToken;
 	}
 
+	isUsingManualTokenFallback(): boolean {
+		return this._usingManualTokenFallback;
+	}
+
+	resolveWebsiteUrl(): string | undefined {
+		const configured = this._configurationService.getValue<string>('chipos.auth.websiteUrl')?.trim();
+		return configured || undefined;
+	}
+
+	mapAuthUser(user: ChipOSAuthUserResponse | undefined): IChipOSUserInfo | undefined {
+		if (!user) {
+			return undefined;
+		}
+
+		const userId = user.user_id?.trim();
+		const email = user.email?.trim();
+		if (!userId || !email) {
+			return undefined;
+		}
+
+		return {
+			user_id: userId,
+			email,
+			role: user.role?.trim() || 'user',
+			org_id: user.org_id?.trim() || undefined,
+			display_name: user.display_name?.trim() || undefined,
+			status: user.status?.trim() || undefined,
+			created_at: user.created_at?.trim() || undefined,
+		};
+	}
+
 	// ── Internal ──
 
 	private async _doRefresh(): Promise<string | undefined> {
-		const websiteUrl = this._configurationService.getValue<string>('chipos.auth.websiteUrl') || '';
+		const websiteUrl = this.resolveWebsiteUrl();
 		if (!websiteUrl) {
-			this._logService.warn('[ChipOS Auth] chipos.auth.websiteUrl not configured, cannot refresh');
+			this._logService.warn('[ChipOS Auth] chipos.auth.websiteUrl is required for OAuth login and token refresh; configure it in Connection settings');
 			return undefined;
 		}
 
@@ -206,11 +266,11 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 				return undefined;
 			}
 
-			const data = await resp.json() as { access_token: string; refresh_token?: string; user?: IChipOSUserInfo };
+			const data = await resp.json() as { access_token: string; refresh_token?: string; user?: ChipOSAuthUserResponse };
 			await this.storeTokens(
 				data.access_token,
 				data.refresh_token ?? this._refreshToken!,
-				data.user ?? this._user,
+				this.mapAuthUser(data.user) ?? this._user,
 			);
 			return data.access_token;
 		} catch (err) {
