@@ -133,8 +133,10 @@ const enum ChipOSCommandId {
 	SaveContent = 'chipos.saveContent',
 	MarkdownPreviewToSide = 'chipos.markdownPreviewToSide',
 	MarkdownShowSource = 'chipos.markdownShowSource',
-	Login = 'chipos.login',
-	Logout = 'chipos.logout',
+	Login = 'chipos.auth.login',
+	Logout = 'chipos.auth.logout',
+	LegacyLogin = 'chipos.login',
+	LegacyLogout = 'chipos.logout',
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────────
@@ -233,6 +235,16 @@ CommandsRegistry.registerCommand(ChipOSCommandId.Logout, async accessor => {
 	const notifications = accessor.get(INotificationService);
 	await authService.logout();
 	notifications.info('ChipOS: Logged out.');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.LegacyLogin, accessor => {
+	const commandService = accessor.get(ICommandService);
+	return commandService.executeCommand(ChipOSCommandId.Login);
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.LegacyLogout, accessor => {
+	const commandService = accessor.get(ICommandService);
+	return commandService.executeCommand(ChipOSCommandId.Logout);
 });
 
 // ── Keybindings ────────────────────────────────────────────────────────────────

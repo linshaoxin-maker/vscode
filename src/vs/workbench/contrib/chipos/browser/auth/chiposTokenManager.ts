@@ -65,6 +65,7 @@ export interface IChipOSTokenManager {
 	isUsingManualTokenFallback(): boolean;
 	resolveWebsiteUrl(): string | undefined;
 	mapAuthUser(user: ChipOSAuthUserResponse | undefined): IChipOSUserInfo | undefined;
+	restoreUserFromServer(): Promise<void>;
 }
 
 export const IChipOSTokenManager = createDecorator<IChipOSTokenManager>('chipOSTokenManager');
@@ -114,6 +115,7 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 			}
 			this._parseTokenExpiry(stored);
 			this._scheduleAutoRefresh();
+			await this.restoreUserFromServer();
 			this._logService.info('[ChipOS Auth] Restored tokens from SecretStorage, user:', this._user?.email ?? 'unknown');
 			return;
 		}
@@ -240,7 +242,61 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		};
 	}
 
+	restoreUserFromServer(): Promise<void> {
+		return this._restoreUserFromServer();
+	}
+
 	// ── Internal ──
+
+	private async _restoreUserFromServer(): Promise<void> {
+		const websiteUrl = this.resolveWebsiteUrl();
+		if (!websiteUrl || !this._accessToken || this._usingManualTokenFallback) {
+			return;
+		}
+
+		const fetchProfile = async (token: string): Promise<Response> => {
+			return fetch(`${websiteUrl}/api/auth/me`, {
+				method: 'GET',
+				headers: { 'Authorization': `Bearer ${token}` },
+			});
+		};
+
+		try {
+			let resp = await fetchProfile(this._accessToken);
+			if (resp.status === 401) {
+				const refreshed = await this.refreshAccessToken();
+				if (!refreshed) {
+					return;
+				}
+				resp = await fetchProfile(refreshed);
+			}
+
+			if (resp.status === 401 || resp.status === 403) {
+				this._logService.warn('[ChipOS Auth] /api/auth/me rejected restored token with status %s, clearing local auth state', resp.status);
+				await this.clearTokens();
+				return;
+			}
+
+			if (!resp.ok) {
+				this._logService.warn('[ChipOS Auth] /api/auth/me returned non-OK status %s, keeping cached user info', resp.status);
+				return;
+			}
+
+			const data = await resp.json() as ChipOSAuthUserResponse | { user?: ChipOSAuthUserResponse } | null;
+			const rawUser = data && typeof data === 'object' && 'user' in data ? data.user : data ?? undefined;
+			const mappedUser = this.mapAuthUser(rawUser);
+			if (!mappedUser) {
+				this._logService.warn('[ChipOS Auth] /api/auth/me returned no usable user profile');
+				return;
+			}
+
+			this._user = mappedUser;
+			await this._secretStorage.set(KEY_USER_INFO, JSON.stringify(mappedUser));
+			this._onDidChangeUser.fire(mappedUser);
+		} catch (err) {
+			this._logService.warn('[ChipOS Auth] Failed to restore user profile from /api/auth/me: %s', String(err));
+		}
+	}
 
 	private async _doRefresh(): Promise<string | undefined> {
 		const websiteUrl = this.resolveWebsiteUrl();

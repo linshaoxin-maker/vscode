@@ -154,11 +154,29 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			this._logService?.debug('[SseClient] connect() health check: %s', healthUrl);
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), 5000);
-			const resp = await fetch(healthUrl, { signal: controller.signal });
+			const token = await this._resolveToken();
+			const headers: Record<string, string> = {};
+			if (token) {
+				headers['Authorization'] = `Bearer ${token}`;
+			}
+			let resp = await fetch(healthUrl, { headers, signal: controller.signal });
+			if (resp.status === 401 && this._config.tokenProvider) {
+				const authCode = await this._readErrorCode(resp.clone());
+				if (authCode === 'AUTH_TOKEN_EXPIRED') {
+					const refreshed = await this._config.tokenProvider.refreshAccessToken();
+					if (refreshed) {
+						resp = await fetch(healthUrl, {
+							headers: { Authorization: `Bearer ${refreshed}` },
+							signal: controller.signal,
+						});
+					}
+				}
+			}
 			clearTimeout(timer);
 			if (!resp.ok) {
 				if (resp.status === 401 || resp.status === 403) {
-					throw new Error(`Authentication failed (${resp.status}). Check your API token in ChipOS Settings → Connection.`);
+					const authCode = await this._readErrorCode(resp.clone());
+					throw new Error(`Authentication failed (${authCode ?? resp.status}). Check your ChipOS auth settings in Connection.`);
 				}
 				throw new Error(`Health check returned ${resp.status}`);
 			}

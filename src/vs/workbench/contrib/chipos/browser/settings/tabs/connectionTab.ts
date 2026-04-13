@@ -363,14 +363,14 @@ export class ConnectionTab extends Disposable {
 		const loginBtn = dom.append(buttonRow, dom.$('button.chipos-auth-button'));
 		loginBtn.textContent = localize('chipos.auth.login', 'Login via ChipOS');
 		this._disposables.add(dom.addDisposableListener(loginBtn, 'click', () => {
-			this._commandService.executeCommand('chipos.login');
+			this._commandService.executeCommand('chipos.auth.login');
 		}));
 
 		// Logout button
 		const logoutBtn = dom.append(buttonRow, dom.$('button.chipos-auth-button'));
 		logoutBtn.textContent = localize('chipos.auth.logout', 'Logout');
 		this._disposables.add(dom.addDisposableListener(logoutBtn, 'click', () => {
-			this._commandService.executeCommand('chipos.logout');
+			this._commandService.executeCommand('chipos.auth.logout');
 		}));
 
 		// Listen for token changes
