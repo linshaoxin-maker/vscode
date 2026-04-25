@@ -30,6 +30,18 @@ export interface ProductInfo {
 	quality: string;
 	updateUrl: string;
 	serverApplicationName: string;
+	/**
+	 * Build-time injected ChipOS deployment defaults. Source-tree (`commit: ""`)
+	 * keeps these empty so dev-mode falls back to user settings.
+	 *
+	 * See `vscode/src/vs/workbench/contrib/chipos/common/chiposEndpoints.ts`
+	 * for the corresponding workbench-side resolver.
+	 */
+	chiposDefaults: {
+		reasoningUrl: string;
+		websiteUrl: string;
+		workerApiKey: string;
+	};
 }
 
 /**
@@ -49,11 +61,17 @@ export function getProductInfo(): ProductInfo {
 		const product = (productPath && fs.existsSync(productPath))
 			? JSON.parse(fs.readFileSync(productPath, 'utf-8'))
 			: require('../../../../product.json');
+		const defaults = product.chiposDefaults || {};
 		return {
 			commit: product.commit || '',
 			quality: product.quality || 'insider',
 			updateUrl: product.updateUrl || 'https://update.chipos.ai',
 			serverApplicationName: product.serverApplicationName || 'chipos-server',
+			chiposDefaults: {
+				reasoningUrl: defaults.reasoningUrl || '',
+				websiteUrl: defaults.websiteUrl || '',
+				workerApiKey: defaults.workerApiKey || '',
+			},
 		};
 	} catch {
 		// Fallback for development
@@ -62,6 +80,7 @@ export function getProductInfo(): ProductInfo {
 			quality: 'insider',
 			updateUrl: '',
 			serverApplicationName: 'chipos-server',
+			chiposDefaults: { reasoningUrl: '', websiteUrl: '', workerApiKey: '' },
 		};
 	}
 }

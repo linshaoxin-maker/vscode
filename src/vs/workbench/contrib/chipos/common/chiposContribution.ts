@@ -561,10 +561,11 @@ class ChipOSContribution extends Disposable {
 			}
 		}));
 
-		const backendMode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+		const backendMode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
+		const developerMode = this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false;
 
-		// v2: 统一走 BackendManager 策略
-		this._logService.info('[ChipOS] Starting backend, mode:', backendMode);
+		// v2: SidecarManager will resolve "auto" against the actual environment.
+		this._logService.info(`[ChipOS] Starting backend, configured mode='${backendMode}' developerMode=${developerMode}`);
 		this._sidecarManager.startBackend();
 
 		this._registerChatAgent();

@@ -83,6 +83,18 @@ export interface IProductConfiguration {
 	readonly urlProtocol: string;
 	readonly dataFolderName: string; // location for extensions (e.g. ~/.vscode-insiders)
 
+	/**
+	 * ChipOS deployment defaults injected by `build-reh.yml` / `build-ide.yml`
+	 * during production builds. Source-tree (`commit: ""`) keeps these empty.
+	 *
+	 * Read order in code: settings.json (workspace > user) > product.chiposDefaults.* > hardcoded fallback.
+	 */
+	readonly chiposDefaults?: {
+		readonly reasoningUrl?: string;
+		readonly websiteUrl?: string;
+		readonly workerApiKey?: string;
+	};
+
 	readonly builtInExtensions?: IBuiltInExtension[];
 	readonly walkthroughMetadata?: IProductWalkthrough[];
 	readonly featuredExtensions?: IFeaturedExtension[];

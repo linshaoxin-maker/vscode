@@ -109,14 +109,23 @@ configurationRegistry.registerConfiguration({
 
 		'chipos.backend.mode': {
 			type: 'string',
-			enum: ['local', 'cloud-reasoning', 'manual'],
+			enum: ['auto', 'local', 'cloud-reasoning', 'manual'],
 			enumDescriptions: [
-				localize('chipos.backend.mode.local', 'Local: reasoning + execution in one process (dev/debug, or via Remote-SSH)'),
-				localize('chipos.backend.mode.cloudReasoning', 'Cloud Reasoning: local execution + cloud reasoning layer'),
+				localize('chipos.backend.mode.auto', 'Auto: detect deployment from workspace and environment (recommended, default)'),
+				localize('chipos.backend.mode.local', 'Local: reasoning + execution spawned by the IDE on this machine'),
+				localize('chipos.backend.mode.cloudReasoning', 'Cloud Reasoning: local execution + remote reasoning layer'),
 				localize('chipos.backend.mode.manual', 'Manual: connect to pre-deployed reasoning/worker URLs'),
 			],
-			default: 'local',
-			description: localize('chipos.backend.mode.desc', 'Backend deployment mode. Remote-SSH is orthogonal — when connected via SSH, "local" mode runs on the remote server.'),
+			default: 'auto',
+			description: localize('chipos.backend.mode.desc', '[Developer] Override the auto-detected backend deployment mode. Only respected when "chipos.backend.developerMode" is enabled. Leave at "auto" unless you know exactly why you need a specific mode.'),
+			scope: ConfigurationScope.APPLICATION,
+			tags: ['experimental'],
+		},
+
+		'chipos.backend.developerMode': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.backend.developerMode.desc', 'Show developer-only ChipOS settings (backend mode override, raw URL/port editors). Most users should leave this off — the backend deployment is auto-detected.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
@@ -186,8 +195,13 @@ configurationRegistry.registerConfiguration({
 		'chipos.backend.grpcAddress': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.backend.grpcAddress.desc', 'gRPC address for Worker to connect to the Reasoning server (e.g. reasoning.chipos.ai:50051). If empty, derived from reasoningUrl host + grpcPort. Used in cloud-reasoning and Remote-SSH modes when Reasoner is on a different host.'),
+			// [Internal] Not exposed in the ChipOS Settings UI. Auto-derived
+			// from reasoningUrl.host + grpcPort. Override only when Reasoner
+			// is on a different host than where the IDE will spawn the Worker
+			// (advanced split-machine deployment).
+			description: localize('chipos.backend.grpcAddress.desc', '[Internal] gRPC dial target the spawned Worker should use to reach Reasoner. Leave empty to auto-derive from reasoningUrl host + grpcPort.'),
 			scope: ConfigurationScope.APPLICATION,
+			tags: ['experimental'],
 		},
 
 		'chipos.backend.token': {

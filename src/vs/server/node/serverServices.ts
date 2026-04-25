@@ -96,6 +96,10 @@ import { McpManagementChannel } from '../../platform/mcp/common/mcpManagementIpc
 import { AllowedMcpServersService } from '../../platform/mcp/common/allowedMcpServersService.js';
 import { IMcpGalleryManifestService } from '../../platform/mcp/common/mcpGalleryManifest.js';
 import { McpGalleryManifestIPCService } from '../../platform/mcp/common/mcpGalleryManifestServiceIpc.js';
+// ChipOS Path-3 Stage-2: REH-side Worker spawn service.
+import { ChiposRemoteWorkerChannelName, IChiposRemoteWorkerService } from '../../platform/chipos/common/chiposRemoteWorker.js';
+import { ChiposRemoteWorkerService } from '../../platform/chipos/node/chiposRemoteWorkerService.js';
+import { ChiposRemoteWorkerChannel } from '../../platform/chipos/node/chiposRemoteWorkerChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -213,6 +217,7 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 	services.set(INativeServerExtensionManagementService, new SyncDescriptor(ExtensionManagementService));
 	services.set(INativeMcpDiscoveryHelperService, new SyncDescriptor(NativeMcpDiscoveryHelperService));
 	services.set(IMcpGatewayService, new SyncDescriptor(McpGatewayService));
+	services.set(IChiposRemoteWorkerService, new SyncDescriptor(ChiposRemoteWorkerService));
 
 	const instantiationService: IInstantiationService = new InstantiationService(services);
 	services.set(ILanguagePackService, instantiationService.createInstance(NativeLanguagePackService));
@@ -252,6 +257,10 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 
 		socketServer.registerChannel(NativeMcpDiscoveryHelperChannelName, instantiationService.createInstance(NativeMcpDiscoveryHelperChannel, (ctx: RemoteAgentConnectionContext) => getUriTransformer(ctx.remoteAuthority)));
 		socketServer.registerChannel(McpGatewayChannelName, instantiationService.createInstance(McpGatewayChannel<RemoteAgentConnectionContext>, socketServer));
+
+		// ChipOS Path-3 Stage-2: REH-side Worker spawn RPC channel.
+		const chiposRemoteWorkerService = accessor.get(IChiposRemoteWorkerService);
+		socketServer.registerChannel(ChiposRemoteWorkerChannelName, new ChiposRemoteWorkerChannel<RemoteAgentConnectionContext>(chiposRemoteWorkerService));
 
 		const remoteFileSystemChannel = disposables.add(new RemoteAgentFileSystemProviderChannel(logService, environmentService, configurationService));
 		socketServer.registerChannel(REMOTE_FILE_SYSTEM_CHANNEL_NAME, remoteFileSystemChannel);

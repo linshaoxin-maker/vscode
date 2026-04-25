@@ -22,9 +22,17 @@ export const enum SidecarState {
 }
 
 /**
- * 后端部署模式（3 种，与 Remote-SSH 正交）
+ * 后端部署模式
+ *
+ * 默认值是 `Auto` —— 由 `SidecarManager` 在运行时根据 workspace 远程性、
+ * 已有进程探测等信号自动解析为 Local / CloudReasoning / Manual 之一。
+ *
+ * 显式取 Local / CloudReasoning / Manual 仅在 `chipos.backend.developerMode`
+ * 打开时通过设置 UI 暴露，普通用户无需关心。
  */
 export enum BackendMode {
+	/** 自适应：根据环境自动选择最合适的模式（默认） */
+	Auto = 'auto',
 	/** 场景 A / B1: 推理+执行同进程（本地或 Remote-SSH 远程） */
 	Local = 'local',
 	/** 场景 B2 / E: 本地执行 + 云端推理 */
@@ -56,6 +64,11 @@ export interface ISidecarManagerService {
 
 	// ── 部署模式 ────────────────────────────────────────────────────────
 
+	/**
+	 * 当前已解析的部署模式。Auto 模式在 startBackend() 期间被解析为具体模式后，
+	 * 这里返回的就是解析后的具体模式（Local / CloudReasoning / Manual），不会
+	 * 再返回 Auto。
+	 */
 	readonly mode: BackendMode;
 
 	// ── Worker 连接状态（cloud-reasoning 模式下有意义）────────────────────

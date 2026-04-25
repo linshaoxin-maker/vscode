@@ -63,6 +63,8 @@ import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
 import { ChipOSEditorEffects } from './editorEffects.js';
 import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
+import { IProductService } from '../../../../../platform/product/common/productService.js';
+import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
 import {
 	AgentEventType,
 	ConnectionState,
@@ -157,6 +159,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IMcpService private readonly _mcpService: IMcpService,
 		@IDialogService private readonly _dialogService: IDialogService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
+		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
 		this._register(this._chatService.onDidDisposeSession(e => {
@@ -217,13 +220,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const runtime = this._getOrCreateRuntime(request.sessionResource);
 		const streamClient = await this._ensureClient(request.sessionResource);
 		if (!streamClient || streamClient.connectionState !== ConnectionState.Connected) {
-			const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
-			const reasoningUrl = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
-			const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
-			const target = reasoningUrl || `http://127.0.0.1:${httpPort}`;
-			const hint = mode === 'local'
-				? `Cannot connect to local backend at \`${target}\`. Is it running? Try \`make local\` in backend_v2/.`
-				: `Cannot connect to reasoning layer at \`${target}\` (mode: ${mode}). Check \`chipos.backend.reasoningUrl\` in settings.`;
+			const configured = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
+			// Use the helper so the error message shows the URL we actually attempted.
+			const target = resolveReasoningUrl(this._configurationService, this._productService);
+			let hint: string;
+			if (configured === 'auto' || !configured) {
+				hint = `Cannot reach the reasoning layer at \`${target}\`. ` +
+					'If you are connected via Remote-SSH, make sure the Reasoner is running on the remote server. ' +
+					'For local development, run `make local` in backend_v2/.';
+			} else if (configured === 'local') {
+				hint = `Cannot connect to local backend at \`${target}\`. Is it running? Try \`make local\` in backend_v2/.`;
+			} else {
+				hint = `Cannot connect to reasoning layer at \`${target}\` (mode: ${configured}). Check \`chipos.backend.reasoningUrl\` in settings.`;
+			}
 			progress([this._markdown(`$(error) **ChipOS:** ${hint}`)]);
 			return { errorDetails: { message: 'Backend not connected' } };
 		}
@@ -2469,9 +2478,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return runtime.streamClient;
 		}
 
-		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
-		const reasoningUrl = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
-		const baseUrl = reasoningUrl || `http://127.0.0.1:${httpPort}`;
+		// Three-tier resolution (settings > product.json > localhost). Helper
+		// keeps SidecarManager + chat agent agreed on which URL to use.
+		const baseUrl = resolveReasoningUrl(this._configurationService, this._productService);
 		const noProxy = this._configurationService.getValue<string[]>('http.noProxy') ?? [];
 
 		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl, '| http.noProxy:', JSON.stringify(noProxy));

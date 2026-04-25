@@ -9,14 +9,32 @@ import * as path from 'path';
 import { SshConnection, SshConnectionOptions } from './sshConnection';
 import { ServerManager } from './serverManager';
 import { WorkerManager } from './workerManager';
-import { getWorkerInstallPath } from './download';
+import { getProductInfo, getWorkerInstallPath } from './download';
+
+/**
+ * Resolve the Worker → Reasoner gRPC API key with the same fallback chain
+ * the workbench uses (settings > product.json > legacy backend.token).
+ * Centralized here so both ChipOSSSHResolver and `ensureRemoteWorker` agree.
+ */
+function resolveWorkerApiKey(): string {
+	const cfg = vscode.workspace.getConfiguration('chipos');
+	const fromSettings = cfg.get<string>('worker.apiKey');
+	if (fromSettings) { return fromSettings; }
+	const fromProduct = getProductInfo().chiposDefaults.workerApiKey;
+	if (fromProduct) { return fromProduct; }
+	const legacy = cfg.get<string>('backend.token');
+	return legacy || '';
+}
 
 let outputChannel: vscode.OutputChannel;
 
 interface RemoteSession {
 	ssh: SshConnection;
-	server: ServerManager;
-	worker: WorkerManager | undefined;
+	/** Optional: only set when this extension also deployed/started the REH (chipos-ssh+ flow). */
+	server?: ServerManager;
+	worker?: WorkerManager;
+	/** Synth flag — true when session was created by ensureRemoteWorker for a foreign authority (e.g. ssh-remote+). */
+	synth?: boolean;
 }
 
 const activeSessions = new Map<string, RemoteSession>();
@@ -46,6 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('chipos-remote-ssh.connectInCurrentWindow', () => connectToHost(true)),
 		vscode.commands.registerCommand('chipos-remote-ssh.showLog', () => outputChannel.show()),
 		vscode.commands.registerCommand('chipos-remote-ssh.disconnect', () => disconnect()),
+		vscode.commands.registerCommand('chipos-remote-ssh.ensureRemoteWorker', ensureRemoteWorker),
 	);
 }
 
@@ -186,7 +205,11 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 						`ChipOS: Failed to forward Reasoning port ${reasoningPort}. Chat may not work. Check if the port is already in use locally.`);
 				}
 
-				// 4b. Probe Reasoner health through the SSH tunnel
+				// 4b. Probe Reasoner health through the SSH tunnel.
+				//     P1-5: Surface absence as a blocking error before we try to
+				//     deploy the Worker — a Worker without a Reasoner has nothing
+				//     to register to and chat will fail with WORKER_UNAVAILABLE.
+				let reasonerReady = false;
 				try {
 					const probeUrl = `http://127.0.0.1:${localReasoningPort}`;
 					log(`[Probe] Checking Reasoner health at ${probeUrl}/health ...`);
@@ -197,15 +220,29 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					if (resp.ok) {
 						const body = await resp.json() as { status?: string; workers_connected?: number };
 						log(`Reasoner health: ${JSON.stringify(body)}`);
+						reasonerReady = true;
 					} else {
-						log(`[WARN] Reasoner /health returned ${resp.status}`);
-						vscode.window.showWarningMessage(
-							`ChipOS: Reasoner on remote returned HTTP ${resp.status}. Make sure the Reasoner is running on the remote server.`);
+						log(`[ERROR] Reasoner /health returned ${resp.status}`);
 					}
-				} catch {
-					log('[WARN] Reasoner /health probe failed — Reasoner may not be running on remote');
-					vscode.window.showWarningMessage(
-						'ChipOS: Cannot reach Reasoner on remote server. Please start the Reasoner first (see startup guide).');
+				} catch (probeErr) {
+					log(`[ERROR] Reasoner /health probe failed: ${probeErr}`);
+				}
+
+				if (!reasonerReady) {
+					const choice = await vscode.window.showErrorMessage(
+						`ChipOS: Reasoner is not reachable on ${sshTarget} (port ${reasoningPort}). ` +
+						'Chat will not work until you start the Reasoner on the remote server.',
+						'View Logs',
+						'Continue Anyway',
+						'Cancel',
+					);
+					if (choice === 'View Logs') {
+						outputChannel.show();
+					}
+					if (choice !== 'Continue Anyway') {
+						throw new Error('Reasoner not running on remote — connection cancelled');
+					}
+					log('[WARN] User chose to continue without Reasoner — chat will fail.');
 				}
 
 				// 5. FEAT-R23: Start Worker on remote + forward Worker HTTP port
@@ -215,7 +252,11 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				log(`[Step 5] workerInstallPath=${workerInstallPath}`);
 				const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 				log(`[Step 5] reasonerGrpcTarget=${reasonerGrpcTarget}`);
-				workerMgr = new WorkerManager(sshConn, workerInstallPath, log);
+				// Worker → Reasoner gRPC auth: settings > product.json > legacy backend.token.
+				const wmApiKey = resolveWorkerApiKey();
+				const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
+				log(`[Step 5] worker auth: apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
+				workerMgr = new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls);
 				try {
 					const folders = vscode.workspace.workspaceFolders;
 					const remoteWorkspacePath =
@@ -243,9 +284,25 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					}
 				} catch (workerErr) {
 					const workerMsg = workerErr instanceof Error ? workerErr.message : String(workerErr);
-					log(`[Step 5][WARN] Worker start failed (non-fatal): ${workerMsg}`);
-					vscode.window.showWarningMessage(
-						`ChipOS: Worker deployment failed: ${workerMsg}. Chat still works, but remote execution won't be available.`);
+					log(`[Step 5][ERROR] Worker start failed: ${workerMsg}`);
+					// P0-1: Worker failure is NOT silently non-fatal anymore.
+					// The previous "Chat still works" wording was misleading: any tool
+					// call (read_file, write_file, run_command, …) will fail with
+					// WORKER_UNAVAILABLE — which is what users typically run into a
+					// minute after connecting. Make it loud and actionable.
+					vscode.window.showErrorMessage(
+						`ChipOS: Worker failed to start on ${sshTarget}. ` +
+						'Tool execution (file ops, terminal, MCP, …) will not work. ' +
+						'See "ChipOS Remote SSH" output channel for the underlying error.',
+						'View Logs',
+						'Retry Connection',
+					).then(choice => {
+						if (choice === 'View Logs') {
+							outputChannel.show();
+						} else if (choice === 'Retry Connection') {
+							vscode.commands.executeCommand('workbench.action.reloadWindow');
+						}
+					});
 				}
 
 				// P1-7: Store per-authority session — multiple remote servers can coexist
@@ -366,7 +423,9 @@ async function disconnect(): Promise<void> {
 			if (session.worker) {
 				await session.worker.stopWorker();
 			}
-			await session.server.stopServer();
+			if (session.server) {
+				await session.server.stopServer();
+			}
 		} catch (err) {
 			log(`[WARN] Cleanup error for ${authority}: ${err}`);
 		}
@@ -497,4 +556,161 @@ function resolveReasonerGrpcTarget(): string {
 function log(message: string): void {
 	const timestamp = new Date().toISOString().substring(11, 23);
 	outputChannel.appendLine(`[${timestamp}] ${message}`);
+}
+
+// ── chipos-remote-ssh.ensureRemoteWorker ────────────────────────────────────
+//
+// Path-3 / Stage-1: when the user is connected via Microsoft Remote-SSH (or any
+// other SSH-based authority that's NOT chipos-ssh+), the ChipOSSSHResolver
+// flow doesn't run, so nobody starts the Worker on the remote host.
+//
+// SidecarManagerElectron invokes this command in that situation. It opens its
+// own ssh2 connection (independent of whatever VS Code's tunnel is doing),
+// reuses WorkerManager + the existing port-forwarding machinery, and updates
+// chipos.backend.{reasoningUrl,workerHttpUrl} so the rest of the IDE finds
+// the forwarded ports.
+//
+// Idempotent: if a synth session already exists for this target, reuse its
+// SshConnection / WorkerManager (ref_count handles multi-window safety).
+
+interface EnsureRemoteWorkerArgs {
+	/** SSH target as `user@host[:port]` (parseable by buildSshOptions). */
+	sshTarget: string;
+	/** Remote workspace folder (e.g. `/root/workspace`). */
+	workspacePath: string;
+}
+
+interface EnsureRemoteWorkerResult {
+	ok: boolean;
+	reasoningUrl?: string;
+	workerHttpUrl?: string;
+	error?: string;
+	/** For diagnostics: which strategy ended up running the Worker. */
+	strategy?: 'reused-session' | 'fresh-ssh';
+}
+
+async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureRemoteWorkerResult> {
+	const t0 = Date.now();
+	log(`[ChipOS RemoteWorker] command invoked target=${args.sshTarget} ws=${args.workspacePath}`);
+
+	if (!args?.sshTarget) {
+		return { ok: false, error: 'Missing sshTarget' };
+	}
+
+	const synthAuthority = `ext-remote-ssh+${args.sshTarget}`;
+	const existing = activeSessions.get(synthAuthority);
+
+	let sshConn: SshConnection;
+	let strategy: 'reused-session' | 'fresh-ssh';
+
+	if (existing && existing.ssh.connected) {
+		log('[ChipOS RemoteWorker] strategy=reused-session');
+		sshConn = existing.ssh;
+		strategy = 'reused-session';
+	} else {
+		log('[ChipOS RemoteWorker] strategy=fresh-ssh — opening new SshConnection');
+		strategy = 'fresh-ssh';
+		const sshOptions = await buildSshOptions(args.sshTarget);
+		if (!sshOptions.privateKeyPath && !process.env.SSH_AUTH_SOCK) {
+			const password = await vscode.window.showInputBox({
+				prompt: `ChipOS Worker: enter password for ${sshOptions.username}@${sshOptions.host}`,
+				password: true,
+			});
+			if (!password) {
+				return { ok: false, error: 'Authentication cancelled by user' };
+			}
+			sshOptions.password = password;
+			sshOptions.useAgent = false;
+		}
+		sshConn = new SshConnection(sshOptions, log);
+		try {
+			await sshConn.connect();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			log(`[ChipOS RemoteWorker][ERROR] SSH connect failed: ${msg}`);
+			return { ok: false, error: `SSH connect failed: ${msg}` };
+		}
+		log(`[ChipOS RemoteWorker] SSH connected elapsed=${Date.now() - t0}ms`);
+	}
+
+	const cfg = vscode.workspace.getConfiguration('chipos.backend');
+	const reasoningPort = cfg.get<number>('httpPort', 8080);
+	const workerHttpPort = cfg.get<number>('workerHttpPort', 8081);
+
+	// Probe Reasoner directly on the remote (cheaper than forwarding then probing).
+	let reasonerOk = false;
+	try {
+		const probeCmd = `curl -fsS --max-time 3 http://127.0.0.1:${reasoningPort}/health || echo NOT_OK`;
+		const out = await sshConn.exec(probeCmd);
+		reasonerOk = !out.includes('NOT_OK') && out.includes('"status"');
+	} catch (err) {
+		log(`[ChipOS RemoteWorker][ERROR] reasoner probe failed: ${err}`);
+	}
+	if (!reasonerOk) {
+		log(`[ChipOS RemoteWorker][ERROR] Reasoner not running on remote port ${reasoningPort}`);
+		return {
+			ok: false,
+			error: `Reasoner is not running on ${args.sshTarget}:${reasoningPort}. Start it on the remote server first.`,
+			strategy,
+		};
+	}
+	log(`[ChipOS RemoteWorker] reasoner probe ok elapsed=${Date.now() - t0}ms`);
+
+	// Forward Reasoner port if not already forwarded.
+	let localReasoningPort: number;
+	try {
+		localReasoningPort = await sshConn.forwardPort(0, '127.0.0.1', reasoningPort);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		log(`[ChipOS RemoteWorker][ERROR] reasoner port forwarding failed: ${msg}`);
+		return { ok: false, error: `Could not forward Reasoner port: ${msg}`, strategy };
+	}
+	log(`[ChipOS RemoteWorker] reasoner forward 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
+
+	// Spawn Worker on remote (reuse existing WorkerManager — same logic as
+	// ChipOSSSHResolver.resolve() step 5, including ref_count for multi-window).
+	const workerInstallPath = getWorkerInstallPath();
+	// Worker on remote talks to Reasoner on the SAME host via loopback.
+	const reasonerGrpcTarget = `127.0.0.1:${cfg.get<number>('grpcPort', 50051)}`;
+	const wmApiKey = resolveWorkerApiKey();
+	const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
+	log(`[ChipOS RemoteWorker] worker auth: apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
+	const workerMgr = existing?.worker ?? new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls);
+	try {
+		await workerMgr.ensureWorkerRunning(reasonerGrpcTarget, args.workspacePath);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		log(`[ChipOS RemoteWorker][ERROR] Worker spawn failed: ${msg}`);
+		return { ok: false, error: `Worker spawn failed: ${msg}`, strategy };
+	}
+	log(`[ChipOS RemoteWorker] worker running elapsed=${Date.now() - t0}ms`);
+
+	// Forward Worker HTTP.
+	let localWorkerPort = workerHttpPort;
+	try {
+		localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
+		log(`[ChipOS RemoteWorker] worker forward 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
+	} catch (err) {
+		log(`[ChipOS RemoteWorker][WARN] worker port forwarding failed: ${err} — using direct port`);
+	}
+
+	const reasoningUrl = `http://127.0.0.1:${localReasoningPort}`;
+	const workerHttpUrl = `http://127.0.0.1:${localWorkerPort}`;
+
+	// Update Global config so SidecarManagerElectron + chat agent pick up the
+	// forwarded URLs. Fire-and-forget; don't block the resolve.
+	cfg.update('reasoningUrl', reasoningUrl, vscode.ConfigurationTarget.Global)
+		.then(undefined, err => log(`[WARN] Failed to update reasoningUrl: ${err}`));
+	cfg.update('workerHttpUrl', workerHttpUrl, vscode.ConfigurationTarget.Global)
+		.then(undefined, err => log(`[WARN] Failed to update workerHttpUrl: ${err}`));
+
+	// Track session for cleanup on disconnect.
+	activeSessions.set(synthAuthority, {
+		ssh: sshConn,
+		worker: workerMgr,
+		synth: true,
+	});
+
+	log(`[ChipOS RemoteWorker] DONE strategy=${strategy} totalElapsed=${Date.now() - t0}ms`);
+	return { ok: true, reasoningUrl, workerHttpUrl, strategy };
 }

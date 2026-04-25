@@ -19,7 +19,7 @@ export class ConnectionTab extends Disposable {
 
 	private _statusContainer!: HTMLElement;
 	private _workerStatusContainer!: HTMLElement;
-	private _modeSpecificContainer!: HTMLElement;
+	private _modeSpecificContainer: HTMLElement | undefined;
 	private _modeSpecificTitleEl: HTMLElement | undefined;
 	private readonly _disposables = this._register(new DisposableStore());
 	private readonly _contextViewProvider: IContextViewProvider | undefined;
@@ -38,29 +38,85 @@ export class ConnectionTab extends Disposable {
 	private _render(): void {
 		dom.clearNode(this._container);
 
-		// ── Sub-section: Backend Mode ──
-		const modeSection = dom.append(this._container, dom.$('.chipos-settings-section'));
-		dom.append(modeSection, dom.$('.chipos-settings-section-title', undefined,
-			localize('chipos.settings.section.mode', 'Backend')));
-		this._renderBackendMode(modeSection);
+		const developerMode = this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false;
 
-		// ── Sub-section: Live Status ──
+		// ── Sub-section: Live Status (always shown) ──
 		const statusSection = dom.append(this._container, dom.$('.chipos-settings-section'));
 		dom.append(statusSection, dom.$('.chipos-settings-section-title', undefined,
 			localize('chipos.settings.section.status', 'Status')));
+		this._renderResolvedMode(statusSection);
 		this._renderConnectionStatus(statusSection);
 		this._renderWorkerStatus(statusSection);
 
-		// ── Sub-section: Mode-specific settings (dynamic) ──
-		// Wrapped in its own section so the joined-card CSS selector
-		// (.chipos-settings-section > .chipos-mode-specific > …) still applies.
-		const configSection = dom.append(this._container, dom.$('.chipos-settings-section'));
-		this._modeSpecificTitleEl = dom.append(configSection, dom.$('.chipos-settings-section-title'));
-		this._modeSpecificContainer = dom.append(configSection, dom.$('.chipos-mode-specific'));
-		this._renderModeSpecificSettings();
+		// ── Sub-section: Developer Mode toggle ──
+		// Always shown so the user can enable it without hand-editing settings.json.
+		const devSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(devSection, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.settings.section.developer', 'Developer Options')));
+		this._renderDeveloperModeToggle(devSection);
 
-		// ── Sub-section: Legacy / v1 fallback (collapsed) ──
-		this._renderLegacySettings(this._container);
+		if (developerMode) {
+			// ── Sub-section: Backend Mode override (developer-only) ──
+			const modeSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+			dom.append(modeSection, dom.$('.chipos-settings-section-title', undefined,
+				localize('chipos.settings.section.mode', 'Backend Mode (Developer Override)')));
+			this._renderBackendMode(modeSection);
+
+			// ── Sub-section: Mode-specific settings (dynamic) ──
+			const configSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+			this._modeSpecificTitleEl = dom.append(configSection, dom.$('.chipos-settings-section-title'));
+			this._modeSpecificContainer = dom.append(configSection, dom.$('.chipos-mode-specific'));
+			this._renderModeSpecificSettings();
+
+			// ── Sub-section: Legacy / v1 fallback (collapsed, dev only) ──
+			this._renderLegacySettings(this._container);
+		}
+
+		// Re-render the whole tab if developerMode toggles on/off.
+		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('chipos.backend.developerMode')) {
+				this._render();
+			}
+		}));
+	}
+
+	// ── New: read-only "resolved mode" indicator ─────────────────────────
+	private _renderResolvedMode(parent: HTMLElement): void {
+		const update = () => {
+			// Clean up any prior row first
+			const prior = parent.querySelector('.chipos-resolved-mode');
+			if (prior) { prior.remove(); }
+
+			const row = dom.append(parent, dom.$('.chipos-resolved-mode'));
+			const resolved = this._sidecarManager.mode;
+			const label = resolved === BackendMode.Auto
+				? localize('chipos.mode.resolving', 'Mode: detecting...')
+				: localize('chipos.mode.resolved', 'Mode: {0} (auto-detected)', resolved);
+			dom.append(row, dom.$('span', undefined, label));
+		};
+		update();
+		this._disposables.add(this._sidecarManager.onDidChangeState(update));
+	}
+
+	// ── New: developer mode toggle ───────────────────────────────────────
+	private _renderDeveloperModeToggle(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
+
+		const checkbox = this._disposables.add(new Checkbox(
+			localize('chipos.settings.developerMode', 'Developer Mode'),
+			this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false,
+			defaultCheckboxStyles,
+		));
+		dom.append(row, checkbox.domNode);
+
+		const textContainer = dom.append(row, dom.$('div'));
+		dom.append(textContainer, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.developerMode.desc', 'Show advanced backend settings (mode override, raw URLs/ports). Most users should leave this off — backend deployment is auto-detected based on whether you are connected via Remote-SSH and whether services are already running.')
+		));
+
+		this._disposables.add(checkbox.onChange(() => {
+			this._configurationService.updateValue('chipos.backend.developerMode', checkbox.checked, ConfigurationTarget.USER);
+		}));
 	}
 
 	private _updateModeSpecificTitle(mode: string): void {
@@ -68,6 +124,9 @@ export class ConnectionTab extends Disposable {
 			return;
 		}
 		switch (mode) {
+			case 'auto':
+				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.auto', 'Auto-Detected Endpoints');
+				break;
 			case 'local':
 				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.local', 'Local Backend');
 				break;
@@ -88,17 +147,18 @@ export class ConnectionTab extends Disposable {
 		const row = dom.append(parent, dom.$('.chipos-setting-row'));
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.mode', 'Backend Mode')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.mode.desc', 'How the IDE connects to reasoning and execution layers. Remote-SSH is orthogonal — when connected via SSH, "local" mode runs on the remote server.')
+			localize('chipos.settings.mode.desc', 'Override auto-detection. "auto" looks at workspace remoteness and existing processes to pick the right mode — recommended.')
 		));
 
-		const modeValues = ['local', 'cloud-reasoning', 'manual'];
+		const modeValues = ['auto', 'local', 'cloud-reasoning', 'manual'];
 		const modeOptions: ISelectOptionItem[] = [
-			{ text: localize('chipos.mode.local', 'Local (reasoning + execution in one process)') },
-			{ text: localize('chipos.mode.cloud', 'Cloud Reasoning (local execution + cloud reasoning)') },
-			{ text: localize('chipos.mode.manual', 'Manual (pre-deployed, specify URLs)') },
+			{ text: localize('chipos.mode.auto', 'Auto (recommended — detect from environment)') },
+			{ text: localize('chipos.mode.local', 'Local (spawn reasoning + execution on this machine)') },
+			{ text: localize('chipos.mode.cloud', 'Cloud Reasoning (local execution + remote reasoning)') },
+			{ text: localize('chipos.mode.manual', 'Manual (connect to pre-deployed URLs)') },
 		];
 
-		const current = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+		const current = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
 		const selectedIndex = Math.max(0, modeValues.indexOf(current));
 
 		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
@@ -114,7 +174,7 @@ export class ConnectionTab extends Disposable {
 
 		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('chipos.backend.mode')) {
-				const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+				const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
 				const idx = modeValues.indexOf(mode);
 				if (idx >= 0) {
 					selectBox.select(idx);
@@ -226,42 +286,61 @@ export class ConnectionTab extends Disposable {
 	// ── v2: 模式相关配置（动态渲染）─────────────────────────────────────
 
 	private _renderModeSpecificSettings(): void {
-		dom.clearNode(this._modeSpecificContainer);
+		// In non-developer mode the container isn't created; nothing to render.
+		const container = this._modeSpecificContainer;
+		if (!container) {
+			return;
+		}
+		dom.clearNode(container);
 
-		const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+		const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
 		this._updateModeSpecificTitle(mode);
 
 		switch (mode) {
+			case 'auto':
+				// In auto mode we don't render an editable form — settings used at
+				// runtime are derived from the resolved mode and the URL fields
+				// below (which are still useful for power users).
+				dom.append(container, dom.$('.chipos-setting-hint', undefined,
+					localize('chipos.mode.auto.hint', 'Auto mode picks Local / Cloud Reasoning / Manual based on workspace remoteness and existing processes. Switch to a specific mode above to edit endpoint URLs directly.')
+				));
+				this._renderReasoningUrlInput(container);
+				this._renderWorkerHttpUrlInput(container);
+				break;
+
 			case 'local':
-				this._renderWorkerHttpPortInput(this._modeSpecificContainer);
-				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
-				this._renderPythonPathInput(this._modeSpecificContainer);
-				this._renderBackendDirInput(this._modeSpecificContainer);
+				this._renderWorkerHttpPortInput(container);
+				this._renderWorkerHttpUrlInput(container);
+				this._renderPythonPathInput(container);
+				this._renderBackendDirInput(container);
 				break;
 
 			case 'cloud-reasoning':
 				// Authentication has moved to the General tab.
-				this._renderWebsiteUrlInput(this._modeSpecificContainer);
-				this._renderReasoningUrlInput(this._modeSpecificContainer);
-				this._renderGrpcAddressInput(this._modeSpecificContainer);
-				this._renderTokenInput(this._modeSpecificContainer);
-				this._renderWorkerApiKeyInput(this._modeSpecificContainer);
-				this._renderTlsEnabled(this._modeSpecificContainer);
-				this._renderWorkerHttpPortInput(this._modeSpecificContainer);
-				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
-				this._renderPythonPathInput(this._modeSpecificContainer);
-				this._renderBackendDirInput(this._modeSpecificContainer);
+				// `grpcAddress` is intentionally NOT exposed: it's auto-derived
+				// from `reasoningUrl.host + grpcPort` for the only case where
+				// it matters (IDE-side spawning a local Worker). Power users
+				// can still override via raw settings.json if needed.
+				this._renderWebsiteUrlInput(container);
+				this._renderReasoningUrlInput(container);
+				this._renderTokenInput(container);
+				this._renderWorkerApiKeyInput(container);
+				this._renderTlsEnabled(container);
+				this._renderWorkerHttpPortInput(container);
+				this._renderWorkerHttpUrlInput(container);
+				this._renderPythonPathInput(container);
+				this._renderBackendDirInput(container);
 				break;
 
 			case 'manual':
 				// Authentication has moved to the General tab.
-				this._renderWebsiteUrlInput(this._modeSpecificContainer);
-				this._renderReasoningUrlInput(this._modeSpecificContainer);
-				this._renderTokenInput(this._modeSpecificContainer);
-				this._renderWorkerApiKeyInput(this._modeSpecificContainer);
-				this._renderTlsEnabled(this._modeSpecificContainer);
-				this._renderWorkerHttpUrlInput(this._modeSpecificContainer);
-				dom.append(this._modeSpecificContainer, dom.$('.chipos-setting-hint', undefined,
+				this._renderWebsiteUrlInput(container);
+				this._renderReasoningUrlInput(container);
+				this._renderTokenInput(container);
+				this._renderWorkerApiKeyInput(container);
+				this._renderTlsEnabled(container);
+				this._renderWorkerHttpUrlInput(container);
+				dom.append(container, dom.$('.chipos-setting-hint', undefined,
 					localize('chipos.mode.manual.hint', 'Worker is managed externally. Deploy it separately and point it to the Reasoning gRPC address.')
 				));
 				break;
@@ -310,48 +389,9 @@ export class ConnectionTab extends Disposable {
 		}));
 	}
 
-	private _renderGrpcAddressInput(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.grpcAddress', 'Worker gRPC Target')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.grpcAddress.desc', 'gRPC address for the local Worker to connect to the Reasoning server (e.g. reasoning.chipos.ai:50051). If empty, derived from Reasoning URL host + port 50051.')
-		));
-
-		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
-			placeholder: 'reasoning.chipos.ai:50051',
-			inputBoxStyles: defaultInputBoxStyles,
-			validationOptions: {
-				validation: (value) => {
-					if (!value) { return null; }
-					// host:port  or  host (port optional)
-					const m = value.match(/^([^:]+)(?::(\d+))?$/);
-					if (!m) {
-						return { content: localize('chipos.settings.grpcAddress.invalid', 'Format: host:port (e.g. reasoning.chipos.ai:50051)'), type: 2 };
-					}
-					if (m[2]) {
-						const port = parseInt(m[2]);
-						if (port < 1 || port > 65535) {
-							return { content: localize('chipos.settings.port.invalid', 'Port must be between 1024 and 65535'), type: 2 };
-						}
-					}
-					return null;
-				}
-			}
-		}));
-		inputBox.value = this._configurationService.getValue<string>('chipos.backend.grpcAddress') || '';
-
-		this._disposables.add(inputBox.onDidChange(value => {
-			if (!value) {
-				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
-				return;
-			}
-			const m = value.match(/^([^:]+)(?::(\d+))?$/);
-			if (m && (!m[2] || (parseInt(m[2]) >= 1 && parseInt(m[2]) <= 65535))) {
-				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
-			}
-		}));
-	}
+	// `_renderGrpcAddressInput` removed — grpcAddress is auto-derived from
+	// reasoningUrl.host + grpcPort in the only case it matters (IDE-side
+	// Worker spawn). Power users can still override via raw settings.json.
 
 	// ── Phase 1 Unified Auth: Worker API Key input ──
 

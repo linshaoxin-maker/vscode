@@ -25,7 +25,8 @@
     "onCommand:chipos-remote-ssh.connect",
     "onCommand:chipos-remote-ssh.connectInCurrentWindow",
     "onCommand:chipos-remote-ssh.showLog",
-    "onCommand:chipos-remote-ssh.disconnect"
+    "onCommand:chipos-remote-ssh.disconnect",
+    "onCommand:chipos-remote-ssh.ensureRemoteWorker"
   ],
   "main": "./out/extension",
   "dependencies": {

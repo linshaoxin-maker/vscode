@@ -7,6 +7,8 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
+import { resolveReasoningUrl } from '../../../../workbench/contrib/chipos/common/chiposEndpoints.js';
 import { ISidecarManagerService, SidecarState, BackendMode, WorkerState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 
 /**
@@ -42,7 +44,7 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 	get mode(): BackendMode { return BackendMode.Manual; }
 	get workerState(): WorkerState { return this._workerState; }
 	get reasoningUrl(): string {
-		return this._configurationService.getValue<string>('chipos.backend.reasoningUrl') || '';
+		return resolveReasoningUrl(this._configurationService, this._productService);
 	}
 	get workerHttpUrl(): string {
 		const explicit = this._configurationService.getValue<string>('chipos.backend.workerHttpUrl');
@@ -61,6 +63,7 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 	constructor(
 		@ILogService private readonly _logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
 

@@ -6,6 +6,14 @@
 /**
  * FEAT-R30 + R49 + R50: SidecarManagerElectron — Electron desktop 实现。
  *
+ * 模式解析（Auto-detect）：
+ *   `chipos.backend.mode` 默认 `auto`。
+ *   - workspace 是 SSH remote → Manual（chipos-remote-ssh 扩展接管远端 spawn + 端口转发）
+ *   - 已有 reasoner 监听本地 8080 → Manual（不要重复 spawn，复用现有进程）
+ *   - 显式配了远程 reasoningUrl → CloudReasoning（本地只 spawn Worker）
+ *   - 否则 → Local（spawn reasoner + worker）
+ *   只有打开 `chipos.backend.developerMode` 后，用户在设置 UI 才能强制覆盖此自动决策。
+ *
  * R49: Worker 启动策略改为 "二进制优先"：
  *   1. 已有 Worker（instance.json PID 活着） → acquire ref_count（多窗口共享）
  *   2. 本地二进制缓存 → IPC spawn 二进制
@@ -35,6 +43,17 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
+import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
+import { resolveReasoningUrl, resolveWorkerApiKey } from '../common/chiposEndpoints.js';
+import { IChipOSAuthService } from '../browser/auth/chiposAuthService.js';
+import {
+	ChiposRemoteWorkerChannelName,
+	IEnsureRemoteWorkerArgs,
+	IEnsureRemoteWorkerResult,
+	IReleaseRemoteWorkerArgs,
+} from '../../../../platform/chipos/common/chiposRemoteWorker.js';
 import {
 	ISidecarManagerService,
 	SidecarState,
@@ -62,6 +81,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	private _workerPid: number | undefined;
 	private _isSharedInstance = false;
 	private _callerId: string;
+	/**
+	 * Tracks whether Path-3 Stage-2 RPC was used to spawn the remote Worker.
+	 * If set, dispose() must call `releaseWorker` on the same channel so the
+	 * REH-side ref_count is decremented (otherwise the Worker leaks on multi-window scenarios).
+	 */
+	private _rpcSpawnedWorkspaceRoot: string | undefined;
 
 	get state(): SidecarState { return this._state; }
 	get workerState(): WorkerState { return this._workerState; }
@@ -70,12 +95,10 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	// ── URLs ─────────────────────────────────────────────────────────────
 
 	get reasoningUrl(): string {
-		const url = this._configurationService.getValue<string>('chipos.backend.reasoningUrl');
-		if (url) {
-			return url;
-		}
-		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
-		return `http://127.0.0.1:${httpPort}`;
+		// Three-tier fallback: settings > product.json > hardcoded loopback.
+		// In SSH-Remote sessions, chipos-remote-ssh has already written the
+		// forwarded port into settings, which takes precedence.
+		return resolveReasoningUrl(this._configurationService, this._productService);
 	}
 
 	get sseUrl(): string {
@@ -127,23 +150,41 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		@INativeHostService _nativeHostService: INativeHostService,
 		@IEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@ICommandService private readonly _commandService: ICommandService,
+		@IRemoteAgentService private readonly _remoteAgentService: IRemoteAgentService,
+		@IProductService private readonly _productService: IProductService,
+		@IChipOSAuthService private readonly _authService: IChipOSAuthService,
 	) {
 		super();
 
-		const modeStr = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
-		this._mode = modeStr as BackendMode;
+		// Provisional mode — final value is computed lazily in startBackend() after
+		// auto-detection (workspace authority, port probe). Until then, treat as Auto.
+		this._mode = BackendMode.Auto;
 		this._callerId = `electron-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-		this._logService.info(`[ChipOS SidecarElectron] mode=${this._mode}`);
+		this._logService.info('[ChipOS SidecarElectron] constructed, mode will be resolved on startBackend()');
 	}
 
 	// ── Lifecycle ────────────────────────────────────────────────────────
 
 	async startBackend(): Promise<void> {
-		this._logService.info('[ChipOS SidecarElectron] startBackend()');
+		// Path-3 Stage-1: if the workspace is on a foreign Remote-SSH (e.g. Microsoft
+		// `ssh-remote+`) where ChipOSSSHResolver never ran, ask the chipos-remote-ssh
+		// extension to spawn the Worker on the remote and forward the ports. This
+		// MUST happen before _resolveMode() so reasoningUrl is populated when the
+		// mode resolver and the health check read config.
+		await this._maybeArrangeRemoteWorker();
 
+		this._mode = await this._resolveMode();
+		this._logService.info(`[ChipOS SidecarElectron] startBackend() resolved mode=${this._mode}`);
+
+		// Manual: nothing to spawn. Either:
+		//   - workspace is remote SSH (chipos-remote-ssh extension owns spawn)
+		//   - user explicitly chose manual
+		//   - auto-detect found an existing reasoner already serving on the local port
+		// In all cases we just verify the reasoning endpoint is reachable.
 		if (this._mode === BackendMode.Manual) {
-			this._setState(SidecarState.Connected);
+			await this._reasonerOnlyHealthCheck();
 			return;
 		}
 
@@ -161,6 +202,340 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			this._logService.error(`[ChipOS SidecarElectron] startBackend failed: ${msg}`);
 			this._setState(SidecarState.Error);
 		}
+	}
+
+	/**
+	 * Resolve `chipos.backend.mode`:
+	 *   1. developerMode + explicit value → respect user's choice
+	 *   2. Otherwise auto-detect:
+	 *      a. workspace is SSH remote → Manual (chipos-remote-ssh / REH owns spawn)
+	 *      b. local /health already responds → Manual (don't fight existing process)
+	 *      c. reasoningUrl points to non-loopback host → CloudReasoning (only spawn worker locally)
+	 *      d. fallback → Local
+	 */
+	private async _resolveMode(): Promise<BackendMode> {
+		const configured = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
+		const developerMode = this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false;
+
+		// Developer override: respect explicit non-auto choice.
+		if (developerMode && configured !== 'auto' && configured !== '') {
+			const forced = this._parseModeOrAuto(configured);
+			if (forced !== BackendMode.Auto) {
+				this._logService.info(`[ChipOS SidecarElectron] developerMode=true, forcing mode=${forced}`);
+				return forced;
+			}
+		}
+
+		// Auto-detect path.
+
+		// (a) Remote SSH workspace — let the SSH extension manage the remote backend.
+		const remoteAuth = this._detectRemoteAuthority();
+		if (remoteAuth) {
+			this._logService.info(`[ChipOS SidecarElectron] auto: remote workspace authority='${remoteAuth}', mode=manual`);
+			return BackendMode.Manual;
+		}
+
+		// (b) Local Reasoner already running → adopt it instead of spawning a duplicate.
+		if (await this._localReasonerAlreadyRunning()) {
+			this._logService.info('[ChipOS SidecarElectron] auto: local reasoner already serving, mode=manual');
+			return BackendMode.Manual;
+		}
+
+		// (c) Reasoner URL points to a remote host (either via settings or
+		// product.json default). Use the same resolver as `reasoningUrl` getter
+		// so the mode decision sees what the rest of the code will actually use.
+		const reasoningUrl = resolveReasoningUrl(this._configurationService, this._productService);
+		if (reasoningUrl && !this._isLoopback(reasoningUrl)) {
+			this._logService.info(`[ChipOS SidecarElectron] auto: remote reasoningUrl='${reasoningUrl}', mode=cloud-reasoning`);
+			return BackendMode.CloudReasoning;
+		}
+
+		// (d) Default — spawn everything on this machine.
+		this._logService.info('[ChipOS SidecarElectron] auto: defaulting to mode=local');
+		return BackendMode.Local;
+	}
+
+	private _parseModeOrAuto(value: string): BackendMode {
+		switch (value) {
+			case 'local': return BackendMode.Local;
+			case 'cloud-reasoning': return BackendMode.CloudReasoning;
+			case 'manual': return BackendMode.Manual;
+			default: return BackendMode.Auto;
+		}
+	}
+
+	private _detectRemoteAuthority(): string | undefined {
+		// 1. INativeEnvironmentService.remoteAuthority (set by VS Code when REH is active).
+		const fromEnv = (this._environmentService as { remoteAuthority?: string }).remoteAuthority;
+		if (fromEnv) {
+			return fromEnv;
+		}
+		// 2. workspace folder URI authority (e.g. ssh-remote+host, chipos-ssh+host).
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		for (const folder of folders) {
+			const auth = folder.uri.authority;
+			if (auth && (auth.startsWith('ssh-remote+') || auth.startsWith('chipos-ssh+') || auth.includes('+'))) {
+				return auth;
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * Path-3 orchestrator.
+	 *
+	 * Two strategies, tried in order:
+	 *
+	 *   A. RPC (Stage-2): if the REH exposes the `chipos-worker` channel
+	 *      (i.e. the user is connected to a Stage-2-or-later chipos-server),
+	 *      ask REH to spawn the Worker locally. No second SSH connection.
+	 *
+	 *   B. Command (Stage-1): delegate to the chipos-remote-ssh extension,
+	 *      which opens its own ssh2 connection and uses WorkerManager.
+	 *      Works regardless of which server is on the remote (vanilla
+	 *      VS Code Server, older chipos-server, anything).
+	 *
+	 * For chipos-ssh+host authorities, ChipOSSSHResolver.resolve() already did
+	 * the same work (and persisted reasoningUrl), so this is a no-op.
+	 *
+	 * For non-remote workspaces this is also a no-op.
+	 */
+	private async _maybeArrangeRemoteWorker(): Promise<void> {
+		const remoteAuth = this._detectRemoteAuthority();
+		if (!remoteAuth) {
+			return;
+		}
+		if (remoteAuth.startsWith('chipos-ssh+')) {
+			this._logService.info('[ChipOS RemoteWorker] authority=chipos-ssh+ — handled by ChipOSSSHResolver, skipping');
+			return;
+		}
+
+		// Strategy A: try RPC.
+		if (await this._tryEnsureWorkerViaRpc()) {
+			return;
+		}
+
+		// Strategy B: fall back to chipos-remote-ssh command.
+		await this._tryEnsureWorkerViaCommand(remoteAuth);
+	}
+
+	/**
+	 * Strategy A: probe the chipos-worker channel and call ensureWorker.
+	 *
+	 * Returns true if the RPC path completed successfully (the IDE can stop
+	 * here). False if the channel is missing, errored, or the REH-side
+	 * service rejected the request — caller should fall back to Strategy B.
+	 */
+	private async _tryEnsureWorkerViaRpc(): Promise<boolean> {
+		const conn = this._remoteAgentService.getConnection();
+		if (!conn) {
+			this._logService.info('[ChipOS RemoteWorker] strategy=rpc-skip reason=no-remote-connection');
+			return false;
+		}
+
+		const t0 = Date.now();
+		const grpcPort = this._configurationService.getValue<number>('chipos.backend.grpcPort') ?? 50051;
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		const workspaceRoot = folders[0]?.uri.path ?? '/root/workspace';
+		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		// Worker → Reasoner gRPC auth: settings > product.json > legacy backend.token.
+		const workerApiKey = resolveWorkerApiKey(this._configurationService, this._productService);
+		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false;
+
+		const args: IEnsureRemoteWorkerArgs = {
+			reasonerGrpcTarget: `127.0.0.1:${grpcPort}`,
+			workspaceRoot,
+			workerHttpPort,
+			workerApiKey: workerApiKey || undefined,
+			tlsEnabled,
+		};
+
+		try {
+			const channel = conn.getChannel(ChiposRemoteWorkerChannelName);
+			// Use a hard timeout — if the channel isn't actually registered,
+			// the call may hang indefinitely waiting for a server response.
+			const result = await this._withTimeout(
+				channel.call<IEnsureRemoteWorkerResult>('ensureWorker', args),
+				10_000,
+				'rpc-ensureWorker',
+			);
+
+			if (!result?.ok) {
+				this._logService.warn(`[ChipOS RemoteWorker] strategy=rpc-failed error=${result?.error ?? '(unknown)'} elapsed=${Date.now() - t0}ms`);
+				return false;
+			}
+
+			this._logService.info(`[ChipOS RemoteWorker] strategy=rpc-ok server-strategy=${result.strategy} pid=${result.pid} httpPort=${result.httpPort} elapsed=${Date.now() - t0}ms`);
+			// Track for ref_count release on dispose.
+			this._rpcSpawnedWorkspaceRoot = workspaceRoot;
+			// Note: we do NOT update reasoningUrl here. In RPC mode the REH is
+			// already the host, and reasoningUrl is expected to already be a
+			// forwarded URL set by Microsoft Remote-SSH's auto-forwarding or by
+			// the user. The Worker's HTTP port is exposed on remote loopback
+			// and the IDE accesses it through whatever forwarding mechanism is
+			// in use (this is consumer's concern, not ours).
+			return true;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this._logService.info(`[ChipOS RemoteWorker] strategy=rpc-unavailable reason="${msg}" elapsed=${Date.now() - t0}ms — falling back to command`);
+			return false;
+		}
+	}
+
+	/**
+	 * Strategy B: invoke the chipos-remote-ssh extension command.
+	 */
+	private async _tryEnsureWorkerViaCommand(remoteAuth: string): Promise<void> {
+		const sshTarget = this._extractSshTarget(remoteAuth);
+		if (!sshTarget) {
+			this._logService.warn(`[ChipOS RemoteWorker] strategy=command-skip cannot extract SSH target from authority='${remoteAuth}'`);
+			return;
+		}
+
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		const workspacePath = folders[0]?.uri.path ?? '/root/workspace';
+
+		this._logService.info(`[ChipOS RemoteWorker] strategy=command target=${sshTarget} ws=${workspacePath}`);
+
+		const t0 = Date.now();
+		try {
+			const result = await this._commandService.executeCommand<{ ok: boolean; error?: string; strategy?: string; reasoningUrl?: string }>(
+				'chipos-remote-ssh.ensureRemoteWorker',
+				{ sshTarget, workspacePath },
+			);
+			const elapsed = Date.now() - t0;
+			if (!result) {
+				this._logService.error(`[ChipOS RemoteWorker][ERROR] strategy=command result=undefined (extension not loaded?) elapsed=${elapsed}ms`);
+				return;
+			}
+			if (result.ok) {
+				this._logService.info(`[ChipOS RemoteWorker] strategy=command-ok inner-strategy=${result.strategy} reasoningUrl=${result.reasoningUrl} elapsed=${elapsed}ms`);
+			} else {
+				this._logService.error(`[ChipOS RemoteWorker][ERROR] strategy=command-failed error=${result.error} elapsed=${elapsed}ms`);
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this._logService.error(`[ChipOS RemoteWorker][ERROR] strategy=command-threw error=${msg} elapsed=${Date.now() - t0}ms`);
+		}
+	}
+
+	private _withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+			p.then(
+				v => { clearTimeout(timer); resolve(v); },
+				e => { clearTimeout(timer); reject(e); },
+			);
+		});
+	}
+
+	/**
+	 * Extract `user@host[:port]` from a Remote-SSH authority. Returns undefined
+	 * if the format is unrecognised (e.g. an SSH config alias we can't resolve).
+	 */
+	private _extractSshTarget(authority: string): string | undefined {
+		// Microsoft: ssh-remote+<host-or-user@host[:port]>
+		// ChipOS:    chipos-ssh+<host-or-user@host[:port]>
+		// Generic fallback: anything+<rest>
+		const plus = authority.indexOf('+');
+		if (plus < 0) {
+			return undefined;
+		}
+		const target = authority.substring(plus + 1);
+		if (!target) {
+			return undefined;
+		}
+		// We only support user@host[:port] format. SSH-config aliases without
+		// a username cannot be reliably resolved by ssh2 from here, so we hand
+		// them through and let buildSshOptions() supply the local username.
+		return target;
+	}
+
+	private _isLoopback(url: string): boolean {
+		try {
+			const u = new URL(url);
+			const host = u.hostname.toLowerCase();
+			return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+		} catch {
+			return true; // malformed URL — treat as local so we still try to spawn
+		}
+	}
+
+	private async _localReasonerAlreadyRunning(): Promise<boolean> {
+		// Only probe loopback addresses — never touch a configured remote URL here.
+		const url = this.reasoningUrl;
+		if (!this._isLoopback(url)) {
+			return false;
+		}
+		try {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 1500);
+			const resp = await fetch(`${url}/health`, { signal: controller.signal });
+			clearTimeout(timer);
+			return resp.ok;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Manual / adopted-existing-process variant of the health check.
+	 *
+	 * Reasoner reachability and Worker registration are reported as separate signals
+	 * (P0-3) so the UI can show "Reasoner connected, Worker not ready" without
+	 * keeping the whole backend in HealthChecking forever.
+	 */
+	private async _reasonerOnlyHealthCheck(): Promise<void> {
+		this._setState(SidecarState.HealthChecking);
+		const deadline = Date.now() + 15_000;
+		while (Date.now() < deadline) {
+			if (this._store.isDisposed) { return; }
+			try {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), 3000);
+				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
+				clearTimeout(timer);
+				if (resp.ok) {
+					this._setState(SidecarState.Connected);
+					this._logService.info('[ChipOS SidecarElectron] Reasoner health OK (manual/adopted)');
+					this._observeWorkerRegistration().catch(() => { /* best effort */ });
+					return;
+				}
+			} catch { /* retry */ }
+			await new Promise<void>(r => setTimeout(r, 500));
+		}
+		this._logService.warn('[ChipOS SidecarElectron] Manual mode: reasoner /health never responded');
+		this._setState(SidecarState.Error);
+	}
+
+	/**
+	 * Independent of the SidecarState machine, watch /health.workers_connected and
+	 * mirror it into WorkerState. In manual / SSH-remote scenarios the worker is
+	 * spawned by someone else (chipos-remote-ssh, REH, an operator); we just observe.
+	 */
+	private async _observeWorkerRegistration(): Promise<void> {
+		const deadline = Date.now() + 60_000;
+		this._setWorkerState(WorkerState.Starting);
+		while (Date.now() < deadline) {
+			if (this._store.isDisposed) { return; }
+			try {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), 3000);
+				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
+				clearTimeout(timer);
+				if (resp.ok) {
+					const body = await resp.json() as { workers_connected?: number };
+					if (body.workers_connected && body.workers_connected > 0) {
+						this._setWorkerState(WorkerState.Connected);
+						return;
+					}
+				}
+			} catch { /* retry */ }
+			await new Promise<void>(r => setTimeout(r, 1500));
+		}
+		// Give up — leave WorkerState as Starting so the user sees something is in flight.
+		this._logService.warn('[ChipOS SidecarElectron] Worker registration not observed within 60s');
+		this._setWorkerState(WorkerState.Disconnected);
 	}
 
 	async stopBackend(): Promise<void> {
@@ -209,6 +584,24 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				}
 			}).catch(() => {});
 		}
+
+		// Path-3 Stage-2/3: release ref_count on REH if we used the RPC path.
+		if (this._rpcSpawnedWorkspaceRoot) {
+			const conn = this._remoteAgentService.getConnection();
+			if (conn) {
+				try {
+					const channel = conn.getChannel(ChiposRemoteWorkerChannelName);
+					const args: IReleaseRemoteWorkerArgs = { workspaceRoot: this._rpcSpawnedWorkspaceRoot };
+					channel.call<void>('releaseWorker', args).catch(err => {
+						this._logService.warn(`[ChipOS RemoteWorker] dispose: releaseWorker failed: ${err}`);
+					});
+				} catch (err) {
+					this._logService.warn(`[ChipOS RemoteWorker] dispose: could not get channel: ${err}`);
+				}
+			}
+			this._rpcSpawnedWorkspaceRoot = undefined;
+		}
+
 		super.dispose();
 	}
 
@@ -282,8 +675,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		this._setWorkerState(WorkerState.Starting);
 
 		const grpcTarget = this.grpcAddress;
-		// Phase 1 Unified Auth: use independent worker API key, NOT user JWT
-		const workerApiKey = this._configurationService.getValue<string>('chipos.worker.apiKey') ?? '';
+		// Phase 1 Unified Auth: settings > product.json > legacy backend.token.
+		const workerApiKey = resolveWorkerApiKey(this._configurationService, this._productService);
 		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
 		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false;
 		const workspaceRoot = this._resolveWorkspaceRoot();
@@ -291,11 +684,41 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const configVersion = this._configurationService.getValue<string>('chipos.worker.version') || 'latest';
 		const backendDir = this._resolveBackendDir();
 
+		// Phase 1.5 Worker JWT: when the user is logged in, mint a Worker JWT
+		// from the website. Reasoner trusts the embedded user_id and hard-rejects
+		// cross-user task scheduling. Falls back to the legacy api_key path when
+		// the user is not logged in or the website is unreachable — that mode
+		// keeps the existing dev-only loopback behavior.
+		let workerToken: string | undefined;
+		if (this._authService.isLoggedIn()) {
+			try {
+				const tokenResult = await this._authService.getWorkerToken();
+				workerToken = tokenResult?.worker_token;
+				if (workerToken) {
+					this._logService.info('[ChipOS SidecarElectron] Minted worker_token (expires_in=%ds)', tokenResult!.expires_in);
+				} else {
+					this._logService.warn('[ChipOS SidecarElectron] worker_token mint returned empty; falling back to api_key path');
+				}
+			} catch (err) {
+				this._logService.warn('[ChipOS SidecarElectron] worker_token mint threw, falling back to api_key:', String(err));
+			}
+		}
+
 		const env: Record<string, string> = {
 			CHIPOS_REASONING_SERVER: grpcTarget,
 			CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
 			CHIPOS_TLS_ENABLED: String(tlsEnabled),
-			...(workerApiKey ? { CHIPOS_API_KEY: workerApiKey } : {}),
+			// Phase 1.5: signed Worker JWT (preferred). Reasoner verifies the
+			// signature and extracts user_id from the payload — the Worker no
+			// longer needs to self-report user identity.
+			...(workerToken ? { CHIPOS_WORKER_TOKEN: workerToken } : {}),
+			// P1-6: Worker → Reasoner gRPC API key (legacy / dev fallback).
+			// Reasoner reads CHIPOS_WORKER_OUTBOUND_KEY (preferred) and falls back
+			// to CHIPOS_API_KEY, so we set both for forward + backward compatibility.
+			...(workerApiKey ? {
+				CHIPOS_WORKER_OUTBOUND_KEY: workerApiKey,
+				CHIPOS_API_KEY: workerApiKey,
+			} : {}),
 			...(workspaceRoot ? { CHIPOS_WORKSPACE_ROOT: workspaceRoot } : {}),
 		};
 
@@ -383,15 +806,27 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		}
 	}
 
+	/**
+	 * Two-phase health check (P0-3):
+	 *   Phase 1: poll /health until it responds 200 → SidecarState.Connected
+	 *            (Reasoner reachability is independent of whether a worker has registered)
+	 *   Phase 2: keep polling for `workers_connected > 0` → WorkerState.Connected
+	 *            (best-effort; SidecarState stays Connected even if this never succeeds)
+	 *
+	 * Old behavior coupled the two: a slow-to-register Worker would leave the whole
+	 * backend in `HealthChecking` and ultimately surface as `Error`, even though
+	 * Chat over SSE would have worked fine.
+	 */
 	private async _healthCheckLoop(): Promise<void> {
 		this._setState(SidecarState.HealthChecking);
-		const timeout = this._mode === BackendMode.CloudReasoning ? 60_000 : 15_000;
+		const reasonerTimeout = this._mode === BackendMode.CloudReasoning ? 60_000 : 15_000;
 		const interval = 500;
 		const start = Date.now();
 		let attempts = 0;
 		let lastError = '';
 
-		while (Date.now() - start < timeout) {
+		// Phase 1: Reasoner reachable.
+		while (Date.now() - start < reasonerTimeout) {
 			if (this._store.isDisposed) { return; }
 			attempts++;
 			try {
@@ -400,25 +835,51 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
 				clearTimeout(timer);
 				if (resp.ok) {
-					const body = await resp.json() as { status?: string; workers_connected?: number };
-					if (body.workers_connected && body.workers_connected > 0) {
-						this._setState(SidecarState.Connected);
-						this._setWorkerState(WorkerState.Connected);
-						this._logService.info('[ChipOS SidecarElectron] Health check passed');
-						return;
-					}
+					this._setState(SidecarState.Connected);
+					this._logService.info(`[ChipOS SidecarElectron] Reasoner health OK after ${attempts} attempts`);
+					// Drop into Phase 2 below.
+					await this._observeWorkerRegistrationAfterSpawn();
+					return;
 				}
 			} catch (e) {
 				lastError = e instanceof Error ? e.message : String(e);
 				if (attempts % 10 === 0) {
-					this._logService.info(`[ChipOS SidecarElectron] Health check attempt ${attempts}, last error: ${lastError}`);
+					this._logService.info(`[ChipOS SidecarElectron] Reasoner health attempt ${attempts}, last error: ${lastError}`);
 				}
 			}
 			await new Promise<void>(r => setTimeout(r, interval));
 		}
 
-		this._logService.warn(`[ChipOS SidecarElectron] Health check failed after ${attempts} attempts. Last error: ${lastError}`);
+		this._logService.warn(`[ChipOS SidecarElectron] Reasoner health check failed after ${attempts} attempts. Last error: ${lastError}`);
 		this._setState(SidecarState.Error);
+	}
+
+	/** Phase 2 — same loop as `_observeWorkerRegistration` but with shorter timeout
+	 * because we just spawned the worker, not adopting an existing one. */
+	private async _observeWorkerRegistrationAfterSpawn(): Promise<void> {
+		const deadline = Date.now() + 30_000;
+		while (Date.now() < deadline) {
+			if (this._store.isDisposed) { return; }
+			try {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), 3000);
+				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
+				clearTimeout(timer);
+				if (resp.ok) {
+					const body = await resp.json() as { workers_connected?: number };
+					if (body.workers_connected && body.workers_connected > 0) {
+						this._setWorkerState(WorkerState.Connected);
+						this._logService.info('[ChipOS SidecarElectron] Worker registered with reasoner');
+						return;
+					}
+				}
+			} catch { /* retry */ }
+			await new Promise<void>(r => setTimeout(r, 1000));
+		}
+		// Worker never showed up — keep SidecarState.Connected (Reasoner is fine)
+		// but flag Worker explicitly so the UI/Chat layer can warn the user.
+		this._logService.warn('[ChipOS SidecarElectron] Worker registration not observed within 30s after spawn');
+		this._setWorkerState(WorkerState.Error);
 	}
 
 	private async _invokeIpc(channel: string, ...args: any[]): Promise<any> {

@@ -40,12 +40,43 @@ export class WorkerManager {
 	private _callerId: string;
 	private _isSharedInstance = false;
 	private _workerHttpPort = 8081;
+	/**
+	 * Worker → Reasoner gRPC API key. Injected into every Worker spawn as both
+	 * CHIPOS_WORKER_OUTBOUND_KEY (preferred) and CHIPOS_API_KEY (legacy).
+	 *
+	 * Without this, Workers fail Reasoner auth with WORKER_AUTH_FAILED when
+	 * the Reasoner has CHIPOS_REASONING_WORKER_API_KEY set.
+	 */
+	private readonly _workerApiKey: string;
+	private readonly _tlsEnabled: boolean;
 
-	constructor(ssh: SshConnection, installPath: string, log: (msg: string) => void) {
+	constructor(ssh: SshConnection, installPath: string, log: (msg: string) => void, workerApiKey?: string, tlsEnabled?: boolean) {
 		this._ssh = ssh;
 		this._installPath = installPath;
 		this._log = log;
 		this._callerId = `ssh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+		this._workerApiKey = workerApiKey ?? '';
+		this._tlsEnabled = tlsEnabled ?? false;
+	}
+
+	/**
+	 * Build the env-var prefix string used when starting the Worker via
+	 * `bash -c 'export ...; ...'`. Centralized here so both binary and
+	 * python spawn paths stay in sync.
+	 */
+	private _buildSpawnEnvExports(grpcTarget: string): string[] {
+		const exports = [`export CHIPOS_REASONING_SERVER="${grpcTarget}"`];
+		if (this._workerApiKey) {
+			// Shell-escape the key — base64 keys contain `=`, `+`, `/` which are
+			// safe inside double quotes but bracket them anyway for paranoia.
+			const escaped = this._workerApiKey.replace(/(["\\$`])/g, '\\$1');
+			exports.push(`export CHIPOS_WORKER_OUTBOUND_KEY="${escaped}"`);
+			exports.push(`export CHIPOS_API_KEY="${escaped}"`);
+		}
+		if (this._tlsEnabled) {
+			exports.push(`export CHIPOS_TLS_ENABLED=true`);
+		}
+		return exports;
 	}
 
 	get workerPid(): number | null {
@@ -207,6 +238,8 @@ export class WorkerManager {
 		const logFile = '$HOME/.chipos/logs/worker.log';
 		await this._ssh.exec('mkdir -p $HOME/.chipos/logs');
 
+		const exportLine = this._buildSpawnEnvExports(grpcTarget).join('; ');
+
 		const startCmd = [
 			`setsid ${binaryPath}`,
 			`start --server "${grpcTarget}"`,
@@ -216,8 +249,10 @@ export class WorkerManager {
 			`> ${logFile} 2>&1 < /dev/null &`,
 		].join(' ');
 
-		const fullCmd = `bash -c 'nohup ${startCmd} sleep 0.5; exit 0'`;
-		this._log(`[WorkerManager] _startBinaryWorker: ${fullCmd}`);
+		// Env exports must run inside the same bash -c so they're inherited by
+		// the spawned binary (the `setsid` child).
+		const fullCmd = `bash -c '${exportLine}; nohup ${startCmd} sleep 0.5; exit 0'`;
+		this._log(`[WorkerManager] _startBinaryWorker (apiKey=${this._workerApiKey ? 'set' : 'unset'}, tls=${this._tlsEnabled})`);
 		await this._ssh.exec(fullCmd);
 
 		await delay(1500);
@@ -258,16 +293,16 @@ export class WorkerManager {
 			needPythonPath = true;
 		} catch { /* standalone layout */ }
 
-		const envVars = [`CHIPOS_REASONING_SERVER="${grpcTarget}"`];
+		const exports = this._buildSpawnEnvExports(grpcTarget);
 		if (needPythonPath) {
 			const pythonPath = [
 				`${this._installPath}/packages/shared/src`,
 				`${this._installPath}/packages/execution/src`,
 			].join(':');
-			envVars.push(`PYTHONPATH="${pythonPath}"`);
+			exports.push(`export PYTHONPATH="${pythonPath}"`);
 		}
 
-		const exportLine = envVars.map(v => `export ${v}`).join('; ');
+		const exportLine = exports.join('; ');
 		const startCmd = [
 			`bash -c '${exportLine}; cd ${workerDir};`,
 			`setsid bash -c "exec ${venvPython} -m execution.server.cli start`,
@@ -309,31 +344,42 @@ export class WorkerManager {
 	/**
 	 * Atomic check + acquire: within flock, read instance.json, verify PID alive,
 	 * and increment ref_count. Returns instance meta if successful, null otherwise.
-	 * This eliminates the TOCTOU race between _readInstanceJson and _acquireRef.
+	 *
+	 * The python script is base64-encoded so no shell character (`>`, `"`, `$`, ...)
+	 * gets reinterpreted by bash on its way through `ssh.exec → bash -c`. Both the
+	 * instance directory path and the caller id are passed as argv to avoid any
+	 * string interpolation inside the python source.
 	 */
 	private async _tryAcquireExisting(): Promise<InstanceMeta | null> {
 		if (!this._instanceDir) { return null; }
-		const script = [
-			`flock -w 10 ${this._instanceDir}/instance.lock bash -c '`,
-			`META=$(cat ${this._instanceDir}/instance.json 2>/dev/null) || exit 1;`,
-			`echo "$META" | python3 -c "`,
-			`import sys,json,os;`,
-			`m=json.load(sys.stdin);`,
-			`pid=int(m.get(\\\"pid\\\",0) or 0);`,
-			// Check if PID is alive (avoid inline try/except syntax issues)
-			`alive = (pid > 0 and os.system(f\"kill -0 {pid} >/dev/null 2>&1\") == 0);`,
-			`alive or sys.exit(1);`,
-			// PID alive → acquire ref
-			`m[\\\"ref_count\\\"]=m.get(\\\"ref_count\\\",1)+1;`,
-			`refs=m.get(\\\"refs\\\",[]);`,
-			`refs.append(\\\"${this._callerId}\\\");`,
-			`m[\\\"refs\\\"]=refs;`,
-			`json.dump(m,open(\\\"${this._instanceDir}/instance.json\\\",\\\"w\\\"),indent=2);`,
-			`json.dump(m,sys.stdout)`,
-			`"'`,
-		].join('');
+		const py = `
+import json, os, sys
+instance_dir = os.path.expandvars(sys.argv[1])
+caller = sys.argv[2]
+json_path = os.path.join(instance_dir, "instance.json")
+try:
+    with open(json_path) as f:
+        m = json.load(f)
+except Exception:
+    sys.exit(1)
+pid = int(m.get("pid", 0) or 0)
+if pid <= 0 or os.system(f"kill -0 {pid} 2>/dev/null") != 0:
+    sys.exit(1)
+m["ref_count"] = m.get("ref_count", 1) + 1
+refs = m.get("refs", [])
+refs.append(caller)
+m["refs"] = refs
+with open(json_path, "w") as f:
+    json.dump(m, f, indent=2)
+print(json.dumps(m))
+`.trim();
+		const b64 = Buffer.from(py, 'utf-8').toString('base64');
+		const cmd = `mkdir -p "${this._instanceDir}" && `
+			+ `flock -w 10 "${this._instanceDir}/instance.lock" `
+			+ `python3 -c "$(echo '${b64}' | base64 -d)" `
+			+ `"${this._instanceDir}" "${this._callerId}"`;
 		try {
-			const result = await this._ssh.exec(script);
+			const result = await this._ssh.exec(cmd);
 			const trimmed = result.trim();
 			if (!trimmed) { return null; }
 			return JSON.parse(trimmed);
@@ -346,24 +392,37 @@ export class WorkerManager {
 		}
 	}
 
+	/**
+	 * Release ref count atomically. Same base64-encoded python pattern as
+	 * `_tryAcquireExisting` to dodge shell quoting hazards.
+	 */
 	private async _releaseRef(): Promise<number> {
 		if (!this._instanceDir) { return -1; }
-		const script = [
-			`flock -w 10 ${this._instanceDir}/instance.lock bash -c '`,
-			`META=$(cat ${this._instanceDir}/instance.json 2>/dev/null) || { echo 0; exit 0; };`,
-			`echo "$META" | python3 -c "`,
-			`import sys,json; m=json.load(sys.stdin);`,
-			`rc=max(0,m.get(\\\"ref_count\\\",1)-1);`,
-			`m[\\\"ref_count\\\"]=rc;`,
-			`refs=m.get(\\\"refs\\\",[]);`,
-			`refs=[r for r in refs if r!=\\\"${this._callerId}\\\"];`,
-			`m[\\\"refs\\\"]=refs;`,
-			`json.dump(m,open(\\\"${this._instanceDir}/instance.json\\\",\\\"w\\\"),indent=2);`,
-			`print(rc)`,
-			`"'`,
-		].join('');
+		const py = `
+import json, os, sys
+instance_dir = os.path.expandvars(sys.argv[1])
+caller = sys.argv[2]
+json_path = os.path.join(instance_dir, "instance.json")
+try:
+    with open(json_path) as f:
+        m = json.load(f)
+except Exception:
+    print(0)
+    sys.exit(0)
+rc = max(0, m.get("ref_count", 1) - 1)
+m["ref_count"] = rc
+refs = [r for r in m.get("refs", []) if r != caller]
+m["refs"] = refs
+with open(json_path, "w") as f:
+    json.dump(m, f, indent=2)
+print(rc)
+`.trim();
+		const b64 = Buffer.from(py, 'utf-8').toString('base64');
+		const cmd = `flock -w 10 "${this._instanceDir}/instance.lock" `
+			+ `python3 -c "$(echo '${b64}' | base64 -d)" `
+			+ `"${this._instanceDir}" "${this._callerId}"`;
 		try {
-			const result = await this._ssh.exec(script);
+			const result = await this._ssh.exec(cmd);
 			const remaining = parseInt(result.trim(), 10);
 			return isNaN(remaining) ? -1 : remaining;
 		} catch (e) {

@@ -20,6 +20,8 @@ import { createDecorator } from '../../../../../platform/instantiation/common/in
 import { ISecretStorageService } from '../../../../../platform/secrets/common/secrets.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IProductService } from '../../../../../platform/product/common/productService.js';
+import { resolveWebsiteUrl } from '../../common/chiposEndpoints.js';
 
 // ── Storage keys ──
 const KEY_ACCESS_TOKEN = 'chipos.auth.accessToken';
@@ -60,6 +62,13 @@ export interface IChipOSTokenManager {
 	initialize(): Promise<void>;
 	getAccessToken(): Promise<string | undefined>;
 	refreshAccessToken(): Promise<string | undefined>;
+	/**
+	 * Returns the current refresh_token if any. Intended for logout flow only
+	 * (so the caller can ask the website to revoke it before clearing local
+	 * state). Do not use for regular auth — refresh_token must never leave
+	 * the IDE process.
+	 */
+	getRefreshTokenForLogout(): Promise<string | undefined>;
 	storeTokens(accessToken: string, refreshToken: string, user?: IChipOSUserInfo): Promise<void>;
 	clearTokens(): Promise<void>;
 	getUser(): IChipOSUserInfo | undefined;
@@ -93,6 +102,7 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		@ISecretStorageService private readonly _secretStorage: ISecretStorageService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ILogService private readonly _logService: ILogService,
+		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
 	}
@@ -168,6 +178,10 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		}
 	}
 
+	async getRefreshTokenForLogout(): Promise<string | undefined> {
+		return this._refreshToken;
+	}
+
 	async storeTokens(accessToken: string, refreshToken: string, user?: IChipOSUserInfo): Promise<void> {
 		this._accessToken = accessToken;
 		this._refreshToken = refreshToken;
@@ -219,8 +233,9 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 	}
 
 	resolveWebsiteUrl(): string | undefined {
-		const configured = this._configurationService.getValue<string>('chipos.auth.websiteUrl')?.trim();
-		return configured || undefined;
+		// settings > product.json (build-time injected) > undefined.
+		const resolved = resolveWebsiteUrl(this._configurationService, this._productService).trim();
+		return resolved || undefined;
 	}
 
 	mapAuthUser(user: ChipOSAuthUserResponse | undefined): IChipOSUserInfo | undefined {
