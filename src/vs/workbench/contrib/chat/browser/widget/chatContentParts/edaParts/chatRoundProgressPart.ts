@@ -7,6 +7,7 @@ import { Disposable } from '../../../../../../../base/common/lifecycle.js';
 import { IChatContentPart } from '../chatContentParts.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import * as dom from '../../../../../../../base/browser/dom.js';
+import { localize } from '../../../../../../../nls.js';
 import { IChatRoundProgress } from '../../../../common/chatEdaTypes.js';
 
 export class ChatRoundProgressContentPart extends Disposable implements IChatContentPart {
@@ -24,12 +25,14 @@ export class ChatRoundProgressContentPart extends Disposable implements IChatCon
 		dom.clearNode(this.domNode);
 
 		const { current_round, max_rounds, phase } = this._data;
-		const pct = max_rounds > 0 ? Math.min(100, Math.round((current_round / max_rounds) * 100)) : 0;
+		const safeRound = Number.isFinite(current_round) ? Math.max(0, current_round) : 0;
+		const safeMax = Number.isFinite(max_rounds) && max_rounds > 0 ? max_rounds : 0;
+		const pct = safeMax > 0 ? Math.max(0, Math.min(100, Math.round((safeRound / safeMax) * 100))) : 0;
 
 		const header = dom.append(this.domNode, dom.$('.chat-round-progress-header'));
 		header.textContent = phase
-			? `Round ${current_round}/${max_rounds} — ${phase}`
-			: `Round ${current_round}/${max_rounds}`;
+			? localize('chipos.progress.roundWithPhase', 'Round {0}/{1} — {2}', safeRound, safeMax, phase)
+			: localize('chipos.progress.round', 'Round {0}/{1}', safeRound, safeMax);
 
 		const track = dom.append(this.domNode, dom.$('.chat-round-progress-track'));
 		const fill = dom.append(track, dom.$('.chat-round-progress-fill'));

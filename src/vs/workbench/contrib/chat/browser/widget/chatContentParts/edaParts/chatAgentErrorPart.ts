@@ -43,11 +43,32 @@ export class ChatAgentErrorContentPart extends Disposable implements IChatConten
 
 		if (retryable) {
 			const btnContainer = dom.append(this.domNode, dom.$('.chat-agent-error-actions'));
-			const retryBtn = dom.append(btnContainer, dom.$('button.chat-agent-error-retry'));
+			const retryBtn = dom.append(btnContainer, dom.$<HTMLButtonElement>('button.chat-agent-error-retry'));
+			retryBtn.type = 'button';
 			retryBtn.textContent = localize('chipos.error.retry', 'Retry');
 
+			let resetTimer: ReturnType<typeof setTimeout> | undefined;
+			this._register({
+				dispose: () => {
+					if (resetTimer !== undefined) {
+						clearTimeout(resetTimer);
+					}
+				},
+			});
+
 			this._register(dom.addDisposableListener(retryBtn, 'click', () => {
+				if (retryBtn.disabled) {
+					return;
+				}
+				retryBtn.disabled = true;
+				retryBtn.setAttribute('aria-busy', 'true');
 				this._commandService.executeCommand('workbench.action.chat.resend');
+				// Re-enable after a short cool-down so users can retry if the resend silently failed.
+				resetTimer = setTimeout(() => {
+					retryBtn.disabled = false;
+					retryBtn.removeAttribute('aria-busy');
+					resetTimer = undefined;
+				}, 2000);
 			}));
 		}
 	}

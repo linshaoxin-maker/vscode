@@ -127,21 +127,33 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 		// ── Options row: radio-style selectable chips ──
 		const optionsRow = document.createElement('div');
 		optionsRow.className = 'chat-confirm-options';
+		optionsRow.setAttribute('role', 'radiogroup');
+		optionsRow.setAttribute('aria-label', confirmation.title);
 		overlay.appendChild(optionsRow);
 
 		let selectedIndex = 0;
 		const chips: HTMLElement[] = [];
 
-		const updateSelection = (idx: number) => {
+		const updateSelection = (idx: number, focus = false) => {
 			selectedIndex = idx;
 			chips.forEach((chip, i) => {
-				chip.classList.toggle('selected', i === idx);
+				const isSelected = i === idx;
+				chip.classList.toggle('selected', isSelected);
+				chip.setAttribute('aria-checked', String(isSelected));
+				chip.tabIndex = isSelected ? 0 : -1;
 			});
+			if (focus) {
+				chips[idx]?.focus();
+			}
 		};
 
 		for (let i = 0; i < buttonLabels.length; i++) {
 			const chip = document.createElement('div');
 			chip.className = 'chat-confirm-chip';
+			chip.setAttribute('role', 'radio');
+			chip.setAttribute('aria-label', buttonLabels[i]);
+			chip.setAttribute('aria-checked', i === 0 ? 'true' : 'false');
+			chip.tabIndex = i === 0 ? 0 : -1;
 			const letterSpan = document.createElement('span');
 			letterSpan.className = 'chat-confirm-chip-letter';
 			letterSpan.textContent = String.fromCharCode(65 + i);
@@ -152,7 +164,24 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 			if (i === 0) {
 				chip.classList.add('selected');
 			}
-			chip.addEventListener('click', () => updateSelection(i));
+			this._register(dom.addDisposableListener(chip, 'click', () => updateSelection(i)));
+			// Radio-group keyboard navigation. Stop propagation so overlay-level
+			// ArrowRight (=submit) doesn't fire while navigating between chips.
+			this._register(dom.addDisposableListener(chip, 'keydown', (e: KeyboardEvent) => {
+				if (e.key === ' ') {
+					e.preventDefault();
+					e.stopPropagation();
+					updateSelection(i);
+				} else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+					e.preventDefault();
+					e.stopPropagation();
+					updateSelection((i - 1 + chips.length) % chips.length, true);
+				} else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+					e.preventDefault();
+					e.stopPropagation();
+					updateSelection((i + 1) % chips.length, true);
+				}
+			}));
 			optionsRow.appendChild(chip);
 			chips.push(chip);
 		}
@@ -229,7 +258,7 @@ export class ChatConfirmationContentPart extends Disposable implements IChatCont
 				}
 			}
 		};
-		overlay.addEventListener('keydown', keyHandler);
+		this._register(dom.addDisposableListener(overlay, 'keydown', keyHandler));
 
 		// Insert overlay AFTER the list container (between list and input),
 		// so it participates in flex layout and the list shrinks automatically.
