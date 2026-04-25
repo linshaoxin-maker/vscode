@@ -154,6 +154,10 @@
 	border-radius: 3px;
 }
 
+.vs .chipos-search-highlight {
+	background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.45));
+}
+
 /* ── Right Content Area ──────────────────────────────────────── */
 
 .chipos-settings-content {
@@ -622,6 +626,11 @@
 
 .hc-black .chipos-toggle-switch:focus-visible {
 	outline: 2px solid var(--vscode-focusBorder, #f38518);
+}
+
+.hc-black .chipos-settings-search-input:focus {
+	outline: 2px solid var(--vscode-focusBorder, #f38518);
+	outline-offset: -1px;
 }
 
 .hc-black .chipos-btn-secondary,

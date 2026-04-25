@@ -102,7 +102,8 @@ export class RulesTab extends Disposable {
 		try {
 			await this._fileService.writeFile(fileUri, VSBuffer.fromString(template));
 			await this._editorService.openEditor({ resource: fileUri });
-			if (this._rulesListContainer) {
+			// Guard against tab dispose during the await above.
+			if (this._rulesListContainer?.isConnected) {
 				dom.clearNode(this._rulesListContainer);
 				this._detectProjectRules(this._rulesListContainer);
 			}
