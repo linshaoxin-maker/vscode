@@ -88,9 +88,17 @@ export interface IProductConfiguration {
 	 * during production builds. Source-tree (`commit: ""`) keeps these empty.
 	 *
 	 * Read order in code: settings.json (workspace > user) > product.chiposDefaults.* > hardcoded fallback.
+	 *
+	 * Reasoner and Worker are deployed on **different machines by default**
+	 * — Reasoner is a centralized service (cloud or shared), Worker is per-user
+	 * on their EDA dev box. `reasonerGrpcAddress` is the cross-network address
+	 * the spawned Worker uses to dial Reasoner gRPC; it is NOT the same as
+	 * `reasoningUrl` (which the IDE uses for HTTP/SSE) once SSH-Remote forwards
+	 * the HTTP port to a local-loopback string.
 	 */
 	readonly chiposDefaults?: {
 		readonly reasoningUrl?: string;
+		readonly reasonerGrpcAddress?: string;
 		readonly websiteUrl?: string;
 		readonly workerApiKey?: string;
 	};

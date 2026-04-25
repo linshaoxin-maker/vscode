@@ -39,6 +39,7 @@ export interface ProductInfo {
 	 */
 	chiposDefaults: {
 		reasoningUrl: string;
+		reasonerGrpcAddress: string;
 		websiteUrl: string;
 		workerApiKey: string;
 	};
@@ -69,6 +70,7 @@ export function getProductInfo(): ProductInfo {
 			serverApplicationName: product.serverApplicationName || 'chipos-server',
 			chiposDefaults: {
 				reasoningUrl: defaults.reasoningUrl || '',
+				reasonerGrpcAddress: defaults.reasonerGrpcAddress || '',
 				websiteUrl: defaults.websiteUrl || '',
 				workerApiKey: defaults.workerApiKey || '',
 			},
@@ -80,7 +82,7 @@ export function getProductInfo(): ProductInfo {
 			quality: 'insider',
 			updateUrl: '',
 			serverApplicationName: 'chipos-server',
-			chiposDefaults: { reasoningUrl: '', websiteUrl: '', workerApiKey: '' },
+			chiposDefaults: { reasoningUrl: '', reasonerGrpcAddress: '', websiteUrl: '', workerApiKey: '' },
 		};
 	}
 }

@@ -195,13 +195,13 @@ configurationRegistry.registerConfiguration({
 		'chipos.backend.grpcAddress': {
 			type: 'string',
 			default: '',
-			// [Internal] Not exposed in the ChipOS Settings UI. Auto-derived
-			// from reasoningUrl.host + grpcPort. Override only when Reasoner
-			// is on a different host than where the IDE will spawn the Worker
-			// (advanced split-machine deployment).
-			description: localize('chipos.backend.grpcAddress.desc', '[Internal] gRPC dial target the spawned Worker should use to reach Reasoner. Leave empty to auto-derive from reasoningUrl host + grpcPort.'),
+			// Real architectural setting — Reasoner and Worker are deployed on
+			// SEPARATE machines by default. This is the gRPC dial target the
+			// spawned Worker uses to reach Reasoner across the network. Only
+			// the dev/single-server case can leave this empty (then loopback
+			// fallback kicks in).
+			description: localize('chipos.backend.grpcAddress.desc', 'gRPC address the spawned Worker should use to dial Reasoner (e.g. `reasoning.chipos.ai:50051`). Required when Reasoner and Worker are on different machines (the default deployment topology). Leave empty for single-machine dev/testing — falls back to product.json injection or 127.0.0.1:50051 loopback.'),
 			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
 		},
 
 		'chipos.backend.token': {

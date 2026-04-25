@@ -21,12 +21,20 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IProductService } from '../../../../platform/product/common/productService.js';
 
 const SETTING_REASONING_URL = 'chipos.backend.reasoningUrl';
+const SETTING_GRPC_ADDRESS = 'chipos.backend.grpcAddress';
 const SETTING_WEBSITE_URL = 'chipos.auth.websiteUrl';
 const SETTING_WORKER_API_KEY = 'chipos.worker.apiKey';
 const SETTING_BACKEND_TOKEN = 'chipos.backend.token'; // legacy fallback for worker key
 const SETTING_HTTP_PORT = 'chipos.backend.httpPort';
+const SETTING_GRPC_PORT = 'chipos.backend.grpcPort';
 
 const DEFAULT_HTTP_PORT = 8080;
+const DEFAULT_GRPC_PORT = 50051;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+function isLoopbackHost(host: string): boolean {
+	return LOOPBACK_HOSTS.has(host.toLowerCase());
+}
 
 /**
  * Resolve the Reasoner HTTP/SSE URL.
@@ -66,6 +74,63 @@ export function resolveWebsiteUrl(
 		return fromSettings;
 	}
 	return productService.chiposDefaults?.websiteUrl ?? '';
+}
+
+/**
+ * Resolve the gRPC address that a spawned Worker should use to dial Reasoner.
+ *
+ * **Default architecture is split-machine**: Reasoner is a centralized service
+ * (cloud-hosted, shared by many users) and Worker is per-user on their EDA dev
+ * box. The Worker dials Reasoner across the network — NOT loopback.
+ *
+ * `127.0.0.1:50051` only makes sense when both happen to be on the same host
+ * (single-server testing, dev). It's the LAST-RESORT fallback here, not the
+ * default for production.
+ *
+ * Resolution order:
+ *   1. `chipos.backend.grpcAddress` setting (workspace > user) — explicit override
+ *   2. `product.chiposDefaults.reasonerGrpcAddress` — build-time injected default
+ *      (this is the production path: deployment ships the centralized
+ *      Reasoner gRPC URL)
+ *   3. Derive from `chipos.backend.reasoningUrl` IF it's a non-loopback URL.
+ *      Useful for cloud-reasoning / manual modes where the user pasted a real
+ *      cloud URL into reasoningUrl. NOT useful for chipos-ssh+ flow because
+ *      reasoningUrl after SSH forwarding is `127.0.0.1:<random>`.
+ *   4. `127.0.0.1:50051` last-resort fallback (single-machine dev/testing).
+ *      ⚠️ If your Reasoner is on a different host than your Worker, you MUST
+ *      configure step 1 or 2 — loopback won't reach it.
+ */
+export function resolveReasonerGrpcAddress(
+	configurationService: IConfigurationService,
+	productService: IProductService,
+): string {
+	// (1) Explicit setting
+	const fromSettings = configurationService.getValue<string>(SETTING_GRPC_ADDRESS);
+	if (fromSettings) {
+		return fromSettings;
+	}
+	// (2) Build-time default
+	const fromProduct = productService.chiposDefaults?.reasonerGrpcAddress;
+	if (fromProduct) {
+		return fromProduct;
+	}
+	// (3) Derive from reasoningUrl when it's clearly a cross-network URL
+	const reasoningUrl = configurationService.getValue<string>(SETTING_REASONING_URL);
+	const grpcPort = configurationService.getValue<number>(SETTING_GRPC_PORT) ?? DEFAULT_GRPC_PORT;
+	if (reasoningUrl) {
+		try {
+			const url = new URL(reasoningUrl);
+			if (!isLoopbackHost(url.hostname)) {
+				// HTTPS deployments typically share TLS port for both HTTP and gRPC
+				if (url.protocol === 'https:' || url.port === '443') {
+					return `${url.hostname}:443`;
+				}
+				return `${url.hostname}:${grpcPort}`;
+			}
+		} catch { /* malformed URL — fall through to (4) */ }
+	}
+	// (4) Last-resort same-machine fallback
+	return `127.0.0.1:${grpcPort}`;
 }
 
 /**

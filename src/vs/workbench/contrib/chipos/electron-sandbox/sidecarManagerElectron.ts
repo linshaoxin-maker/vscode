@@ -46,7 +46,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
-import { resolveReasoningUrl, resolveWorkerApiKey } from '../common/chiposEndpoints.js';
+import { resolveReasoningUrl, resolveReasonerGrpcAddress, resolveWorkerApiKey } from '../common/chiposEndpoints.js';
 import { IChipOSAuthService } from '../browser/auth/chiposAuthService.js';
 import {
 	ChiposRemoteWorkerChannelName,
@@ -123,20 +123,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	}
 
 	get grpcAddress(): string {
-		const explicit = this._configurationService.getValue<string>('chipos.backend.grpcAddress');
-		if (explicit) {
-			return explicit;
-		}
-		const grpcPort = this._configurationService.getValue<number>('chipos.backend.grpcPort') ?? 50051;
-		try {
-			const url = new URL(this.reasoningUrl);
-			if (url.port === '443' || url.protocol === 'https:') {
-				return `${url.hostname}:443`;
-			}
-			return `${url.hostname}:${grpcPort}`;
-		} catch {
-			return `localhost:${grpcPort}`;
-		}
+		// Use the centralized resolver: settings > product.json > derive from
+		// reasoningUrl (only when non-loopback) > 127.0.0.1:50051 fallback.
+		// Default deployment is split (Reasoner ≠ Worker host) so the loopback
+		// fallback is for single-machine dev/testing only.
+		return resolveReasonerGrpcAddress(this._configurationService, this._productService);
 	}
 
 	// ── v1 兼容 ──────────────────────────────────────────────────────────
@@ -334,16 +325,19 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		}
 
 		const t0 = Date.now();
-		const grpcPort = this._configurationService.getValue<number>('chipos.backend.grpcPort') ?? 50051;
 		const folders = this._workspaceContextService.getWorkspace().folders;
 		const workspaceRoot = folders[0]?.uri.path ?? '/root/workspace';
 		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
 		// Worker → Reasoner gRPC auth: settings > product.json > legacy backend.token.
 		const workerApiKey = resolveWorkerApiKey(this._configurationService, this._productService);
+		// Worker → Reasoner gRPC dial target. Default architecture is split-machine
+		// (Reasoner is centralized, Worker is per-user). Only single-server testing
+		// falls back to 127.0.0.1:50051.
+		const reasonerGrpcTarget = resolveReasonerGrpcAddress(this._configurationService, this._productService);
 		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false;
 
 		const args: IEnsureRemoteWorkerArgs = {
-			reasonerGrpcTarget: `127.0.0.1:${grpcPort}`,
+			reasonerGrpcTarget,
 			workspaceRoot,
 			workerHttpPort,
 			workerApiKey: workerApiKey || undefined,

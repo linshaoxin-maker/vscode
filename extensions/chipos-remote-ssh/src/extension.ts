@@ -530,26 +530,47 @@ async function getSshHosts(): Promise<string[]> {
 }
 
 /**
- * Resolve the gRPC target address that the remote Worker should use to connect
- * to the Reasoner.  Priority:
- *   1. Explicit `chipos.backend.grpcAddress` (e.g. "10.0.0.5:50051")
- *   2. Host extracted from `chipos.backend.reasoningUrl` + `grpcPort`
- *   3. Fallback `127.0.0.1:<grpcPort>` (same-machine default)
+ * Resolve the gRPC target address that the remote Worker uses to dial Reasoner.
+ *
+ * Default architecture is split-machine: Reasoner is centralized (cloud or
+ * shared host), Worker is per-user. So this returns a CROSS-NETWORK address
+ * unless the deployment is single-server.
+ *
+ * Priority (must mirror workbench's `resolveReasonerGrpcAddress` in
+ * `chiposEndpoints.ts` since the extension cannot import workbench code):
+ *   1. Explicit `chipos.backend.grpcAddress`         (e.g. "reasoning.chipos.ai:50051")
+ *   2. `product.chiposDefaults.reasonerGrpcAddress`  (build-time injected)
+ *   3. Derived from `chipos.backend.reasoningUrl`    (only when non-loopback)
+ *   4. `127.0.0.1:<grpcPort>` last-resort same-machine fallback
  */
 function resolveReasonerGrpcTarget(): string {
 	const cfg = vscode.workspace.getConfiguration('chipos.backend');
+	// (1) Explicit setting
 	const explicit = cfg.get<string>('grpcAddress', '');
 	if (explicit) {
 		return explicit;
 	}
+	// (2) Build-time default
+	const productDefault = getProductInfo().chiposDefaults.reasonerGrpcAddress;
+	if (productDefault) {
+		return productDefault;
+	}
+	// (3) Derive from reasoningUrl when it's clearly a cross-network URL
 	const grpcPort = cfg.get<number>('grpcPort', 50051);
 	const reasoningUrl = cfg.get<string>('reasoningUrl', '');
 	if (reasoningUrl) {
 		try {
 			const url = new URL(reasoningUrl);
-			return `${url.hostname}:${grpcPort}`;
+			const host = url.hostname.toLowerCase();
+			if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+				if (url.protocol === 'https:' || url.port === '443') {
+					return `${url.hostname}:443`;
+				}
+				return `${url.hostname}:${grpcPort}`;
+			}
 		} catch { /* fall through */ }
 	}
+	// (4) Same-machine fallback
 	return `127.0.0.1:${grpcPort}`;
 }
 
@@ -670,8 +691,9 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	// Spawn Worker on remote (reuse existing WorkerManager — same logic as
 	// ChipOSSSHResolver.resolve() step 5, including ref_count for multi-window).
 	const workerInstallPath = getWorkerInstallPath();
-	// Worker on remote talks to Reasoner on the SAME host via loopback.
-	const reasonerGrpcTarget = `127.0.0.1:${cfg.get<number>('grpcPort', 50051)}`;
+	// Worker → Reasoner gRPC dial target. Default split-machine: settings >
+	// product.json > derive from reasoningUrl > 127.0.0.1:50051 fallback.
+	const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 	const wmApiKey = resolveWorkerApiKey();
 	const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
 	log(`[ChipOS RemoteWorker] worker auth: apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);

@@ -317,12 +317,13 @@ export class ConnectionTab extends Disposable {
 
 			case 'cloud-reasoning':
 				// Authentication has moved to the General tab.
-				// `grpcAddress` is intentionally NOT exposed: it's auto-derived
-				// from `reasoningUrl.host + grpcPort` for the only case where
-				// it matters (IDE-side spawning a local Worker). Power users
-				// can still override via raw settings.json if needed.
+				// `grpcAddress` is the cross-network gRPC URL the Worker uses to
+				// reach Reasoner — meaningful for the default split-machine
+				// deployment. Auto-derived from reasoningUrl when both share the
+				// same hostname (cloud Reasoner case).
 				this._renderWebsiteUrlInput(container);
 				this._renderReasoningUrlInput(container);
+				this._renderGrpcAddressInput(container);
 				this._renderTokenInput(container);
 				this._renderWorkerApiKeyInput(container);
 				this._renderTlsEnabled(container);
@@ -389,9 +390,47 @@ export class ConnectionTab extends Disposable {
 		}));
 	}
 
-	// `_renderGrpcAddressInput` removed — grpcAddress is auto-derived from
-	// reasoningUrl.host + grpcPort in the only case it matters (IDE-side
-	// Worker spawn). Power users can still override via raw settings.json.
+	private _renderGrpcAddressInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.grpcAddress', 'Reasoner gRPC Address (Worker → Reasoner)')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.grpcAddress.desc', 'Cross-network gRPC URL the Worker uses to reach Reasoner. Required when Reasoner and Worker are on different machines (the default deployment). Example: `reasoning.chipos.ai:50051`. Leave empty to auto-derive from Reasoning URL host (when not loopback) or fall back to 127.0.0.1:50051 for single-machine setups.')
+		));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: 'reasoning.chipos.ai:50051',
+			inputBoxStyles: defaultInputBoxStyles,
+			validationOptions: {
+				validation: (value) => {
+					if (!value) { return null; }
+					const m = value.match(/^([^:]+)(?::(\d+))?$/);
+					if (!m) {
+						return { content: localize('chipos.settings.grpcAddress.invalid', 'Format: host:port (e.g. reasoning.chipos.ai:50051)'), type: 2 };
+					}
+					if (m[2]) {
+						const port = parseInt(m[2]);
+						if (port < 1 || port > 65535) {
+							return { content: localize('chipos.settings.port.invalid', 'Port must be between 1024 and 65535'), type: 2 };
+						}
+					}
+					return null;
+				}
+			}
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.backend.grpcAddress') || '';
+
+		this._disposables.add(inputBox.onDidChange(value => {
+			if (!value) {
+				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
+				return;
+			}
+			const m = value.match(/^([^:]+)(?::(\d+))?$/);
+			if (m && (!m[2] || (parseInt(m[2]) >= 1 && parseInt(m[2]) <= 65535))) {
+				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
+			}
+		}));
+	}
 
 	// ── Phase 1 Unified Auth: Worker API Key input ──
 
