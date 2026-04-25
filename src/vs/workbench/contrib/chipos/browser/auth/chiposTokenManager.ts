@@ -14,12 +14,12 @@
  *  See: chiops/docs/unified-auth/04-phase1-coderust-ide.md (I2)
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../../base/common/lifecycle.js';
-import { Emitter, Event } from '../../../../../../base/common/event.js';
-import { createDecorator } from '../../../../../../platform/instantiation/common/instantiation.js';
-import { ISecretStorageService } from '../../../../../../platform/secrets/common/secrets.js';
-import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
-import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ISecretStorageService } from '../../../../../platform/secrets/common/secrets.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
 
 // ── Storage keys ──
 const KEY_ACCESS_TOKEN = 'chipos.auth.accessToken';
@@ -39,8 +39,10 @@ export interface IChipOSUserInfo {
 	created_at?: string;
 }
 
+// Wire format mirror of backend `UserResponse` (chiops/backend/app/auth/schemas.py).
+// IDE internal model is IChipOSUserInfo; mapAuthUser does the wire→internal rename (id → user_id).
 export type ChipOSAuthUserResponse = {
-	user_id?: string;
+	id?: string;
 	email?: string;
 	role?: string;
 	org_id?: string;
@@ -108,7 +110,8 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 			const userJson = await this._secretStorage.get(KEY_USER_INFO);
 			if (userJson) {
 				try {
-					this._user = this.mapAuthUser(JSON.parse(userJson) as ChipOSAuthUserResponse);
+					// SecretStorage 里存的是已 mapped 的 IChipOSUserInfo（见 storeTokens），不需要再 mapAuthUser。
+					this._user = JSON.parse(userJson) as IChipOSUserInfo;
 				} catch {
 					this._user = undefined;
 				}
@@ -225,7 +228,7 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 			return undefined;
 		}
 
-		const userId = user.user_id?.trim();
+		const userId = user.id?.trim();
 		const email = user.email?.trim();
 		if (!userId || !email) {
 			return undefined;
@@ -283,7 +286,12 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 			}
 
 			const data = await resp.json() as ChipOSAuthUserResponse | { user?: ChipOSAuthUserResponse } | null;
-			const rawUser = data && typeof data === 'object' && 'user' in data ? data.user : data ?? undefined;
+			let rawUser: ChipOSAuthUserResponse | undefined;
+			if (data && typeof data === 'object' && 'user' in data) {
+				rawUser = data.user;
+			} else if (data) {
+				rawUser = data as ChipOSAuthUserResponse;
+			}
 			const mappedUser = this.mapAuthUser(rawUser);
 			if (!mappedUser) {
 				this._logService.warn('[ChipOS Auth] /api/auth/me returned no usable user profile');

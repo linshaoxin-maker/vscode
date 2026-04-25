@@ -14,12 +14,12 @@
  *  See: chiops/docs/unified-auth/04-phase1-coderust-ide.md (I1)
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../../base/common/lifecycle.js';
-import { Emitter, Event } from '../../../../../../base/common/event.js';
-import { createDecorator } from '../../../../../../platform/instantiation/common/instantiation.js';
-import { IOpenerService } from '../../../../../../platform/opener/common/opener.js';
-import { URI } from '../../../../../../base/common/uri.js';
-import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IChipOSTokenManager, type ChipOSAuthUserResponse, type IChipOSUserInfo } from './chiposTokenManager.js';
 
 export interface IChipOSAuthService {

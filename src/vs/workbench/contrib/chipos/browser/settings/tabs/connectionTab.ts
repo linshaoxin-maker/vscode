@@ -22,6 +22,7 @@ export class ConnectionTab extends Disposable {
 	private _statusContainer!: HTMLElement;
 	private _workerStatusContainer!: HTMLElement;
 	private _modeSpecificContainer!: HTMLElement;
+	private _modeSpecificTitleEl: HTMLElement | undefined;
 	private readonly _disposables = this._register(new DisposableStore());
 	private readonly _contextViewProvider: IContextViewProvider | undefined;
 
@@ -41,20 +42,48 @@ export class ConnectionTab extends Disposable {
 	private _render(): void {
 		dom.clearNode(this._container);
 
-		const section = dom.append(this._container, dom.$('.chipos-settings-section'));
-		dom.append(section, dom.$('.chipos-settings-section-title', undefined, localize('chipos.settings.connection', 'Connection Settings')));
+		// ── Sub-section: Backend Mode ──
+		const modeSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(modeSection, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.settings.section.mode', 'Backend')));
+		this._renderBackendMode(modeSection);
 
-		// v2: 模式选择器 + 双状态指示器
-		this._renderBackendMode(section);
-		this._renderConnectionStatus(section);
-		this._renderWorkerStatus(section);
+		// ── Sub-section: Live Status ──
+		const statusSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(statusSection, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.settings.section.status', 'Status')));
+		this._renderConnectionStatus(statusSection);
+		this._renderWorkerStatus(statusSection);
 
-		// v2: 模式相关配置（动态显示）
-		this._modeSpecificContainer = dom.append(section, dom.$('.chipos-mode-specific'));
+		// ── Sub-section: Mode-specific settings (dynamic) ──
+		// Wrapped in its own section so the joined-card CSS selector
+		// (.chipos-settings-section > .chipos-mode-specific > …) still applies.
+		const configSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		this._modeSpecificTitleEl = dom.append(configSection, dom.$('.chipos-settings-section-title'));
+		this._modeSpecificContainer = dom.append(configSection, dom.$('.chipos-mode-specific'));
 		this._renderModeSpecificSettings();
 
-		// v1 兼容配置（折叠）
-		this._renderLegacySettings(section);
+		// ── Sub-section: Legacy / v1 fallback (collapsed) ──
+		this._renderLegacySettings(this._container);
+	}
+
+	private _updateModeSpecificTitle(mode: string): void {
+		if (!this._modeSpecificTitleEl) {
+			return;
+		}
+		switch (mode) {
+			case 'local':
+				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.local', 'Local Backend');
+				break;
+			case 'cloud-reasoning':
+				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.cloud', 'Cloud Reasoning');
+				break;
+			case 'manual':
+				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.manual', 'Manual Endpoints');
+				break;
+			default:
+				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.endpoints', 'Endpoints');
+		}
 	}
 
 	// ── v2: Backend Mode 选择器 ─────────────────────────────────────────
@@ -204,6 +233,7 @@ export class ConnectionTab extends Disposable {
 		dom.clearNode(this._modeSpecificContainer);
 
 		const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'local';
+		this._updateModeSpecificTitle(mode);
 
 		switch (mode) {
 			case 'local':
@@ -390,11 +420,11 @@ export class ConnectionTab extends Disposable {
 		const row = dom.append(parent, dom.$('.chipos-setting-row'));
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.websiteUrl', 'ChipOS Website URL')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.websiteUrl.desc', 'Required for OAuth login and token refresh. Example: http://121.89.82.122:8001')));
+			localize('chipos.settings.websiteUrl.desc', 'Required for OAuth login and token refresh. Example: http://121.89.82.122')));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
 		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
-			placeholder: 'http://121.89.82.122:8001',
+			placeholder: 'http://121.89.82.122',
 			inputBoxStyles: defaultInputBoxStyles,
 			validationOptions: {
 				validation: (value) => {
@@ -438,9 +468,9 @@ export class ConnectionTab extends Disposable {
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
 		const inputBox = this._disposables.add(new InputBox(inputContainer, undefined, {
-			...defaultInputBoxStyles,
 			type: 'password',
 			placeholder: localize('chipos.settings.workerApiKey.placeholder', 'Worker API key (optional for local mode)'),
+			inputBoxStyles: defaultInputBoxStyles,
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.worker.apiKey') ?? '';
 		this._disposables.add(inputBox.onDidChange(value => {
