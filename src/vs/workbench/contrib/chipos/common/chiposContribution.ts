@@ -175,7 +175,11 @@ CommandsRegistry.registerCommand('chipos.pickSession', async accessor => {
 CommandsRegistry.registerCommand(ChipOSCommandId.OpenSettings, (accessor, tab?: ChipOSSettingsTab) => {
 	const editorService = accessor.get(IEditorService);
 	const input = accessor.get(IInstantiationService).createInstance(ChipOSSettingsEditorInput);
-	editorService.openEditor(input, tab ? { initialTab: tab } as IEditorOptions : undefined);
+	// Always pass initialTab so the editor resets to General (or the requested
+	// tab) even when reopened — without this, openEditor on an already-open
+	// instance would just focus it without changing tabs.
+	const initialTab: ChipOSSettingsTab = tab ?? 'general';
+	editorService.openEditor(input, { initialTab } as IEditorOptions);
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.AddToChat, accessor => {

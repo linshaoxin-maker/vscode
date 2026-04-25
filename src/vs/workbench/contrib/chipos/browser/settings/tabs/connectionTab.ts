@@ -14,8 +14,6 @@ import { SelectBox, ISelectOptionItem } from '../../../../../../base/browser/ui/
 import { defaultCheckboxStyles, defaultInputBoxStyles, defaultSelectBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
-import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
-import { IChipOSTokenManager } from '../../../browser/auth/chiposTokenManager.js';
 
 export class ConnectionTab extends Disposable {
 
@@ -31,8 +29,6 @@ export class ConnectionTab extends Disposable {
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
 		@IContextViewService contextViewService: IContextViewService,
-		@ICommandService private readonly _commandService: ICommandService,
-		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 	) {
 		super();
 		this._contextViewProvider = contextViewService ?? undefined;
@@ -244,8 +240,7 @@ export class ConnectionTab extends Disposable {
 				break;
 
 			case 'cloud-reasoning':
-				// Phase 1 Unified Auth: login section
-				this._renderAuthSection(this._modeSpecificContainer);
+				// Authentication has moved to the General tab.
 				this._renderWebsiteUrlInput(this._modeSpecificContainer);
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderGrpcAddressInput(this._modeSpecificContainer);
@@ -259,8 +254,7 @@ export class ConnectionTab extends Disposable {
 				break;
 
 			case 'manual':
-				// Phase 1 Unified Auth: login section
-				this._renderAuthSection(this._modeSpecificContainer);
+				// Authentication has moved to the General tab.
 				this._renderWebsiteUrlInput(this._modeSpecificContainer);
 				this._renderReasoningUrlInput(this._modeSpecificContainer);
 				this._renderTokenInput(this._modeSpecificContainer);
@@ -357,61 +351,6 @@ export class ConnectionTab extends Disposable {
 				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
 			}
 		}));
-	}
-
-	// ── Phase 1 Unified Auth: Login/Logout section ──
-
-	private _renderAuthSection(parent: HTMLElement): void {
-		const section = dom.append(parent, dom.$('.chipos-auth-section'));
-		dom.append(section, dom.$('.chipos-setting-label', undefined,
-			localize('chipos.settings.auth', 'Authentication')));
-
-		const statusRow = dom.append(section, dom.$('.chipos-setting-row'));
-		const statusText = dom.append(statusRow, dom.$('.chipos-auth-status'));
-
-		const buttonRow = dom.append(section, dom.$('.chipos-setting-row'));
-
-		const updateStatus = () => {
-			const user = this._tokenManager?.getUser();
-			if (user) {
-				const displayName = user.display_name?.trim() || user.email;
-				statusText.textContent = localize('chipos.auth.loggedIn', 'Logged in as {0}', displayName);
-				return;
-			}
-
-			if (this._tokenManager?.isUsingManualTokenFallback()) {
-				statusText.textContent = localize('chipos.auth.manualFallback', 'Using manual token fallback');
-				return;
-			}
-
-			statusText.textContent = localize('chipos.auth.notLoggedIn', 'Not logged in');
-		};
-
-		updateStatus();
-
-		// Login button
-		const loginBtn = dom.append(buttonRow, dom.$('button.chipos-auth-button'));
-		loginBtn.textContent = localize('chipos.auth.login', 'Login via ChipOS');
-		this._disposables.add(dom.addDisposableListener(loginBtn, 'click', () => {
-			this._commandService.executeCommand('chipos.auth.login');
-		}));
-
-		// Logout button
-		const logoutBtn = dom.append(buttonRow, dom.$('button.chipos-auth-button'));
-		logoutBtn.textContent = localize('chipos.auth.logout', 'Logout');
-		this._disposables.add(dom.addDisposableListener(logoutBtn, 'click', () => {
-			this._commandService.executeCommand('chipos.auth.logout');
-		}));
-
-		// Listen for token changes
-		if (this._tokenManager) {
-			this._disposables.add(this._tokenManager.onDidChangeUser(() => {
-				updateStatus();
-			}));
-			this._disposables.add(this._tokenManager.onDidChangeToken(() => {
-				updateStatus();
-			}));
-		}
 	}
 
 	// ── Phase 1 Unified Auth: Worker API Key input ──

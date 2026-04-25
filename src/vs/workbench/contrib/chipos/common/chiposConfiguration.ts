@@ -236,6 +236,14 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.contextWindow.fallback': {
+			type: 'number',
+			default: 128000,
+			minimum: 1000,
+			description: localize('chipos.contextWindow.fallback.desc', "Fallback context window size (in tokens) used by the chat input's token meter when the backend doesn't report it. Set this to your model's actual context window for accurate percentage display."),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		'chipos.chatMode': {
 			type: 'string',
 			enum: ['agent', 'spec'],

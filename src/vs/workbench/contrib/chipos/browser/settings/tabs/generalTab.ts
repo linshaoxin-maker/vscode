@@ -11,6 +11,8 @@ import { SelectBox, ISelectOptionItem } from '../../../../../../base/browser/ui/
 import { defaultSelectBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
+import { IChipOSTokenManager } from '../../auth/chiposTokenManager.js';
 
 const LOG_LEVELS = ['trace', 'debug', 'info', 'warning', 'error', 'off'];
 
@@ -23,6 +25,8 @@ export class GeneralTab extends Disposable {
 		private readonly _container: HTMLElement,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IContextViewService contextViewService: IContextViewService,
+		@ICommandService private readonly _commandService: ICommandService,
+		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 	) {
 		super();
 		this._contextViewProvider = contextViewService ?? undefined;
@@ -31,6 +35,9 @@ export class GeneralTab extends Disposable {
 
 	private _render(): void {
 		dom.clearNode(this._container);
+
+		// Account (auth) — pinned at the top, similar to Cursor.
+		this._renderAccountSection(this._container);
 
 		// Privacy
 		const privacySection = dom.append(this._container, dom.$('.chipos-settings-section'));
@@ -57,6 +64,63 @@ export class GeneralTab extends Disposable {
 		this._renderToggle(editorSection, 'chipos.editor.showInlineHints',
 			localize('chipos.general.inlineHints', 'Show Inline Hints'),
 			localize('chipos.general.inlineHints.desc', 'Show subtle inline hints for AI-assisted actions in the editor gutter.'));
+	}
+
+	// ── Account / Authentication ─────────────────────────────────────────
+	private _renderAccountSection(parent: HTMLElement): void {
+		const section = dom.append(parent, dom.$('.chipos-settings-section'));
+		dom.append(section, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.general.account', 'Account')));
+
+		const auth = dom.append(section, dom.$('.chipos-auth-section'));
+		dom.append(auth, dom.$('.chipos-setting-label', undefined,
+			localize('chipos.general.auth', 'Authentication')));
+
+		const statusRow = dom.append(auth, dom.$('.chipos-setting-row'));
+		const statusText = dom.append(statusRow, dom.$('.chipos-auth-status'));
+
+		// Single button row. Contents (Sign in vs Sign out) are rebuilt
+		// whenever auth state changes so we never show both at once.
+		const buttonRow = dom.append(auth, dom.$('.chipos-setting-row'));
+
+		const renderButton = (signedIn: boolean) => {
+			dom.clearNode(buttonRow);
+			if (signedIn) {
+				const logoutBtn = dom.append(buttonRow, dom.$('button.chipos-btn-secondary'));
+				logoutBtn.textContent = localize('chipos.auth.logout', 'Sign out');
+				this._disposables.add(dom.addDisposableListener(logoutBtn, 'click', () => {
+					this._commandService.executeCommand('chipos.auth.logout');
+				}));
+			} else {
+				const loginBtn = dom.append(buttonRow, dom.$('button.chipos-auth-button'));
+				loginBtn.textContent = localize('chipos.auth.login', 'Sign in');
+				this._disposables.add(dom.addDisposableListener(loginBtn, 'click', () => {
+					this._commandService.executeCommand('chipos.auth.login');
+				}));
+			}
+		};
+
+		const updateStatus = () => {
+			const user = this._tokenManager.getUser();
+			if (user) {
+				const displayName = user.display_name?.trim() || user.email;
+				statusText.textContent = localize('chipos.auth.loggedIn', 'Logged in as {0}', displayName);
+				renderButton(true);
+				return;
+			}
+			if (this._tokenManager.isUsingManualTokenFallback()) {
+				statusText.textContent = localize('chipos.auth.manualFallback', 'Using manual token fallback');
+				renderButton(true);
+				return;
+			}
+			statusText.textContent = localize('chipos.auth.notLoggedIn', 'Not logged in');
+			renderButton(false);
+		};
+
+		updateStatus();
+
+		this._disposables.add(this._tokenManager.onDidChangeUser(updateStatus));
+		this._disposables.add(this._tokenManager.onDidChangeToken(updateStatus));
 	}
 
 	private _renderToggle(parent: HTMLElement, key: string, label: string, description: string): void {

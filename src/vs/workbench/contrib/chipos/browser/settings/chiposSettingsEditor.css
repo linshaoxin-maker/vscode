@@ -3,85 +3,114 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
+/* ============================================================================
+ *  ChipOS Settings — Visual System
+ *  Inspired by macOS System Settings & Cursor Settings.
+ *
+ *  Design tokens (kept as CSS custom properties so themes can override them
+ *  without rewriting selectors):
+ *    --chipos-radius-sm:   6px   (inputs, toggles, badges)
+ *    --chipos-radius-md:   8px   (buttons, nav items)
+ *    --chipos-radius-lg:  12px   (cards / sections)
+ *    --chipos-gap-1:       6px
+ *    --chipos-gap-2:      10px
+ *    --chipos-gap-3:      14px
+ *    --chipos-gap-4:      20px
+ *    --chipos-gap-5:      28px
+ *    --chipos-content-max: 760px (matches Cursor's content column width)
+ * ========================================================================== */
+
 .chipos-settings-editor {
+	--chipos-radius-sm: 6px;
+	--chipos-radius-md: 8px;
+	--chipos-radius-lg: 12px;
+	--chipos-gap-1: 6px;
+	--chipos-gap-2: 10px;
+	--chipos-gap-3: 14px;
+	--chipos-gap-4: 20px;
+	--chipos-gap-5: 28px;
+	--chipos-content-max: 800px;
+
+	/* === Design tokens borrowed from Cursor (derived from VS Code theme vars) === */
+	/* Text */
+	--chipos-text-primary: var(--vscode-foreground);
+	--chipos-text-secondary: color-mix(in srgb, var(--vscode-foreground) 74%, transparent);
+	--chipos-text-tertiary: color-mix(in srgb, var(--vscode-foreground) 54%, transparent);
+	/* Backgrounds (surfaces) */
+	--chipos-surface-1: var(--vscode-editor-background);
+	--chipos-surface-2: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+	--chipos-surface-3: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+	--chipos-surface-4: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+	/* Strokes (borders) */
+	--chipos-border-soft: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	--chipos-border-medium: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	--chipos-border-strong: color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
+
 	display: flex;
 	flex-direction: column;
 	height: 100%;
 	overflow: hidden;
+	background: var(--chipos-surface-1);
+	color: var(--chipos-text-primary);
+	/* Cursor-style: 12px base font everywhere */
+	font-size: 12px;
+	line-height: 16px;
 }
 
-/* ── Header ──────────────────────────────────────────────────── */
-
-.chipos-settings-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 12px 20px;
-	border-bottom: 1px solid var(--vscode-panel-border);
-	flex-shrink: 0;
-	background: var(--vscode-editor-background);
-}
-
-.chipos-settings-title {
-	font-size: 16px;
-	font-weight: 600;
-	color: var(--vscode-foreground);
-}
-
-.chipos-settings-header-left {
-	display: flex;
-	align-items: center;
-	gap: 16px;
-	flex: 1;
-}
+/* ── Sidebar Search (sits under the account card) ─────────────────────── */
 
 .chipos-settings-search {
-	flex: 1;
-	max-width: 300px;
+	width: 100%;
+	position: relative;
+	margin: 0;
+}
+
+.chipos-settings-search::before {
+	content: '';
+	position: absolute;
+	left: 8px;
+	top: 50%;
+	width: 11px;
+	height: 11px;
+	transform: translateY(-50%);
+	background-color: var(--chipos-text-tertiary);
+	-webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='currentColor'%3E%3Cpath d='M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Zm-.92 4.65a6 6 0 1 1 1.06-1.06l3.4 3.39-1.06 1.06-3.4-3.39Z'/%3E%3C/svg%3E") center / contain no-repeat;
+	mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='currentColor'%3E%3Cpath d='M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Zm-.92 4.65a6 6 0 1 1 1.06-1.06l3.4 3.39-1.06 1.06-3.4-3.39Z'/%3E%3C/svg%3E") center / contain no-repeat;
+	pointer-events: none;
+	opacity: 0.9;
 }
 
 .chipos-settings-search-input {
 	width: 100%;
-	padding: 4px 8px;
+	height: 26px;
+	padding: 0 8px 0 26px;
 	font-size: 12px;
-	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-	background: var(--vscode-input-background);
+	line-height: 16px;
+	font-family: inherit;
+	border: 1px solid var(--chipos-border-soft);
+	background: var(--chipos-surface-2);
 	color: var(--vscode-input-foreground);
-	border-radius: 4px;
+	border-radius: var(--chipos-radius-sm);
 	outline: none;
+	transition: background-color 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+
+.chipos-settings-search-input:hover {
+	background: var(--chipos-surface-3);
+	border-color: var(--chipos-border-medium);
 }
 
 .chipos-settings-search-input:focus {
+	background: var(--vscode-input-background);
 	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 22%, transparent);
 }
 
 .chipos-settings-search-input::placeholder {
-	color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+	color: var(--chipos-text-tertiary);
 }
 
-.chipos-settings-keybinding-hint {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	background: var(--vscode-keybindingLabel-background, rgba(128,128,128,0.17));
-	border: 1px solid var(--vscode-keybindingLabel-border, rgba(51,51,51,0.6));
-	border-radius: 3px;
-	padding: 1px 5px;
-	font-family: var(--vscode-editor-font-family);
-	margin-left: 8px;
-}
-
-.chipos-settings-customizations-link {
-	font-size: 12px;
-	color: var(--vscode-textLink-foreground);
-	cursor: pointer;
-	text-decoration: none;
-}
-
-.chipos-settings-customizations-link:hover {
-	text-decoration: underline;
-}
-
-/* ── SplitView Body ──────────────────────────────────────────── */
+/* ── SplitView Body ───────────────────────────────────────────────────── */
 
 .chipos-settings-body {
 	display: flex;
@@ -89,45 +118,172 @@
 	overflow: hidden;
 }
 
-/* ── Left Navigation ─────────────────────────────────────────── */
+/* ── Left Navigation (capsule-style, à la Cursor) ─────────────────────── */
 
 .chipos-settings-nav {
-	width: 200px;
-	min-width: 160px;
+	width: 220px;
+	min-width: 180px;
 	flex-shrink: 0;
-	border-right: 1px solid var(--vscode-panel-border);
-	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-	padding: 8px 0;
+	border-right: 1px solid var(--chipos-border-soft);
+	background: var(--chipos-surface-2);
+	padding: 14px 10px;
 	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.chipos-settings-nav-items {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+/* Hairline divider between Cursor-style nav groups. */
+.chipos-settings-nav-divider {
+	border: none;
+	border-top: 1px solid var(--chipos-border-soft);
+	margin: 8px 6px;
+	height: 0;
+}
+
+/* Account card — top of the nav, à la Cursor's account row. */
+.chipos-settings-account-card {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border-radius: var(--chipos-radius-md);
+	background: transparent;
+	border: 1px solid transparent;
+	cursor: pointer;
+	transition: background-color 0.12s ease, border-color 0.12s ease;
+	user-select: none;
+	overflow: hidden;
+}
+
+.chipos-settings-account-card:hover {
+	background: var(--chipos-surface-3);
+}
+
+.chipos-settings-account-card:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent);
+}
+
+/* Signed-out state: become a prominent CTA. */
+.chipos-settings-account-card.signed-out {
+	background: var(--chipos-surface-2);
+	border: 1px dashed var(--chipos-border-strong);
+}
+
+.chipos-settings-account-card.signed-out:hover {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 8%, var(--chipos-surface-2));
+	border-color: var(--vscode-focusBorder);
+	border-style: solid;
+}
+
+.chipos-settings-account-card.signed-out .chipos-settings-account-name {
+	color: var(--vscode-textLink-foreground, var(--vscode-focusBorder));
+}
+
+.chipos-settings-account-avatar {
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	background: var(--chipos-surface-4);
+	color: var(--chipos-text-tertiary);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	font-weight: 400;
+	flex-shrink: 0;
+	letter-spacing: 0;
+	text-transform: uppercase;
+	transition: background-color 0.12s ease;
+}
+
+/* Signed-in: vivid avatar with user initial */
+.chipos-settings-account-card:not(.signed-out) .chipos-settings-account-avatar {
+	background: linear-gradient(135deg,
+		color-mix(in srgb, var(--vscode-focusBorder) 90%, transparent),
+		color-mix(in srgb, var(--vscode-focusBorder) 60%, transparent));
+	color: #ffffff;
+	font-weight: 600;
+}
+
+/* Signed-out: avatar shows a plus icon to invite click */
+.chipos-settings-account-avatar.signed-out::before {
+	content: '+';
+	font-size: 18px;
+	font-weight: 300;
+	line-height: 1;
+	color: var(--chipos-text-secondary);
+}
+
+.chipos-settings-account-info {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	flex: 1;
+	gap: 2px;
+	font-size: 12px;
+	line-height: 16px;
+}
+
+.chipos-settings-account-name {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--chipos-text-primary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	letter-spacing: 0;
+}
+
+.chipos-settings-account-status {
+	font-size: 11px;
+	color: var(--chipos-text-secondary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	line-height: 14px;
 }
 
 .chipos-settings-nav-item {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 8px 16px;
+	padding: 6px 10px;
 	cursor: pointer;
-	color: var(--vscode-foreground);
+	color: var(--chipos-text-secondary);
 	font-size: 13px;
-	border-left: 3px solid transparent;
-	transition: background-color 0.1s;
+	line-height: 18px;
+	border-radius: var(--chipos-radius-sm);
+	transition: background-color 0.12s ease, color 0.12s ease;
+	user-select: none;
 }
 
 .chipos-settings-nav-item:hover {
-	background: var(--vscode-list-hoverBackground);
+	background: var(--chipos-surface-3);
+	color: var(--chipos-text-primary);
 }
 
 .chipos-settings-nav-item.active {
 	background: var(--vscode-list-activeSelectionBackground);
 	color: var(--vscode-list-activeSelectionForeground);
-	border-left-color: var(--vscode-focusBorder);
 }
 
 .chipos-settings-nav-icon {
-	font-size: 16px;
-	width: 20px;
-	text-align: center;
+	font-size: 15px;
+	width: 18px;
+	height: 18px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	flex-shrink: 0;
+	opacity: 1;
 }
 
 .chipos-settings-nav-label {
@@ -135,13 +291,16 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	flex: 1;
+	letter-spacing: 0;
 }
 
 .chipos-settings-nav-badge {
 	font-size: 10px;
-	min-width: 16px;
+	font-weight: 600;
+	min-width: 18px;
 	height: 16px;
 	line-height: 16px;
+	padding: 0 5px;
 	text-align: center;
 	border-radius: 8px;
 	background: var(--vscode-badge-background);
@@ -150,46 +309,214 @@
 }
 
 .chipos-search-highlight {
-	background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.2));
-	border-radius: 3px;
+	background: var(--vscode-editor-findMatchHighlightBackground, color-mix(in srgb, var(--vscode-focusBorder) 22%, transparent));
+	border-radius: var(--chipos-radius-sm);
 }
 
-.vs .chipos-search-highlight {
-	background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.45));
-}
-
-/* ── Right Content Area ──────────────────────────────────────── */
+/* ── Right Content Area ───────────────────────────────────────────────── */
 
 .chipos-settings-content {
 	flex: 1;
 	overflow-y: auto;
-	padding: 20px 24px;
+	padding: 28px 32px 56px;
 }
 
 .chipos-settings-content-inner {
-	animation: chipos-fade-in 0.15s ease-out;
+	max-width: var(--chipos-content-max);
+	margin: 0 auto;
+	animation: chipos-fade-in 0.18s ease-out;
 }
 
-/* ── Shared Tab Styles ───────────────────────────────────────── */
+/* ── Section (card-grouped) ───────────────────────────────────────────── */
 
 .chipos-settings-section {
-	margin-bottom: 24px;
+	margin-bottom: 28px;
 }
 
+/* Cursor-style: 11px, not uppercase, secondary color, normal weight. */
 .chipos-settings-section-title {
-	font-size: 14px;
-	font-weight: 600;
-	color: var(--vscode-foreground);
-	margin-bottom: 12px;
-	padding-bottom: 6px;
-	border-bottom: 1px solid var(--vscode-panel-border);
+	font-size: 11px;
+	font-weight: 400;
+	text-transform: none;
+	letter-spacing: 0;
+	color: var(--chipos-text-secondary);
+	line-height: 14px;
+	margin: 0 0 8px 8px;
+	padding-bottom: 0;
+	border-bottom: none;
 }
 
-.chipos-setting-row {
+/* Plain description that sits as a direct child of a section (section-level
+ * explanation). Renders below the section title in tertiary color. */
+.chipos-settings-section > .chipos-setting-description {
+	margin: -4px 0 8px 8px;
+	font-size: 11px;
+	color: var(--chipos-text-tertiary);
+	line-height: 14px;
+}
+
+/* Top-level "tab header" description (first child of the tab content). */
+.chipos-settings-content-inner > .chipos-setting-description:first-child {
+	margin: 0 8px 20px;
+	font-size: 12px;
+	color: var(--chipos-text-secondary);
+	line-height: 16px;
+}
+
+.chipos-settings-section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 10px;
+	padding-bottom: 0;
+	border-bottom: none;
+}
+
+.chipos-settings-section-header .chipos-settings-section-title {
+	margin-bottom: 0;
+}
+
+/* === Cursor-style continuous list ===
+ * All setting-rows / toggle-rows in a section stack into ONE rounded card
+ * with hairline dividers between rows — no margins between, no individual
+ * borders. The card itself is the section. */
+.chipos-settings-section > .chipos-setting-row,
+.chipos-settings-section > .chipos-setting-row-horizontal,
+.chipos-settings-section > .chipos-toggle-row,
+.chipos-settings-section > .chipos-connection-status,
+.chipos-settings-section > .chipos-auth-section,
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row,
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row-horizontal,
+.chipos-settings-section > .chipos-mode-specific > .chipos-toggle-row,
+.chipos-settings-section > .chipos-mode-specific > .chipos-connection-status,
+.chipos-settings-section > .chipos-mode-specific > .chipos-auth-section {
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	border-top-width: 0;
+	margin: 0;
+	padding: 12px 14px;
+	position: relative;
+}
+
+/* First row in a section gets the rounded top edge + restored top border. */
+.chipos-settings-section > .chipos-setting-row:first-of-type,
+.chipos-settings-section > .chipos-setting-row-horizontal:first-of-type,
+.chipos-settings-section > .chipos-toggle-row:first-of-type,
+.chipos-settings-section > .chipos-connection-status:first-of-type,
+.chipos-settings-section > .chipos-auth-section:first-of-type {
+	border-top-width: 1px;
+	border-top-left-radius: var(--chipos-radius-lg);
+	border-top-right-radius: var(--chipos-radius-lg);
+}
+
+/* Last row in a section gets the rounded bottom edge. */
+.chipos-settings-section > .chipos-setting-row:last-of-type,
+.chipos-settings-section > .chipos-setting-row-horizontal:last-of-type,
+.chipos-settings-section > .chipos-toggle-row:last-of-type,
+.chipos-settings-section > .chipos-connection-status:last-of-type,
+.chipos-settings-section > .chipos-auth-section:last-of-type {
+	border-bottom-left-radius: var(--chipos-radius-lg);
+	border-bottom-right-radius: var(--chipos-radius-lg);
+}
+
+/* When rows live inside .chipos-mode-specific (the dynamic container in
+ * Connection tab), apply the same first/last rounding semantics. */
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row:first-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row-horizontal:first-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-toggle-row:first-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-connection-status:first-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-auth-section:first-of-type {
+	border-top-width: 1px;
+	border-top-left-radius: var(--chipos-radius-lg);
+	border-top-right-radius: var(--chipos-radius-lg);
+}
+
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row:last-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row-horizontal:last-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-toggle-row:last-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-connection-status:last-of-type,
+.chipos-settings-section > .chipos-mode-specific > .chipos-auth-section:last-of-type {
+	border-bottom-left-radius: var(--chipos-radius-lg);
+	border-bottom-right-radius: var(--chipos-radius-lg);
+}
+
+/* Special case: rows inside mode-specific that are followed by a hint
+ * (typed as `.chipos-setting-hint`) should still bottom-round, since hint
+ * sits visually outside the joined card. */
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row:has(+ .chipos-setting-hint:last-child),
+.chipos-settings-section > .chipos-mode-specific > .chipos-setting-row-horizontal:has(+ .chipos-setting-hint:last-child),
+.chipos-settings-section > .chipos-mode-specific > .chipos-toggle-row:has(+ .chipos-setting-hint:last-child) {
+	border-bottom-left-radius: var(--chipos-radius-lg);
+	border-bottom-right-radius: var(--chipos-radius-lg);
+}
+
+/* Mode-specific container — purely a layout wrapper; no border of its own.
+ * Rows inside join the section's continuous list. */
+.chipos-mode-specific {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
-	margin-bottom: 16px;
+	gap: 0;
+	margin: 0;
+}
+
+.chipos-mode-specific > .chipos-setting-row,
+.chipos-mode-specific > .chipos-setting-row-horizontal,
+.chipos-mode-specific > .chipos-toggle-row {
+	border-radius: 0;
+	border-top-width: 0;
+	margin-bottom: 0;
+}
+
+/* First card-row in mode-specific gets the rounded top edge.
+ * Last card-row gets the rounded bottom edge — and we also handle the
+ * common case where a non-card .chipos-setting-hint trails after the rows. */
+.chipos-mode-specific > .chipos-setting-row:first-child,
+.chipos-mode-specific > .chipos-setting-row-horizontal:first-child,
+.chipos-mode-specific > .chipos-toggle-row:first-child,
+.chipos-mode-specific > .chipos-connection-status:first-child,
+.chipos-mode-specific > .chipos-auth-section:first-child {
+	border-top-left-radius: var(--chipos-radius-lg);
+	border-top-right-radius: var(--chipos-radius-lg);
+	border-top-width: 1px;
+}
+
+.chipos-mode-specific > .chipos-setting-row:last-child,
+.chipos-mode-specific > .chipos-setting-row-horizontal:last-child,
+.chipos-mode-specific > .chipos-toggle-row:last-child,
+.chipos-mode-specific > .chipos-connection-status:last-child,
+.chipos-mode-specific > .chipos-auth-section:last-child,
+.chipos-mode-specific > .chipos-setting-row:nth-last-child(2):has(+ .chipos-setting-hint),
+.chipos-mode-specific > .chipos-setting-row-horizontal:nth-last-child(2):has(+ .chipos-setting-hint),
+.chipos-mode-specific > .chipos-toggle-row:nth-last-child(2):has(+ .chipos-setting-hint),
+.chipos-mode-specific > .chipos-connection-status:nth-last-child(2):has(+ .chipos-setting-hint),
+.chipos-mode-specific > .chipos-auth-section:nth-last-child(2):has(+ .chipos-setting-hint) {
+	border-bottom-left-radius: var(--chipos-radius-lg);
+	border-bottom-right-radius: var(--chipos-radius-lg);
+}
+
+/* When a hint trails the joined card, give it some breathing space. */
+.chipos-mode-specific > .chipos-setting-hint:last-child {
+	margin-top: 12px;
+}
+
+/* ── Setting Row (Cursor-style horizontal cell) ───────────────────────── */
+/* Layout via grid:
+ *   col 1 (1fr)         col 2 (auto, max 320px)
+ *   ┌──────────────┬─────────────────────────┐
+ *   │ Label        │                         │
+ *   │              │   Input / Select / etc. │   ← spans both rows
+ *   │ Description  │                         │
+ *   └──────────────┴─────────────────────────┘
+ *
+ * On narrow viewports, collapses to a single column (control below text).
+ */
+
+.chipos-setting-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	column-gap: 20px;
+	row-gap: 1px;
+	align-items: center;
 }
 
 .chipos-setting-row.disabled {
@@ -197,49 +524,100 @@
 	pointer-events: none;
 }
 
+.chipos-setting-row > .chipos-setting-label {
+	grid-column: 1;
+	grid-row: 1;
+}
+
+.chipos-setting-row > .chipos-setting-description {
+	grid-column: 1;
+	grid-row: 2;
+}
+
+.chipos-setting-row > .chipos-setting-input-container {
+	grid-column: 2;
+	grid-row: 1 / span 2;
+	justify-self: end;
+	align-self: center;
+	width: clamp(180px, 320px, 100%);
+	margin-top: 0;
+	max-width: 100%;
+}
+
 .chipos-setting-label {
-	font-size: 13px;
-	font-weight: 500;
-	color: var(--vscode-foreground);
+	font-size: 12px;
+	font-weight: 400;
+	color: var(--chipos-text-primary);
+	line-height: 16px;
+	letter-spacing: 0;
 }
 
 .chipos-setting-description {
 	font-size: 12px;
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.4;
-}
-
-.chipos-setting-input-container {
-	max-width: 400px;
+	color: var(--chipos-text-secondary);
+	line-height: 16px;
+	max-width: 100%;
+	word-wrap: break-word;
+	overflow-wrap: break-word;
 }
 
 .chipos-setting-input-container .monaco-inputbox {
 	width: 100%;
+	border-radius: var(--chipos-radius-sm);
 }
 
+.chipos-setting-input-container .monaco-inputbox > .ibwrapper > .input {
+	border-radius: var(--chipos-radius-sm);
+	padding: 5px 8px;
+	font-size: 12px;
+	line-height: 16px;
+}
+
+/* Horizontal row: checkbox + text label/desc */
 .chipos-setting-row-horizontal {
 	display: flex;
 	align-items: flex-start;
-	gap: 8px;
-	margin-bottom: 16px;
+	gap: 10px;
 }
 
 .chipos-setting-row-horizontal .monaco-custom-toggle {
-	margin-top: 2px;
+	margin-top: 1px;
+	flex-shrink: 0;
+}
+
+.chipos-setting-row-horizontal > div {
+	flex: 1;
+	min-width: 0;
+}
+
+/* Responsive: collapse to single column on narrow viewports */
+@media (max-width: 640px) {
+	.chipos-setting-row {
+		grid-template-columns: 1fr;
+		row-gap: 6px;
+	}
+	.chipos-setting-row > .chipos-setting-input-container {
+		grid-column: 1;
+		grid-row: auto;
+		justify-self: stretch;
+		width: 100%;
+	}
 }
 
 .chipos-setting-input,
 .chipos-setting-select {
-	padding: 6px 10px;
-	font-size: 13px;
-	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+	padding: 5px 8px;
+	font-size: 12px;
+	line-height: 16px;
+	font-family: inherit;
+	border: 1px solid var(--chipos-border-medium);
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
-	border-radius: 4px;
+	border-radius: var(--chipos-radius-sm);
 	outline: none;
-	max-width: 400px;
 	width: 100%;
 	cursor: text;
+	transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .chipos-setting-input::placeholder {
@@ -248,29 +626,73 @@
 
 .chipos-setting-input:hover,
 .chipos-setting-select:hover {
-	border-color: var(--vscode-focusBorder);
+	border-color: var(--chipos-border-strong);
 }
 
 .chipos-setting-input:focus,
 .chipos-setting-select:focus {
 	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 25%, transparent);
 }
 
-/* ── Toggle Switch ───────────────────────────────────────────── */
+/* ── Monaco SelectBox (used by Provider / Log Level / Model dropdowns) ─ */
+
+.chipos-setting-input-container .monaco-select-box,
+.chipos-setting-input-container .select-box {
+	width: 100%;
+	height: 28px;
+	padding: 0 28px 0 8px;
+	font-size: 12px;
+	line-height: 16px;
+	font-family: inherit;
+	border: 1px solid var(--chipos-border-medium);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border-radius: var(--chipos-radius-sm);
+	outline: none;
+	cursor: pointer;
+	appearance: none;
+	-webkit-appearance: none;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6 L8 10 L12 6' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 8px center;
+	background-size: 14px;
+	transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.chipos-setting-input-container .monaco-select-box:hover,
+.chipos-setting-input-container .select-box:hover {
+	border-color: var(--chipos-border-strong);
+}
+
+.chipos-setting-input-container .monaco-select-box:focus,
+.chipos-setting-input-container .select-box:focus {
+	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 25%, transparent);
+}
+
+/* Some Monaco SelectBox renderings wrap a native <select> inside a div. */
+.chipos-setting-input-container .monaco-select-box-dropdown-container,
+.chipos-setting-input-container > .monaco-select-box-wrapper {
+	width: 100%;
+	max-width: 480px;
+}
+
+/* ── Toggle Switch (iOS-style, refined) ───────────────────────────────── */
 
 .chipos-toggle-row {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: 8px 0;
+	gap: 20px;
 }
 
 .chipos-toggle-info {
 	display: flex;
 	flex-direction: column;
-	gap: 2px;
+	gap: 1px;
 	flex: 1;
-	margin-right: 16px;
+	min-width: 0;
 }
 
 .chipos-toggle-switch {
@@ -278,42 +700,53 @@
 	width: 36px;
 	height: 20px;
 	flex-shrink: 0;
+	cursor: pointer;
 }
 
+/* Input fills the switch area (visually invisible but clickable),
+ * so mouse clicks reach the input and fire 'change'. The slider sits
+ * underneath as decoration only. */
 .chipos-toggle-switch input {
+	appearance: none;
+	-webkit-appearance: none;
+	margin: 0;
+	padding: 0;
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
 	opacity: 0;
-	width: 0;
-	height: 0;
+	cursor: pointer;
+	z-index: 2;
 }
 
 .chipos-toggle-slider {
 	position: absolute;
-	cursor: pointer;
-	top: 0;
-	left: 0;
-	right: 0;
-	bottom: 0;
-	background: var(--vscode-input-border, #555);
-	border-radius: 10px;
-	transition: background-color 0.2s;
+	pointer-events: none;
+	inset: 0;
+	background: color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+	border-radius: 999px;
+	transition: background-color 0.18s ease;
+	z-index: 1;
 }
 
 .chipos-toggle-slider::before {
 	content: '';
 	position: absolute;
-	height: 14px;
-	width: 14px;
-	left: 3px;
-	bottom: 3px;
-	background: white;
+	height: 16px;
+	width: 16px;
+	left: 2px;
+	bottom: 2px;
+	background: #ffffff;
 	border-radius: 50%;
-	transition: transform 0.2s;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.08);
+	transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1);
 }
 
 .chipos-toggle-switch:focus-visible {
-	outline: 2px solid var(--vscode-focusBorder);
-	outline-offset: 2px;
-	border-radius: 10px;
+	outline: none;
+	border-radius: 999px;
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent);
 }
 
 .chipos-toggle-switch input:checked + .chipos-toggle-slider {
@@ -324,20 +757,58 @@
 	transform: translateX(16px);
 }
 
-/* ── Verify Button ───────────────────────────────────────────── */
+/* ── Verify row (button + status) ─────────────────────────────────────── */
 
-.chipos-verify-button {
-	padding: 4px 12px;
+/* Acts as an inline action bar between two card groups. Transparent, with
+ * a small vertical gap above and below to visually separate the groups. */
+.chipos-settings-section > .chipos-verify-row,
+.chipos-settings-section > .chipos-mode-specific > .chipos-verify-row {
+	background: transparent;
+	border: none;
+	padding: 10px 4px 6px;
+	margin: 0;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+/* When verify-row interrupts the joined list, round the corners of the
+ * setting-row above it, and the setting-row right after it. */
+.chipos-settings-section > .chipos-setting-row:has(+ .chipos-verify-row) {
+	border-bottom-left-radius: var(--chipos-radius-lg);
+	border-bottom-right-radius: var(--chipos-radius-lg);
+}
+
+.chipos-settings-section > .chipos-verify-row + .chipos-setting-row {
+	border-top-width: 1px;
+	border-top-left-radius: var(--chipos-radius-lg);
+	border-top-right-radius: var(--chipos-radius-lg);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+
+.chipos-verify-button,
+.chipos-auth-button {
+	padding: 6px 14px;
 	font-size: 12px;
+	font-weight: 500;
+	font-family: inherit;
 	border: 1px solid var(--vscode-button-border, transparent);
 	background: var(--vscode-button-background);
 	color: var(--vscode-button-foreground);
-	border-radius: 4px;
+	border-radius: var(--chipos-radius-md);
 	cursor: pointer;
+	transition: background-color 0.12s ease, transform 0.06s ease;
 }
 
-.chipos-verify-button:hover {
+.chipos-verify-button:hover,
+.chipos-auth-button:hover {
 	background: var(--vscode-button-hoverBackground);
+}
+
+.chipos-verify-button:active,
+.chipos-auth-button:active {
+	transform: translateY(0.5px);
 }
 
 .chipos-verify-button:disabled {
@@ -347,7 +818,7 @@
 
 .chipos-verify-status {
 	font-size: 12px;
-	margin-left: 8px;
+	margin-left: 10px;
 }
 
 .chipos-verify-status.success {
@@ -358,16 +829,33 @@
 	color: var(--vscode-testing-iconFailed);
 }
 
-/* ── Connection Status ───────────────────────────────────────── */
+.chipos-btn-secondary {
+	padding: 6px 14px;
+	font-size: 12px;
+	font-weight: 500;
+	font-family: inherit;
+	border: 1px solid var(--chipos-border-strong);
+	background: transparent;
+	color: var(--vscode-foreground);
+	border-radius: var(--chipos-radius-md);
+	cursor: pointer;
+	transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.chipos-btn-secondary:hover {
+	background: var(--chipos-surface-3);
+	border-color: var(--vscode-focusBorder);
+}
+
+/* ── Connection Status (Cursor-style: blends into the list) ──────────── */
 
 .chipos-connection-status {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 8px 12px;
-	border-radius: 6px;
-	background: var(--vscode-editor-inactiveSelectionBackground);
-	margin-bottom: 16px;
+	gap: 10px;
+	font-size: 12px;
+	line-height: 16px;
+	font-weight: 400;
 }
 
 .chipos-status-dot {
@@ -375,27 +863,81 @@
 	height: 8px;
 	border-radius: 50%;
 	flex-shrink: 0;
+	box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
 }
 
 .chipos-connection-status.connected .chipos-status-dot {
-	background: var(--vscode-testing-iconPassed);
+	background: var(--vscode-testing-iconPassed, #3fb950);
+	color: var(--vscode-testing-iconPassed, #3fb950);
 }
 
 .chipos-connection-status.disconnected .chipos-status-dot {
-	background: var(--vscode-testing-iconFailed);
+	background: var(--vscode-testing-iconFailed, #f85149);
+	color: var(--vscode-testing-iconFailed, #f85149);
 }
 
 .chipos-connection-status.connecting .chipos-status-dot {
-	background: var(--vscode-descriptionForeground);
-	animation: chipos-pulse 1.5s infinite;
+	background: var(--vscode-charts-yellow, #d29922);
+	color: var(--vscode-charts-yellow, #d29922);
+	animation: chipos-pulse 1.4s ease-in-out infinite;
 }
 
 @keyframes chipos-pulse {
-	0%, 100% { opacity: 1; }
-	50% { opacity: 0.3; }
+	0%, 100% { opacity: 1; transform: scale(1); }
+	50% { opacity: 0.55; transform: scale(0.85); }
 }
 
-/* ── Disabled / Greyed-out Feature ───────────────────────────── */
+/* The text label sitting next to the dot */
+.chipos-connection-status > span {
+	color: var(--chipos-text-primary);
+	font-weight: 400;
+}
+
+/* ── Authentication Section ───────────────────────────────────────────── */
+
+.chipos-auth-section {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	column-gap: 16px;
+	row-gap: 4px;
+	align-items: center;
+}
+
+.chipos-auth-section > .chipos-setting-label {
+	grid-column: 1;
+	grid-row: 1;
+	font-size: 12px;
+	font-weight: 500;
+}
+
+.chipos-auth-section > .chipos-setting-row:first-of-type {
+	grid-column: 1;
+	grid-row: 2;
+}
+
+.chipos-auth-section > .chipos-setting-row:last-of-type {
+	grid-column: 2;
+	grid-row: 1 / span 2;
+	justify-self: end;
+}
+
+.chipos-auth-status {
+	font-size: 12px;
+	color: var(--chipos-text-secondary);
+	line-height: 16px;
+}
+
+.chipos-auth-section .chipos-setting-row {
+	display: flex;
+	flex-direction: row;
+	gap: 6px;
+	background: transparent !important;
+	border: none !important;
+	padding: 0 !important;
+	margin: 0 !important;
+}
+
+/* ── Disabled / Coming-soon ───────────────────────────────────────────── */
 
 .chipos-setting-row.greyed-out,
 .chipos-toggle-row.greyed-out {
@@ -412,63 +954,43 @@
 	font-style: italic;
 }
 
-/* ── Secondary Button ───────────────────────────────────────── */
-
-.chipos-btn-secondary {
-	padding: 4px 12px;
-	font-size: 12px;
-	border: 1px solid var(--vscode-button-secondaryBorder, var(--vscode-panel-border));
-	background: var(--vscode-button-secondaryBackground, transparent);
-	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-	border-radius: 4px;
-	cursor: pointer;
-}
-
-.chipos-btn-secondary:hover {
-	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
-}
-
-/* ── Section Header (flex row with title + action button) ───── */
-
-.chipos-settings-section-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	margin-bottom: 12px;
-	padding-bottom: 6px;
-	border-bottom: 1px solid var(--vscode-panel-border);
-}
-
-/* When section-title is inside a section-header, remove its own border/margin */
-.chipos-settings-section-header .chipos-settings-section-title {
-	margin-bottom: 0;
-	padding-bottom: 0;
-	border-bottom: none;
-}
-
-/* ── MCP Tools Tab ───────────────────────────────────────────── */
+/* ── MCP Tools Tab ────────────────────────────────────────────────────── */
 
 .chipos-mcp-server-list {
-	margin-top: 8px;
+	margin-top: 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
 }
 
 .chipos-mcp-empty {
-	padding: 16px;
+	padding: 24px;
 	color: var(--vscode-descriptionForeground);
 	font-style: italic;
+	text-align: center;
+	background: var(--chipos-surface-2);
+	border-radius: var(--chipos-radius-lg);
+	border: 1px dashed var(--chipos-border-soft);
 }
 
 .chipos-mcp-server-row {
 	display: flex;
 	align-items: center;
-	padding: 8px 12px;
-	border-radius: 4px;
-	margin-bottom: 4px;
-	background: var(--vscode-list-hoverBackground);
+	gap: 10px;
+	padding: 10px 14px;
+	border-radius: var(--chipos-radius-md);
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	transition: background-color 0.12s ease;
+}
+
+.chipos-mcp-server-row:hover {
+	background: var(--chipos-surface-3);
 }
 
 .chipos-mcp-server-row .chipos-mcp-dot {
 	flex-shrink: 0;
+	font-size: 14px;
 }
 
 .chipos-mcp-dot.running { color: var(--vscode-testing-iconPassed); }
@@ -479,7 +1001,7 @@
 .chipos-mcp-server-name {
 	font-weight: 600;
 	flex: 1;
-	margin-left: 4px;
+	font-size: 13px;
 }
 
 .chipos-mcp-server-state,
@@ -494,29 +1016,86 @@
 	border: none;
 	color: var(--vscode-foreground);
 	cursor: pointer;
-	font-size: 16px;
-	padding: 2px 6px;
+	font-size: 14px;
+	padding: 4px 8px;
+	border-radius: var(--chipos-radius-sm);
+	opacity: 0.7;
+	transition: background-color 0.12s ease, opacity 0.12s ease;
 }
 
+.chipos-mcp-server-actions:hover {
+	background: var(--chipos-surface-3);
+	opacity: 1;
+}
+
+/* Configuration files links — render as joined card rows. */
+.chipos-settings-section > .chipos-config-link-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px 18px;
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	border-top-width: 0;
+	margin: 0;
+}
+
+.chipos-settings-section > .chipos-config-link-row:first-of-type {
+	border-top-width: 1px;
+	border-top-left-radius: var(--chipos-radius-lg);
+	border-top-right-radius: var(--chipos-radius-lg);
+	margin-top: 8px;
+}
+
+.chipos-settings-section > .chipos-config-link-row:last-of-type {
+	border-bottom-left-radius: var(--chipos-radius-lg);
+	border-bottom-right-radius: var(--chipos-radius-lg);
+}
+
+/* Fallback when not inside a section (defensive). */
 .chipos-config-link-row {
 	display: flex;
 	align-items: center;
-	padding: 6px 0;
+	gap: 10px;
+	padding: 8px 0;
 }
 
 .chipos-config-link-label {
 	flex: 1;
 	font-family: var(--vscode-editor-font-family);
-	font-size: 13px;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
-/* ── Tab Header Description ──────────────────────────────────── */
+/* Small leading "{}" mono badge to hint that this is a JSON file path. */
+.chipos-settings-section > .chipos-config-link-row .chipos-config-link-label::before {
+	content: '{ }';
+	display: inline-block;
+	margin-right: 10px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	background: var(--chipos-surface-3);
+	color: var(--vscode-descriptionForeground);
+	font-size: 10px;
+	font-weight: 600;
+	font-family: var(--vscode-editor-font-family);
+	letter-spacing: 0;
+	vertical-align: 1px;
+}
+
+/* ── Tab Header Description ───────────────────────────────────────────── */
 
 .chipos-setting-description.chipos-tab-header-desc {
-	margin-bottom: 16px;
+	margin-bottom: var(--chipos-gap-4);
+	font-size: 13px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.55;
 }
 
-/* ── Rules Tab ───────────────────────────────────────────────── */
+/* ── Rules Tab ────────────────────────────────────────────────────────── */
 
 .chipos-rules-list {
 	margin: 8px 0;
@@ -526,18 +1105,26 @@
 
 .chipos-rules-list li {
 	color: var(--vscode-foreground);
-	margin-bottom: 2px;
+	margin-bottom: 4px;
 }
-
-/* ── Rule Items ──────────────────────────────────────────────── */
 
 .chipos-rule-item {
 	display: flex;
 	align-items: center;
-	padding: 6px 10px;
-	border-radius: 4px;
-	margin-bottom: 4px;
-	background: var(--vscode-list-hoverBackground);
+	gap: 10px;
+	padding: 8px 14px;
+	border-radius: var(--chipos-radius-md);
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	transition: background-color 0.12s ease;
+}
+
+.chipos-rule-item + .chipos-rule-item {
+	margin-top: 6px;
+}
+
+.chipos-rule-item:hover {
+	background: var(--chipos-surface-3);
 }
 
 .chipos-rule-name {
@@ -555,44 +1142,121 @@
 
 .chipos-btn-danger {
 	color: var(--vscode-testing-iconFailed, #f14c4c) !important;
-	border-color: var(--vscode-testing-iconFailed, #f14c4c) !important;
+	border-color: color-mix(in srgb, var(--vscode-testing-iconFailed, #f14c4c) 40%, transparent) !important;
 }
 
 .chipos-btn-danger:hover {
-	background: rgba(241, 76, 76, 0.15) !important;
+	background: color-mix(in srgb, var(--vscode-testing-iconFailed, #f14c4c) 12%, transparent) !important;
+	border-color: var(--vscode-testing-iconFailed, #f14c4c) !important;
 }
 
-/* ── Setting Hint ────────────────────────────────────────────── */
+/* ── Setting Hint ─────────────────────────────────────────────────────── */
 
 .chipos-setting-hint {
-	font-size: 11px;
+	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
 	font-style: italic;
-	margin-top: 8px;
+	margin-top: 10px;
+	padding: 10px 14px;
+	background: var(--chipos-surface-2);
+	border-left: 3px solid var(--chipos-border-strong);
+	border-radius: var(--chipos-radius-sm);
 }
 
-/* ── Empty State ─────────────────────────────────────────────── */
+/* ── Empty State ──────────────────────────────────────────────────────── */
 
 .chipos-settings-empty {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	height: 200px;
+	height: 240px;
 	color: var(--vscode-descriptionForeground);
 	font-size: 13px;
-	gap: 8px;
+	gap: 12px;
 }
 
 .chipos-settings-empty .codicon {
-	font-size: 32px;
-	opacity: 0.5;
+	font-size: 36px;
+	opacity: 0.4;
 }
 
-/* ── Light Theme Overrides ───────────────────────────────────── */
+/* ── Legacy Settings (collapsible) ────────────────────────────────────── */
+
+.chipos-legacy-settings {
+	margin-top: var(--chipos-gap-5);
+	border: 1px solid var(--chipos-border-soft);
+	border-radius: var(--chipos-radius-lg);
+	background: var(--chipos-surface-2);
+	overflow: hidden;
+}
+
+.chipos-legacy-settings > summary {
+	padding: 12px 16px;
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	user-select: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	list-style: none;
+	transition: background-color 0.12s ease;
+}
+
+.chipos-legacy-settings > summary::-webkit-details-marker {
+	display: none;
+}
+
+.chipos-legacy-settings > summary::before {
+	content: '';
+	width: 0;
+	height: 0;
+	border-left: 4px solid currentColor;
+	border-top: 4px solid transparent;
+	border-bottom: 4px solid transparent;
+	margin-right: 4px;
+	transition: transform 0.15s ease;
+}
+
+.chipos-legacy-settings[open] > summary::before {
+	transform: rotate(90deg);
+}
+
+.chipos-legacy-settings > summary:hover {
+	background: var(--chipos-surface-3);
+}
+
+.chipos-legacy-content {
+	padding: 8px 16px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	border-top: 1px solid var(--chipos-border-soft);
+}
+
+.chipos-legacy-content > .chipos-setting-row,
+.chipos-legacy-content > .chipos-setting-row-horizontal,
+.chipos-legacy-content > .chipos-toggle-row {
+	background: transparent;
+	border: none;
+	padding: 0;
+	margin: 0;
+	border-radius: 0;
+}
+
+/* ── Light Theme Adjustments ──────────────────────────────────────────── */
+
+.vs .chipos-settings-editor {
+	--chipos-surface-2: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+	--chipos-surface-3: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	--chipos-border-soft: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	--chipos-border-strong: color-mix(in srgb, var(--vscode-foreground) 22%, transparent);
+}
 
 .vs .chipos-toggle-slider {
-	background: var(--vscode-input-border, #cecece);
+	background: color-mix(in srgb, var(--vscode-foreground) 22%, transparent);
 }
 
 .vs .chipos-toggle-switch input:checked + .chipos-toggle-slider {
@@ -604,44 +1268,93 @@
 	color: var(--vscode-list-activeSelectionForeground, #000);
 }
 
-.vs .chipos-connection-status {
-	background: var(--vscode-editor-inactiveSelectionBackground, #e5ebf1);
+/* ── High Contrast Theme ──────────────────────────────────────────────── */
+
+.hc-black .chipos-settings-editor,
+.hc-light .chipos-settings-editor {
+	--chipos-border-soft: var(--vscode-contrastBorder);
+	--chipos-border-strong: var(--vscode-contrastBorder);
 }
 
-.vs .chipos-mcp-server-row,
-.vs .chipos-rule-item {
-	background: var(--vscode-list-hoverBackground, #f0f0f0);
+.hc-black .chipos-settings-nav-item.active,
+.hc-light .chipos-settings-nav-item.active {
+	outline: 1px solid var(--vscode-contrastActiveBorder, var(--vscode-focusBorder));
 }
 
-.vs .chipos-btn-secondary {
-	border-color: var(--vscode-button-secondaryBorder, #c8c8c8);
+.hc-black .chipos-toggle-switch:focus-visible,
+.hc-light .chipos-toggle-switch:focus-visible {
+	box-shadow: none;
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
 }
 
-/* ── High Contrast Theme Overrides ───────────────────────────── */
-
-.hc-black .chipos-settings-nav-item.active {
-	border-left-color: var(--vscode-focusBorder, #f38518);
-	outline: 1px solid var(--vscode-contrastActiveBorder, #f38518);
-}
-
-.hc-black .chipos-toggle-switch:focus-visible {
-	outline: 2px solid var(--vscode-focusBorder, #f38518);
-}
-
-.hc-black .chipos-settings-search-input:focus {
-	outline: 2px solid var(--vscode-focusBorder, #f38518);
+.hc-black .chipos-settings-search-input:focus,
+.hc-light .chipos-settings-search-input:focus {
+	box-shadow: none;
+	outline: 2px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
 
 .hc-black .chipos-btn-secondary,
 .hc-black .chipos-verify-button,
-.hc-black .chat-agent-error-retry {
+.hc-black .chipos-auth-button,
+.hc-light .chipos-btn-secondary,
+.hc-light .chipos-verify-button,
+.hc-light .chipos-auth-button {
 	border-width: 2px;
 }
 
-/* ── Tab Content Transition ──────────────────────────────────── */
+/* ── Animations ───────────────────────────────────────────────────────── */
 
 @keyframes chipos-fade-in {
-	from { opacity: 0; transform: translateY(4px); }
+	from { opacity: 0; transform: translateY(6px); }
 	to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+	.chipos-settings-content-inner,
+	.chipos-toggle-slider,
+	.chipos-toggle-slider::before,
+	.chipos-connection-status.connecting .chipos-status-dot,
+	.chipos-settings-nav-item,
+	.chipos-settings-search-input,
+	.chipos-verify-button,
+	.chipos-auth-button,
+	.chipos-btn-secondary {
+		animation: none !important;
+		transition: none !important;
+	}
+}
+
+/* ── Narrow viewport (split editor) ───────────────────────────────────── */
+
+@media (max-width: 720px) {
+	.chipos-settings-nav {
+		width: 64px;
+		min-width: 64px;
+		padding: 14px 6px;
+	}
+
+	.chipos-settings-nav-label,
+	.chipos-settings-nav-badge,
+	.chipos-settings-account-info,
+	.chipos-settings-search {
+		display: none;
+	}
+
+	.chipos-settings-nav-item {
+		justify-content: center;
+		padding: 8px;
+	}
+
+	.chipos-settings-account-card {
+		justify-content: center;
+		padding: 6px;
+	}
+
+	.chipos-settings-content {
+		padding: 20px 18px 40px;
+	}
 }

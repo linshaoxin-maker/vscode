@@ -1268,19 +1268,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			case AgentEventType.Usage: {
-				// Feed token usage into VS Code's chat model so ChatContextUsageWidget can display it
+				// Feed token usage into VS Code's chat model so ChatContextUsageWidget can display it.
+				// The widget requires a non-zero `contextWindow` to show. Priority:
+				//   1. Backend's `tokens_max` (preferred — reflects actual model capability)
+				//   2. Value previously set by ContextWarning (>=80% threshold)
+				//   3. Workspace config `chipos.contextWindow.fallback` (default 128000)
+				// This guarantees the token meter shows for any model that returns usage.
 				const p = event.payload as IUsagePayload;
 				if (ctx.request) {
 					const chatModel = this._chatService.getSession(ctx.request.sessionResource);
 					const reqModel = chatModel?.getRequests().find(r => r.id === ctx.request!.requestId);
 					if (reqModel?.response) {
 						const existing = reqModel.response.usage;
+						const fallback = this._configurationService.getValue<number>('chipos.contextWindow.fallback') || 128000;
 						reqModel.response.setUsage({
 							kind: 'usage',
 							promptTokens: p.prompt_tokens,
 							completionTokens: p.completion_tokens,
-							// tokens_max from backend payload takes priority; fall back to ContextWarning value
-							contextWindow: p.tokens_max ?? existing?.contextWindow,
+							contextWindow: p.tokens_max ?? existing?.contextWindow ?? fallback,
 						});
 					}
 				}
