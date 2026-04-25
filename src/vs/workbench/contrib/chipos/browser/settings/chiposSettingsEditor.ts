@@ -123,6 +123,8 @@ export class ChipOSSettingsEditor extends EditorPane {
 			for (const cat of group) {
 				const item = dom.append(navItemsContainer, dom.$('.chipos-settings-nav-item'));
 				item.dataset.category = cat.id;
+				// Tooltip surfaces the label when the nav collapses to icons-only.
+				item.title = cat.label;
 
 				const iconEl = dom.append(item, dom.$('.chipos-settings-nav-icon'));
 				iconEl.classList.add(...ThemeIcon.asClassNameArray(cat.icon));

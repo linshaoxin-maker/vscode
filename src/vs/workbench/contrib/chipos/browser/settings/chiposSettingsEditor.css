@@ -55,6 +55,13 @@
 	/* Cursor-style: 12px base font everywhere */
 	font-size: 12px;
 	line-height: 16px;
+
+	/* Container query context — child layout reacts to the editor's actual
+	 * width (split panes, narrow window, etc.) rather than the viewport.
+	 * Cursor uses the same trick: when narrow, collapse the sidebar to
+	 * icons and let cells wrap their controls below the label. */
+	container-type: inline-size;
+	container-name: chipos-settings-editor;
 }
 
 /* ── Sidebar Search (sits under the account card) ─────────────────────── */
@@ -513,7 +520,10 @@
 
 .chipos-setting-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
+	/* Left column gets minimum 0 + 1fr (always grows first), right column
+	 * is at most 280px and shrinks to as little as 140px before the layout
+	 * collapses to a single column (handled in the container query below). */
+	grid-template-columns: minmax(0, 1fr) minmax(140px, 280px);
 	column-gap: 20px;
 	row-gap: 1px;
 	align-items: center;
@@ -527,21 +537,24 @@
 .chipos-setting-row > .chipos-setting-label {
 	grid-column: 1;
 	grid-row: 1;
+	min-width: 0;
 }
 
 .chipos-setting-row > .chipos-setting-description {
 	grid-column: 1;
 	grid-row: 2;
+	min-width: 0;
 }
 
 .chipos-setting-row > .chipos-setting-input-container {
 	grid-column: 2;
 	grid-row: 1 / span 2;
-	justify-self: end;
+	justify-self: stretch;
 	align-self: center;
-	width: clamp(180px, 320px, 100%);
+	width: 100%;
 	margin-top: 0;
 	max-width: 100%;
+	min-width: 0;
 }
 
 .chipos-setting-label {
@@ -590,17 +603,34 @@
 	min-width: 0;
 }
 
-/* Responsive: collapse to single column on narrow viewports */
-@media (max-width: 640px) {
+/* Responsive: when the editor's content area is too narrow to fit a side-
+ * by-side label/control layout cleanly, collapse the cell to a single
+ * column — description wraps freely above, control sits below at full
+ * width. Triggered well before text starts wrapping awkwardly. */
+@container chipos-settings-editor (max-width: 760px) {
 	.chipos-setting-row {
 		grid-template-columns: 1fr;
-		row-gap: 6px;
+		row-gap: 8px;
 	}
 	.chipos-setting-row > .chipos-setting-input-container {
 		grid-column: 1;
 		grid-row: auto;
 		justify-self: stretch;
 		width: 100%;
+		max-width: 480px;
+	}
+	.chipos-toggle-row {
+		/* Toggle stays inline with its label even when narrow — it only
+		 * occupies 36px so doesn't crowd the text. */
+		gap: 12px;
+	}
+	.chipos-auth-section {
+		grid-template-columns: 1fr;
+	}
+	.chipos-auth-section > .chipos-setting-row:last-of-type {
+		grid-column: 1;
+		grid-row: auto;
+		justify-self: start;
 	}
 }
 
@@ -1328,13 +1358,18 @@
 	}
 }
 
-/* ── Narrow viewport (split editor) ───────────────────────────────────── */
+/* ── Narrow editor pane (split view, narrow window) ───────────────────── */
+/* Container query reacts to the editor's actual width — works whether
+ * the whole window is small OR just this pane is narrow (split view).
+ * Triggers earlier than the row-collapse breakpoint above so that nav
+ * shrinks first (giving content more room) before cells re-flow. */
 
-@media (max-width: 720px) {
+@container chipos-settings-editor (max-width: 900px) {
 	.chipos-settings-nav {
-		width: 64px;
-		min-width: 64px;
-		padding: 14px 6px;
+		width: 56px;
+		min-width: 56px;
+		padding: 12px 6px;
+		gap: 8px;
 	}
 
 	.chipos-settings-nav-label,
@@ -1346,15 +1381,26 @@
 
 	.chipos-settings-nav-item {
 		justify-content: center;
-		padding: 8px;
+		padding: 6px;
+		gap: 0;
+	}
+
+	.chipos-settings-nav-divider {
+		margin: 6px 4px;
 	}
 
 	.chipos-settings-account-card {
 		justify-content: center;
-		padding: 6px;
+		padding: 4px;
 	}
 
 	.chipos-settings-content {
 		padding: 20px 18px 40px;
 	}
+
+	/* Show the full label as a tooltip via the title attribute fallback;
+	 * the icon alone keeps a compact, scannable nav strip. */
 }
+
+/* When even the collapsed nav + content feels cramped, the cell layout
+ * already collapses to single column via the 640px container query above. */
