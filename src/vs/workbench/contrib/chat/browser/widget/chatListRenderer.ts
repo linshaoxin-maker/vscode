@@ -1151,14 +1151,10 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 			// action buttons out of the viewport. Once the user confirms/dismisses,
 			// the confirmation is marked as used and the remaining parts will render.
 			if (hasPendingConfirmation) {
-				// console.log('[ChatListRenderer] Skipping part after pending confirmation:', data.kind, 'contentIndex:', contentIndex);
 				return;
 			}
-			if (data.kind === 'confirmation') {
-				// console.log('[ChatListRenderer] Found confirmation part, isUsed:', data.isUsed, 'contentIndex:', contentIndex, 'totalParts:', content.length);
-				if (!data.isUsed) {
-					hasPendingConfirmation = true;
-				}
+			if (data.kind === 'confirmation' && !data.isUsed) {
+				hasPendingConfirmation = true;
 			}
 			const context: IChatContentPartRenderContext = {
 				element,

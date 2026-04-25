@@ -96,25 +96,50 @@ export class BetaTab extends Disposable {
 		dom.append(info, dom.$('.chipos-setting-description', undefined, feature.description));
 
 		const toggle = dom.append(row, dom.$('.chipos-toggle-switch'));
+		toggle.setAttribute('role', 'switch');
+		toggle.setAttribute('aria-label', feature.label);
+		toggle.tabIndex = greyed ? -1 : 0;
+		if (greyed) {
+			toggle.setAttribute('aria-disabled', 'true');
+		}
+
 		const checkbox = dom.append(toggle, dom.$<HTMLInputElement>('input'));
 		checkbox.type = 'checkbox';
-		checkbox.checked = feature.available
+		const initialChecked = feature.available
 			? (this._configurationService.getValue<boolean>(feature.key) ?? false)
 			: false;
+		checkbox.checked = initialChecked;
 		checkbox.disabled = greyed;
+		toggle.setAttribute('aria-checked', String(initialChecked));
 
 		const slider = dom.append(toggle, dom.$('.chipos-toggle-slider'));
 		slider.setAttribute('aria-hidden', 'true');
 
 		if (!greyed) {
+			const updateValue = (checked: boolean) => {
+				checkbox.checked = checked;
+				toggle.setAttribute('aria-checked', String(checked));
+				this._configurationService.updateValue(feature.key, checked, ConfigurationTarget.USER);
+			};
+
 			this._disposables.add(dom.addDisposableListener(checkbox, 'change', () => {
+				toggle.setAttribute('aria-checked', String(checkbox.checked));
 				this._configurationService.updateValue(feature.key, checkbox.checked, ConfigurationTarget.USER);
+			}));
+
+			this._disposables.add(dom.addDisposableListener(toggle, 'keydown', (e: KeyboardEvent) => {
+				if (e.key === ' ' || e.key === 'Enter') {
+					e.preventDefault();
+					updateValue(!checkbox.checked);
+				}
 			}));
 
 			// Sync from external changes
 			this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
 				if (e.affectsConfiguration(feature.key)) {
-					checkbox.checked = this._configurationService.getValue<boolean>(feature.key) ?? false;
+					const val = this._configurationService.getValue<boolean>(feature.key) ?? false;
+					checkbox.checked = val;
+					toggle.setAttribute('aria-checked', String(val));
 				}
 			}));
 		}
