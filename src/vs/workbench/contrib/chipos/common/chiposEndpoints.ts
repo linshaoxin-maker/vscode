@@ -24,9 +24,21 @@ const SETTING_REASONING_URL = 'chipos.backend.reasoningUrl';
 const SETTING_GRPC_ADDRESS = 'chipos.backend.grpcAddress';
 const SETTING_WEBSITE_URL = 'chipos.auth.websiteUrl';
 const SETTING_WORKER_API_KEY = 'chipos.worker.apiKey';
+const SETTING_WORKER_MCP_CONFIG_PATH = 'chipos.worker.mcpConfigPath';
 const SETTING_BACKEND_TOKEN = 'chipos.backend.token'; // legacy fallback for worker key
 const SETTING_HTTP_PORT = 'chipos.backend.httpPort';
 const SETTING_GRPC_PORT = 'chipos.backend.grpcPort';
+
+/**
+ * Default worker MCP config path. Uses `~` (not `$HOME`) on purpose — both
+ * the remote bash that SSH paths exec into AND the worker's own
+ * `Path(...).expanduser()` (see `execution.executor.mcp_loader`) handle `~`,
+ * so we can pass the literal string everywhere without per-callsite expansion.
+ *
+ * Lives under the canonical `~/.chipos/` umbrella alongside `~/.chipos/logs/`
+ * and `~/.chipos/instances/`.
+ */
+export const DEFAULT_WORKER_MCP_CONFIG_PATH = '~/.chipos/mcp_servers.json';
 
 const DEFAULT_HTTP_PORT = 8080;
 const DEFAULT_GRPC_PORT = 50051;
@@ -159,4 +171,34 @@ export function resolveWorkerApiKey(
 		return legacy;
 	}
 	return productService.chiposDefaults?.workerApiKey ?? '';
+}
+
+/**
+ * Resolve the worker-side MCP servers JSON config path passed via `--mcp-config`.
+ *
+ * Without this flag the worker falls back to `cwd/mcp_servers.json` (see
+ * execution.executor.mcp_loader.resolve_mcp_config_path), and `cwd` for a
+ * `setsid`-spawned worker is whatever directory the spawn happened from —
+ * usually $HOME for SSH paths or workspaceRoot for local spawns. Both are
+ * surprising defaults; users expect a single stable per-host config they can
+ * curate.
+ *
+ * Resolution order:
+ *   1. `chipos.worker.mcpConfigPath` setting — explicit override
+ *   2. `$HOME/.chipos/mcp_servers.json` — canonical default under the .chipos
+ *      umbrella, consistent with `~/.chipos/logs/` and `~/.chipos/instances/`
+ *
+ * The returned string MAY contain `$HOME` (when defaulting). SSH-Remote callers
+ * pass the literal through to a remote bash that expands it. Local callers
+ * (chiposRemoteWorkerService node spawn, sidecarManagerElectron IPC) must
+ * expand it via `os.homedir()` before `cp.spawn` — see local helper below.
+ */
+export function resolveWorkerMcpConfigPath(
+	configurationService: IConfigurationService,
+): string {
+	const fromSettings = configurationService.getValue<string>(SETTING_WORKER_MCP_CONFIG_PATH);
+	if (fromSettings) {
+		return fromSettings;
+	}
+	return DEFAULT_WORKER_MCP_CONFIG_PATH;
 }

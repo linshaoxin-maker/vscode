@@ -55,6 +55,13 @@ export class WorkerManager {
 	 */
 	private readonly _workerApiKey: string;
 	private readonly _tlsEnabled: boolean;
+	/**
+	 * Worker-side MCP servers JSON config path (NEW-1). Passed verbatim to
+	 * the worker via `--mcp-config`; remote bash (and the worker's own
+	 * Path(...).expanduser()) handle `~` expansion. Empty = use built-in
+	 * default `~/.chipos/mcp_servers.json`.
+	 */
+	private readonly _mcpConfigPath: string;
 
 	constructor(
 		ssh: SshConnection,
@@ -63,6 +70,7 @@ export class WorkerManager {
 		workerApiKey?: string,
 		tlsEnabled?: boolean,
 		workerToken?: string,
+		mcpConfigPath?: string,
 	) {
 		this._ssh = ssh;
 		this._installPath = installPath;
@@ -71,6 +79,7 @@ export class WorkerManager {
 		this._workerApiKey = workerApiKey ?? '';
 		this._tlsEnabled = tlsEnabled ?? false;
 		this._workerToken = workerToken ?? '';
+		this._mcpConfigPath = mcpConfigPath || '~/.chipos/mcp_servers.json';
 	}
 
 	/**
@@ -267,6 +276,11 @@ export class WorkerManager {
 			`--workspace "${workspace}"`,
 			`--http-port ${this._workerHttpPort}`,
 			`--instance-dir ${this._instanceDir}`,
+			// NEW-1: pin --mcp-config so the worker doesn't fall through to
+			// `cwd/mcp_servers.json` (cwd here is wherever ssh.exec landed —
+			// usually $HOME). Remote bash expands `~` via shell expansion;
+			// worker also runs Path(...).expanduser() defensively.
+			`--mcp-config "${this._mcpConfigPath}"`,
 			`> ${logFile} 2>&1 < /dev/null &`,
 		].join(' ');
 
@@ -331,6 +345,9 @@ export class WorkerManager {
 			`--workspace \\"${workspace}\\"`,
 			`--http-port ${this._workerHttpPort}`,
 			`--instance-dir ${this._instanceDir}`,
+			// NEW-1: same default-pin as the binary path. Note the escaped
+			// double quotes — we're already two `bash -c` levels deep.
+			`--mcp-config \\"${this._mcpConfigPath}\\"`,
 			`> ${logFile} 2>&1 < /dev/null" &`,
 			`sleep 0.5; exit 0'`,
 		].join(' ');

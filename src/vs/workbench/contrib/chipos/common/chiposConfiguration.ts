@@ -178,6 +178,15 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.worker.mcpConfigPath': {
+			type: 'string',
+			default: '',
+			// Default empty → resolveWorkerMcpConfigPath() returns ~/.chipos/mcp_servers.json.
+			// Set explicitly to override (e.g. for per-machine custom paths or shared configs).
+			description: localize('chipos.worker.mcpConfigPath.desc', 'Absolute path to the worker-side MCP servers JSON config (passed to the Worker via --mcp-config). Leave empty for the default ~/.chipos/mcp_servers.json. For SSH-Remote workers this path is resolved on the remote host (use $HOME, not the IDE-side home).'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		'chipos.backend.pythonPath': {
 			type: 'string',
 			default: '',

@@ -46,7 +46,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
-import { resolveReasoningUrl, resolveReasonerGrpcAddress, resolveWorkerApiKey } from '../common/chiposEndpoints.js';
+import { resolveReasoningUrl, resolveReasonerGrpcAddress, resolveWorkerApiKey, resolveWorkerMcpConfigPath } from '../common/chiposEndpoints.js';
 import { IChipOSAuthService } from '../browser/auth/chiposAuthService.js';
 import {
 	ChiposRemoteWorkerChannelName,
@@ -370,6 +370,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			}
 		}
 
+		// NEW-1: forward the IDE-resolved MCP config path so a user override
+		// (chipos.worker.mcpConfigPath) reaches REH-spawned workers too. The
+		// path is resolved on the REH host via Path(...).expanduser(), so `~`
+		// expands to REH's $HOME — which is what we want.
+		const mcpConfigPath = resolveWorkerMcpConfigPath(this._configurationService);
+
 		const args: IEnsureRemoteWorkerArgs = {
 			reasonerGrpcTarget,
 			workspaceRoot,
@@ -377,6 +383,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			workerApiKey: workerApiKey || undefined,
 			workerToken,
 			tlsEnabled,
+			mcpConfigPath,
 		};
 
 		try {
@@ -776,6 +783,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const configDownloadUrl = this._configurationService.getValue<string>('chipos.worker.downloadUrl') || '';
 		const configVersion = this._configurationService.getValue<string>('chipos.worker.version') || 'latest';
 		const backendDir = this._resolveBackendDir();
+		// NEW-1: pin --mcp-config explicitly so the worker doesn't fall through
+		// to `cwd/mcp_servers.json` (which is whatever directory cp.spawn used).
+		// We pass `~/...` literally because the worker's CLI runs Path(...).expanduser()
+		// — see resolve_mcp_config_path in execution.executor.mcp_loader.
+		const mcpConfigPath = resolveWorkerMcpConfigPath(this._configurationService);
 
 		// Phase 1.5 Worker JWT: when the user is logged in, mint a Worker JWT
 		// from the website. Reasoner trusts the embedded user_id and hard-rejects
@@ -856,7 +868,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				const result = await this._invokeIpc('chipos:spawnProcess', {
 					binaryPath,
 					args: ['start', '--server', grpcTarget, '--workspace', workspaceRoot,
-						'--http-port', String(workerHttpPort)],
+						'--http-port', String(workerHttpPort),
+						'--mcp-config', mcpConfigPath],
 					env,
 					cwd: workspaceRoot,
 					role: 'worker',
@@ -878,7 +891,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			const result = await this._invokeIpc('chipos:spawnProcess', {
 				pythonPath,
 				moduleArgs: ['-m', 'execution.server.cli', 'start', '--server', grpcTarget,
-					'--workspace', workspaceRoot, '--http-port', String(workerHttpPort)],
+					'--workspace', workspaceRoot, '--http-port', String(workerHttpPort),
+					'--mcp-config', mcpConfigPath],
 				env,
 				cwd: backendDir,
 				role: 'worker',

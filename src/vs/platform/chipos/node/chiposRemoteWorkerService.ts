@@ -224,6 +224,12 @@ export class ChiposRemoteWorkerService extends Disposable implements IChiposRemo
 		const dir = instanceDir(workspaceRoot);
 		fs.mkdirSync(dir, { recursive: true });
 
+		// NEW-1: pin --mcp-config explicitly. IDE may pass an override; otherwise
+		// fall back to the same `~/.chipos/mcp_servers.json` default the SSH path
+		// uses, so a worker spawned by REH and a worker spawned by chipos-remote-ssh
+		// land on identical config without per-host setup.
+		const mcpConfigPath = args.mcpConfigPath || '~/.chipos/mcp_servers.json';
+
 		let proc: cp.ChildProcess;
 		try {
 			proc = cp.spawn(
@@ -234,6 +240,7 @@ export class ChiposRemoteWorkerService extends Disposable implements IChiposRemo
 					'--workspace', workspaceRoot,
 					'--http-port', String(workerHttpPort),
 					'--instance-dir', dir,
+					'--mcp-config', mcpConfigPath,
 				],
 				{
 					cwd: workspaceRoot,

@@ -54,6 +54,18 @@ export interface IEnsureRemoteWorkerArgs {
 	workerToken?: string;
 	/** Whether to enable TLS for Worker → Reasoner gRPC. */
 	tlsEnabled?: boolean;
+	/**
+	 * Worker-side MCP servers JSON config path (NEW-1).
+	 *
+	 * IDE-resolved via `resolveWorkerMcpConfigPath()` (settings >
+	 * `~/.chipos/mcp_servers.json` default). MAY contain `~` — the worker's
+	 * own `Path(...).expanduser()` resolves it on the REH host's filesystem.
+	 *
+	 * If unset the REH falls back to the same default. The arg exists so
+	 * IDE-side `chipos.worker.mcpConfigPath` overrides take effect against
+	 * REH-spawned workers, not just SSH-spawned ones.
+	 */
+	mcpConfigPath?: string;
 }
 
 /** Result returned to the local IDE. */

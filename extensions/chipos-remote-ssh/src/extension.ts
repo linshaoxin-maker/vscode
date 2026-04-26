@@ -49,6 +49,19 @@ async function resolveWorkerToken(): Promise<string> {
 	}
 }
 
+/**
+ * NEW-1: resolve the worker-side MCP servers config path from settings,
+ * falling back to the canonical default. Mirrors `resolveWorkerMcpConfigPath`
+ * in `vscode/src/.../chiposEndpoints.ts` (kept duplicated because UI extensions
+ * can't import workbench code). Returned string MAY contain `~`; expansion
+ * happens on the remote — both bash and the worker's own Path(...).expanduser().
+ */
+function resolveWorkerMcpConfigPath(): string {
+	const fromSettings = vscode.workspace.getConfiguration('chipos').get<string>('worker.mcpConfigPath');
+	if (fromSettings) { return fromSettings; }
+	return '~/.chipos/mcp_servers.json';
+}
+
 let outputChannel: vscode.OutputChannel;
 
 interface RemoteSession {
@@ -282,8 +295,9 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				const wmApiKey = resolveWorkerApiKey();
 				const wmToken = await resolveWorkerToken();
 				const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
-				log(`[Step 5] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
-				workerMgr = new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken);
+				const wmMcpConfig = resolveWorkerMcpConfigPath();
+				log(`[Step 5] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
+				workerMgr = new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken, wmMcpConfig);
 				try {
 					const folders = vscode.workspace.workspaceFolders;
 					const remoteWorkspacePath =
@@ -724,8 +738,9 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	const wmApiKey = resolveWorkerApiKey();
 	const wmToken = await resolveWorkerToken();
 	const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
-	log(`[ChipOS RemoteWorker] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
-	const workerMgr = existing?.worker ?? new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken);
+	const wmMcpConfig = resolveWorkerMcpConfigPath();
+	log(`[ChipOS RemoteWorker] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
+	const workerMgr = existing?.worker ?? new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken, wmMcpConfig);
 	try {
 		await workerMgr.ensureWorkerRunning(reasonerGrpcTarget, args.workspacePath);
 	} catch (err) {
