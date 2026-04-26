@@ -19,6 +19,13 @@ const STATUSBAR_CONNECTION_ID = 'chipos.statusbar.connection';
 const STATUSBAR_AGENT_ID = 'chipos.statusbar.agent';
 const STATUSBAR_FILES_ID = 'chipos.statusbar.files';
 const STATUSBAR_MCP_ID = 'chipos.statusbar.mcp';
+const STATUSBAR_USAGE_ID = 'chipos.statusbar.usage';
+
+export interface IChipOSUsageDisplay {
+	totalTokens: number;
+	limitTokens: number | null;
+	meteringEnabled: boolean;
+}
 
 export class StatusBarHandler extends Disposable {
 
@@ -26,6 +33,7 @@ export class StatusBarHandler extends Disposable {
 	private _agentEntry: IStatusbarEntryAccessor | undefined;
 	private _filesEntry: IStatusbarEntryAccessor | undefined;
 	private _mcpEntry: IStatusbarEntryAccessor | undefined;
+	private _usageEntry: IStatusbarEntryAccessor | undefined;
 
 	constructor(
 		@IStatusbarService private readonly _statusbarService: IStatusbarService,
@@ -170,6 +178,47 @@ export class StatusBarHandler extends Disposable {
 		}
 	}
 
+	// ── Usage / quota ─────────────────────────────────────────────────────
+
+	updateUsage(display: IChipOSUsageDisplay | null): void {
+		// Hide entry when not logged in / metering off / no data yet.
+		if (!display || !display.meteringEnabled) {
+			if (this._usageEntry) {
+				this._usageEntry.dispose();
+				this._usageEntry = undefined;
+			}
+			return;
+		}
+
+		const used = formatTokens(display.totalTokens);
+		const limit = display.limitTokens ? formatTokens(display.limitTokens) : null;
+		const text = limit
+			? `$(graph) ${used} / ${limit}`
+			: `$(graph) ${used} tokens`;
+		const tooltip = limit
+			? `ChipOS usage this month: ${display.totalTokens.toLocaleString()} / ${display.limitTokens!.toLocaleString()} tokens\nClick to open dashboard`
+			: `ChipOS usage this month: ${display.totalTokens.toLocaleString()} tokens\nClick to open dashboard`;
+
+		const entry = {
+			name: 'ChipOS Usage',
+			text,
+			ariaLabel: text,
+			command: 'chipos.dashboard.openUsage',
+			tooltip,
+		};
+		if (this._usageEntry) {
+			this._usageEntry.update(entry);
+		} else {
+			this._usageEntry = this._statusbarService.addEntry(
+				entry,
+				STATUSBAR_USAGE_ID,
+				StatusbarAlignment.LEFT,
+				{ location: { id: STATUSBAR_CONNECTION_ID, priority: 97 }, alignment: StatusbarAlignment.LEFT, compact: true },
+			);
+			this._register(this._usageEntry);
+		}
+	}
+
 	override dispose(): void {
 		this._connectionEntry?.dispose();
 		this._connectionEntry = undefined;
@@ -179,6 +228,8 @@ export class StatusBarHandler extends Disposable {
 		this._filesEntry = undefined;
 		this._mcpEntry?.dispose();
 		this._mcpEntry = undefined;
+		this._usageEntry?.dispose();
+		this._usageEntry = undefined;
 		super.dispose();
 	}
 
@@ -187,4 +238,14 @@ export class StatusBarHandler extends Disposable {
 	private _initConnectionEntry(): void {
 		this.updateConnectionState(ConnectionState.Disconnected);
 	}
+}
+
+function formatTokens(n: number): string {
+	if (n >= 1_000_000) {
+		return `${(n / 1_000_000).toFixed(1)}M`;
+	}
+	if (n >= 1_000) {
+		return `${(n / 1_000).toFixed(1)}k`;
+	}
+	return String(n);
 }

@@ -17,4 +17,8 @@ import { IChipOSAuthService, ChipOSAuthService } from '../../../../workbench/con
 registerSingleton(IChipOSTokenManager, ChipOSTokenManager, InstantiationType.Delayed);
 registerSingleton(IChipOSAuthService, ChipOSAuthService, InstantiationType.Delayed);
 
+// Phase 2 Usage polling: status bar widget showing /api/billing/usage
+import { IChipOSUsageService, ChipOSUsageService } from '../../../../workbench/contrib/chipos/browser/billing/chiposUsageService.js';
+registerSingleton(IChipOSUsageService, ChipOSUsageService, InstantiationType.Delayed);
+
 import '../../../../workbench/contrib/chipos/common/chiposContribution.js';

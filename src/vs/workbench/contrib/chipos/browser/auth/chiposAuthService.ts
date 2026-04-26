@@ -22,6 +22,11 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IChipOSTokenManager, type ChipOSAuthUserResponse, type IChipOSUserInfo } from './chiposTokenManager.js';
 
+export interface IChipOSWorkerTokenResult {
+	worker_token: string;
+	expires_in: number;
+}
+
 export interface IChipOSAuthService {
 	readonly _serviceBrand: undefined;
 
@@ -32,6 +37,15 @@ export interface IChipOSAuthService {
 	handleCallback(uri: URI): Promise<void>;
 	isLoggedIn(): boolean;
 	getUser(): IChipOSUserInfo | undefined;
+	/**
+	 * Phase 1.5 Worker JWT: exchange the current access_token for a Worker
+	 * JWT (`scope=worker`) signed by the website. Used by the IDE sidecar to
+	 * boot a local Worker without sharing the user access_token.
+	 *
+	 * Returns undefined when not logged in or when the website rejects the
+	 * exchange (caller should fall back to the legacy api_key path).
+	 */
+	getWorkerToken(workerId?: string): Promise<IChipOSWorkerTokenResult | undefined>;
 }
 
 export const IChipOSAuthService = createDecorator<IChipOSAuthService>('chipOSAuthService');
@@ -74,8 +88,61 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 	}
 
 	async logout(): Promise<void> {
+		// Best-effort: tell the website to revoke the refresh_token before we
+		// clear it locally. Failure (network, 4xx, etc.) must not block local
+		// logout — the user expects the IDE to forget them either way.
+		const refreshToken = await this._tokenManager.getRefreshTokenForLogout();
+		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
+		if (websiteUrl && refreshToken) {
+			try {
+				await fetch(`${websiteUrl}/api/auth/logout`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ refresh_token: refreshToken }),
+				});
+			} catch (err) {
+				this._logService.warn('[ChipOS Auth] /api/auth/logout failed (continuing local logout):', String(err));
+			}
+		}
 		await this._tokenManager.clearTokens();
 		this._logService.info('[ChipOS Auth] Logged out');
+	}
+
+	async getWorkerToken(workerId?: string): Promise<IChipOSWorkerTokenResult | undefined> {
+		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
+		if (!websiteUrl) {
+			this._logService.warn('[ChipOS Auth] getWorkerToken: chipos.auth.websiteUrl not configured');
+			return undefined;
+		}
+		const accessToken = await this._tokenManager.getAccessToken();
+		if (!accessToken) {
+			this._logService.warn('[ChipOS Auth] getWorkerToken: no access_token (user not logged in)');
+			return undefined;
+		}
+		try {
+			const resp = await fetch(`${websiteUrl}/api/auth/worker-token`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${accessToken}`,
+				},
+				body: JSON.stringify(workerId ? { worker_id: workerId } : {}),
+			});
+			if (!resp.ok) {
+				const text = await resp.text().catch(() => '');
+				this._logService.warn('[ChipOS Auth] /api/auth/worker-token failed:', resp.status, text);
+				return undefined;
+			}
+			const data = await resp.json() as { worker_token?: string; expires_in?: number };
+			if (!data?.worker_token || !data?.expires_in) {
+				this._logService.warn('[ChipOS Auth] /api/auth/worker-token returned malformed response');
+				return undefined;
+			}
+			return { worker_token: data.worker_token, expires_in: data.expires_in };
+		} catch (err) {
+			this._logService.warn('[ChipOS Auth] getWorkerToken error:', String(err));
+			return undefined;
+		}
 	}
 
 	async handleCallback(uri: URI): Promise<void> {
