@@ -1592,6 +1592,69 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				return context || 'Please select an option.';
 			}
 
+			// ── ChipOS UI polish: render EDA report payloads as markdown tables ──
+			// Schemas come from eventStream/eventTypes.ts (ISimReportPayload / ILintReportPayload /
+			// ICoverageReportPayload). Each block is defensive about missing fields so a slightly
+			// off payload still degrades gracefully to the default JSON pretty-print below.
+			case 'sim_report': {
+				const tests = Array.isArray(data?.tests) ? data.tests as Array<{ name?: string; status?: string; message?: string; duration_ms?: number }> : [];
+				const summary = data?.summary as { total?: number; passed?: number; failed?: number; errors?: number } | undefined;
+				const lines: string[] = [];
+				if (summary) {
+					const failedSeg = summary.failed ? `, ${summary.failed} failed` : '';
+					const errorSeg = summary.errors ? `, ${summary.errors} errors` : '';
+					lines.push(`**Summary:** ${summary.passed ?? 0} / ${summary.total ?? tests.length} passed${failedSeg}${errorSeg}`);
+				}
+				if (tests.length > 0) {
+					lines.push('', '| Test | Status | Duration |', '|---|---|---|');
+					for (const t of tests.slice(0, 50)) {
+						const icon = t.status === 'pass' ? '✓' : t.status === 'fail' ? '✗' : '⚠';
+						const dur = typeof t.duration_ms === 'number' ? `${t.duration_ms}ms` : '-';
+						lines.push(`| ${t.name ?? '-'} | ${icon} ${t.status ?? '-'} | ${dur} |`);
+					}
+					if (tests.length > 50) {
+						lines.push(`| _… ${tests.length - 50} more …_ | | |`);
+					}
+				}
+				return lines.length > 0 ? lines.join('\n') : (p.message ?? 'Simulation complete.');
+			}
+
+			case 'lint_report': {
+				const errors = Array.isArray(data?.errors) ? data.errors as Array<{ file?: string; line?: number; col?: number; severity?: string; message?: string; rule?: string }> : [];
+				const tool = data?.tool ? String(data.tool) : 'lint';
+				const autoFixable = data?.auto_fixable;
+				const lines: string[] = [];
+				const fixableSeg = typeof autoFixable === 'number' ? ` ｜ **Auto-fixable:** ${autoFixable}` : '';
+				lines.push(`**Tool:** ${tool} ｜ **Errors:** ${errors.length}${fixableSeg}`);
+				if (errors.length > 0) {
+					lines.push('', '| File | Line | Severity | Message |', '|---|---|---|---|');
+					for (const e of errors.slice(0, 30)) {
+						const msg = (e.message ?? '').replace(/\|/g, '\\|').slice(0, 120);
+						lines.push(`| \`${e.file ?? '-'}\` | ${e.line ?? '-'} | ${e.severity ?? '-'} | ${msg} |`);
+					}
+					if (errors.length > 30) {
+						lines.push(`| _… ${errors.length - 30} more …_ | | | |`);
+					}
+				}
+				return lines.join('\n');
+			}
+
+			case 'coverage_report': {
+				const lineCov = typeof data?.line_cov === 'number' ? data.line_cov : undefined;
+				const branchCov = typeof data?.branch_cov === 'number' ? data.branch_cov : undefined;
+				const gaps = Array.isArray(data?.gaps) ? data.gaps as Array<{ file?: string; lines?: string; type?: string }> : [];
+				const lines: string[] = [];
+				if (typeof lineCov === 'number') { lines.push(`**Line Coverage:** ${(lineCov * 100).toFixed(1)}%`); }
+				if (typeof branchCov === 'number') { lines.push(`**Branch Coverage:** ${(branchCov * 100).toFixed(1)}%`); }
+				if (gaps.length > 0) {
+					lines.push('', '**Uncovered:**', '', '| File | Lines | Type |', '|---|---|---|');
+					for (const g of gaps.slice(0, 30)) {
+						lines.push(`| \`${g.file ?? '-'}\` | ${g.lines ?? '-'} | ${g.type ?? '-'} |`);
+					}
+				}
+				return lines.length > 0 ? lines.join('\n') : (p.message ?? 'Coverage report.');
+			}
+
 			default:
 				return JSON.stringify(data, null, 2).slice(0, 500);
 		}
