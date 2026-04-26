@@ -40,6 +40,8 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { localize } from '../../../../nls.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -158,6 +160,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSAuthService private readonly _authService: IChipOSAuthService,
 		@IChipOSRuntimeOverridesService private readonly _runtimeOverrides: IChipOSRuntimeOverridesService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super();
 
@@ -662,7 +665,32 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		this._workerTokenRefreshTimer = setTimeout(() => {
 			this._workerTokenRefreshTimer = undefined;
 			this._refreshWorkerTokenAndRespawn().catch(err => {
-				this._logService.warn('[ChipOS SidecarElectron] worker_token auto-refresh failed:', String(err));
+				const msg = err instanceof Error ? err.message : String(err);
+				// Audit fix: a silent log-only failure here means the worker
+				// dies a few hours later (token expired, no respawn) and the
+				// user sees "WORKER_UNAVAILABLE" with no clue why. Surface a
+				// toast pointing them at the recovery action.
+				this._logService.warn(`[ChipOS SidecarElectron] worker_token auto-refresh failed: ${msg}`);
+				void this._notificationService.prompt(
+					Severity.Warning,
+					localize('chipos.tokenRefreshFailed',
+						'ChipOS: failed to refresh worker authentication. Tools will stop working when the current token expires.'),
+					[
+						{
+							label: localize('chipos.reloadWindow', 'Reload Window'),
+							run: () => {
+								void this._commandService.executeCommand('workbench.action.reloadWindow');
+							},
+						},
+						{
+							label: localize('chipos.retryNow', 'Retry Now'),
+							run: () => {
+								void this._refreshWorkerTokenAndRespawn().catch(() => { /* retry already best-effort */ });
+							},
+						},
+					],
+					{ sticky: false },
+				);
 			});
 		}, delayMs);
 		this._logService.info('[ChipOS SidecarElectron] worker_token auto-refresh scheduled in %dms', delayMs);
@@ -865,9 +893,16 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			await this._invokeIpc('chipos:acquireRef', { workspaceRoot, callerId: this._callerId });
 			this._workerPid = existing.pid;
 			this._isSharedInstance = true;
-			// Don't blindly trust PID alive = HTTP ready; verify the Worker
-			// is actually serving before declaring Connected.
 			this._setWorkerState(WorkerState.Starting);
+			// Audit fix: PID alive ≠ HTTP serving. The other window may have
+			// just spawned the worker seconds ago and HTTP is still warming
+			// up. Observe Reasoner /health.workers_connected so the state
+			// transitions to Connected once the worker actually registers,
+			// instead of staying in Starting forever and the UI showing
+			// "worker starting" indefinitely.
+			void this._observeWorkerRegistrationAfterSpawn().catch(err => {
+				this._logService.warn(`[ChipOS SidecarElectron] post-acquire health observation failed: ${err}`);
+			});
 			return;
 		}
 
