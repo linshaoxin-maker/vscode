@@ -6,10 +6,15 @@
 /**
  * Centralized resolution for ChipOS deployment endpoints.
  *
- * Three-tier fallback (highest priority first):
- *   1. settings.json     (user override or chipos-remote-ssh dynamic write)
- *   2. product.json      (build-time injection — see chiposDefaults in product.ts)
- *   3. hardcoded default (dev-mode safety net, e.g. http://127.0.0.1:8080)
+ * Four-tier fallback (highest priority first):
+ *   1. runtime overrides (P2-14, IChipOSRuntimeOverridesService) — set by
+ *      chipos-remote-ssh after port forwarding; per-window in-memory only,
+ *      never persisted to disk. Optional 3rd argument; resolvers still work
+ *      without it for callers that don't have access to the service.
+ *   2. settings.json     (user explicit override; may also be written by
+ *      legacy chipos-remote-ssh builds that pre-date the runtime service)
+ *   3. product.json      (build-time injection — see chiposDefaults in product.ts)
+ *   4. hardcoded default (dev-mode safety net, e.g. http://127.0.0.1:8080)
  *
  * All consumers (sidecar managers, chat agent, auth service, settings UI hints)
  * MUST go through this module so dev-vs-production behavior stays consistent.
@@ -19,6 +24,7 @@
 
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
+import type { IChipOSRuntimeOverridesService } from './chiposRuntimeOverrides.js';
 
 const SETTING_REASONING_URL = 'chipos.backend.reasoningUrl';
 const SETTING_GRPC_ADDRESS = 'chipos.backend.grpcAddress';
@@ -51,14 +57,20 @@ function isLoopbackHost(host: string): boolean {
 /**
  * Resolve the Reasoner HTTP/SSE URL.
  *
- * In SSH-Remote sessions this is dynamically rewritten by chipos-remote-ssh
- * to a forwarded `127.0.0.1:<random>` URL — that takes precedence over
- * everything else.
+ * In SSH-Remote sessions this is dynamically set by chipos-remote-ssh via
+ * the runtime overrides service (P2-14) to a forwarded `127.0.0.1:<random>`
+ * URL — that takes precedence over everything else and is per-window so it
+ * cannot leak into other windows.
  */
 export function resolveReasoningUrl(
 	configurationService: IConfigurationService,
 	productService: IProductService,
+	runtimeOverrides?: IChipOSRuntimeOverridesService,
 ): string {
+	const fromRuntime = runtimeOverrides?.getOverride('reasoningUrl');
+	if (fromRuntime) {
+		return fromRuntime;
+	}
 	const fromSettings = configurationService.getValue<string>(SETTING_REASONING_URL);
 	if (fromSettings) {
 		return fromSettings;
@@ -69,6 +81,34 @@ export function resolveReasoningUrl(
 	}
 	const httpPort = configurationService.getValue<number>(SETTING_HTTP_PORT) ?? DEFAULT_HTTP_PORT;
 	return `http://127.0.0.1:${httpPort}`;
+}
+
+/**
+ * Resolve the Worker HTTP base URL.
+ *
+ * Used by the Worker Tools panel and any IDE-side HTTP client that talks to
+ * the Worker. Like reasoningUrl, this gets a runtime-override priority for
+ * SSH-Remote port forwarding.
+ *
+ * When neither runtime nor settings provide one, falls back to deriving from
+ * `reasoningUrl` host + `workerHttpPort`. The caller (`SidecarManagerElectron`)
+ * can override the fallback via its own deployment-mode-aware logic.
+ */
+export function resolveWorkerHttpUrl(
+	configurationService: IConfigurationService,
+	productService: IProductService,
+	runtimeOverrides?: IChipOSRuntimeOverridesService,
+): string | undefined {
+	const fromRuntime = runtimeOverrides?.getOverride('workerHttpUrl');
+	if (fromRuntime) {
+		return fromRuntime.replace(/\/$/, '');
+	}
+	const fromSettings = configurationService.getValue<string>('chipos.backend.workerHttpUrl');
+	if (fromSettings) {
+		return fromSettings.replace(/\/$/, '');
+	}
+	// No explicit value — caller derives from reasoningUrl host + workerHttpPort.
+	return undefined;
 }
 
 /**

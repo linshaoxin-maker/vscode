@@ -62,6 +62,56 @@ function resolveWorkerMcpConfigPath(): string {
 	return '~/.chipos/mcp_servers.json';
 }
 
+/**
+ * P2-14: ask the workbench to set a per-window runtime URL override.
+ *
+ * Replaces `cfg.update(..., ConfigurationTarget.Global)` writes that used to
+ * leak across windows. The command is registered in workbench
+ * `chiposContribution.ts` and writes to a per-window in-memory service —
+ * never hits disk, never visible to other windows.
+ *
+ * Fire-and-forget: failures are logged but don't block the resolver / connect
+ * flow. On a workbench build that pre-dates the service the command no-ops
+ * silently and the IDE-side resolvers fall through to settings/product/loopback.
+ */
+function applyRuntimeOverride(key: 'reasoningUrl' | 'workerHttpUrl', value: string, log: (msg: string) => void): void {
+	void vscode.commands.executeCommand('chipos.runtime.setOverride', key, value).then(undefined, err => {
+		log(`[WARN] runtime.setOverride(${key}) failed: ${err}`);
+	});
+}
+
+/**
+ * NEW-4 helpers: bounded cleanup so disconnect() fits inside VS Code's
+ * deactivate budget (~5s) regardless of how many remote sessions are active.
+ *
+ * `withTimeout` rejects (not resolves) on timeout so the caller logs a
+ * specific WARN instead of silently treating a hang as success. The "race"
+ * approach intentionally leaks the inner promise — it's about meeting the
+ * deactivate deadline, not waiting for full completion.
+ */
+async function cleanupSession(session: { worker?: WorkerManager; server?: ServerManager }, authority: string): Promise<void> {
+	if (session.worker) {
+		await session.worker.stopWorker();
+	}
+	if (session.server) {
+		await session.server.stopServer();
+	}
+	log(`Disconnect for ${authority} done`);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string, log: (msg: string) => void): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			log(`[WARN] ${label} exceeded ${ms}ms budget — abandoning (worker may leak on remote, will be GC'd on next reconnect)`);
+			reject(new Error(`${label} timed out after ${ms}ms`));
+		}, ms);
+		promise.then(
+			val => { clearTimeout(timer); resolve(val); },
+			err => { clearTimeout(timer); reject(err); },
+		);
+	});
+}
+
 let outputChannel: vscode.OutputChannel;
 
 interface RemoteSession {
@@ -229,11 +279,12 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					localReasoningPort = await sshConn.forwardPort(0, '127.0.0.1', reasoningPort);
 					log(`Reasoning port forwarding: 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
 					if (localReasoningPort !== reasoningPort) {
-						// Fire-and-forget: do NOT await config writes inside resolve(),
-						// because the workspace is not loaded yet and awaiting can deadlock.
-						vscode.workspace.getConfiguration('chipos.backend').update(
-							'reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, vscode.ConfigurationTarget.Global
-						).then(undefined, err => log(`[WARN] Failed to update reasoningUrl: ${err}`));
+						// P2-14: per-window runtime override instead of Global config.
+						// Avoids cross-window pollution (B1 SSH window leaking its
+						// 127.0.0.1:<random> tunnel URL to a B2 Local window) while
+						// still keeping the IDE-side resolvers in sync. The command
+						// no-ops on older workbench builds without the service.
+						applyRuntimeOverride('reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, log);
 					}
 				} catch (fwdErr) {
 					log(`[WARN] Could not forward reasoning port ${reasoningPort}: ${fwdErr}`);
@@ -314,9 +365,8 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 						const localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
 						log(`[Step 5] Worker HTTP port forwarding: 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
 					if (localWorkerPort !== workerHttpPort) {
-						vscode.workspace.getConfiguration('chipos.backend').update(
-							'workerHttpUrl', `http://127.0.0.1:${localWorkerPort}`, vscode.ConfigurationTarget.Global
-						).then(undefined, err => log(`[WARN] Failed to update workerHttpUrl: ${err}`));
+						// P2-14: see comment on reasoningUrl override above.
+						applyRuntimeOverride('workerHttpUrl', `http://127.0.0.1:${localWorkerPort}`, log);
 					}
 					} catch (fwdErr) {
 						log(`[Step 5][WARN] Could not forward worker HTTP port: ${fwdErr}`);
@@ -456,26 +506,60 @@ async function connectToHost(reuseWindow: boolean): Promise<void> {
 	await vscode.commands.executeCommand('vscode.openFolder', folderUri, { forceNewWindow: !reuseWindow });
 }
 
+/**
+ * NEW-4 fix: VS Code awaits the deactivate() promise on a tight budget when
+ * the user closes the window — typically ~5s before the extension host is
+ * SIGTERMed. The previous sequential per-session loop with default-budget
+ * SSH operations (10s flock, 5×500ms wait-for-exit) easily blew that, so
+ * `stopWorker` would be killed mid-flight and the worker would leak.
+ *
+ * New approach:
+ *   - Run all sessions' cleanup in PARALLEL via allSettled (one slow session
+ *     can't starve the others).
+ *   - Wrap each session's cleanup in a hard timeout. If the SSH layer hangs,
+ *     we fall through to disposing the ssh connection, which interrupts any
+ *     pending `ssh.exec` and frees local resources.
+ *   - On the remote side a stale ref_count is a best-effort leak; the worker
+ *     binary's instance-staleness detector will GC it on next IDE attach
+ *     (fold into the existing "PID alive?" check at acquire time — see
+ *     readInstanceJson + isPidAlive in the REH service).
+ */
+const DISCONNECT_PER_SESSION_BUDGET_MS = 3500;
+
 async function disconnect(): Promise<void> {
-	// Tear down ALL active remote sessions (fault-tolerant per session)
-	for (const [authority, session] of activeSessions) {
+	// Snapshot the map so the parallel cleanups can't race against
+	// activeSessions.clear() below.
+	const sessions = Array.from(activeSessions.entries());
+	activeSessions.clear();
+
+	const cleanupPromises = sessions.map(async ([authority, session]) => {
 		log(`Disconnecting ${authority}...`);
 		try {
-			if (session.worker) {
-				await session.worker.stopWorker();
-			}
-			if (session.server) {
-				await session.server.stopServer();
-			}
+			await withTimeout(
+				cleanupSession(session, authority),
+				DISCONNECT_PER_SESSION_BUDGET_MS,
+				`disconnect-${authority}`,
+				log,
+			);
 		} catch (err) {
 			log(`[WARN] Cleanup error for ${authority}: ${err}`);
 		}
-		session.ssh.dispose();
-	}
-	activeSessions.clear();
+		// Always dispose SSH last — even if stopWorker timed out, this ensures
+		// the local socket and forwarded ports are released so a reconnect
+		// won't EADDRINUSE on the same local ephemeral port.
+		try { session.ssh.dispose(); } catch (e) { log(`[WARN] ssh.dispose threw for ${authority}: ${e}`); }
+	});
+	await Promise.allSettled(cleanupPromises);
 
-	// P1-6: Revert Global config overrides written during resolve(),
-	// so B2/Local modes don't inherit stale SSH-tunnel URLs.
+	// P1-6 + P2-14: clear runtime overrides + any stale Global config left over
+	// from older builds. The runtime clear is per-window so it only affects
+	// THIS process; the Global cleanup is defensive — older versions may have
+	// written there before the runtime-override mechanism existed.
+	try {
+		await vscode.commands.executeCommand('chipos.runtime.clearOverride');
+	} catch (err) {
+		log(`[WARN] runtime.clearOverride failed: ${err}`);
+	}
 	const cfg = vscode.workspace.getConfiguration('chipos.backend');
 	await cfg.update('reasoningUrl', undefined, vscode.ConfigurationTarget.Global);
 	await cfg.update('workerHttpUrl', undefined, vscode.ConfigurationTarget.Global);
@@ -762,12 +846,11 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	const reasoningUrl = `http://127.0.0.1:${localReasoningPort}`;
 	const workerHttpUrl = `http://127.0.0.1:${localWorkerPort}`;
 
-	// Update Global config so SidecarManagerElectron + chat agent pick up the
-	// forwarded URLs. Fire-and-forget; don't block the resolve.
-	cfg.update('reasoningUrl', reasoningUrl, vscode.ConfigurationTarget.Global)
-		.then(undefined, err => log(`[WARN] Failed to update reasoningUrl: ${err}`));
-	cfg.update('workerHttpUrl', workerHttpUrl, vscode.ConfigurationTarget.Global)
-		.then(undefined, err => log(`[WARN] Failed to update workerHttpUrl: ${err}`));
+	// P2-14: per-window runtime overrides instead of Global config writes.
+	// SidecarManagerElectron + chat agent read these via the URL resolvers
+	// which check the runtime service first.
+	applyRuntimeOverride('reasoningUrl', reasoningUrl, log);
+	applyRuntimeOverride('workerHttpUrl', workerHttpUrl, log);
 
 	// Track session for cleanup on disconnect.
 	activeSessions.set(synthAuthority, {

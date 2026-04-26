@@ -21,4 +21,9 @@ registerSingleton(IChipOSAuthService, ChipOSAuthService, InstantiationType.Delay
 import { IChipOSUsageService, ChipOSUsageService } from '../../../../workbench/contrib/chipos/browser/billing/chiposUsageService.js';
 registerSingleton(IChipOSUsageService, ChipOSUsageService, InstantiationType.Delayed);
 
+// P2-14: per-window runtime URL overrides (replaces Global config writes
+// from chipos-remote-ssh). See chiposRuntimeOverrides.ts header for rationale.
+import { IChipOSRuntimeOverridesService, ChipOSRuntimeOverridesService } from '../../../../workbench/contrib/chipos/common/chiposRuntimeOverrides.js';
+registerSingleton(IChipOSRuntimeOverridesService, ChipOSRuntimeOverridesService, InstantiationType.Delayed);
+
 import '../../../../workbench/contrib/chipos/common/chiposContribution.js';

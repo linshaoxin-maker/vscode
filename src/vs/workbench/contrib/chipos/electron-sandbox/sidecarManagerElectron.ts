@@ -46,8 +46,9 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
-import { resolveReasoningUrl, resolveReasonerGrpcAddress, resolveWorkerApiKey, resolveWorkerMcpConfigPath } from '../common/chiposEndpoints.js';
+import { resolveReasoningUrl, resolveReasonerGrpcAddress, resolveWorkerApiKey, resolveWorkerMcpConfigPath, resolveWorkerHttpUrl } from '../common/chiposEndpoints.js';
 import { IChipOSAuthService } from '../browser/auth/chiposAuthService.js';
+import { IChipOSRuntimeOverridesService } from '../common/chiposRuntimeOverrides.js';
 import {
 	ChiposRemoteWorkerChannelName,
 	IEnsureRemoteWorkerArgs,
@@ -100,10 +101,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	// ── URLs ─────────────────────────────────────────────────────────────
 
 	get reasoningUrl(): string {
-		// Three-tier fallback: settings > product.json > hardcoded loopback.
-		// In SSH-Remote sessions, chipos-remote-ssh has already written the
-		// forwarded port into settings, which takes precedence.
-		return resolveReasoningUrl(this._configurationService, this._productService);
+		// Four-tier fallback: runtime override > settings > product.json > loopback.
+		// In SSH-Remote sessions, chipos-remote-ssh sets the runtime override to
+		// the forwarded `127.0.0.1:<random>` URL. Per-window in-memory only —
+		// can't leak into other windows the way Global config used to.
+		return resolveReasoningUrl(this._configurationService, this._productService, this._runtimeOverrides);
 	}
 
 	get sseUrl(): string {
@@ -111,9 +113,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	}
 
 	get workerHttpUrl(): string {
-		const explicit = this._configurationService.getValue<string>('chipos.backend.workerHttpUrl');
+		// runtime override > explicit settings — both bypass the derive-from-reasoningUrl
+		// path. Fall through to deployment-mode-aware derivation when neither is set.
+		const explicit = resolveWorkerHttpUrl(this._configurationService, this._productService, this._runtimeOverrides);
 		if (explicit) {
-			return explicit.replace(/\/$/, '');
+			return explicit;
 		}
 		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
 		if (this._mode === BackendMode.Local || this._mode === BackendMode.CloudReasoning) {
@@ -150,6 +154,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		@IRemoteAgentService private readonly _remoteAgentService: IRemoteAgentService,
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSAuthService private readonly _authService: IChipOSAuthService,
+		@IChipOSRuntimeOverridesService private readonly _runtimeOverrides: IChipOSRuntimeOverridesService,
 	) {
 		super();
 
@@ -170,6 +175,16 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			this._refreshWorkerTokenAndRespawn().catch(err => {
 				this._logService.warn('[ChipOS SidecarElectron] respawn-on-login-change failed:', String(err));
 			});
+		}));
+
+		// P2-14: when chipos-remote-ssh sets a runtime URL override (after port
+		// forwarding lands), notify any URL-derived caches downstream. The URL
+		// getters consult the override on each read so this only matters for
+		// observers that subscribe to a `urlsChanged`-style event — but emit
+		// it now so future listeners (HTTP client base, SSE re-subscribe) can
+		// hook in without another refactor.
+		this._register(this._runtimeOverrides.onDidChangeOverrides(key => {
+			this._logService.info(`[ChipOS SidecarElectron] runtime override changed: ${key}=${this._runtimeOverrides.getOverride(key) ?? '(cleared)'}`);
 		}));
 
 		this._logService.info('[ChipOS SidecarElectron] constructed, mode will be resolved on startBackend()');
