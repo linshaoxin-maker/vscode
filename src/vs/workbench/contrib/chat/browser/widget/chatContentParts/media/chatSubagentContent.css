@@ -84,4 +84,18 @@
 			}
 		}
 	}
+
+	/* ChipOS UI polish: when expanded, draw a thin left guide line on the body so nested
+	   subagent steps are visually grouped (similar to thread indentation in chat tools). */
+	&:not(.chat-used-context-collapsed) > .chat-used-context-list.chat-thinking-collapsible {
+		border-left: 1px solid var(--vscode-editorWidget-border, var(--vscode-chat-requestBorder));
+		margin-left: 6px;
+		padding-left: 6px;
+	}
+
+	/* ChipOS UI polish: completed subagents (no longer active) — slightly soften the body to
+	   visually de-emphasize finished work without hiding it. */
+	&:not(.chat-thinking-active) > .chat-used-context-list.chat-thinking-collapsible {
+		opacity: 0.92;
+	}
 }
