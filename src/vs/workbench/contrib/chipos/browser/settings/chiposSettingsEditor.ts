@@ -161,8 +161,6 @@ export class ChipOSSettingsEditor extends EditorPane {
 		// editor never sits with a blank right pane and no active nav item.
 		const initialTab = this._pendingTab ?? 'general';
 		this._pendingTab = undefined;
-		console.log('[ChipOSSettings] createEditor done — flushing tab:', initialTab,
-			'navItems.size=', this._navItems.size, 'contentArea=', !!this._contentArea);
 		this._switchTab(initialTab);
 	}
 
@@ -249,14 +247,10 @@ export class ChipOSSettingsEditor extends EditorPane {
 	}
 
 	private _switchTab(tab: ChipOSSettingsTab): void {
-		console.log('[ChipOSSettings] _switchTab called:', tab,
-			'activeTab=', this._activeTab, 'hasDisposable=', !!this._activeTabDisposable,
-			'contentChild=', this._contentArea?.firstChild?.nodeName);
 		// DOM not ready yet — createEditor hasn't run. Stash the request and
 		// bail; createEditor will pick it up via _pendingTab once the DOM is
 		// laid out. Without this, the editor would sit blank forever.
 		if (!this._contentArea || this._navItems.size === 0) {
-			console.log('[ChipOSSettings] _switchTab → stashing in pendingTab (DOM not ready)');
 			this._pendingTab = tab;
 			return;
 		}
@@ -265,7 +259,6 @@ export class ChipOSSettingsEditor extends EditorPane {
 		// alone, which could keep us stuck on a stale state if the content
 		// area got cleared externally.)
 		if (this._activeTab === tab && this._activeTabDisposable && this._contentArea.firstChild) {
-			console.log('[ChipOSSettings] _switchTab → short-circuit, already on', tab);
 			return;
 		}
 		this._activeTab = tab;
@@ -313,10 +306,6 @@ export class ChipOSSettingsEditor extends EditorPane {
 					store.add(this._instantiationService.createInstance(ToolsTab, inner));
 					break;
 			}
-			console.log('[ChipOSSettings] tab rendered:', tab,
-				'inner.children=', inner.children.length,
-				'inner.offsetHeight=', inner.offsetHeight,
-				'contentArea.offsetHeight=', this._contentArea?.offsetHeight);
 		} catch (err) {
 			// Surface the failure in DevTools console too, so empty-pane bugs
 			// can be diagnosed without tearing into TS source.
