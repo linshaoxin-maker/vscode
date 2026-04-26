@@ -51,6 +51,7 @@ import { TerminalLocation } from '../../../../../../../platform/terminal/common/
 import { Codicon } from '../../../../../../../base/common/codicons.js';
 import { TerminalContribCommandId } from '../../../../../terminal/terminalContribExports.js';
 import { ITelemetryService } from '../../../../../../../platform/telemetry/common/telemetry.js';
+import { IClipboardService } from '../../../../../../../platform/clipboard/common/clipboardService.js';
 import { isNumber } from '../../../../../../../base/common/types.js';
 import { removeAnsiEscapeCodes } from '../../../../../../../base/common/strings.js';
 import { PANEL_BACKGROUND } from '../../../../../../common/theme.js';
@@ -301,6 +302,7 @@ export class ChatTerminalToolProgressPart extends BaseChatToolInvocationSubPart 
 		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@IKeybindingService private readonly _keybindingService: IKeybindingService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IClipboardService private readonly _clipboardService: IClipboardService,
 	) {
 		super(toolInvocation);
 
@@ -371,6 +373,38 @@ export class ChatTerminalToolProgressPart extends BaseChatToolInvocationSubPart 
 		const actionBarEl = h('.chat-terminal-action-bar@actionBar');
 		elements.title.append(actionBarEl.root);
 		this._actionBar = this._register(new ActionBar(actionBarEl.actionBar, {}));
+
+		// ChipOS UI polish: always-available "Copy command" + "Rerun command" actions on the
+		// terminal tool card. Pushed once at the end of the action bar so they sit to the right
+		// of focus / showOutput / continueInBackground actions which are managed dynamically by
+		// _addActions() below. They only need this._commandText (set above) and don't depend on
+		// a live terminal instance, so they remain functional even on serialized invocations.
+		const copyCommandAction = this._register(new Action(
+			'chipos.terminal.copyCommand',
+			localize('chipos.terminal.copyCommand', "Copy Command"),
+			ThemeIcon.asClassName(Codicon.copy),
+			true,
+			async () => {
+				await this._clipboardService.writeText(this._commandText);
+			}
+		));
+		this._actionBar.push(copyCommandAction, { icon: true, label: false });
+
+		const rerunCommandAction = this._register(new Action(
+			'chipos.terminal.rerunCommand',
+			localize('chipos.terminal.rerunCommand', "Rerun Command"),
+			ThemeIcon.asClassName(Codicon.refresh),
+			true,
+			async () => {
+				const instance = this._terminalInstance ?? await this._ensureTerminalInstance();
+				if (instance) {
+					instance.sendText(this._commandText, true);
+					instance.focus();
+				}
+			}
+		));
+		this._actionBar.push(rerunCommandAction, { icon: true, label: false });
+
 		this._initializeTerminalActions();
 		this._terminalService.whenConnected.then(() => this._initializeTerminalActions());
 		let pastTenseMessage: string | undefined;
