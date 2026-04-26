@@ -11,8 +11,20 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "sourceMap": true
+    "sourceMap": true,
+    // P3-A: pull vscode types from src/vscode-dts/ (the canonical source for
+    // built-in extensions) instead of @types/vscode. The stable @types/vscode
+    // omits proposed APIs (RemoteAuthorityResolver, TunnelFactory, …) which
+    // this extension relies on. The narrow `types` array prevents @types/vscode
+    // from being auto-included, which would otherwise clash with vscode.d.ts.
+    "types": ["node"]
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*",
+    "../../src/vscode-dts/vscode.d.ts",
+    "../../src/vscode-dts/vscode.proposed.resolvers.d.ts",
+    "../../src/vscode-dts/vscode.proposed.tunnels.d.ts",
+    "../../src/vscode-dts/vscode.proposed.tunnelFactory.d.ts"
+  ],
   "exclude": ["node_modules", "out"]
 }

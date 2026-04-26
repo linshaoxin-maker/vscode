@@ -37,15 +37,57 @@ function resolveWorkerApiKey(): string {
  * workbench contribution not loaded yet at resolve() time, etc.) — caller
  * gracefully falls back to the legacy static apiKey path.
  */
+interface WorkerTokenMint {
+	worker_token: string;
+	/** Seconds until expiry as reported by the website (best-effort hint;
+	 *  the real exp is in the JWT payload). */
+	expires_in?: number;
+}
+
 async function resolveWorkerToken(): Promise<string> {
+	const result = await mintWorkerToken();
+	return result?.worker_token ?? '';
+}
+
+/** Same as resolveWorkerToken but returns the full mint object so callers
+ *  scheduling auto-refresh can consult `expires_in` as a fallback when the
+ *  JWT lacks an `exp` claim. */
+async function mintWorkerToken(): Promise<WorkerTokenMint | undefined> {
 	try {
-		const result = await vscode.commands.executeCommand<{ worker_token?: string; expires_in?: number } | undefined>(
+		const result = await vscode.commands.executeCommand<WorkerTokenMint | undefined>(
 			'chipos.auth.getWorkerToken',
 		);
-		return result?.worker_token ?? '';
+		if (result?.worker_token) {
+			return result;
+		}
+		return undefined;
 	} catch (err) {
 		log(`[ChipOS Auth] mint worker_token failed (will fall back to apiKey): ${err}`);
-		return '';
+		return undefined;
+	}
+}
+
+/**
+ * P3-D: parse the `exp` claim from a JWT (in seconds since epoch) and return
+ * milliseconds-since-epoch. Returns 0 on any parse failure — caller should
+ * fall back to the website-reported `expires_in` hint, or assume 0 (= refresh
+ * immediately on next tick) if neither is available.
+ *
+ * No signature verification — that's Reasoner's job. We only read the exp
+ * claim for refresh scheduling.
+ */
+function parseJwtExpMs(token: string): number {
+	try {
+		const parts = token.split('.');
+		if (parts.length !== 3) { return 0; }
+		// JWT uses base64url; pad to base64 then decode.
+		const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+		const padded = b64 + '==='.slice((b64.length + 3) % 4);
+		const json = Buffer.from(padded, 'base64').toString('utf-8');
+		const exp = JSON.parse(json)?.exp;
+		return typeof exp === 'number' ? exp * 1000 : 0;
+	} catch {
+		return 0;
 	}
 }
 
@@ -99,6 +141,94 @@ async function cleanupSession(session: { worker?: WorkerManager; server?: Server
 	log(`Disconnect for ${authority} done`);
 }
 
+/**
+ * P3-D: schedule the next worker_token refresh for a session.
+ *
+ * Refresh happens 30 min before the JWT exp claim, clamped to
+ * [60s, 23h] so a misconfigured website can't push the refresh
+ * indefinitely far out (and can't spin if the website hands us a
+ * just-expired token by accident).
+ *
+ * Pass `currentToken` so we can read its `exp`. The first call also
+ * happens AFTER the worker has spawned successfully — we don't want
+ * to refresh a worker that never came up.
+ */
+function scheduleWorkerTokenRefresh(
+	session: RemoteSession,
+	authority: string,
+	currentToken: string,
+	expiresInSecondsHint: number | undefined,
+): void {
+	if (session.tokenRefreshTimer) {
+		clearTimeout(session.tokenRefreshTimer);
+		session.tokenRefreshTimer = undefined;
+	}
+	if (!currentToken) {
+		// dev / api_key path — no refresh to schedule.
+		return;
+	}
+	const expEpochMs = parseJwtExpMs(currentToken);
+	const nowMs = Date.now();
+	const expiresInMs = expEpochMs > 0
+		? expEpochMs - nowMs
+		: (expiresInSecondsHint ?? 0) * 1000;
+	const REFRESH_MARGIN_MS = 30 * 60 * 1000;
+	const MIN_DELAY_MS = 60 * 1000;
+	const MAX_DELAY_MS = 23 * 60 * 60 * 1000;
+	const delayMs = Math.min(MAX_DELAY_MS, Math.max(MIN_DELAY_MS, expiresInMs - REFRESH_MARGIN_MS));
+	log(`[ChipOS Auth] worker_token refresh scheduled for ${authority} in ${Math.round(delayMs / 1000)}s`);
+	session.tokenRefreshTimer = setTimeout(() => {
+		session.tokenRefreshTimer = undefined;
+		void runWorkerTokenRefresh(session, authority);
+	}, delayMs);
+}
+
+async function runWorkerTokenRefresh(session: RemoteSession, authority: string): Promise<void> {
+	if (!session.worker) {
+		log(`[ChipOS Auth] refresh skipped for ${authority}: no worker on session`);
+		return;
+	}
+	if (!session.reasonerGrpcTarget || !session.workspacePath) {
+		log(`[ChipOS Auth] refresh skipped for ${authority}: missing grpcTarget/workspace cache`);
+		return;
+	}
+	log(`[ChipOS Auth] worker_token nearing expiry for ${authority} — minting fresh token`);
+	const mint = await mintWorkerToken();
+	if (!mint?.worker_token) {
+		// Common causes: user signed out, website unreachable, transient 5xx.
+		// Reschedule a short retry — don't burn the worker over a transient
+		// failure. If it keeps failing, the worker's existing token will
+		// still expire and reasoner will UNAUTHENTICATED — but at that point
+		// the user seeing the error is the right outcome.
+		const RETRY_MS = 60 * 1000;
+		log(`[ChipOS Auth] mint failed during refresh — retry in ${RETRY_MS / 1000}s`);
+		session.tokenRefreshTimer = setTimeout(() => {
+			session.tokenRefreshTimer = undefined;
+			void runWorkerTokenRefresh(session, authority);
+		}, RETRY_MS);
+		return;
+	}
+	try {
+		await session.worker.refreshWorkerToken(mint.worker_token, session.reasonerGrpcTarget, session.workspacePath);
+		log(`[ChipOS Auth] worker_token refreshed for ${authority}`);
+		// Schedule the NEXT refresh based on the new token's exp.
+		scheduleWorkerTokenRefresh(session, authority, mint.worker_token, mint.expires_in);
+	} catch (err) {
+		log(`[ChipOS Auth][ERROR] worker respawn during token refresh failed: ${err}`);
+		// Don't reschedule — the worker is probably in a bad state. User can
+		// reload window to recover. Loud-and-actionable rather than a silent
+		// retry loop that hides the real problem.
+		void vscode.window.showErrorMessage(
+			`ChipOS: worker token refresh failed on ${authority}. Tools may stop working when the current token expires. Reload the window to recover.`,
+			'Reload Window',
+		).then(choice => {
+			if (choice === 'Reload Window') {
+				void vscode.commands.executeCommand('workbench.action.reloadWindow');
+			}
+		});
+	}
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string, log: (msg: string) => void): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		const timer = setTimeout(() => {
@@ -121,6 +251,17 @@ interface RemoteSession {
 	worker?: WorkerManager;
 	/** Synth flag — true when session was created by ensureRemoteWorker for a foreign authority (e.g. ssh-remote+). */
 	synth?: boolean;
+	/**
+	 * P3-D: handle for the worker_token auto-refresh timer. Cleared on
+	 * disconnect / refresh-completion / failure-retry. One timer per session
+	 * because each session has its own worker process with its own token.
+	 */
+	tokenRefreshTimer?: NodeJS.Timeout;
+	/** Cached for refresh respawn. The grpc target + workspace need to be
+	 * re-passed to `ensureWorkerRunning` since `WorkerManager` doesn't cache
+	 * them itself. */
+	reasonerGrpcTarget?: string;
+	workspacePath?: string;
 }
 
 const activeSessions = new Map<string, RemoteSession>();
@@ -344,17 +485,20 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				// If user is logged in this gives us a signed token; otherwise we fall
 				// back to the static apiKey (settings > product.json > legacy backend.token).
 				const wmApiKey = resolveWorkerApiKey();
-				const wmToken = await resolveWorkerToken();
+				const wmTokenMint = await mintWorkerToken();
+				const wmToken = wmTokenMint?.worker_token ?? '';
 				const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
 				const wmMcpConfig = resolveWorkerMcpConfigPath();
 				log(`[Step 5] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
 				workerMgr = new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken, wmMcpConfig);
+				let resolvedWorkspacePath: string | undefined;
 				try {
 					const folders = vscode.workspace.workspaceFolders;
 					const remoteWorkspacePath =
 						pendingWorkspacePaths.get(authority)
 						|| (folders && folders.length > 0 ? folders[0].uri.path : undefined);
 					pendingWorkspacePaths.delete(authority);
+					resolvedWorkspacePath = remoteWorkspacePath;
 					log(`[Step 5] remoteWorkspacePath=${remoteWorkspacePath}`);
 					await workerMgr.ensureWorkerRunning(reasonerGrpcTarget, remoteWorkspacePath);
 					log('[Step 5] Execution Worker started on remote');
@@ -397,7 +541,21 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				}
 
 				// P1-7: Store per-authority session — multiple remote servers can coexist
-				activeSessions.set(authority, { ssh: sshConn, server: serverMgr, worker: workerMgr });
+				const session: RemoteSession = {
+					ssh: sshConn,
+					server: serverMgr,
+					worker: workerMgr,
+					reasonerGrpcTarget,
+					workspacePath: resolvedWorkspacePath,
+				};
+				activeSessions.set(authority, session);
+
+				// P3-D: schedule worker_token auto-refresh. No-op when wmToken is
+				// empty (api_key path). Done last so `session` is in the map and the
+				// timer callback can find it again.
+				if (wmToken) {
+					scheduleWorkerTokenRefresh(session, authority, wmToken, wmTokenMint?.expires_in);
+				}
 
 				return new vscode.ResolvedAuthority('127.0.0.1', localPort, connectionToken);
 
@@ -429,16 +587,15 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 	}
 
 	/**
-	 * Called when the tunnel to the remote is closed.
+	 * P3-A: tunnelFactory and getCanonicalURI are declared as optional members
+	 * on `vscode.RemoteAuthorityResolver`. The class doesn't override them —
+	 * VS Code defaults to the built-in tunneling and a no-op canonicalization,
+	 * which is exactly what this extension wants. The previous `tunnelFactory?: vscode.TunnelFactory`
+	 * stub referenced a type that doesn't exist in vscode-dts (the proposed
+	 * resolvers.d.ts inlines the function signature on the parent interface);
+	 * removing the stub also removes a misleading "this extension owns the
+	 * tunnel factory" reading of the source.
 	 */
-	tunnelFactory?: vscode.TunnelFactory;
-
-	/**
-	 * Provide information about the remote environment.
-	 */
-	getCanonicalURI?(uri: vscode.Uri): vscode.ProviderResult<vscode.Uri> {
-		return uri;
-	}
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
@@ -534,6 +691,12 @@ async function disconnect(): Promise<void> {
 
 	const cleanupPromises = sessions.map(async ([authority, session]) => {
 		log(`Disconnecting ${authority}...`);
+		// P3-D: cancel pending token refresh first so it can't fire mid-cleanup
+		// and re-spawn a worker we're trying to tear down.
+		if (session.tokenRefreshTimer) {
+			clearTimeout(session.tokenRefreshTimer);
+			session.tokenRefreshTimer = undefined;
+		}
 		try {
 			await withTimeout(
 				cleanupSession(session, authority),
@@ -820,7 +983,8 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	// product.json > derive from reasoningUrl > 127.0.0.1:50051 fallback.
 	const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 	const wmApiKey = resolveWorkerApiKey();
-	const wmToken = await resolveWorkerToken();
+	const wmTokenMint = await mintWorkerToken();
+	const wmToken = wmTokenMint?.worker_token ?? '';
 	const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
 	const wmMcpConfig = resolveWorkerMcpConfigPath();
 	log(`[ChipOS RemoteWorker] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
@@ -853,11 +1017,19 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	applyRuntimeOverride('workerHttpUrl', workerHttpUrl, log);
 
 	// Track session for cleanup on disconnect.
-	activeSessions.set(synthAuthority, {
+	const synthSession: RemoteSession = {
 		ssh: sshConn,
 		worker: workerMgr,
 		synth: true,
-	});
+		reasonerGrpcTarget,
+		workspacePath: args.workspacePath,
+	};
+	activeSessions.set(synthAuthority, synthSession);
+
+	// P3-D: schedule worker_token auto-refresh for the synth session too.
+	if (wmToken) {
+		scheduleWorkerTokenRefresh(synthSession, synthAuthority, wmToken, wmTokenMint?.expires_in);
+	}
 
 	log(`[ChipOS RemoteWorker] DONE strategy=${strategy} totalElapsed=${Date.now() - t0}ms`);
 	return { ok: true, reasoningUrl, workerHttpUrl, strategy };

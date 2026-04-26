@@ -44,8 +44,12 @@ export class WorkerManager {
 	 * Phase 1.5 Worker JWT (preferred). IDE-minted via OAuth, signed by website,
 	 * Reasoner verifies signature + extracts user_id. When set, the spawned
 	 * Worker process gets `CHIPOS_WORKER_TOKEN` env.
+	 *
+	 * Mutable: P3-D auto-refresh swaps this in via `refreshWorkerToken()`
+	 * shortly before expiry. The next worker spawn (or respawn) reads this
+	 * current value via `_buildSpawnEnvExports`.
 	 */
-	private readonly _workerToken: string;
+	private _workerToken: string;
 	/**
 	 * Worker → Reasoner gRPC API key (legacy / fallback when user not logged in).
 	 * Spawn env: `CHIPOS_WORKER_OUTBOUND_KEY` (preferred) + `CHIPOS_API_KEY` (alias).
@@ -209,6 +213,48 @@ export class WorkerManager {
 		await this._cleanupInstance();
 		this._workerPid = null;
 		this._log('[WorkerManager] Worker stopped');
+	}
+
+	/**
+	 * P3-D: hot-swap the worker token and respawn so the new credential
+	 * takes effect.
+	 *
+	 * Worker JWTs are short-lived (typically 24h). Without this, after
+	 * the first day the worker presents an expired token and Reasoner
+	 * UNAUTHENTICATEDs every reconnect — the user has to manually
+	 * restart the IDE. The token-refresh timer in extension.ts schedules
+	 * a call here ~30 min before expiry.
+	 *
+	 * Why respawn instead of in-place hot-swap: the worker reads
+	 * `CHIPOS_WORKER_TOKEN` from env at startup and there's no IPC
+	 * endpoint to mutate it. Respawn is also a natural fit for shared
+	 * instances — all consumers see the new token because they share
+	 * the same worker process.
+	 *
+	 * Caller MUST pass the workspace path; we don't cache it here
+	 * because `ensureWorkerRunning` accepts it as an argument and
+	 * we want to stay symmetric.
+	 */
+	async refreshWorkerToken(newToken: string, reasonerGrpcTarget: string, workspace: string): Promise<void> {
+		if (!newToken) {
+			this._log('[WorkerManager] refreshWorkerToken called with empty token — skipping');
+			return;
+		}
+		if (newToken === this._workerToken) {
+			this._log('[WorkerManager] refreshWorkerToken: token unchanged, skipping respawn');
+			return;
+		}
+		this._log('[WorkerManager] refreshWorkerToken: stopping current worker for token swap');
+		try {
+			await this.stopWorker();
+		} catch (err) {
+			// Best-effort: even if stop fails (worker dead, SSH glitch), proceed with
+			// swap + ensure. The new spawn will create a fresh instance.json.
+			this._log(`[WorkerManager] stopWorker during refresh threw (continuing): ${err}`);
+		}
+		this._workerToken = newToken;
+		this._log('[WorkerManager] refreshWorkerToken: starting worker with new token');
+		await this.ensureWorkerRunning(reasonerGrpcTarget, workspace);
 	}
 
 	// ── Binary management ────────────────────────────────────────────────
