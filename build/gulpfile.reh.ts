@@ -488,6 +488,14 @@ function tweakProductForServerWeb(product: typeof import('../product.json')) {
 			}
 		)
 	));
+	// Expose as a CLI-runnable task so CI's OOM-safe build chain can invoke
+	// `bundle-vscode-reh` directly without going through the mangling-heavy
+	// full `vscode-reh-${p}-${a}` task series. Without this, the CI workflow
+	// at .github/workflows/build-reh.yml fails with "Task never defined" on
+	// step 4 of the build chain (and minify-vscode-reh — the only exposed
+	// alternative — produces `out-vscode-reh-min`, not the `out-vscode-reh`
+	// that `vscode-reh-${p}-${a}-ci` expects in non-min mode).
+	gulp.task(bundleTask);
 
 	const minifyTask = task.define(`minify-vscode-${type}`, task.series(
 		bundleTask,

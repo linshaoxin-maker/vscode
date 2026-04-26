@@ -411,67 +411,19 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				const localPort = await sshConn.forwardPort(0, '127.0.0.1', port);
 				log(`Local port forwarding: 127.0.0.1:${localPort} → remote:${port}`);
 
-				// 4. Forward the Reasoning HTTP port so the local renderer's
-				//    SSE client (browser fetch/EventSource) can reach the remote backend.
-				const reasoningPort = vscode.workspace.getConfiguration('chipos.backend')
-					.get<number>('httpPort', 8080);
-				let localReasoningPort = reasoningPort;
-				try {
-					localReasoningPort = await sshConn.forwardPort(0, '127.0.0.1', reasoningPort);
-					log(`Reasoning port forwarding: 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
-					if (localReasoningPort !== reasoningPort) {
-						// P2-14: per-window runtime override instead of Global config.
-						// Avoids cross-window pollution (B1 SSH window leaking its
-						// 127.0.0.1:<random> tunnel URL to a B2 Local window) while
-						// still keeping the IDE-side resolvers in sync. The command
-						// no-ops on older workbench builds without the service.
-						applyRuntimeOverride('reasoningUrl', `http://127.0.0.1:${localReasoningPort}`, log);
-					}
-				} catch (fwdErr) {
-					log(`[WARN] Could not forward reasoning port ${reasoningPort}: ${fwdErr}`);
-					vscode.window.showWarningMessage(
-						`ChipOS: Failed to forward Reasoning port ${reasoningPort}. Chat may not work. Check if the port is already in use locally.`);
-				}
-
-				// 4b. Probe Reasoner health through the SSH tunnel.
-				//     P1-5: Surface absence as a blocking error before we try to
-				//     deploy the Worker — a Worker without a Reasoner has nothing
-				//     to register to and chat will fail with WORKER_UNAVAILABLE.
-				let reasonerReady = false;
-				try {
-					const probeUrl = `http://127.0.0.1:${localReasoningPort}`;
-					log(`[Probe] Checking Reasoner health at ${probeUrl}/health ...`);
-					const controller = new AbortController();
-					const probeTimer = setTimeout(() => controller.abort(), 5000);
-					const resp = await fetch(`${probeUrl}/health`, { signal: controller.signal });
-					clearTimeout(probeTimer);
-					if (resp.ok) {
-						const body = await resp.json() as { status?: string; workers_connected?: number };
-						log(`Reasoner health: ${JSON.stringify(body)}`);
-						reasonerReady = true;
-					} else {
-						log(`[ERROR] Reasoner /health returned ${resp.status}`);
-					}
-				} catch (probeErr) {
-					log(`[ERROR] Reasoner /health probe failed: ${probeErr}`);
-				}
-
-				if (!reasonerReady) {
-					const choice = await vscode.window.showErrorMessage(
-						`ChipOS: Reasoner is not reachable on ${sshTarget} (port ${reasoningPort}). ` +
-						'Chat will not work until you start the Reasoner on the remote server.',
-						'View Logs',
-						'Continue Anyway',
-						'Cancel',
-					);
-					if (choice === 'View Logs') {
-						outputChannel.show();
-					}
-					if (choice !== 'Continue Anyway') {
-						throw new Error('Reasoner not running on remote — connection cancelled');
-					}
-					log('[WARN] User chose to continue without Reasoner — chat will fail.');
-				}
+				// Note: there is intentionally no "forward Reasoner port" step here.
+				// Deployment model A says Reasoner is cloud-hosted and the IDE
+				// reaches it directly over the public internet (via product.json's
+				// chiposDefaults.reasoningUrl). Only Worker → Reasoner gRPC and
+				// IDE → Worker HTTP need to know about the remote — Worker dials
+				// Reasoner with its own grpcAddress, IDE → Worker is what we
+				// tunnel below in step 5.
+				//
+				// Earlier builds tried to forward port 8080 + probe a "remote
+				// Reasoner /health" here. That assumed an all-in-one self-hosted
+				// deployment which is not the supported architecture; it caused
+				// "Reasoner not reachable" errors on every connection because the
+				// remote box only ran Worker. Removed deliberately.
 
 				// 5. FEAT-R23: Start Worker on remote + forward Worker HTTP port
 				progress.report({ message: 'Starting Execution Worker on remote...' });
@@ -714,10 +666,11 @@ async function disconnect(): Promise<void> {
 	});
 	await Promise.allSettled(cleanupPromises);
 
-	// P1-6 + P2-14: clear runtime overrides + any stale Global config left over
-	// from older builds. The runtime clear is per-window so it only affects
-	// THIS process; the Global cleanup is defensive — older versions may have
-	// written there before the runtime-override mechanism existed.
+	// P1-6 + P2-14: clear the per-window workerHttpUrl runtime override and any
+	// stale Global config left over from older builds. Reasoner URL is no
+	// longer tunneled (model A) — chat reads product.json directly — so we
+	// don't manage it here, only clean up Global writes that pre-date this
+	// architectural decision.
 	try {
 		await vscode.commands.executeCommand('chipos.runtime.clearOverride');
 	} catch (err) {
@@ -875,12 +828,15 @@ function log(message: string): void {
 //
 // SidecarManagerElectron invokes this command in that situation. It opens its
 // own ssh2 connection (independent of whatever VS Code's tunnel is doing),
-// reuses WorkerManager + the existing port-forwarding machinery, and updates
-// chipos.backend.{reasoningUrl,workerHttpUrl} so the rest of the IDE finds
-// the forwarded ports.
+// reuses WorkerManager + ref_count for multi-window safety, and forwards the
+// Worker HTTP port so the IDE-side Worker Tools panel can talk to it.
+//
+// Deployment model A: Reasoner is cloud-hosted and reached directly by both
+// the IDE (chat) and the Worker (gRPC), so this command does NOT touch the
+// Reasoner port — that traffic never traverses the tunnel.
 //
 // Idempotent: if a synth session already exists for this target, reuse its
-// SshConnection / WorkerManager (ref_count handles multi-window safety).
+// SshConnection / WorkerManager.
 
 interface EnsureRemoteWorkerArgs {
 	/** SSH target as `user@host[:port]` (parseable by buildSshOptions). */
@@ -891,7 +847,7 @@ interface EnsureRemoteWorkerArgs {
 
 interface EnsureRemoteWorkerResult {
 	ok: boolean;
-	reasoningUrl?: string;
+	/** Local URL where the Worker HTTP API is reachable through the SSH tunnel. */
 	workerHttpUrl?: string;
 	error?: string;
 	/** For diagnostics: which strategy ended up running the Worker. */
@@ -943,38 +899,7 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	}
 
 	const cfg = vscode.workspace.getConfiguration('chipos.backend');
-	const reasoningPort = cfg.get<number>('httpPort', 8080);
 	const workerHttpPort = cfg.get<number>('workerHttpPort', 8081);
-
-	// Probe Reasoner directly on the remote (cheaper than forwarding then probing).
-	let reasonerOk = false;
-	try {
-		const probeCmd = `curl -fsS --max-time 3 http://127.0.0.1:${reasoningPort}/health || echo NOT_OK`;
-		const out = await sshConn.exec(probeCmd);
-		reasonerOk = !out.includes('NOT_OK') && out.includes('"status"');
-	} catch (err) {
-		log(`[ChipOS RemoteWorker][ERROR] reasoner probe failed: ${err}`);
-	}
-	if (!reasonerOk) {
-		log(`[ChipOS RemoteWorker][ERROR] Reasoner not running on remote port ${reasoningPort}`);
-		return {
-			ok: false,
-			error: `Reasoner is not running on ${args.sshTarget}:${reasoningPort}. Start it on the remote server first.`,
-			strategy,
-		};
-	}
-	log(`[ChipOS RemoteWorker] reasoner probe ok elapsed=${Date.now() - t0}ms`);
-
-	// Forward Reasoner port if not already forwarded.
-	let localReasoningPort: number;
-	try {
-		localReasoningPort = await sshConn.forwardPort(0, '127.0.0.1', reasoningPort);
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		log(`[ChipOS RemoteWorker][ERROR] reasoner port forwarding failed: ${msg}`);
-		return { ok: false, error: `Could not forward Reasoner port: ${msg}`, strategy };
-	}
-	log(`[ChipOS RemoteWorker] reasoner forward 127.0.0.1:${localReasoningPort} → remote:${reasoningPort}`);
 
 	// Spawn Worker on remote (reuse existing WorkerManager — same logic as
 	// ChipOSSSHResolver.resolve() step 5, including ref_count for multi-window).
@@ -998,7 +923,9 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	}
 	log(`[ChipOS RemoteWorker] worker running elapsed=${Date.now() - t0}ms`);
 
-	// Forward Worker HTTP.
+	// Forward Worker HTTP. The Worker listens on `workerHttpPort` (default 8081)
+	// on remote loopback; the IDE-side Worker Tools panel + HTTP clients dial
+	// through the local forwarded port.
 	let localWorkerPort = workerHttpPort;
 	try {
 		localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
@@ -1007,13 +934,10 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 		log(`[ChipOS RemoteWorker][WARN] worker port forwarding failed: ${err} — using direct port`);
 	}
 
-	const reasoningUrl = `http://127.0.0.1:${localReasoningPort}`;
 	const workerHttpUrl = `http://127.0.0.1:${localWorkerPort}`;
 
-	// P2-14: per-window runtime overrides instead of Global config writes.
-	// SidecarManagerElectron + chat agent read these via the URL resolvers
-	// which check the runtime service first.
-	applyRuntimeOverride('reasoningUrl', reasoningUrl, log);
+	// P2-14: per-window runtime override for workerHttpUrl. Reasoner is NOT
+	// tunneled (model A) — chat goes direct to product.json's cloud Reasoner.
 	applyRuntimeOverride('workerHttpUrl', workerHttpUrl, log);
 
 	// Track session for cleanup on disconnect.
@@ -1032,5 +956,5 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	}
 
 	log(`[ChipOS RemoteWorker] DONE strategy=${strategy} totalElapsed=${Date.now() - t0}ms`);
-	return { ok: true, reasoningUrl, workerHttpUrl, strategy };
+	return { ok: true, workerHttpUrl, strategy };
 }

@@ -2478,8 +2478,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return runtime.streamClient;
 		}
 
-		// Three-tier resolution (settings > product.json > localhost). Helper
-		// keeps SidecarManager + chat agent agreed on which URL to use.
+		// Three-tier resolution (settings > product.json > loopback).
+		// Reasoner is reached directly over the public internet (deployment
+		// model A: cloud-hosted Reasoner, per-user Worker on a remote EDA
+		// server). chipos-remote-ssh does NOT and SHOULD NOT route the chat
+		// SSE stream through the SSH tunnel — the worker's gRPC link is the
+		// only thing that needs to traverse the tunnel, and it goes
+		// Worker → Reasoner directly over its own grpcAddress, not via IDE.
 		const baseUrl = resolveReasoningUrl(this._configurationService, this._productService);
 		const noProxy = this._configurationService.getValue<string[]>('http.noProxy') ?? [];
 

@@ -101,11 +101,14 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	// ── URLs ─────────────────────────────────────────────────────────────
 
 	get reasoningUrl(): string {
-		// Four-tier fallback: runtime override > settings > product.json > loopback.
-		// In SSH-Remote sessions, chipos-remote-ssh sets the runtime override to
-		// the forwarded `127.0.0.1:<random>` URL. Per-window in-memory only —
-		// can't leak into other windows the way Global config used to.
-		return resolveReasoningUrl(this._configurationService, this._productService, this._runtimeOverrides);
+		// Three-tier fallback: settings > product.json > loopback.
+		//
+		// Deployment model A: Reasoner is cloud-hosted (or wherever
+		// product.json's chiposDefaults.reasoningUrl points), and the IDE
+		// reaches it directly over the public internet. There is intentionally
+		// NO per-window runtime override path here — chipos-remote-ssh does
+		// not tunnel chat traffic, only Worker HTTP traffic (see workerHttpUrl).
+		return resolveReasoningUrl(this._configurationService, this._productService);
 	}
 
 	get sseUrl(): string {
@@ -320,10 +323,16 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	 *      Works regardless of which server is on the remote (vanilla
 	 *      VS Code Server, older chipos-server, anything).
 	 *
-	 * For chipos-ssh+host authorities, ChipOSSSHResolver.resolve() already did
-	 * the same work (and persisted reasoningUrl), so this is a no-op.
+	 * For chipos-ssh+host authorities, ChipOSSSHResolver.resolve() already
+	 * spawned the Worker and forwarded the Worker HTTP port, so this is a
+	 * no-op.
 	 *
 	 * For non-remote workspaces this is also a no-op.
+	 *
+	 * Note (deployment model A): we deliberately do NOT touch reasoningUrl in
+	 * any of these paths. Reasoner is reached directly over the public
+	 * internet via product.json's chiposDefaults.reasoningUrl; only Worker
+	 * HTTP traffic gets tunneled.
 	 */
 	private async _maybeArrangeRemoteWorker(): Promise<void> {
 		const remoteAuth = this._detectRemoteAuthority();
@@ -450,7 +459,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 		const t0 = Date.now();
 		try {
-			const result = await this._commandService.executeCommand<{ ok: boolean; error?: string; strategy?: string; reasoningUrl?: string }>(
+			const result = await this._commandService.executeCommand<{ ok: boolean; error?: string; strategy?: string; workerHttpUrl?: string }>(
 				'chipos-remote-ssh.ensureRemoteWorker',
 				{ sshTarget, workspacePath },
 			);
@@ -460,7 +469,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				return;
 			}
 			if (result.ok) {
-				this._logService.info(`[ChipOS RemoteWorker] strategy=command-ok inner-strategy=${result.strategy} reasoningUrl=${result.reasoningUrl} elapsed=${elapsed}ms`);
+				this._logService.info(`[ChipOS RemoteWorker] strategy=command-ok inner-strategy=${result.strategy} workerHttpUrl=${result.workerHttpUrl} elapsed=${elapsed}ms`);
 			} else {
 				this._logService.error(`[ChipOS RemoteWorker][ERROR] strategy=command-failed error=${result.error} elapsed=${elapsed}ms`);
 			}

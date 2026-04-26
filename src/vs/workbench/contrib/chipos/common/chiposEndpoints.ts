@@ -6,15 +6,37 @@
 /**
  * Centralized resolution for ChipOS deployment endpoints.
  *
- * Four-tier fallback (highest priority first):
- *   1. runtime overrides (P2-14, IChipOSRuntimeOverridesService) — set by
- *      chipos-remote-ssh after port forwarding; per-window in-memory only,
- *      never persisted to disk. Optional 3rd argument; resolvers still work
- *      without it for callers that don't have access to the service.
- *   2. settings.json     (user explicit override; may also be written by
- *      legacy chipos-remote-ssh builds that pre-date the runtime service)
- *   3. product.json      (build-time injection — see chiposDefaults in product.ts)
- *   4. hardcoded default (dev-mode safety net, e.g. http://127.0.0.1:8080)
+ * Resolver-by-resolver tier rules (deployment model A: cloud-hosted Reasoner +
+ * per-user remote Worker — Reasoner and Worker are intentionally on different
+ * machines, the IDE reaches Reasoner over the public internet, and the Worker
+ * dials Reasoner over its own grpcAddress):
+ *
+ *   resolveReasoningUrl       3-tier: settings > product.json > loopback.
+ *                             NO runtime-override tier on purpose — chat
+ *                             traffic does NOT go through the SSH tunnel.
+ *                             The optional 3rd `runtimeOverrides` argument
+ *                             exists for symmetry with workerHttpUrl but is
+ *                             a no-op in production usage; we kept it because
+ *                             dev/test setups (or future B/C deployment
+ *                             modes) may want to opt in.
+ *
+ *   resolveWorkerHttpUrl      runtime-override > settings > derive-from-host.
+ *                             Worker HTTP IS tunneled through SSH (used by
+ *                             the IDE-side Worker Tools panel and HTTP
+ *                             clients), so the per-window override set by
+ *                             chipos-remote-ssh after `forwardPort` lands
+ *                             takes precedence.
+ *
+ *   resolveReasonerGrpcAddress  4-tier: settings > product.json > derive-from
+ *                               -reasoningUrl > 127.0.0.1:50051. This is the
+ *                               address the Worker uses to dial Reasoner. The
+ *                               Worker connects directly, NOT through the IDE.
+ *
+ *   resolveWorkerApiKey       3-tier: settings > legacy backend.token >
+ *                             product.json. Used as fallback when no
+ *                             OAuth-vended Worker JWT is available.
+ *
+ *   resolveWorkerMcpConfigPath  2-tier: settings > `~/.chipos/mcp_servers.json`
  *
  * All consumers (sidecar managers, chat agent, auth service, settings UI hints)
  * MUST go through this module so dev-vs-production behavior stays consistent.
@@ -57,10 +79,16 @@ function isLoopbackHost(host: string): boolean {
 /**
  * Resolve the Reasoner HTTP/SSE URL.
  *
- * In SSH-Remote sessions this is dynamically set by chipos-remote-ssh via
- * the runtime overrides service (P2-14) to a forwarded `127.0.0.1:<random>`
- * URL — that takes precedence over everything else and is per-window so it
- * cannot leak into other windows.
+ * Deployment model A: Reasoner is cloud-hosted (or wherever
+ * `chiposDefaults.reasoningUrl` points). The IDE reaches it directly over
+ * the public internet — we do NOT route chat through the SSH tunnel even
+ * when chipos-remote-ssh is active.
+ *
+ * The optional `runtimeOverrides` argument is consulted only as a future-
+ * proofing hook (test setups, alternate deployment modes that DO want
+ * tunneling). Production code paths pass it but it stays empty for
+ * reasoningUrl — `applyRuntimeOverride` in chipos-remote-ssh sets the
+ * `workerHttpUrl` key only, never `reasoningUrl`.
  */
 export function resolveReasoningUrl(
 	configurationService: IConfigurationService,
