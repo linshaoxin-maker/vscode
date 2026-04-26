@@ -92,6 +92,46 @@ function parseJwtExpMs(token: string): number {
 }
 
 /**
+ * B-10: client-side sanity check on a freshly-minted worker_token before we
+ * commit to spawning a worker with it.
+ *
+ * The worker reads `CHIPOS_WORKER_TOKEN` from env at startup. If the token
+ * is malformed / already expired / about to expire, the worker registers
+ * with Reasoner and gets UNAUTHENTICATED on the next reconnect — looks
+ * exactly like "WORKER_UNAVAILABLE" to the user despite the worker process
+ * itself being healthy. Catching this client-side lets us fall back to the
+ * legacy apiKey path (or surface a clear error if no apiKey configured)
+ * instead of spawning a worker that will silently fail in a few seconds.
+ *
+ * Returns:
+ *   'valid'           — token has an exp claim that's at least
+ *                       MIN_VALID_REMAINING_MS in the future
+ *   'expired'         — exp claim is in the past
+ *   'about-to-expire' — exp claim is in the future but within
+ *                       MIN_VALID_REMAINING_MS — refresh would fire
+ *                       immediately, so don't bother spawning
+ *   'malformed'       — couldn't parse as JWT or no exp claim
+ *
+ * No signature verification (that's Reasoner's job) — we only do
+ * structural + temporal checks here.
+ */
+type WorkerTokenStatus = 'valid' | 'expired' | 'about-to-expire' | 'malformed';
+
+function validateWorkerToken(token: string): WorkerTokenStatus {
+	if (!token) { return 'malformed'; }
+	const expMs = parseJwtExpMs(token);
+	if (expMs === 0) { return 'malformed'; }
+	const nowMs = Date.now();
+	if (expMs <= nowMs) { return 'expired'; }
+	// 5 minutes — generous grace so a clock skew of a few seconds doesn't
+	// trip this, but tight enough to catch tokens that would die before
+	// the user finishes connecting.
+	const MIN_VALID_REMAINING_MS = 5 * 60 * 1000;
+	if (expMs - nowMs < MIN_VALID_REMAINING_MS) { return 'about-to-expire'; }
+	return 'valid';
+}
+
+/**
  * NEW-1: resolve the worker-side MCP servers config path from settings,
  * falling back to the canonical default. Mirrors `resolveWorkerMcpConfigPath`
  * in `vscode/src/.../chiposEndpoints.ts` (kept duplicated because UI extensions
@@ -438,10 +478,42 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				// back to the static apiKey (settings > product.json > legacy backend.token).
 				const wmApiKey = resolveWorkerApiKey();
 				const wmTokenMint = await mintWorkerToken();
-				const wmToken = wmTokenMint?.worker_token ?? '';
+				const wmRawToken = wmTokenMint?.worker_token ?? '';
+				const wmTokenStatus = validateWorkerToken(wmRawToken);
+				// B-10: don't pass an obviously-bad token through to spawn — it would
+				// land the worker in a UNAUTHENTICATED loop right after registration
+				// and look identical to "worker crashed" to the user. Drop it and
+				// let the apiKey fallback kick in (or fail-fast below if neither
+				// path has a usable credential).
+				const wmToken = wmTokenStatus === 'valid' ? wmRawToken : '';
+				if (wmRawToken && wmTokenStatus !== 'valid') {
+					log(`[Step 5][WARN] minted worker_token is ${wmTokenStatus} — dropping, falling back to apiKey path`);
+				}
 				const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
 				const wmMcpConfig = resolveWorkerMcpConfigPath();
-				log(`[Step 5] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
+				log(`[Step 5] worker auth: workerToken=${wmToken ? 'set (valid)' : `unset (${wmTokenStatus})`}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
+				if (!wmToken && !wmApiKey) {
+					// Hard fail-fast: Reasoner with auth enabled rejects ALL worker
+					// connects without credentials, and the user has no way to know
+					// from the worker process logs alone. Surface clearly here so
+					// they know to log in or set chipos.worker.apiKey.
+					log(`[Step 5][ERROR] no worker auth credential available (token=${wmTokenStatus}, no apiKey) — refusing to spawn worker`);
+					void vscode.window.showErrorMessage(
+						`ChipOS: cannot start Worker on ${sshTarget}. ` +
+						'No valid auth credential — please run "ChipOS: Login" first, ' +
+						'or set `chipos.worker.apiKey` in Settings if your deployment uses a static key.',
+						'Sign In', 'Open Settings',
+					).then(choice => {
+						if (choice === 'Sign In') {
+							void vscode.commands.executeCommand('chipos.auth.login');
+						} else if (choice === 'Open Settings') {
+							void vscode.commands.executeCommand('workbench.action.openSettings', 'chipos.worker.apiKey');
+						}
+					});
+					// Continue resolving the SSH authority — chat won't work but at
+					// least file editing on the remote does. Worker spawn will be
+					// retried on next reload window.
+				}
 				workerMgr = new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken, wmMcpConfig);
 				let resolvedWorkspacePath: string | undefined;
 				try {
@@ -909,10 +981,25 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 	const wmApiKey = resolveWorkerApiKey();
 	const wmTokenMint = await mintWorkerToken();
-	const wmToken = wmTokenMint?.worker_token ?? '';
+	const wmRawToken = wmTokenMint?.worker_token ?? '';
+	const wmTokenStatus = validateWorkerToken(wmRawToken);
+	// B-10: same client-side validation as the resolve() path. Don't pass an
+	// already-bad token to spawn; let apiKey fall back if available.
+	const wmToken = wmTokenStatus === 'valid' ? wmRawToken : '';
+	if (wmRawToken && wmTokenStatus !== 'valid') {
+		log(`[ChipOS RemoteWorker][WARN] minted worker_token is ${wmTokenStatus} — dropping, falling back to apiKey path`);
+	}
 	const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
 	const wmMcpConfig = resolveWorkerMcpConfigPath();
-	log(`[ChipOS RemoteWorker] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
+	log(`[ChipOS RemoteWorker] worker auth: workerToken=${wmToken ? 'set (valid)' : `unset (${wmTokenStatus})`}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}, mcpConfig=${wmMcpConfig}`);
+	if (!wmToken && !wmApiKey) {
+		log(`[ChipOS RemoteWorker][ERROR] no worker auth credential available (token=${wmTokenStatus}, no apiKey) — refusing to spawn`);
+		return {
+			ok: false,
+			error: `No worker auth credential available. Run "ChipOS: Login" or set chipos.worker.apiKey.`,
+			strategy,
+		};
+	}
 	const workerMgr = existing?.worker ?? new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken, wmMcpConfig);
 	try {
 		await workerMgr.ensureWorkerRunning(reasonerGrpcTarget, args.workspacePath);
