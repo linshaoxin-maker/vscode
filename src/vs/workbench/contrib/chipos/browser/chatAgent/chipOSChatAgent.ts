@@ -13,7 +13,7 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalService, ITerminalChatService } from '../../../terminal/browser/terminal.js';
@@ -200,6 +200,57 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}, 1000);
 	}
 
+	/**
+	 * Clear any user-level overrides for the internal backend endpoints so the
+	 * chat agent falls back to the deployment default (product.json) on the
+	 * next connection attempt.
+	 *
+	 * Called from the "Reset Connection" inline action when a stale URL/port
+	 * has been left behind in user settings (e.g. a previous chipos-remote-ssh
+	 * forwarded port that has since been released, or a manual debug value the
+	 * user typed once and forgot about). The whole point is that users should
+	 * never have to reason about these keys — this helper is the no-questions
+	 * "make it work like a fresh install" escape hatch.
+	 */
+	private async _resetBackendOverrides(): Promise<void> {
+		const keys = [
+			'chipos.backend.reasoningUrl',
+			'chipos.backend.workerHttpUrl',
+			'chipos.backend.httpPort',
+			'chipos.backend.grpcPort',
+			'chipos.backend.workerHttpPort',
+			'chipos.backend.mode',
+		];
+		const cleared: string[] = [];
+		for (const key of keys) {
+			try {
+				const inspect = this._configurationService.inspect<unknown>(key);
+				if (inspect.userValue !== undefined) {
+					await this._configurationService.updateValue(key, undefined, ConfigurationTarget.USER);
+					cleared.push(key);
+				}
+			} catch (err) {
+				this._logService.warn('[ChipOS Agent] Failed to clear user override for', key, err);
+			}
+		}
+		this._logService.info('[ChipOS Agent] Reset backend overrides; cleared keys:', cleared);
+
+		// Tell the user something actually happened. resolveReasoningUrl reads
+		// settings each call, so the very next chat message will pick up the
+		// deployment default — no reload required.
+		void this._notificationService.info(
+			cleared.length > 0
+				? localize(
+					'chipos.backend.resetConnection.done',
+					'ChipOS: connection reset. Send a message to retry.',
+				)
+				: localize(
+					'chipos.backend.resetConnection.noop',
+					'ChipOS: no manual overrides to clear.',
+				),
+		);
+	}
+
 	private _findAllActiveSessions(): Array<{ streamClient: IEventStreamClient; sessionId: string }> {
 		const result: Array<{ streamClient: IEventStreamClient; sessionId: string }> = [];
 		for (const [, runtime] of this._sessionRuntimes) {
@@ -243,56 +294,68 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				bucket = 'cloud-unreachable';
 			}
 
+			// User-facing hints. We deliberately do NOT mention any internal setting
+			// key (chipos.backend.reasoningUrl etc.) — those are implementation
+			// details users should never have to learn. Each bucket maps to a
+			// concrete operational suggestion + actionable buttons below.
+			const hasUserOverride = !!userSetting;
 			let hint: string;
 			switch (bucket) {
 				case 'unconfigured':
-					hint = `ChipOS hasn't been configured for this build. ` +
-						`Reasoner URL is empty (product.json injection didn't run, or you're running a dev build). ` +
-						'Set `chipos.backend.reasoningUrl` in Settings, or use a release build that has the cloud Reasoner baked in.';
+					hint = `ChipOS isn't connected to a backend yet. ` +
+						`This usually means you're running a development build that hasn't been linked to a deployment. ` +
+						`Use a release build, or contact your ChipOS admin for the connection details.`;
 					break;
 				case 'loopback-no-server':
-					hint = `Cannot connect to local backend at \`${target}\`. ` +
-						'Run `make local` in `backend_v2/` to start a Reasoner on this machine, or switch to a release build with cloud defaults.';
+					hint = hasUserOverride
+						? `ChipOS is configured to use a local backend, but nothing is responding on this machine. ` +
+						  `If you set this manually, click **Reset Connection** below to fall back to the deployment default.`
+						: `ChipOS expected a local backend on this machine but none is running. ` +
+						  `Start the local backend, or switch to a release build that connects to a managed deployment.`;
 					break;
 				case 'cloud-unreachable':
-					hint = `Cannot reach the cloud Reasoner at \`${target}\`. ` +
-						'Check your network — chat traffic goes direct over the public internet, not through the SSH tunnel. ' +
-						'If you are on a corporate network, make sure outbound HTTPS to that host is allowed.';
+					hint = `ChipOS can't reach its backend right now. ` +
+						`Check your network — chat traffic goes over the public internet, not through any SSH tunnel. ` +
+						`On a corporate network, ensure outbound HTTPS to the ChipOS service is allowed.`;
 					break;
 				case 'manual-misconfigured':
-					hint = `Cannot connect to \`${target}\` (mode: ${configured}). ` +
-						'Verify `chipos.backend.reasoningUrl` is reachable from this machine.';
+					hint = `ChipOS can't reach the backend you've configured (mode: ${configured}). ` +
+						`Click **Reset Connection** below to clear the manual override and use the deployment default.`;
 					break;
 			}
 			progress([this._markdown(`$(error) **ChipOS:** ${hint}`)]);
 
 			// Also surface a notification with actionable buttons — chat error is
 			// inline-only and easy to miss when the user is mid-typing.
+			//
+			// Action set depends on bucket: when the user has an override that
+			// shadows the deployment default, offer a one-click reset. We never
+			// link directly to "Open Settings" for these keys — they are
+			// internal/advanced and surfacing them in this flow trains users to
+			// think backend URLs are something they should be tweaking.
+			const actions: { label: string; run: () => void }[] = [];
+			if (hasUserOverride) {
+				actions.push({
+					label: localize('chipos.backend.resetConnection', 'Reset Connection'),
+					run: () => { void this._resetBackendOverrides(); },
+				});
+			}
+			actions.push({
+				label: localize('chipos.backend.viewLogs', 'View Logs'),
+				run: () => {
+					void this._instantiationService.invokeFunction(accessor =>
+						accessor.get(ICommandService).executeCommand('workbench.action.output.toggleOutput')
+					);
+				},
+			});
 			void this._notificationService.prompt(
 				Severity.Warning,
-				`ChipOS: cannot reach Reasoner at ${target}`,
-				[
-					{
-						label: 'Open Settings',
-						run: () => {
-							void this._instantiationService.invokeFunction(accessor =>
-								accessor.get(ICommandService).executeCommand('workbench.action.openSettings', 'chipos.backend')
-							);
-						},
-					},
-					{
-						label: 'View Logs',
-						run: () => {
-							void this._instantiationService.invokeFunction(accessor =>
-								accessor.get(ICommandService).executeCommand('workbench.action.output.toggleOutput')
-							);
-						},
-					},
-				],
-				// Sticky for unconfigured because the user needs to go set
-				// chipos.backend.reasoningUrl before retrying. Other buckets
-				// auto-dismiss so we don't pile up duplicates.
-				{ sticky: bucket === 'unconfigured' },
+				localize('chipos.backend.cannotReach', "ChipOS: can't reach the backend right now."),
+				actions,
+				// Sticky for unconfigured/manual-misconfigured because the user needs
+				// to take an action before retrying. Other buckets auto-dismiss so we
+				// don't pile up duplicate toasts on transient network glitches.
+				{ sticky: bucket === 'unconfigured' || bucket === 'manual-misconfigured' },
 			);
 
 			return { errorDetails: { message: 'Backend not connected' } };

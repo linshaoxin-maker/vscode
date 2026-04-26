@@ -132,36 +132,41 @@ configurationRegistry.registerConfiguration({
 		'chipos.backend.reasoningUrl': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.backend.reasoningUrl.desc', 'Reasoning layer URL for remote modes (e.g. https://reasoning.chipos.ai). Leave empty for local mode.'),
+			markdownDescription: localize('chipos.backend.reasoningUrl.desc', '**Internal — managed automatically.** Reasoning layer endpoint. Auto-detected from the build (cloud default) and overridden by chipos-remote-ssh when connected. Do not edit unless instructed by ChipOS support; manual values can be left stale and break chat connectivity.'),
 			scope: ConfigurationScope.APPLICATION,
+			tags: ['advanced'],
 		},
 
 		'chipos.backend.httpPort': {
 			type: 'number',
 			default: 8080,
-			description: localize('chipos.backend.httpPort.desc', 'HTTP/SSE port for reasoning layer (v2 protocol).'),
+			markdownDescription: localize('chipos.backend.httpPort.desc', '**Internal — managed automatically.** HTTP/SSE port for the reasoning layer (v2 protocol).'),
 			scope: ConfigurationScope.APPLICATION,
+			tags: ['advanced'],
 		},
 
 		'chipos.backend.grpcPort': {
 			type: 'number',
 			default: 50051,
-			description: localize('chipos.backend.grpcPort.desc', 'gRPC port for the reasoning layer in local and Remote-SSH deployments.'),
+			markdownDescription: localize('chipos.backend.grpcPort.desc', '**Internal — managed automatically.** gRPC port for the reasoning layer in local and Remote-SSH deployments.'),
 			scope: ConfigurationScope.APPLICATION,
+			tags: ['advanced'],
 		},
 
 		'chipos.backend.workerHttpPort': {
 			type: 'number',
 			default: 8081,
-			description: localize('chipos.backend.workerHttpPort.desc', 'HTTP port for the local or forwarded Worker API used by the Worker Tools panel.'),
+			markdownDescription: localize('chipos.backend.workerHttpPort.desc', '**Internal — managed automatically.** HTTP port for the local or forwarded Worker API used by the Worker Tools panel.'),
 			scope: ConfigurationScope.APPLICATION,
+			tags: ['advanced'],
 		},
 
 		'chipos.backend.workerHttpUrl': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.backend.workerHttpUrl.desc', 'Explicit Worker HTTP base URL (for manual/pre-deployed mode). If empty, derived from reasoningUrl host + workerHttpPort or localhost for local/cloud modes.'),
+			markdownDescription: localize('chipos.backend.workerHttpUrl.desc', '**Internal — managed automatically.** Worker HTTP base URL. Auto-derived from the resolved reasoning endpoint and the worker port; chipos-remote-ssh sets a per-window override during SSH sessions. Do not edit manually.'),
 			scope: ConfigurationScope.APPLICATION,
+			tags: ['advanced'],
 		},
 
 		'chipos.worker.downloadUrl': {
