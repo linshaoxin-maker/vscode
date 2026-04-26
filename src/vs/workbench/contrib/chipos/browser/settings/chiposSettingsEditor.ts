@@ -66,7 +66,8 @@ export class ChipOSSettingsEditor extends EditorPane {
 	private _rootElement: HTMLElement | undefined;
 	private _navList: HTMLElement | undefined;
 	private _contentArea: HTMLElement | undefined;
-	private _activeTab: ChipOSSettingsTab = 'general';
+	private _activeTab: ChipOSSettingsTab | undefined;
+	private _pendingTab: ChipOSSettingsTab | undefined;
 	private _navItems = new Map<ChipOSSettingsTab, HTMLElement>();
 	private _navBadges = new Map<ChipOSSettingsTab, HTMLElement>();
 	private _tabInstances = new DisposableStore();
@@ -153,6 +154,14 @@ export class ChipOSSettingsEditor extends EditorPane {
 				this._searchInput?.select();
 			}
 		}));
+
+		// If setInput was called before createEditor finished (race) it stashes
+		// the requested tab in _pendingTab. Now that the DOM is ready, flush it.
+		// Falling back to 'general' guarantees something is always shown — the
+		// editor never sits with a blank right pane and no active nav item.
+		const initialTab = this._pendingTab ?? 'general';
+		this._pendingTab = undefined;
+		this._switchTab(initialTab);
 	}
 
 	// ── Account card (top of nav) ──────────────────────────────────
@@ -227,13 +236,29 @@ export class ChipOSSettingsEditor extends EditorPane {
 		context: IEditorOpenContext,
 		token: CancellationToken,
 	): Promise<void> {
-		await super.setInput(input, options, context, token);
+		// Decide the target tab BEFORE awaiting super.setInput, so we still
+		// switch even if super throws / the await is cancelled mid-flight.
 		const tab = (options as IChipOSSettingsEditorOptions | undefined)?.initialTab ?? 'general';
-		this._switchTab(tab);
+		try {
+			await super.setInput(input, options, context, token);
+		} finally {
+			this._switchTab(tab);
+		}
 	}
 
 	private _switchTab(tab: ChipOSSettingsTab): void {
-		if (this._activeTab === tab && this._activeTabDisposable) {
+		// DOM not ready yet — createEditor hasn't run. Stash the request and
+		// bail; createEditor will pick it up via _pendingTab once the DOM is
+		// laid out. Without this, the editor would sit blank forever.
+		if (!this._contentArea || this._navItems.size === 0) {
+			this._pendingTab = tab;
+			return;
+		}
+		// Only short-circuit when we're already showing this tab AND it has
+		// rendered content. (Previously this also checked _activeTabDisposable
+		// alone, which could keep us stuck on a stale state if the content
+		// area got cleared externally.)
+		if (this._activeTab === tab && this._activeTabDisposable && this._contentArea.firstChild) {
 			return;
 		}
 		this._activeTab = tab;
@@ -282,6 +307,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 					break;
 			}
 		} catch (err) {
+			// Surface the failure in DevTools console too, so empty-pane bugs
+			// can be diagnosed without tearing into TS source.
+			console.error('[ChipOSSettings] Failed to render tab', tab, err);
 			const errorEl = dom.append(inner, dom.$('.chipos-settings-empty'));
 			const icon = dom.append(errorEl, dom.$('.codicon'));
 			icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.warning));
