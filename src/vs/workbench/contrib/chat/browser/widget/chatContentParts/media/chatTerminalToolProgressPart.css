@@ -92,17 +92,18 @@
 	color: var(--vscode-terminalCommandDecoration-errorBackground) !important;
 }
 
-/* ChipOS UI polish: when the terminal command finished with an error decoration, add a subtle left border
-   to the title and output container so the failure is easy to spot when scanning a long chat. */
+/* ChipOS UI polish: when the terminal command finished with an error decoration, draw an inset
+   left "rail" on the title and output container so failures are easy to spot when scanning a
+   long chat. Uses an inset box-shadow rather than border-left so we don't disturb the existing
+   1px border, border-radius, or padding/alignment of the card. */
 .chat-terminal-content-part .chat-terminal-content-title:has(.chat-terminal-command-decoration.error),
 .chat-terminal-content-part .chat-terminal-content-title:has(.terminal-command-decoration.error) {
-	border-left: 3px solid var(--vscode-errorForeground);
-	padding-left: 4px;
+	box-shadow: inset 3px 0 0 0 var(--vscode-errorForeground);
 }
 
 .chat-terminal-content-part:has(.chat-terminal-command-decoration.error) > .chat-terminal-output-container,
 .chat-terminal-content-part:has(.terminal-command-decoration.error) > .chat-terminal-output-container {
-	border-left: 3px solid var(--vscode-errorForeground);
+	box-shadow: inset 3px 0 0 0 var(--vscode-errorForeground);
 }
 
 .chat-terminal-content-part .chat-terminal-content-title .chat-terminal-command-block .chat-terminal-command-decoration.default,
