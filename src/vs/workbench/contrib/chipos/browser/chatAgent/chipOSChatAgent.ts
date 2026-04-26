@@ -10,7 +10,8 @@ import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
 import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
@@ -220,20 +221,80 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const runtime = this._getOrCreateRuntime(request.sessionResource);
 		const streamClient = await this._ensureClient(request.sessionResource);
 		if (!streamClient || streamClient.connectionState !== ConnectionState.Connected) {
+			// B-5: classify the failure into one of a small number of buckets so the
+			// hint is actionable. The same toast covers all of them; we only swap
+			// the message + offered actions.
 			const configured = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
-			// Use the helper so the error message shows the URL we actually attempted.
 			const target = resolveReasoningUrl(this._configurationService, this._productService);
-			let hint: string;
-			if (configured === 'auto' || !configured) {
-				hint = `Cannot reach the reasoning layer at \`${target}\`. ` +
-					'If you are connected via Remote-SSH, make sure the Reasoner is running on the remote server. ' +
-					'For local development, run `make local` in backend_v2/.';
-			} else if (configured === 'local') {
-				hint = `Cannot connect to local backend at \`${target}\`. Is it running? Try \`make local\` in backend_v2/.`;
+			const productDefault = this._productService.chiposDefaults?.reasoningUrl ?? '';
+			const userSetting = this._configurationService.getValue<string>('chipos.backend.reasoningUrl') ?? '';
+
+			let bucket: 'unconfigured' | 'loopback-no-server' | 'cloud-unreachable' | 'manual-misconfigured';
+			if (!productDefault && !userSetting && /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(target)) {
+				// We fell through to hardcoded localhost — neither product.json nor user
+				// settings provided a URL. Almost always means a dev build with no
+				// `make local` running.
+				bucket = configured === 'local' ? 'loopback-no-server' : 'unconfigured';
+			} else if (/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(target)) {
+				bucket = 'loopback-no-server';
+			} else if (configured && configured !== 'auto' && configured !== 'cloud-reasoning') {
+				bucket = 'manual-misconfigured';
 			} else {
-				hint = `Cannot connect to reasoning layer at \`${target}\` (mode: ${configured}). Check \`chipos.backend.reasoningUrl\` in settings.`;
+				bucket = 'cloud-unreachable';
+			}
+
+			let hint: string;
+			switch (bucket) {
+				case 'unconfigured':
+					hint = `ChipOS hasn't been configured for this build. ` +
+						`Reasoner URL is empty (product.json injection didn't run, or you're running a dev build). ` +
+						'Set `chipos.backend.reasoningUrl` in Settings, or use a release build that has the cloud Reasoner baked in.';
+					break;
+				case 'loopback-no-server':
+					hint = `Cannot connect to local backend at \`${target}\`. ` +
+						'Run `make local` in `backend_v2/` to start a Reasoner on this machine, or switch to a release build with cloud defaults.';
+					break;
+				case 'cloud-unreachable':
+					hint = `Cannot reach the cloud Reasoner at \`${target}\`. ` +
+						'Check your network — chat traffic goes direct over the public internet, not through the SSH tunnel. ' +
+						'If you are on a corporate network, make sure outbound HTTPS to that host is allowed.';
+					break;
+				case 'manual-misconfigured':
+					hint = `Cannot connect to \`${target}\` (mode: ${configured}). ` +
+						'Verify `chipos.backend.reasoningUrl` is reachable from this machine.';
+					break;
 			}
 			progress([this._markdown(`$(error) **ChipOS:** ${hint}`)]);
+
+			// Also surface a notification with actionable buttons — chat error is
+			// inline-only and easy to miss when the user is mid-typing.
+			void this._notificationService.prompt(
+				Severity.Warning,
+				`ChipOS: cannot reach Reasoner at ${target}`,
+				[
+					{
+						label: 'Open Settings',
+						run: () => {
+							void this._instantiationService.invokeFunction(accessor =>
+								accessor.get(ICommandService).executeCommand('workbench.action.openSettings', 'chipos.backend')
+							);
+						},
+					},
+					{
+						label: 'View Logs',
+						run: () => {
+							void this._instantiationService.invokeFunction(accessor =>
+								accessor.get(ICommandService).executeCommand('workbench.action.output.toggleOutput')
+							);
+						},
+					},
+				],
+				// Sticky for unconfigured because the user needs to go set
+				// chipos.backend.reasoningUrl before retrying. Other buckets
+				// auto-dismiss so we don't pile up duplicates.
+				{ sticky: bucket === 'unconfigured' },
+			);
+
 			return { errorDetails: { message: 'Backend not connected' } };
 		}
 
