@@ -41,31 +41,52 @@ export class WorkerManager {
 	private _isSharedInstance = false;
 	private _workerHttpPort = 8081;
 	/**
-	 * Worker → Reasoner gRPC API key. Injected into every Worker spawn as both
-	 * CHIPOS_WORKER_OUTBOUND_KEY (preferred) and CHIPOS_API_KEY (legacy).
+	 * Phase 1.5 Worker JWT (preferred). IDE-minted via OAuth, signed by website,
+	 * Reasoner verifies signature + extracts user_id. When set, the spawned
+	 * Worker process gets `CHIPOS_WORKER_TOKEN` env.
+	 */
+	private readonly _workerToken: string;
+	/**
+	 * Worker → Reasoner gRPC API key (legacy / fallback when user not logged in).
+	 * Spawn env: `CHIPOS_WORKER_OUTBOUND_KEY` (preferred) + `CHIPOS_API_KEY` (alias).
 	 *
-	 * Without this, Workers fail Reasoner auth with WORKER_AUTH_FAILED when
-	 * the Reasoner has CHIPOS_REASONING_WORKER_API_KEY set.
+	 * Without either workerToken OR apiKey, Worker fails Reasoner auth with
+	 * WORKER_AUTH_FAILED when the Reasoner has authentication enabled.
 	 */
 	private readonly _workerApiKey: string;
 	private readonly _tlsEnabled: boolean;
 
-	constructor(ssh: SshConnection, installPath: string, log: (msg: string) => void, workerApiKey?: string, tlsEnabled?: boolean) {
+	constructor(
+		ssh: SshConnection,
+		installPath: string,
+		log: (msg: string) => void,
+		workerApiKey?: string,
+		tlsEnabled?: boolean,
+		workerToken?: string,
+	) {
 		this._ssh = ssh;
 		this._installPath = installPath;
 		this._log = log;
 		this._callerId = `ssh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 		this._workerApiKey = workerApiKey ?? '';
 		this._tlsEnabled = tlsEnabled ?? false;
+		this._workerToken = workerToken ?? '';
 	}
 
 	/**
 	 * Build the env-var prefix string used when starting the Worker via
 	 * `bash -c 'export ...; ...'`. Centralized here so both binary and
 	 * python spawn paths stay in sync.
+	 *
+	 * Auth precedence: workerToken > workerApiKey. Both can be set
+	 * (Reasoner side prefers token; apiKey is harmless if unused).
 	 */
 	private _buildSpawnEnvExports(grpcTarget: string): string[] {
 		const exports = [`export CHIPOS_REASONING_SERVER="${grpcTarget}"`];
+		if (this._workerToken) {
+			const escaped = this._workerToken.replace(/(["\\$`])/g, '\\$1');
+			exports.push(`export CHIPOS_WORKER_TOKEN="${escaped}"`);
+		}
 		if (this._workerApiKey) {
 			// Shell-escape the key — base64 keys contain `=`, `+`, `/` which are
 			// safe inside double quotes but bracket them anyway for paranoia.
@@ -252,7 +273,7 @@ export class WorkerManager {
 		// Env exports must run inside the same bash -c so they're inherited by
 		// the spawned binary (the `setsid` child).
 		const fullCmd = `bash -c '${exportLine}; nohup ${startCmd} sleep 0.5; exit 0'`;
-		this._log(`[WorkerManager] _startBinaryWorker (apiKey=${this._workerApiKey ? 'set' : 'unset'}, tls=${this._tlsEnabled})`);
+		this._log(`[WorkerManager] _startBinaryWorker (workerToken=${this._workerToken ? 'set' : 'unset'}, apiKey=${this._workerApiKey ? 'set' : 'unset'}, tls=${this._tlsEnabled})`);
 		await this._ssh.exec(fullCmd);
 
 		await delay(1500);

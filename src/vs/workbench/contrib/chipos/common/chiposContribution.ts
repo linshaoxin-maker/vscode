@@ -22,6 +22,8 @@ import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../plat
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IChipOSTokenManager } from '../../../../workbench/contrib/chipos/browser/auth/chiposTokenManager.js';
 import { IChipOSAuthService } from '../../../../workbench/contrib/chipos/browser/auth/chiposAuthService.js';
+import { IChipOSUsageService } from '../../../../workbench/contrib/chipos/browser/billing/chiposUsageService.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IURLService } from '../../../../platform/url/common/url.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
@@ -137,6 +139,8 @@ const enum ChipOSCommandId {
 	Logout = 'chipos.auth.logout',
 	LegacyLogin = 'chipos.login',
 	LegacyLogout = 'chipos.logout',
+	OpenUsageDashboard = 'chipos.dashboard.openUsage',
+	OpenTeamDashboard = 'chipos.dashboard.openTeam',
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────────
@@ -241,6 +245,30 @@ CommandsRegistry.registerCommand(ChipOSCommandId.Logout, async accessor => {
 	notifications.info('ChipOS: Logged out.');
 });
 
+/**
+ * Phase 1.5 Worker JWT bridge for the chipos-remote-ssh extension.
+ *
+ * The extension lives in the UI extension host and cannot import the workbench
+ * service directly. It invokes this command via `vscode.commands.executeCommand`
+ * to mint a Worker JWT, then passes it as `CHIPOS_WORKER_TOKEN` env when
+ * spawning the remote Worker.
+ *
+ * Returns undefined when the user is not logged in or the website rejects
+ * the exchange; callers fall back to the legacy static apiKey path.
+ */
+CommandsRegistry.registerCommand('chipos.auth.getWorkerToken', async (accessor, workerId?: string) => {
+	const authService = accessor.get(IChipOSAuthService);
+	if (!authService.isLoggedIn()) {
+		return undefined;
+	}
+	try {
+		const result = await authService.getWorkerToken(workerId);
+		return result;
+	} catch {
+		return undefined;
+	}
+});
+
 CommandsRegistry.registerCommand(ChipOSCommandId.LegacyLogin, accessor => {
 	const commandService = accessor.get(ICommandService);
 	return commandService.executeCommand(ChipOSCommandId.Login);
@@ -249,6 +277,29 @@ CommandsRegistry.registerCommand(ChipOSCommandId.LegacyLogin, accessor => {
 CommandsRegistry.registerCommand(ChipOSCommandId.LegacyLogout, accessor => {
 	const commandService = accessor.get(ICommandService);
 	return commandService.executeCommand(ChipOSCommandId.Logout);
+});
+
+// ── Phase 2 / 3: Open chipos website pages from the IDE ────────────────────────
+
+function openChiposPage(accessor: ServicesAccessor, path: string): void {
+	const tokenManager = accessor.get(IChipOSTokenManager);
+	const opener = accessor.get(IOpenerService);
+	const websiteUrl = tokenManager.resolveWebsiteUrl();
+	if (!websiteUrl) {
+		accessor.get(INotificationService).warn(
+			'ChipOS: chipos.auth.websiteUrl is not configured — set it in Connection settings.',
+		);
+		return;
+	}
+	opener.open(URI.parse(`${websiteUrl.replace(/\/$/, '')}${path}`), { openExternal: true });
+}
+
+CommandsRegistry.registerCommand(ChipOSCommandId.OpenUsageDashboard, accessor => {
+	openChiposPage(accessor, '/dashboard/usage');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.OpenTeamDashboard, accessor => {
+	openChiposPage(accessor, '/dashboard/team');
 });
 
 // ── Keybindings ────────────────────────────────────────────────────────────────
@@ -501,6 +552,7 @@ class ChipOSContribution extends Disposable {
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
+		@IChipOSUsageService private readonly _usageService: IChipOSUsageService,
 	) {
 		super();
 
@@ -538,6 +590,13 @@ class ChipOSContribution extends Disposable {
 		this._statusBarHandler = this._register(
 			this._instantiationService.createInstance(StatusBarHandler)
 		);
+
+		// Phase 2 Usage status bar widget — start polling and forward results.
+		const handler = this._statusBarHandler;
+		this._register(this._usageService.onDidChangeUsage(display => {
+			handler.updateUsage(display);
+		}));
+		this._usageService.start();
 
 		this._applyEmptyWindowLayout();
 

@@ -30,18 +30,28 @@ export interface IEnsureRemoteWorkerArgs {
 	/** Optional override of the Worker HTTP port. */
 	workerHttpPort?: number;
 	/**
-	 * Worker → Reasoner gRPC API key.
+	 * Worker → Reasoner gRPC API key (legacy / static fallback).
 	 *
-	 * Required when the Reasoner has `CHIPOS_REASONING_WORKER_API_KEY` set
-	 * (production / shared deployments). Forwarded into the spawned Worker
-	 * process as both `CHIPOS_WORKER_OUTBOUND_KEY` (preferred env var name)
-	 * and `CHIPOS_API_KEY` (legacy fallback) so any Worker version picks it up.
+	 * Used when the user is NOT logged in (no OAuth) or the website rejected
+	 * the worker-token exchange. Reasoner side reads `CHIPOS_WORKER_OUTBOUND_KEY`
+	 * (preferred) / `CHIPOS_API_KEY` (legacy alias).
 	 *
-	 * The IDE reads this from the user's `chipos.worker.apiKey` setting (with
-	 * `chipos.backend.token` as legacy fallback). Empty/undefined ⇒ no auth
-	 * (only valid when Reasoner is also unauthenticated).
+	 * Resolved on IDE side via `chiposEndpoints.resolveWorkerApiKey()`
+	 * (settings > product.json > legacy backend.token).
+	 *
+	 * Phase 1.5+ deployments should prefer `workerToken` (OAuth-vended,
+	 * short-TTL, signed by website) and treat this as fallback only.
 	 */
 	workerApiKey?: string;
+	/**
+	 * Phase 1.5 Worker JWT minted by the website for the logged-in user.
+	 *
+	 * When provided, takes precedence over `workerApiKey`. Forwarded into
+	 * the spawned Worker process as `CHIPOS_WORKER_TOKEN` env. Reasoner
+	 * verifies the signature and extracts user_id from the payload — Worker
+	 * no longer needs to self-report user identity.
+	 */
+	workerToken?: string;
 	/** Whether to enable TLS for Worker → Reasoner gRPC. */
 	tlsEnabled?: boolean;
 }

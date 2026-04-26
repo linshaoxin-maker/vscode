@@ -81,6 +81,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	private _workerPid: number | undefined;
 	private _isSharedInstance = false;
 	private _callerId: string;
+	// Phase 2 Worker JWT auto-refresh: timer fires before the current
+	// worker_token expires so we can mint a new one + respawn the Worker
+	// before Reasoner starts rejecting on UNAUTHENTICATED.
+	private _workerTokenRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+	private _refreshingWorkerToken = false;
 	/**
 	 * Tracks whether Path-3 Stage-2 RPC was used to spawn the remote Worker.
 	 * If set, dispose() must call `releaseWorker` on the same channel so the
@@ -152,6 +157,20 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		// auto-detection (workspace authority, port probe). Until then, treat as Auto.
 		this._mode = BackendMode.Auto;
 		this._callerId = `electron-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+		// Phase 2: when the user signs in/out the Worker is now bound to the
+		// wrong identity (or none at all). Respawn so the new worker_token
+		// (or absence thereof) takes effect immediately instead of after the
+		// next 23h refresh cycle. Skipped while no Worker is running yet.
+		this._register(this._authService.onDidChangeLoginState(() => {
+			if (this._workerState === WorkerState.NotStarted) {
+				return;
+			}
+			this._logService.info('[ChipOS SidecarElectron] login state changed — respawning Worker to refresh identity');
+			this._refreshWorkerTokenAndRespawn().catch(err => {
+				this._logService.warn('[ChipOS SidecarElectron] respawn-on-login-change failed:', String(err));
+			});
+		}));
 
 		this._logService.info('[ChipOS SidecarElectron] constructed, mode will be resolved on startBackend()');
 	}
@@ -336,11 +355,27 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const reasonerGrpcTarget = resolveReasonerGrpcAddress(this._configurationService, this._productService);
 		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false;
 
+		// Phase 1.5 Worker JWT: when logged in, mint a token from the website.
+		// REH service prefers it over the static apiKey.
+		let workerToken: string | undefined;
+		if (this._authService.isLoggedIn()) {
+			try {
+				const tokenResult = await this._authService.getWorkerToken();
+				workerToken = tokenResult?.worker_token;
+				if (workerToken) {
+					this._logService.info(`[ChipOS RemoteWorker] minted worker_token for RPC (expires_in=${tokenResult!.expires_in}s)`);
+				}
+			} catch (err) {
+				this._logService.warn(`[ChipOS RemoteWorker] worker_token mint threw, falling back to api_key: ${err}`);
+			}
+		}
+
 		const args: IEnsureRemoteWorkerArgs = {
 			reasonerGrpcTarget,
 			workspaceRoot,
 			workerHttpPort,
 			workerApiKey: workerApiKey || undefined,
+			workerToken,
 			tlsEnabled,
 		};
 
@@ -561,11 +596,75 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	async restartWorker(): Promise<void> {
 		this._logService.info('[ChipOS SidecarElectron] restartWorker()');
+		this._clearWorkerTokenRefreshTimer();
 		await this._killProcessViaIpc('worker');
 		await this._spawnWorkerViaIpc();
 	}
 
+	// ── Worker JWT auto-refresh ──────────────────────────────────────────
+
+	/**
+	 * Schedule a one-shot timer that re-mints the worker_token + respawns the
+	 * Worker process before the current token expires. Reads ``exp`` straight
+	 * from the JWT so we honor whatever the website handed us, falling back to
+	 * ``expires_in`` when the JWT can't be parsed.
+	 *
+	 * Clears any existing timer first — the most recent spawn always wins.
+	 */
+	private _scheduleWorkerTokenRefresh(token: string | undefined, fallbackExpiresInS: number | undefined): void {
+		this._clearWorkerTokenRefreshTimer();
+		if (!token) {
+			return; // dev / api_key path — nothing to refresh
+		}
+		const expEpochMs = parseJwtExpMs(token);
+		const nowMs = Date.now();
+		const expiresInMs = expEpochMs > 0
+			? expEpochMs - nowMs
+			: (fallbackExpiresInS ?? 0) * 1000;
+		// Refresh 30 min before expiry, but never sooner than 60s (avoid spin)
+		// and never more than 23h out (so a misconfigured server-side exp can't
+		// stretch our refresh interval indefinitely).
+		const REFRESH_MARGIN_MS = 30 * 60 * 1000;
+		const MIN_DELAY_MS = 60 * 1000;
+		const MAX_DELAY_MS = 23 * 60 * 60 * 1000;
+		const delayMs = Math.min(MAX_DELAY_MS, Math.max(MIN_DELAY_MS, expiresInMs - REFRESH_MARGIN_MS));
+		this._workerTokenRefreshTimer = setTimeout(() => {
+			this._workerTokenRefreshTimer = undefined;
+			this._refreshWorkerTokenAndRespawn().catch(err => {
+				this._logService.warn('[ChipOS SidecarElectron] worker_token auto-refresh failed:', String(err));
+			});
+		}, delayMs);
+		this._logService.info('[ChipOS SidecarElectron] worker_token auto-refresh scheduled in %dms', delayMs);
+	}
+
+	private _clearWorkerTokenRefreshTimer(): void {
+		if (this._workerTokenRefreshTimer !== undefined) {
+			clearTimeout(this._workerTokenRefreshTimer);
+			this._workerTokenRefreshTimer = undefined;
+		}
+	}
+
+	private async _refreshWorkerTokenAndRespawn(): Promise<void> {
+		// De-dupe: if a refresh is already running (slow IPC, retry, …) drop
+		// the duplicate timer fire instead of stacking respawns.
+		if (this._refreshingWorkerToken) {
+			return;
+		}
+		this._refreshingWorkerToken = true;
+		try {
+			if (!this._authService.isLoggedIn()) {
+				this._logService.info('[ChipOS SidecarElectron] worker_token auto-refresh skipped — user signed out');
+				return;
+			}
+			this._logService.info('[ChipOS SidecarElectron] worker_token nearing expiry — respawning Worker');
+			await this.restartWorker();
+		} finally {
+			this._refreshingWorkerToken = false;
+		}
+	}
+
 	override dispose(): void {
+		this._clearWorkerTokenRefreshTimer();
 		if (this._isSharedInstance) {
 			// R50 fix: dispose 时也要检查 ref_count 归零并 kill Worker
 			this._invokeIpc('chipos:releaseRef', {
@@ -684,10 +783,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		// the user is not logged in or the website is unreachable — that mode
 		// keeps the existing dev-only loopback behavior.
 		let workerToken: string | undefined;
+		let workerTokenExpiresInS: number | undefined;
 		if (this._authService.isLoggedIn()) {
 			try {
 				const tokenResult = await this._authService.getWorkerToken();
 				workerToken = tokenResult?.worker_token;
+				workerTokenExpiresInS = tokenResult?.expires_in;
 				if (workerToken) {
 					this._logService.info('[ChipOS SidecarElectron] Minted worker_token (expires_in=%ds)', tokenResult!.expires_in);
 				} else {
@@ -697,6 +798,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				this._logService.warn('[ChipOS SidecarElectron] worker_token mint threw, falling back to api_key:', String(err));
 			}
 		}
+		// Phase 2: schedule auto-refresh ahead of expiry. Without this the Worker
+		// keeps presenting an expired token after ~24h and Reasoner UNAUTHENTICATEDs
+		// every reconnect — user has to manually restart the IDE. We respawn the
+		// sidecar with a freshly-minted token instead.
+		this._scheduleWorkerTokenRefresh(workerToken, workerTokenExpiresInS);
 
 		const env: Record<string, string> = {
 			CHIPOS_REASONING_SERVER: grpcTarget,
@@ -900,5 +1006,28 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			this._workerState = s;
 			this._onDidChangeWorkerState.fire(s);
 		}
+	}
+}
+
+/**
+ * Decode the ``exp`` claim from a JWT without verifying the signature.
+ * Returns 0 when the token is malformed — caller should use a fallback.
+ *
+ * Signature verification is the Reasoner's job; here we only need the expiry
+ * timestamp to schedule a local refresh, so we deliberately skip verification.
+ */
+function parseJwtExpMs(token: string): number {
+	try {
+		const parts = token.split('.');
+		if (parts.length !== 3) {
+			return 0;
+		}
+		// JWT base64url → base64
+		const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+		const padded = b64 + '==='.slice((b64.length + 3) % 4);
+		const json = JSON.parse(atob(padded));
+		return typeof json.exp === 'number' ? json.exp * 1000 : 0;
+	} catch {
+		return 0;
 	}
 }

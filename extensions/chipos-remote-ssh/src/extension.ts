@@ -26,6 +26,29 @@ function resolveWorkerApiKey(): string {
 	return legacy || '';
 }
 
+/**
+ * Phase 1.5: ask the workbench to mint a Worker JWT.
+ *
+ * The auth service lives in the workbench renderer; this UI extension can't
+ * import it directly, so we go through `vscode.commands.executeCommand`.
+ * The command is registered in `workbench/contrib/chipos/common/chiposContribution.ts`.
+ *
+ * Returns empty string on any failure (user not logged in, website unreachable,
+ * workbench contribution not loaded yet at resolve() time, etc.) — caller
+ * gracefully falls back to the legacy static apiKey path.
+ */
+async function resolveWorkerToken(): Promise<string> {
+	try {
+		const result = await vscode.commands.executeCommand<{ worker_token?: string; expires_in?: number } | undefined>(
+			'chipos.auth.getWorkerToken',
+		);
+		return result?.worker_token ?? '';
+	} catch (err) {
+		log(`[ChipOS Auth] mint worker_token failed (will fall back to apiKey): ${err}`);
+		return '';
+	}
+}
+
 let outputChannel: vscode.OutputChannel;
 
 interface RemoteSession {
@@ -252,11 +275,15 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 				log(`[Step 5] workerInstallPath=${workerInstallPath}`);
 				const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 				log(`[Step 5] reasonerGrpcTarget=${reasonerGrpcTarget}`);
-				// Worker → Reasoner gRPC auth: settings > product.json > legacy backend.token.
+				// Worker → Reasoner gRPC auth.
+				// Phase 1.5: try to mint a Worker JWT via workbench (OAuth-vended).
+				// If user is logged in this gives us a signed token; otherwise we fall
+				// back to the static apiKey (settings > product.json > legacy backend.token).
 				const wmApiKey = resolveWorkerApiKey();
+				const wmToken = await resolveWorkerToken();
 				const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
-				log(`[Step 5] worker auth: apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
-				workerMgr = new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls);
+				log(`[Step 5] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
+				workerMgr = new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken);
 				try {
 					const folders = vscode.workspace.workspaceFolders;
 					const remoteWorkspacePath =
@@ -695,9 +722,10 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	// product.json > derive from reasoningUrl > 127.0.0.1:50051 fallback.
 	const reasonerGrpcTarget = resolveReasonerGrpcTarget();
 	const wmApiKey = resolveWorkerApiKey();
+	const wmToken = await resolveWorkerToken();
 	const wmTls = vscode.workspace.getConfiguration('chipos.backend').get<boolean>('tlsEnabled') ?? false;
-	log(`[ChipOS RemoteWorker] worker auth: apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
-	const workerMgr = existing?.worker ?? new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls);
+	log(`[ChipOS RemoteWorker] worker auth: workerToken=${wmToken ? 'set' : 'unset'}, apiKey=${wmApiKey ? 'set' : 'unset'}, tls=${wmTls}`);
+	const workerMgr = existing?.worker ?? new WorkerManager(sshConn, workerInstallPath, log, wmApiKey, wmTls, wmToken);
 	try {
 		await workerMgr.ensureWorkerRunning(reasonerGrpcTarget, args.workspacePath);
 	} catch (err) {

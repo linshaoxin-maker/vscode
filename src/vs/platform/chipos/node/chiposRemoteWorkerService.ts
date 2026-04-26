@@ -189,23 +189,32 @@ export class ChiposRemoteWorkerService extends Disposable implements IChiposRemo
 			CHIPOS_WORKSPACE_ROOT: workspaceRoot,
 		};
 
-		// Worker → Reasoner gRPC API key.
+		// Phase 1.5 Worker JWT (preferred when present): IDE minted via OAuth,
+		// signed by website, Reasoner verifies + extracts user_id from payload.
+		if (args.workerToken) {
+			env.CHIPOS_WORKER_TOKEN = args.workerToken;
+			this._logService.info(`${LOG_PREFIX} auth source=worker-token (Phase 1.5 OAuth-vended)`);
+		}
+
+		// Worker → Reasoner gRPC API key (legacy / fallback when not logged in).
 		// Priority:
 		//   1. args.workerApiKey       (IDE-supplied via RPC — primary path)
 		//   2. CHIPOS_WORKER_OUTBOUND_KEY in REH process env (operator-pinned)
 		//   3. CHIPOS_API_KEY in REH process env (legacy fallback)
 		//
-		// Without this the Worker fails Reasoner auth with WORKER_AUTH_FAILED
-		// when the Reasoner has CHIPOS_REASONING_WORKER_API_KEY set.
+		// Without either workerToken OR an apiKey, the Worker fails Reasoner auth
+		// with WORKER_AUTH_FAILED when the Reasoner has authentication enabled.
 		const apiKey = args.workerApiKey
 			|| process.env['CHIPOS_WORKER_OUTBOUND_KEY']
 			|| process.env['CHIPOS_API_KEY'];
 		if (apiKey) {
 			env.CHIPOS_WORKER_OUTBOUND_KEY = apiKey;
 			env.CHIPOS_API_KEY = apiKey;
-			this._logService.info(`${LOG_PREFIX} api-key source=${args.workerApiKey ? 'rpc-args' : 'reh-env'}`);
-		} else {
-			this._logService.info(`${LOG_PREFIX} no api-key configured (assuming Reasoner is unauthenticated)`);
+			if (!args.workerToken) {
+				this._logService.info(`${LOG_PREFIX} auth source=api-key (${args.workerApiKey ? 'rpc-args' : 'reh-env'})`);
+			}
+		} else if (!args.workerToken) {
+			this._logService.info(`${LOG_PREFIX} no auth credentials configured (assuming Reasoner is unauthenticated)`);
 		}
 
 		if (args.tlsEnabled) {
