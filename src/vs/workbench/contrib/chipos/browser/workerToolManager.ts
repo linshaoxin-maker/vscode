@@ -414,7 +414,7 @@ export class WorkerToolsViewDataProvider extends Disposable implements ITreeView
 			configPath: result.config_path,
 			handle: 'worker-mcp-root',
 			collapsibleState: result.servers.length > 0 ? TreeItemCollapsibleState.Collapsed : TreeItemCollapsibleState.None,
-			label: { label: localize('chipos.workerTools.mcp.label', 'MCP Servers') },
+			label: { label: localize('chipos.workerTools.mcp.label', 'Worker-side MCP Servers') },
 			description: localize('chipos.workerTools.mcp.count', '{0} configured', result.servers.length),
 			tooltip,
 			themeIcon: Codicon.plug,

@@ -27,14 +27,14 @@ export class ToolsTab extends Disposable {
 		// ── Header ──
 		const headerDesc = dom.append(this._container, dom.$('.chipos-setting-description'));
 		headerDesc.textContent = localize('chipos.tools.header',
-			'Manage MCP servers and view available tools. MCP servers provide additional capabilities to the AI agent.');
+			'Manage IDE-side MCP servers (run alongside the editor). Worker-side MCP servers — those launched by the Worker process for EDA tooling — are listed in the Worker Tools panel.');
 
 		// ── Section: MCP Servers ──
 		const mcpSection = dom.append(this._container, dom.$('.chipos-settings-section'));
 		const mcpHeader = dom.append(mcpSection, dom.$('.chipos-settings-section-header'));
 
 		dom.append(mcpHeader, dom.$('.chipos-settings-section-title', undefined,
-			localize('chipos.tools.mcpServers', 'MCP Servers')));
+			localize('chipos.tools.mcpServers', 'IDE-side MCP Servers')));
 
 		const addBtn = dom.append(mcpHeader, dom.$('button.chipos-btn-secondary'));
 		addBtn.textContent = localize('chipos.tools.addServer', '+ Add Server');
