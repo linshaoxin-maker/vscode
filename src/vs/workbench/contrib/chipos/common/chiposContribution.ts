@@ -271,23 +271,31 @@ CommandsRegistry.registerCommand('chipos.auth.getWorkerToken', async (accessor, 
 });
 
 /**
- * P2-14: runtime URL overrides bridge for chipos-remote-ssh.
+ * P2-14: runtime URL override bridge for chipos-remote-ssh.
  *
  * The extension calls these commands instead of writing to Global config —
  * see chiposRuntimeOverrides.ts header for the full rationale. Per-window
- * service means B1's tunnel URL never leaks into B2.
+ * service means B1's Worker HTTP tunnel URL never leaks into B2.
  *
  * Both commands no-op cleanly when the service isn't available (older
  * workbench builds), so a mismatched ext+core combo just falls back to the
  * old configuration-based behavior rather than crashing.
+ *
+ * Accepted keys: `'workerHttpUrl'`. Older versions also accepted
+ * `'reasoningUrl'`; that key is silently dropped here so an old
+ * chipos-remote-ssh extension talking to a new workbench fails closed
+ * (chat won't be misrouted through a stale tunnel URL) rather than
+ * silently misbehaving.
  */
+const RUNTIME_OVERRIDE_KEYS = new Set<string>(['workerHttpUrl']);
+
 CommandsRegistry.registerCommand('chipos.runtime.setOverride', (accessor, key: string, value: string | undefined) => {
-	if (key !== 'reasoningUrl' && key !== 'workerHttpUrl') {
-		return; // unknown key — ignore so future ext versions can fail gracefully
+	if (!RUNTIME_OVERRIDE_KEYS.has(key)) {
+		return; // unknown / deprecated key — ignore
 	}
 	try {
 		const svc = accessor.get(IChipOSRuntimeOverridesService);
-		svc.setOverride(key, value);
+		svc.setOverride(key as 'workerHttpUrl', value);
 	} catch {
 		// Service not registered (very old workbench) — drop silently.
 	}
@@ -298,8 +306,8 @@ CommandsRegistry.registerCommand('chipos.runtime.clearOverride', (accessor, key?
 		const svc = accessor.get(IChipOSRuntimeOverridesService);
 		if (!key) {
 			svc.clearAllOverrides();
-		} else if (key === 'reasoningUrl' || key === 'workerHttpUrl') {
-			svc.clearOverride(key);
+		} else if (RUNTIME_OVERRIDE_KEYS.has(key)) {
+			svc.clearOverride(key as 'workerHttpUrl');
 		}
 	} catch {
 		// Service not registered.

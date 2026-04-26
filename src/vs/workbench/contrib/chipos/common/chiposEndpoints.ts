@@ -12,13 +12,11 @@
  * dials Reasoner over its own grpcAddress):
  *
  *   resolveReasoningUrl       3-tier: settings > product.json > loopback.
- *                             NO runtime-override tier on purpose — chat
- *                             traffic does NOT go through the SSH tunnel.
- *                             The optional 3rd `runtimeOverrides` argument
- *                             exists for symmetry with workerHttpUrl but is
- *                             a no-op in production usage; we kept it because
- *                             dev/test setups (or future B/C deployment
- *                             modes) may want to opt in.
+ *                             NO runtime-override tier — chat traffic does
+ *                             NOT go through the SSH tunnel in model A.
+ *                             The runtime-override service even rejects the
+ *                             `reasoningUrl` key at the type level so this
+ *                             stays true (see chiposRuntimeOverrides.ts).
  *
  *   resolveWorkerHttpUrl      runtime-override > settings > derive-from-host.
  *                             Worker HTTP IS tunneled through SSH (used by
@@ -82,23 +80,20 @@ function isLoopbackHost(host: string): boolean {
  * Deployment model A: Reasoner is cloud-hosted (or wherever
  * `chiposDefaults.reasoningUrl` points). The IDE reaches it directly over
  * the public internet — we do NOT route chat through the SSH tunnel even
- * when chipos-remote-ssh is active.
+ * when chipos-remote-ssh is active. There's no runtime-override tier on
+ * this resolver on purpose; the `IChipOSRuntimeOverridesService` accepts
+ * only `workerHttpUrl` keys (see chiposRuntimeOverrides.ts).
  *
- * The optional `runtimeOverrides` argument is consulted only as a future-
- * proofing hook (test setups, alternate deployment modes that DO want
- * tunneling). Production code paths pass it but it stays empty for
- * reasoningUrl — `applyRuntimeOverride` in chipos-remote-ssh sets the
- * `workerHttpUrl` key only, never `reasoningUrl`.
+ * If a future deployment mode (B: all-in-one self-hosted) needs to route
+ * chat through SSH again, add a `reasoningUrl` key to
+ * `ChipOSRuntimeOverrideKey` and a runtime tier here in lockstep — the
+ * one-key-only design is intentional, so don't add the param without
+ * adding the key.
  */
 export function resolveReasoningUrl(
 	configurationService: IConfigurationService,
 	productService: IProductService,
-	runtimeOverrides?: IChipOSRuntimeOverridesService,
 ): string {
-	const fromRuntime = runtimeOverrides?.getOverride('reasoningUrl');
-	if (fromRuntime) {
-		return fromRuntime;
-	}
 	const fromSettings = configurationService.getValue<string>(SETTING_REASONING_URL);
 	if (fromSettings) {
 		return fromSettings;
