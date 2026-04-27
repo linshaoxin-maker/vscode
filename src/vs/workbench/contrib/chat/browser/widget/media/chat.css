@@ -2412,6 +2412,21 @@ have to be updated for changes to the rules above, or to support more deeply nes
 	gap: 4px;
 	margin: 0 0 14px 0;
 	font-size: 13px;
+}
+
+/*
+ * ChipOS UI polish: when consecutive progress lines pile up (init phase
+ * "Connecting…" / "Step 1" / "Step 2" / status), the 14px bottom margin
+ * combined with each line's own ~20px height produces ~40px of vertical
+ * gap per line — 8 lines pile to ~300px of nearly-empty whitespace. Drop
+ * margin-bottom to 4px ONLY when followed by another progress; keep the
+ * full 14px breathing room on the last progress before real content.
+ */
+.interactive-item-container .progress-container:has(+ .progress-container) {
+	margin-bottom: 4px;
+}
+
+.interactive-item-container .progress-container {
 
 	/* Tool calls transition from a progress to a collapsible list part, which needs to have this top padding.
 	The working progress also can be replaced by a tool progress part. So align this padding so the text doesn't appear to shift. */

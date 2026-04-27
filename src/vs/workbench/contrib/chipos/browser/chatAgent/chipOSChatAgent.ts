@@ -119,6 +119,21 @@ interface IChatSessionRuntime {
 	terminalCommandLines: Map<string, string>;
 	/** Stores terminal artifacts (theme, URI) captured after _runInTerminal completes, for ToolResult handler */
 	terminalArtifacts: Map<string, { theme?: { background?: string; foreground?: string }; commandUri?: UriComponents }>;
+	/**
+	 * UX polish — every-event runtime state for chat progress hygiene.
+	 *
+	 * `inInitPhase`: true between user message submit and the first real
+	 *   content event (TextDelta / ThinkingDelta / ToolCall). While true,
+	 *   incoming Status events are *swallowed* and only a single
+	 *   "Connecting…" spinner stays visible. Once any real content arrives
+	 *   we flip this to false and Status events pass through normally.
+	 *
+	 * `lastStatusText`: cache of the previous Status text so we can drop
+	 *   immediate duplicates ("Step model_run" arriving twice in a row,
+	 *   etc.) — they were rendering as two adjacent identical lines.
+	 */
+	inInitPhase: boolean;
+	lastStatusText?: string;
 }
 
 /**
@@ -470,6 +485,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.externalEditOps.clear();
 		runtime.pendingStartEdits.clear();
 		runtime.terminalSessionMap.clear();
+		// Each new invoke starts a fresh init phase: Status events between
+		// here and the first real content are folded; dedupe cache cleared.
+		runtime.inInitPhase = true;
+		runtime.lastStatusText = undefined;
 		runtime.terminalCommandLines.clear();
 		runtime.terminalArtifacts.clear();
 
@@ -582,6 +601,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case AgentEventType.TextDelta: {
 				const p = event.payload as ITextDeltaPayload;
 				ctx.trackFirstProgress?.();
+				ctx.runtime.inInitPhase = false;
 				if (p.role === 'thinking') {
 					ctx.progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
 				} else {
@@ -593,6 +613,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case AgentEventType.ThinkingDelta: {
 				const p = event.payload as IThinkingDeltaPayload;
 				ctx.trackFirstProgress?.();
+				ctx.runtime.inInitPhase = false;
 				ctx.progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
 				break;
 			}
@@ -602,6 +623,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				const p = event.payload as IToolCallPayload;
 				const key = p.call_id || p.tool_name;
 				ctx.onToolStep?.();
+				ctx.runtime.inInitPhase = false;
 				ctx.runtime.toolStartTimes.set(key, Date.now());
 				// Save file_path from arguments for later reference emission
 				const args = p.arguments as Record<string, unknown> | undefined;
@@ -853,16 +875,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// ── Status / Progress ──
 			case AgentEventType.Status: {
 				const p = event.payload as IStatusPayload;
-				if (p.text) {
-					const shimmer = p.level === 'thinking' || p.tool_name !== undefined;
-					ctx.progress([this._progress(p.text, shimmer)]);
+				const text = p.text?.trim();
+				if (!text) {
+					break;
 				}
+				// A1: drop protocol-debug strings that leak internals to the user.
+				// Patterns: "(mode=local)", "(proxy_remote=True)", trailing
+				// "key=value" args. These come from backend log-style f-strings
+				// not meant for end users.
+				if (ChipOSChatAgent._isProtocolDebugStatus(text)) {
+					break;
+				}
+				// A2: while initializing (between user-submit and first real
+				// content), swallow all status text. The init banner spinner
+				// already says "Connecting…"; we don't want a wall of progress
+				// lines piling up before the response starts.
+				if (ctx.runtime.inInitPhase) {
+					break;
+				}
+				// A4: drop immediate duplicate of the previous status text.
+				if (ctx.runtime.lastStatusText === text) {
+					break;
+				}
+				ctx.runtime.lastStatusText = text;
+				const shimmer = p.level === 'thinking' || p.tool_name !== undefined;
+				ctx.progress([this._progress(text, shimmer)]);
 				break;
 			}
 
 			// ── Round start ──
 			case AgentEventType.RoundStart: {
 				const p = event.payload as IRoundStartPayload;
+				// A1: backend sometimes uses round labels like "model_run" instead
+				// of a numeric index — those leak protocol naming to users.
+				// Numeric rounds we still surface (Step 1, Step 2, …); string
+				// labels are dropped and the shimmer in the input bar carries
+				// the "still working" signal instead.
+				const roundIsNumeric = typeof p.round === 'number' || /^\d+$/.test(String(p.round));
+				if (!roundIsNumeric) {
+					break;
+				}
 				ctx.progress([this._progress(`Step ${p.round}`, true)]);
 				break;
 			}
@@ -1469,6 +1521,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalSessionMap: new Map<string, { sessionId: string; commandId: string }>(),
 				terminalCommandLines: new Map<string, string>(),
 				terminalArtifacts: new Map(),
+				inInitPhase: true,
 			  } as IChatSessionRuntime;
 
 		return new Promise<IChatAgentResult>((resolve) => {
@@ -2068,6 +2121,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * Heuristic: does this Status text look like backend-internal log output
+	 * leaking into the chat? Common shapes seen in production:
+	 *   "Session started (mode=local)"
+	 *   "Agent ready (proxy_remote=True)"
+	 *   "[WorkerAuth] foo=bar"
+	 * These are debug f-strings from `agent_session.py` / `agent_core.py` etc.
+	 * Any "(...=...)" parenthetical or a bare "key=value" trailing token is
+	 * treated as protocol detail and swallowed.
+	 */
+	private static _isProtocolDebugStatus(text: string): boolean {
+		// Parenthetical with key=value inside (matches "(mode=local)", "(proxy_remote=True)", etc.)
+		if (/\([^)]*=[^)]*\)/.test(text)) {
+			return true;
+		}
+		// Square-bracket prefix tag like "[WorkerAuth] ..." — log line shape
+		if (/^\[[A-Z][A-Za-z]+\]\s/.test(text)) {
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Build llm_config from user Settings for sendTask().
 	 * Maps chipos.provider/apiKey/apiBaseUrl/model → backend LLMConfig fields.
 	 */
@@ -2547,6 +2622,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalSessionMap: new Map<string, { sessionId: string; commandId: string }>(),
 				terminalCommandLines: new Map<string, string>(),
 				terminalArtifacts: new Map(),
+				inInitPhase: true,
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
 		}
