@@ -51,6 +51,7 @@ import { TerminalLocation } from '../../../../../../../platform/terminal/common/
 import { Codicon } from '../../../../../../../base/common/codicons.js';
 import { TerminalContribCommandId } from '../../../../../terminal/terminalContribExports.js';
 import { ITelemetryService } from '../../../../../../../platform/telemetry/common/telemetry.js';
+import { IClipboardService } from '../../../../../../../platform/clipboard/common/clipboardService.js';
 import { isNumber } from '../../../../../../../base/common/types.js';
 import { removeAnsiEscapeCodes } from '../../../../../../../base/common/strings.js';
 import { PANEL_BACKGROUND } from '../../../../../../common/theme.js';
@@ -301,6 +302,7 @@ export class ChatTerminalToolProgressPart extends BaseChatToolInvocationSubPart 
 		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@IKeybindingService private readonly _keybindingService: IKeybindingService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IClipboardService private readonly _clipboardService: IClipboardService,
 	) {
 		super(toolInvocation);
 
@@ -371,6 +373,56 @@ export class ChatTerminalToolProgressPart extends BaseChatToolInvocationSubPart 
 		const actionBarEl = h('.chat-terminal-action-bar@actionBar');
 		elements.title.append(actionBarEl.root);
 		this._actionBar = this._register(new ActionBar(actionBarEl.actionBar, {}));
+
+		// ChipOS UI polish: always-available "Copy command" + "Insert command" actions on the
+		// terminal tool card. Pushed once at the end of the action bar so they sit to the right
+		// of focus / showOutput / continueInBackground actions which are managed dynamically by
+		// _addActions() below. Both only need this._commandText (set above) and don't depend on
+		// a live terminal instance, so they remain functional even on serialized invocations.
+		//
+		// IMPORTANT: the second action does NOT auto-execute. We deliberately call
+		// sendText(text, false) — the command lands in the terminal input line and the user
+		// has to press Enter themselves. This avoids accidentally re-running destructive or
+		// expensive commands (rm -rf, deploy, license-burning sims) with one click.
+		const copyCommandAction = this._register(new Action(
+			'chipos.terminal.copyCommand',
+			localize('chipos.terminal.copyCommand', "Copy Command"),
+			ThemeIcon.asClassName(Codicon.copy),
+			true,
+			async () => {
+				try {
+					await this._clipboardService.writeText(this._commandText);
+				} catch {
+					// Clipboard access can fail under sandboxed/permission-denied conditions; we
+					// intentionally swallow rather than surface a confusing modal — the user can
+					// still copy via the rendered code-block toolbar above.
+				}
+			}
+		));
+		this._actionBar.push(copyCommandAction, { icon: true, label: false });
+
+		const insertCommandAction = this._register(new Action(
+			'chipos.terminal.insertCommand',
+			localize('chipos.terminal.insertCommand', "Insert Command into Terminal (no auto-run)"),
+			ThemeIcon.asClassName(Codicon.debugRestart),
+			true,
+			async () => {
+				try {
+					const instance = this._terminalInstance ?? await this._ensureTerminalInstance();
+					if (instance) {
+						// Pass `false` so the command appears at the prompt without a trailing newline.
+						// User must press Enter themselves — preserves intent for destructive commands.
+						instance.sendText(this._commandText, false);
+						instance.focus();
+					}
+				} catch {
+					// _ensureTerminalInstance / sendText / focus may throw if the terminal session
+					// has been torn down. Failing silently is preferable to a stack-trace toast.
+				}
+			}
+		));
+		this._actionBar.push(insertCommandAction, { icon: true, label: false });
+
 		this._initializeTerminalActions();
 		this._terminalService.whenConnected.then(() => this._initializeTerminalActions());
 		let pastTenseMessage: string | undefined;

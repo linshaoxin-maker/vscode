@@ -35,6 +35,16 @@ interface PortForwardConfig {
 	remotePort: number;
 }
 
+/**
+ * Reconnect state events emitted to interested observers (typically the extension's
+ * UI layer that wants to surface toasts to the user). Kept as a plain discriminated
+ * union so this module remains independent of the `vscode` API.
+ */
+export type ReconnectState =
+	| { kind: 'attempting'; attempt: number; max: number; delayMs: number }
+	| { kind: 'succeeded'; afterAttempts: number }
+	| { kind: 'gaveUp'; afterAttempts: number; lastError?: string };
+
 export class SshConnection {
 
 	private _client: Client | undefined;
@@ -47,11 +57,14 @@ export class SshConnection {
 
 	private _onDisconnect: (() => void) | undefined;
 	private _onReconnect: (() => void) | undefined;
+	private _onReconnectState: ((state: ReconnectState) => void) | undefined;
+	private _lastReconnectError: string | undefined;
 
 	get connected(): boolean { return this._connected; }
 	get host(): string { return `${this._options.username}@${this._options.host}`; }
 	set onDisconnect(cb: () => void) { this._onDisconnect = cb; }
 	set onReconnect(cb: () => void) { this._onReconnect = cb; }
+	set onReconnectState(cb: (state: ReconnectState) => void) { this._onReconnectState = cb; }
 
 	constructor(
 		private readonly _options: SshConnectionOptions,
@@ -341,11 +354,14 @@ export class SshConnection {
 		const MAX_ATTEMPTS = 5;
 		if (attempt >= MAX_ATTEMPTS) {
 			this._log(`[SSH] Reconnect failed after ${MAX_ATTEMPTS} attempts, giving up`);
+			this._emitReconnectState({ kind: 'gaveUp', afterAttempts: MAX_ATTEMPTS, lastError: this._lastReconnectError });
+			this._lastReconnectError = undefined;
 			return;
 		}
 
 		const delayMs = Math.min(1000 * Math.pow(2, attempt), 30_000);
 		this._log(`[SSH] Scheduling reconnect attempt ${attempt + 1}/${MAX_ATTEMPTS} in ${delayMs}ms`);
+		this._emitReconnectState({ kind: 'attempting', attempt: attempt + 1, max: MAX_ATTEMPTS, delayMs });
 
 		this._reconnectTimer = setTimeout(async () => {
 			if (this._disposed) { return; }
@@ -355,14 +371,28 @@ export class SshConnection {
 				this._log('[SSH] Reconnected successfully');
 				await this._rebuildPortForwards();
 				this._onReconnect?.();
+				this._emitReconnectState({ kind: 'succeeded', afterAttempts: attempt + 1 });
+				this._lastReconnectError = undefined;
 			} catch (err) {
 				this._log(`[SSH] Reconnect attempt ${attempt + 1} failed: ${err}`);
+				this._lastReconnectError = err instanceof Error ? err.message : String(err);
 				this._reconnecting = false;
 				this._scheduleReconnect(attempt + 1);
 				return;
 			}
 			this._reconnecting = false;
 		}, delayMs);
+	}
+
+	private _emitReconnectState(state: ReconnectState): void {
+		const cb = this._onReconnectState;
+		if (!cb) { return; }
+		try {
+			cb(state);
+		} catch (err) {
+			// Never let observer errors affect reconnect logic.
+			this._log(`[SSH] onReconnectState observer threw: ${err}`);
+		}
 	}
 
 	private async _rebuildPortForwards(): Promise<void> {

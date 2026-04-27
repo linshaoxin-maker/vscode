@@ -105,63 +105,28 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
-		// ── v2: 推理-执行分离架构配置 ──
-
-		'chipos.backend.mode': {
-			type: 'string',
-			enum: ['auto', 'cloud-reasoning', 'manual'],
-			enumDescriptions: [
-				localize('chipos.backend.mode.auto', 'Auto: detect deployment from workspace and product defaults (recommended, default)'),
-				localize('chipos.backend.mode.cloudReasoning', 'Cloud Reasoning: SSH-Remote forwards a remote Worker; chat goes direct to the cloud Reasoner'),
-				localize('chipos.backend.mode.manual', 'Manual: connect to pre-deployed reasoning/worker URLs (you set reasoningUrl yourself)'),
-			],
-			default: 'auto',
-			description: localize('chipos.backend.mode.desc', '[Developer] Override the auto-detected backend deployment mode. Only respected when "chipos.backend.developerMode" is enabled. Leave at "auto" unless you know exactly why you need a specific mode. ("local" was removed 2026-04-27 — IDE never spawns backends.)'),
-			scope: ConfigurationScope.APPLICATION,
-			tags: ['experimental'],
-		},
-
-		'chipos.backend.developerMode': {
-			type: 'boolean',
-			default: false,
-			description: localize('chipos.backend.developerMode.desc', 'Show developer-only ChipOS settings (backend mode override, raw URL/port editors). Most users should leave this off — the backend deployment is auto-detected.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.reasoningUrl': {
-			type: 'string',
-			default: '',
-			description: localize('chipos.backend.reasoningUrl.desc', 'Reasoning layer URL for remote modes (e.g. https://reasoning.chipos.ai). Leave empty for local mode.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.httpPort': {
-			type: 'number',
-			default: 8080,
-			description: localize('chipos.backend.httpPort.desc', 'HTTP/SSE port for reasoning layer (v2 protocol).'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.grpcPort': {
-			type: 'number',
-			default: 50051,
-			description: localize('chipos.backend.grpcPort.desc', 'gRPC port for the reasoning layer in local and Remote-SSH deployments.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.workerHttpPort': {
-			type: 'number',
-			default: 8081,
-			description: localize('chipos.backend.workerHttpPort.desc', 'HTTP port for the local or forwarded Worker API used by the Worker Tools panel.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.workerHttpUrl': {
-			type: 'string',
-			default: '',
-			description: localize('chipos.backend.workerHttpUrl.desc', 'Explicit Worker HTTP base URL (for manual/pre-deployed mode). If empty, derived from reasoningUrl host + workerHttpPort or localhost for local/cloud modes.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
+		// ── v2 architecture: backend deployment is fully internal ──
+		//
+		// The seven keys below (chipos.backend.{mode,developerMode,reasoningUrl,
+		// httpPort,grpcPort,workerHttpPort,workerHttpUrl}) used to live here as
+		// user-facing settings. They are now intentionally NOT registered in the
+		// schema, because users should never have to know they exist:
+		//
+		//   - reasoningUrl / reasonerGrpcAddress come from product.json's
+		//     chiposDefaults (build-time, baked into the binary).
+		//   - chipos-remote-ssh installs per-window in-memory runtime overrides
+		//     during SSH sessions (chiposRuntimeOverrides.ts).
+		//   - The "developer mode" that exposes URL/port editors in the ChipOS
+		//     Settings tab is now gated by product.chiposDefaults.developerBuild
+		//     (a build-time flag), NOT by a runtime user toggle.
+		//
+		// Code that needs these values still reads them via
+		// configurationService.getValue(...) — VS Code returns whatever is in
+		// settings.json (if anything) or undefined. Removing the schema only
+		// affects discoverability (Cmd+, search, settings.json IntelliSense),
+		// not read/write semantics. Any chipos-internal-build user that needs to
+		// set them can still do so by enabling the Developer section of the
+		// ChipOS Settings tab in a developerBuild=true binary.
 
 		'chipos.worker.mcpConfigPath': {
 			type: 'string',
@@ -172,31 +137,16 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
-		'chipos.backend.grpcAddress': {
-			type: 'string',
-			default: '',
-			// Real architectural setting — Reasoner and Worker are deployed on
-			// SEPARATE machines by default. This is the gRPC dial target the
-			// spawned Worker uses to reach Reasoner across the network. Only
-			// the dev/single-server case can leave this empty (then loopback
-			// fallback kicks in).
-			description: localize('chipos.backend.grpcAddress.desc', 'gRPC address the spawned Worker should use to dial Reasoner (e.g. `reasoning.chipos.ai:50051`). Required when Reasoner and Worker are on different machines (the default deployment topology). Leave empty for single-machine dev/testing — falls back to product.json injection or 127.0.0.1:50051 loopback.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.token': {
-			type: 'string',
-			default: '',
-			description: localize('chipos.backend.token.desc', '[Legacy fallback] Manual JWT token for authenticating with the reasoning layer. Prefer OAuth login via ChipOS: Login command.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.tlsEnabled': {
-			type: 'boolean',
-			default: false,
-			description: localize('chipos.backend.tlsEnabled.desc', 'Enable TLS for gRPC connections between Worker and Reasoner.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
+		// chipos.backend.grpcAddress / token / tlsEnabled used to live here as
+		// user-facing settings. They join the seven keys removed above for the
+		// same reason: end users should never reason about the deployment
+		// topology, the worker's gRPC dial target, the auth-token fallback, or
+		// TLS toggles. grpcAddress and tlsEnabled come from product.json (the
+		// reasonerGrpcAddress field; TLS implied by https:// scheme on
+		// reasoningUrl). token is superseded by OAuth login via the unified
+		// auth flow. Code that still calls getValue() on these names continues
+		// to work — only Cmd+, search and IntelliSense lose them, which is
+		// the goal.
 
 		// ── Phase 1 Unified Auth ──
 

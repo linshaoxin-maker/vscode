@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
-import { SshConnection, SshConnectionOptions } from './sshConnection';
+import { SshConnection, SshConnectionOptions, ReconnectState } from './sshConnection';
 import { ServerManager } from './serverManager';
 import { WorkerManager } from './workerManager';
 import { getProductInfo, getWorkerInstallPath } from './download';
@@ -432,6 +432,7 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					}
 				}
 				log('SSH connection established');
+				attachReconnectNotifier(sshConn, sshConn.host);
 
 				// 2. Start ChipOS Server on remote
 				progress.report({ message: 'Starting ChipOS Server on remote...' });
@@ -707,6 +708,51 @@ async function connectToHost(reuseWindow: boolean): Promise<void> {
  */
 const DISCONNECT_PER_SESSION_BUDGET_MS = 3500;
 
+/**
+ * Surface SSH auto-reconnect progress as VS Code notifications so the user
+ * doesn't have to watch the SSH output channel for transient drops. Skips the
+ * very first attempt to avoid noisy toasts on quick blip recoveries; only fires
+ * once per scheduled attempt from attempt #2 onwards. On final give-up, offers
+ * "Show Logs" / "Reconnect" buttons.
+ */
+function attachReconnectNotifier(sshConn: SshConnection, host: string): void {
+	sshConn.onReconnectState = (state: ReconnectState): void => {
+		switch (state.kind) {
+			case 'attempting':
+				if (state.attempt >= 2) {
+					void vscode.window.showInformationMessage(
+						`ChipOS Remote (${host}): reconnecting (${state.attempt}/${state.max})…`,
+					);
+				}
+				break;
+			case 'succeeded':
+				if (state.afterAttempts > 0) {
+					void vscode.window.showInformationMessage(
+						`ChipOS Remote (${host}): reconnected.`,
+					);
+				}
+				break;
+			case 'gaveUp': {
+				const showLogs = 'Show Logs';
+				const reconnect = 'Reconnect';
+				const detail = state.lastError ? ` Last error: ${state.lastError}` : '';
+				void vscode.window.showErrorMessage(
+					`ChipOS Remote (${host}): lost connection after ${state.afterAttempts} attempts.${detail}`,
+					showLogs,
+					reconnect,
+				).then(action => {
+					if (action === showLogs) {
+						outputChannel.show();
+					} else if (action === reconnect) {
+						void vscode.commands.executeCommand('chipos-remote-ssh.connect');
+					}
+				});
+				break;
+			}
+		}
+	};
+}
+
 async function disconnect(): Promise<void> {
 	// Snapshot the map so the parallel cleanups can't race against
 	// activeSessions.clear() below.
@@ -968,6 +1014,7 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 			return { ok: false, error: `SSH connect failed: ${msg}` };
 		}
 		log(`[ChipOS RemoteWorker] SSH connected elapsed=${Date.now() - t0}ms`);
+		attachReconnectNotifier(sshConn, sshConn.host);
 	}
 
 	const cfg = vscode.workspace.getConfiguration('chipos.backend');

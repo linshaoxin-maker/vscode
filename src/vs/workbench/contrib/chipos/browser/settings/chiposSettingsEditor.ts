@@ -246,6 +246,22 @@ export class ChipOSSettingsEditor extends EditorPane {
 		}
 	}
 
+	/**
+	 * VS Code skips `setInput()` and only calls `setOptions()` when an editor
+	 * is reopened with an input that already matches the current pane's input
+	 * (see editorPanes.ts `doSetInput`). Without this override, our
+	 * `initialTab` would be ignored on every reopen — meaning the user would
+	 * stay on whatever tab they last looked at instead of resetting to General
+	 * (or whichever tab was explicitly requested).
+	 */
+	override setOptions(options: IEditorOptions | undefined): void {
+		super.setOptions(options);
+		const requested = (options as IChipOSSettingsEditorOptions | undefined)?.initialTab;
+		if (requested) {
+			this._switchTab(requested);
+		}
+	}
+
 	private _switchTab(tab: ChipOSSettingsTab): void {
 		// DOM not ready yet — createEditor hasn't run. Stash the request and
 		// bail; createEditor will pick it up via _pendingTab once the DOM is
