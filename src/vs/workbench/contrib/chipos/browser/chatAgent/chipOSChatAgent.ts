@@ -134,6 +134,15 @@ interface IChatSessionRuntime {
 	 */
 	inInitPhase: boolean;
 	lastStatusText?: string;
+	/**
+	 * UX polish — track which file refs have already been emitted in the
+	 * current invoke. Without this, an agent that writes the same file
+	 * three times (e.g. write_file → edit_file → str_replace on rtl/x.v)
+	 * produces three identical "modified" rows in the chat references
+	 * area. We dedupe on the resolved absolute path string. Cleared on
+	 * each invoke alongside the other transient maps.
+	 */
+	emittedFileRefs: Set<string>;
 }
 
 /**
@@ -489,6 +498,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// here and the first real content are folded; dedupe cache cleared.
 		runtime.inInitPhase = true;
 		runtime.lastStatusText = undefined;
+		runtime.emittedFileRefs?.clear();
 		runtime.terminalCommandLines.clear();
 		runtime.terminalArtifacts.clear();
 
@@ -832,7 +842,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							ctx.progress(editProgress);
 						}
 					}).catch(err => {
+						// B-F6: previously this only logged and gave up. If the
+						// editing-session machinery throws, the file *was* still
+						// modified on disk — but the chat references area would
+						// silently miss it. Emit a fallback file reference so the
+						// user at least sees the modified file.
 						this._logService.warn('[ChipOS Agent] ToolResult: stopExternalEdit failed for', key, err);
+						const fallbackPath = ctx.runtime.toolFileArgs.get(key);
+						if (fallbackPath) {
+							const ref = this._buildFileRef(fallbackPath, p.tool_name, ctx.runtime);
+							if (ref) { ctx.progress([ref]); }
+						}
 					});
 					ctx.runtime.toolFileArgs.delete(key);
 				} else if (p.success) {
@@ -843,30 +863,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						try {
 							const resultObj = JSON.parse(p.result);
 							filePath = resultObj.path ?? resultObj.file_path ?? resultObj.file_name;
-						} catch { /* not JSON, ignore */ }
+						} catch (parseErr) {
+							// B-F5: the prior `catch {}` silenced parse errors and
+							// made it impossible to debug "why is the modified
+							// file missing?". Log so we can at least see what shape
+							// the result took.
+							this._logService.warn('[ChipOS Agent] ToolResult: result not JSON for', p.tool_name, '-', String(parseErr).slice(0, 120));
+						}
 					}
 					if (filePath) {
-						const workspaceRoot = this._getWorkspaceRoot();
-						const absPath = filePath.startsWith('/') ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
-						const fileTools = new Set(['edit_file', 'create_file', 'apply_diff', 'write_file', 'delete_file', 'str_replace']);
-						if (fileTools.has(p.tool_name)) {
-							const isDelete = p.tool_name === 'delete_file';
-							const fileUri = URI.file(absPath);
-							const ref: IChatContentReference = {
-								kind: 'reference',
-								reference: fileUri,
-								options: {
-									status: {
-										description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
-										kind: isDelete
-											? ChatResponseReferencePartStatusKind.Omitted
-											: ChatResponseReferencePartStatusKind.Complete,
-									},
-									isDeletion: isDelete,
-								},
-							};
-							ctx.progress([ref]);
-						}
+						const ref = this._buildFileRef(filePath, p.tool_name, ctx.runtime);
+						if (ref) { ctx.progress([ref]); }
 					}
 				}
 				break;
@@ -963,25 +970,62 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// ── Todo update → native ChatTodoListService ──
 			case AgentEventType.TodoUpdate: {
 				const p = event.payload as ITodoUpdatePayload;
-				if (p.todos.length > 0 && ctx.request) {
-					const sessionRes = ctx.request.sessionResource;
-					const statusMap: Record<string, IChatTodo['status']> = {
-						done: 'completed',
-						completed: 'completed',
-						in_progress: 'in-progress',
-						'in-progress': 'in-progress',
-						pending: 'not-started',
-					};
-					const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
-						const key = t.task_status || t.status || 'pending';
-						return {
-							id: idx,
-							title: t.task_des ?? t.content ?? `Todo ${idx + 1}`,
-							status: statusMap[key] ?? 'not-started',
-						};
-					});
-					this._todoListService.setTodos(sessionRes, nativeTodos);
+				if (!ctx.request) {
+					break;
 				}
+				// B-T6: a todo widget showing up is real progress signal — let it
+				// out of the init-phase suppression bucket.
+				ctx.runtime.inInitPhase = false;
+
+				const sessionRes = ctx.request.sessionResource;
+				// B-T4 — backend has at least three serializations in flight
+				// (snake_case from the legacy adapter, kebab-case from the new
+				// adapter, and TitleCase from one model variant). Lowercase
+				// before lookup so all of {Done, IN_PROGRESS, Pending, ...}
+				// resolve correctly.
+				// B-T5 — IChatTodo.status is a 3-value union ('not-started' |
+				// 'in-progress' | 'completed'). cancelled/failed/error degrade
+				// to 'not-started' (closest existing semantic) but we log so
+				// the loss-of-information is debuggable.
+				const statusMap: Record<string, IChatTodo['status']> = {
+					'done': 'completed',
+					'completed': 'completed',
+					'finished': 'completed',
+					'in_progress': 'in-progress',
+					'in-progress': 'in-progress',
+					'inprogress': 'in-progress',
+					'running': 'in-progress',
+					'active': 'in-progress',
+					'pending': 'not-started',
+					'todo': 'not-started',
+					'not_started': 'not-started',
+					'not-started': 'not-started',
+					'cancelled': 'not-started',
+					'canceled': 'not-started',
+					'failed': 'not-started',
+					'error': 'not-started',
+				};
+				const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
+					const rawKey = (t.task_status || t.status || 'pending').toLowerCase();
+					const status = statusMap[rawKey];
+					if (!status) {
+						this._logService.warn('[ChipOS Agent] TodoUpdate: unknown status', rawKey, '→ not-started fallback');
+					}
+					// B-T3 — fall back through empty strings as well as null/undef.
+					// task_des and content were both observed to arrive as ""
+					// (the model produced an empty step); without || we'd render
+					// blank rows.
+					const title = (t.task_des || t.content || `Todo ${idx + 1}`).trim() || `Todo ${idx + 1}`;
+					return {
+						id: idx,
+						title,
+						status: status ?? 'not-started',
+					};
+				});
+				// B-T1 — call setTodos even with an empty array. Backend signals
+				// "all done, clean slate" by emitting `todos: []`; the prior
+				// `length > 0` gate left stale rows hanging in the UI forever.
+				this._todoListService.setTodos(sessionRes, nativeTodos);
 				break;
 			}
 
@@ -1522,6 +1566,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalCommandLines: new Map<string, string>(),
 				terminalArtifacts: new Map(),
 				inInitPhase: true,
+				emittedFileRefs: new Set<string>(),
 			  } as IChatSessionRuntime;
 
 		return new Promise<IChatAgentResult>((resolve) => {
@@ -2121,6 +2166,76 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * Build the IChatContentReference for a modified/created/deleted file,
+	 * if (and only if) we haven't already emitted one for that resolved
+	 * absolute path in the current invoke. Returns undefined when:
+	 *   - tool isn't a file-mutating one (read_file etc.)
+	 *   - we've already emitted a ref for the same file (B-F1 dedupe)
+	 *   - path resolution fails
+	 *
+	 * Also handles the path-shape footguns: collapses `/./` and double
+	 * slashes (B-F2), and detects Windows-style absolute paths
+	 * (`C:\foo\bar`) so they aren't mistakenly treated as relative and
+	 * re-rooted under the workspace (B-F3).
+	 */
+	private static readonly _fileMutatingTools = new Set([
+		'edit_file', 'create_file', 'apply_diff', 'write_file',
+		'delete_file', 'str_replace',
+	]);
+
+	private static _isAbsolutePath(p: string): boolean {
+		// POSIX: leading slash. Windows: drive letter followed by `:\` or `:/`.
+		return p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p);
+	}
+
+	private static _normalizePath(p: string): string {
+		return p
+			.replace(/\\/g, '/')   // Windows backslashes → forward slash so the
+			//                        rest of the regex chain is uniform.
+			.replace(/\/{2,}/g, '/') // collapse runs of slashes
+			.replace(/\/\.\//g, '/') // collapse "/./" mid-path
+			.replace(/^\.\//, '')    // strip leading "./"
+			.replace(/\/\.$/, '');   // strip trailing "/."
+	}
+
+	private _buildFileRef(
+		filePath: string,
+		toolName: string,
+		runtime: IChatSessionRuntime,
+	): IChatContentReference | undefined {
+		if (!ChipOSChatAgent._fileMutatingTools.has(toolName)) {
+			return undefined;
+		}
+		const workspaceRoot = this._getWorkspaceRoot();
+		const isAbs = ChipOSChatAgent._isAbsolutePath(filePath);
+		const joined = isAbs ? filePath : (workspaceRoot ? `${workspaceRoot}/${filePath}` : filePath);
+		const absPath = ChipOSChatAgent._normalizePath(joined);
+
+		// B-F1: dedupe per invoke. Tracking the resolved absolute path means
+		// `rtl/x.v` and `./rtl/x.v` collapse to one row even if the agent
+		// alternates the spelling.
+		if (runtime.emittedFileRefs.has(absPath)) {
+			return undefined;
+		}
+		runtime.emittedFileRefs.add(absPath);
+
+		const isDelete = toolName === 'delete_file';
+		return {
+			kind: 'reference',
+			reference: URI.file(absPath),
+			options: {
+				status: {
+					description: isDelete ? '$(diff-removed) deleted' : '$(diff-modified) modified',
+					kind: isDelete
+						? ChatResponseReferencePartStatusKind.Omitted
+						: ChatResponseReferencePartStatusKind.Complete,
+				},
+				isDeletion: isDelete,
+			},
+		};
+	}
+
+	/**
 	 * Heuristic: does this Status text look like backend-internal log output
 	 * leaking into the chat? Common shapes seen in production:
 	 *   "Session started (mode=local)"
@@ -2623,6 +2738,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalCommandLines: new Map<string, string>(),
 				terminalArtifacts: new Map(),
 				inInitPhase: true,
+				emittedFileRefs: new Set<string>(),
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
 		}
