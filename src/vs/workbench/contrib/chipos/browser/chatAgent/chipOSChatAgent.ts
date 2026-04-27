@@ -231,10 +231,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			let bucket: 'unconfigured' | 'loopback-no-server' | 'cloud-unreachable' | 'manual-misconfigured';
 			if (!productDefault && !userSetting && /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(target)) {
-				// We fell through to hardcoded localhost — neither product.json nor user
-				// settings provided a URL. Almost always means a dev build with no
-				// `make local` running.
-				bucket = configured === 'local' ? 'loopback-no-server' : 'unconfigured';
+				// We fell through to hardcoded localhost — neither product.json nor
+				// user settings provided a URL. Almost always means a dev build
+				// pointed at no deployment, or the user explicitly set
+				// reasoningUrl=loopback for backend development without actually
+				// running a backend on this machine.
+				bucket = 'unconfigured';
 			} else if (/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(target)) {
 				bucket = 'loopback-no-server';
 			} else if (configured && configured !== 'auto' && configured !== 'cloud-reasoning') {
