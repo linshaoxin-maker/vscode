@@ -109,15 +109,14 @@ configurationRegistry.registerConfiguration({
 
 		'chipos.backend.mode': {
 			type: 'string',
-			enum: ['auto', 'local', 'cloud-reasoning', 'manual'],
+			enum: ['auto', 'cloud-reasoning', 'manual'],
 			enumDescriptions: [
-				localize('chipos.backend.mode.auto', 'Auto: detect deployment from workspace and environment (recommended, default)'),
-				localize('chipos.backend.mode.local', 'Local: reasoning + execution spawned by the IDE on this machine'),
-				localize('chipos.backend.mode.cloudReasoning', 'Cloud Reasoning: local execution + remote reasoning layer'),
-				localize('chipos.backend.mode.manual', 'Manual: connect to pre-deployed reasoning/worker URLs'),
+				localize('chipos.backend.mode.auto', 'Auto: detect deployment from workspace and product defaults (recommended, default)'),
+				localize('chipos.backend.mode.cloudReasoning', 'Cloud Reasoning: SSH-Remote forwards a remote Worker; chat goes direct to the cloud Reasoner'),
+				localize('chipos.backend.mode.manual', 'Manual: connect to pre-deployed reasoning/worker URLs (you set reasoningUrl yourself)'),
 			],
 			default: 'auto',
-			description: localize('chipos.backend.mode.desc', '[Developer] Override the auto-detected backend deployment mode. Only respected when "chipos.backend.developerMode" is enabled. Leave at "auto" unless you know exactly why you need a specific mode.'),
+			description: localize('chipos.backend.mode.desc', '[Developer] Override the auto-detected backend deployment mode. Only respected when "chipos.backend.developerMode" is enabled. Leave at "auto" unless you know exactly why you need a specific mode. ("local" was removed 2026-04-27 — IDE never spawns backends.)'),
 			scope: ConfigurationScope.APPLICATION,
 			tags: ['experimental'],
 		},
@@ -164,40 +163,12 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
-		'chipos.worker.downloadUrl': {
-			type: 'string',
-			default: '',
-			description: localize('chipos.worker.downloadUrl.desc', 'Custom download URL for the Worker binary (e.g. a private mirror or file:// for local testing). Leave empty to download from the official GitHub Releases.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.worker.version': {
-			type: 'string',
-			default: 'latest',
-			description: localize('chipos.worker.version.desc', "Worker binary version to use. Set to 'latest' to auto-detect, or pin to a specific version like '0.3.0'."),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
 		'chipos.worker.mcpConfigPath': {
 			type: 'string',
 			default: '',
 			// Default empty → resolveWorkerMcpConfigPath() returns ~/.chipos/mcp_servers.json.
 			// Set explicitly to override (e.g. for per-machine custom paths or shared configs).
 			description: localize('chipos.worker.mcpConfigPath.desc', 'Absolute path to the worker-side MCP servers JSON config (passed to the Worker via --mcp-config). Leave empty for the default ~/.chipos/mcp_servers.json. For SSH-Remote workers this path is resolved on the remote host (use $HOME, not the IDE-side home).'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.pythonPath': {
-			type: 'string',
-			default: '',
-			description: localize('chipos.backend.pythonPath.desc', 'Optional Python executable path used by desktop IPC spawning. Leave empty to use the bundled/runtime default.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.dir': {
-			type: 'string',
-			default: '',
-			description: localize('chipos.backend.dir.desc', 'Optional backend_v2 directory override for local desktop development.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
