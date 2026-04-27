@@ -137,31 +137,16 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
-		'chipos.backend.grpcAddress': {
-			type: 'string',
-			default: '',
-			// Real architectural setting — Reasoner and Worker are deployed on
-			// SEPARATE machines by default. This is the gRPC dial target the
-			// spawned Worker uses to reach Reasoner across the network. Only
-			// the dev/single-server case can leave this empty (then loopback
-			// fallback kicks in).
-			description: localize('chipos.backend.grpcAddress.desc', 'gRPC address the spawned Worker should use to dial Reasoner (e.g. `reasoning.chipos.ai:50051`). Required when Reasoner and Worker are on different machines (the default deployment topology). Leave empty for single-machine dev/testing — falls back to product.json injection or 127.0.0.1:50051 loopback.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.token': {
-			type: 'string',
-			default: '',
-			description: localize('chipos.backend.token.desc', '[Legacy fallback] Manual JWT token for authenticating with the reasoning layer. Prefer OAuth login via ChipOS: Login command.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
-		'chipos.backend.tlsEnabled': {
-			type: 'boolean',
-			default: false,
-			description: localize('chipos.backend.tlsEnabled.desc', 'Enable TLS for gRPC connections between Worker and Reasoner.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
+		// chipos.backend.grpcAddress / token / tlsEnabled used to live here as
+		// user-facing settings. They join the seven keys removed above for the
+		// same reason: end users should never reason about the deployment
+		// topology, the worker's gRPC dial target, the auth-token fallback, or
+		// TLS toggles. grpcAddress and tlsEnabled come from product.json (the
+		// reasonerGrpcAddress field; TLS implied by https:// scheme on
+		// reasoningUrl). token is superseded by OAuth login via the unified
+		// auth flow. Code that still calls getValue() on these names continues
+		// to work — only Cmd+, search and IntelliSense lose them, which is
+		// the goal.
 
 		// ── Phase 1 Unified Auth ──
 

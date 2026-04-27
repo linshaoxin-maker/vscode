@@ -213,13 +213,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * "make it work like a fresh install" escape hatch.
 	 */
 	private async _resetBackendOverrides(): Promise<void> {
+		// Every chipos.backend.* key the IDE has ever shipped. Even though the
+		// schema for most of these has been removed, older user settings.json
+		// files may still carry stale values written by earlier builds — we
+		// must clear all of them or the override silently keeps poisoning the
+		// connection. Order doesn't matter; updateValue(undefined, USER) is
+		// idempotent for keys with no userValue.
 		const keys = [
+			'chipos.backend.mode',
+			'chipos.backend.developerMode',
 			'chipos.backend.reasoningUrl',
 			'chipos.backend.workerHttpUrl',
 			'chipos.backend.httpPort',
 			'chipos.backend.grpcPort',
 			'chipos.backend.workerHttpPort',
-			'chipos.backend.mode',
+			'chipos.backend.grpcAddress',
+			'chipos.backend.token',
+			'chipos.backend.tlsEnabled',
 		];
 		const cleared: string[] = [];
 		for (const key of keys) {
