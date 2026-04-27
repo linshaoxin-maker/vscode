@@ -36,7 +36,8 @@
 		"reasoningUrl": "http://121.89.82.122:8080",
 		"reasonerGrpcAddress": "121.89.82.122:50051",
 		"websiteUrl": "http://121.89.82.122",
-		"workerApiKey": ""
+		"workerApiKey": "",
+		"developerBuild": true
 	},
 	"webviewContentExternalBaseUrlTemplate": "https://{{uuid}}.vscode-cdn.net/insider/ef65ac1ba57f57f2a3961bfe94aa20481caca4c6/out/vs/workbench/contrib/webview/browser/pre/",
 	"builtInExtensions": [

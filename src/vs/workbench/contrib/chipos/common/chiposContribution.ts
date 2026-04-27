@@ -14,6 +14,7 @@ import { ILifecycleService, LifecyclePhase } from '../../../../workbench/service
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
@@ -598,6 +599,7 @@ class ChipOSContribution extends Disposable {
 		@IMcpService private readonly _mcpService: IMcpService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IChipOSUsageService private readonly _usageService: IChipOSUsageService,
+		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
 
@@ -666,10 +668,12 @@ class ChipOSContribution extends Disposable {
 		}));
 
 		const backendMode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
-		const developerMode = this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false;
+		// developerBuild comes from product.json (build-time), not runtime user
+		// settings — end-user release builds have it false/absent.
+		const developerBuild = this._productService.chiposDefaults?.developerBuild === true;
 
 		// v2: SidecarManager will resolve "auto" against the actual environment.
-		this._logService.info(`[ChipOS] Starting backend, configured mode='${backendMode}' developerMode=${developerMode}`);
+		this._logService.info(`[ChipOS] Starting backend, configured mode='${backendMode}' developerBuild=${developerBuild}`);
 		this._sidecarManager.startBackend();
 
 		this._registerChatAgent();

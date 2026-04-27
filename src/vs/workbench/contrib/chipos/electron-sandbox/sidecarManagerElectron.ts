@@ -12,7 +12,7 @@
  *   - 已有 reasoner 监听本地 8080 → Manual（不要重复 spawn，复用现有进程）
  *   - 显式配了远程 reasoningUrl → CloudReasoning（本地只 spawn Worker）
  *   - 否则 → Local（spawn reasoner + worker）
- *   只有打开 `chipos.backend.developerMode` 后，用户在设置 UI 才能强制覆盖此自动决策。
+ *   只有 build-time flag `product.chiposDefaults.developerBuild === true` 的二进制，用户才能在 ChipOS Settings 面板里强制覆盖此自动决策；end-user release build 完全没有这个开关。
  *
  * R49: Worker 启动策略改为 "二进制优先"：
  *   1. 已有 Worker（instance.json PID 活着） → acquire ref_count（多窗口共享）
@@ -241,13 +241,17 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	 */
 	private async _resolveMode(): Promise<BackendMode> {
 		const configured = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
-		const developerMode = this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false;
+		// Build-time flag from product.json (replaces the old runtime
+		// `chipos.backend.developerMode` user setting). End-user release builds
+		// have this false/absent and chipos.backend.mode is silently ignored.
+		const developerBuild = this._productService.chiposDefaults?.developerBuild === true;
 
-		// Developer override: respect explicit non-auto choice.
-		if (developerMode && configured !== 'auto' && configured !== '') {
+		// Developer build override: respect explicit non-auto choice from the
+		// in-IDE Backend Mode picker (only rendered when developerBuild=true).
+		if (developerBuild && configured !== 'auto' && configured !== '') {
 			const forced = this._parseModeOrAuto(configured);
 			if (forced !== BackendMode.Auto) {
-				this._logService.info(`[ChipOS SidecarElectron] developerMode=true, forcing mode=${forced}`);
+				this._logService.info(`[ChipOS SidecarElectron] developerBuild=true, forcing mode=${forced}`);
 				return forced;
 			}
 		}

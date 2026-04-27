@@ -14,6 +14,7 @@ import { SelectBox, ISelectOptionItem } from '../../../../../../base/browser/ui/
 import { defaultCheckboxStyles, defaultInputBoxStyles, defaultSelectBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
+import { IProductService } from '../../../../../../platform/product/common/productService.js';
 
 export class ConnectionTab extends Disposable {
 
@@ -29,6 +30,7 @@ export class ConnectionTab extends Disposable {
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ISidecarManagerService private readonly _sidecarManager: ISidecarManagerService,
 		@IContextViewService contextViewService: IContextViewService,
+		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
 		this._contextViewProvider = contextViewService ?? undefined;
@@ -38,7 +40,11 @@ export class ConnectionTab extends Disposable {
 	private _render(): void {
 		dom.clearNode(this._container);
 
-		const developerMode = this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false;
+		// Build-time flag from product.json. End-user release builds set this
+		// to false (or omit it); ChipOS-team / private-deployment-debug builds
+		// set it to true. NOT a runtime user setting — there is intentionally
+		// no in-IDE toggle for this.
+		const developerBuild = this._productService.chiposDefaults?.developerBuild === true;
 
 		// ── Sub-section: Live Status (always shown) ──
 		const statusSection = dom.append(this._container, dom.$('.chipos-settings-section'));
@@ -48,18 +54,11 @@ export class ConnectionTab extends Disposable {
 		this._renderConnectionStatus(statusSection);
 		this._renderWorkerStatus(statusSection);
 
-		// ── Sub-section: Developer Mode toggle ──
-		// Always shown so the user can enable it without hand-editing settings.json.
-		const devSection = dom.append(this._container, dom.$('.chipos-settings-section'));
-		dom.append(devSection, dom.$('.chipos-settings-section-title', undefined,
-			localize('chipos.settings.section.developer', 'Developer Options')));
-		this._renderDeveloperModeToggle(devSection);
-
-		if (developerMode) {
-			// ── Sub-section: Backend Mode override (developer-only) ──
+		if (developerBuild) {
+			// ── Sub-section: Backend Mode override (developer build only) ──
 			const modeSection = dom.append(this._container, dom.$('.chipos-settings-section'));
 			dom.append(modeSection, dom.$('.chipos-settings-section-title', undefined,
-				localize('chipos.settings.section.mode', 'Backend Mode (Developer Override)')));
+				localize('chipos.settings.section.mode', 'Backend Mode (Developer Build Override)')));
 			this._renderBackendMode(modeSection);
 
 			// ── Sub-section: Mode-specific settings (dynamic) ──
@@ -68,16 +67,9 @@ export class ConnectionTab extends Disposable {
 			this._modeSpecificContainer = dom.append(configSection, dom.$('.chipos-mode-specific'));
 			this._renderModeSpecificSettings();
 
-			// ── Sub-section: Legacy / v1 fallback (collapsed, dev only) ──
+			// ── Sub-section: Legacy / v1 fallback (developer build only) ──
 			this._renderLegacySettings(this._container);
 		}
-
-		// Re-render the whole tab if developerMode toggles on/off.
-		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('chipos.backend.developerMode')) {
-				this._render();
-			}
-		}));
 	}
 
 	// ── New: read-only "resolved mode" indicator ─────────────────────────
@@ -96,27 +88,6 @@ export class ConnectionTab extends Disposable {
 		};
 		update();
 		this._disposables.add(this._sidecarManager.onDidChangeState(update));
-	}
-
-	// ── New: developer mode toggle ───────────────────────────────────────
-	private _renderDeveloperModeToggle(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
-
-		const checkbox = this._disposables.add(new Checkbox(
-			localize('chipos.settings.developerMode', 'Developer Mode'),
-			this._configurationService.getValue<boolean>('chipos.backend.developerMode') ?? false,
-			defaultCheckboxStyles,
-		));
-		dom.append(row, checkbox.domNode);
-
-		const textContainer = dom.append(row, dom.$('div'));
-		dom.append(textContainer, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.developerMode.desc', 'Show advanced backend settings (mode override, raw URLs/ports). Most users should leave this off — backend deployment is auto-detected based on whether you are connected via Remote-SSH and whether services are already running.')
-		));
-
-		this._disposables.add(checkbox.onChange(() => {
-			this._configurationService.updateValue('chipos.backend.developerMode', checkbox.checked, ConfigurationTarget.USER);
-		}));
 	}
 
 	private _updateModeSpecificTitle(mode: string): void {

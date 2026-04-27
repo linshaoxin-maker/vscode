@@ -101,6 +101,18 @@ export interface IProductConfiguration {
 		readonly reasonerGrpcAddress?: string;
 		readonly websiteUrl?: string;
 		readonly workerApiKey?: string;
+		/**
+		 * Build-time flag that exposes ChipOS internal backend controls
+		 * (Backend Mode override, raw URL/port editors) inside the ChipOS
+		 * Settings tab. End-user release builds set this to `false` (or
+		 * omit the key); ChipOS team / private-deployment-debug builds set
+		 * it to `true`.
+		 *
+		 * NOTE: this is a build-time flag, NOT a runtime user setting. It is
+		 * baked into product.json by the packaging step and the user has no
+		 * way (and no need) to flip it from inside the IDE.
+		 */
+		readonly developerBuild?: boolean;
 	};
 
 	readonly builtInExtensions?: IBuiltInExtension[];
