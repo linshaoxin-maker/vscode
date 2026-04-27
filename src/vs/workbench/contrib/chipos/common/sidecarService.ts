@@ -24,20 +24,22 @@ export const enum SidecarState {
 /**
  * 后端部署模式
  *
- * 默认值是 `Auto` —— 由 `SidecarManager` 在运行时根据 workspace 远程性、
- * 已有进程探测等信号自动解析为 Local / CloudReasoning / Manual 之一。
+ * 默认值是 `Auto` —— SidecarManager 根据 workspace 是否是 SSH-Remote、
+ * product.json 是否注入了 reasoningUrl 等信号自动决定具体行为。
  *
- * 显式取 Local / CloudReasoning / Manual 仅在 `chipos.backend.developerMode`
- * 打开时通过设置 UI 暴露，普通用户无需关心。
+ * 设计原则：**IDE 永远不 spawn 任何 backend 进程**. Reasoner 和 Worker
+ * 都由开发者/运维手动部署（121 host / 云端 / Docker / chipos-server REH），
+ * IDE 通过 `chipos.backend.reasoningUrl` + workerHttpUrl 连过去.
+ *
+ * 历史上有过 `Local` 模式（IDE 自己 spawn 一对 reasoning + worker），
+ * 已于 2026-04-27 移除 — 见 backend_v2/Makefile commit / chipos-configuration-reference §0.
  */
 export enum BackendMode {
 	/** 自适应：根据环境自动选择最合适的模式（默认） */
 	Auto = 'auto',
-	/** 场景 A / B1: 推理+执行同进程（本地或 Remote-SSH 远程） */
-	Local = 'local',
-	/** 场景 B2 / E: 本地执行 + 云端推理 */
+	/** 本地执行 + 云端推理（chipos-remote-ssh / chipos-server REH 在远端 spawn worker, IDE 连云端 reasoner） */
 	CloudReasoning = 'cloud-reasoning',
-	/** 场景 C / D: 手动指定地址（预部署） */
+	/** 手动指定 reasoner / worker URL（pre-deployed backend）*/
 	Manual = 'manual',
 }
 
@@ -87,15 +89,20 @@ export interface ISidecarManagerService {
 	// ── 生命周期 ────────────────────────────────────────────────────────
 
 	/**
-	 * 根据 chipos.backend.mode 配置启动后端。
-	 * - local: spawn local_runner.py（推理+执行同进程）
-	 * - cloud-reasoning: spawn Worker + 连接云端推理
-	 * - manual: 不 spawn，直接连接预部署的后端
+	 * 根据 chipos.backend.mode 配置 + workspace 远程性 决定如何连后端。
+	 * IDE 不 spawn reasoning / worker — 它们都由开发者/运维独立部署.
+	 *
+	 * - cloud-reasoning: workspace 是 SSH-Remote, chipos-remote-ssh 已经
+	 *                    forward worker HTTP, IDE 连云端 reasoner +
+	 *                    forwarded worker
+	 * - manual:         不做任何探测, 直接连 settings 里写的 reasoningUrl
+	 *                   / workerHttpUrl
 	 */
 	startBackend(): Promise<void>;
 
 	/**
-	 * 停止后端（包括 Worker 和推理层进程）
+	 * 停止后端连接（清理 SSE 流 / worker_token refresh timer 等）。
+	 * 不会去 kill 任何 backend 进程 — 那是部署方的事.
 	 */
 	stopBackend(): Promise<void>;
 

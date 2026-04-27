@@ -37,11 +37,8 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
-import { localize } from '../../../../nls.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -81,9 +78,6 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	private _state: SidecarState = SidecarState.NotStarted;
 	private _workerState: WorkerState = WorkerState.NotStarted;
 	private _mode: BackendMode;
-	private _workerPid: number | undefined;
-	private _isSharedInstance = false;
-	private _callerId: string;
 	// Phase 2 Worker JWT auto-refresh: timer fires before the current
 	// worker_token expires so we can mint a new one + respawn the Worker
 	// before Reasoner starts rejecting on UNAUTHENTICATED.
@@ -125,9 +119,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			return explicit;
 		}
 		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
-		if (this._mode === BackendMode.Local || this._mode === BackendMode.CloudReasoning) {
+		if (this._mode === BackendMode.CloudReasoning) {
+			// SSH-Remote / REH path — chipos-remote-ssh forwarded the remote
+			// worker HTTP port to local loopback.
 			return `http://127.0.0.1:${workerHttpPort}`;
 		}
+		// Manual mode — derive from the reasoner host the user configured.
 		try {
 			const url = new URL(this.reasoningUrl);
 			return `${url.protocol}//${url.hostname}:${workerHttpPort}`;
@@ -160,14 +157,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSAuthService private readonly _authService: IChipOSAuthService,
 		@IChipOSRuntimeOverridesService private readonly _runtimeOverrides: IChipOSRuntimeOverridesService,
-		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super();
 
 		// Provisional mode — final value is computed lazily in startBackend() after
 		// auto-detection (workspace authority, port probe). Until then, treat as Auto.
 		this._mode = BackendMode.Auto;
-		this._callerId = `electron-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 		// Phase 2: when the user signs in/out the Worker is now bound to the
 		// wrong identity (or none at all). Respawn so the new worker_token
@@ -219,14 +214,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			return;
 		}
 
+		// IDE never spawns Reasoner / Worker — both are deployed independently
+		// by the user (Docker / chipos-server REH / chipos-remote-ssh).
+		// Health-check the configured endpoint and call it a day.
 		this._setState(SidecarState.Spawning);
 
 		try {
-			if (this._mode === BackendMode.Local) {
-				await this._spawnReasonerViaIpc();
-			}
-
-			await this._spawnWorkerViaIpc();
 			await this._healthCheckLoop();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -239,10 +232,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	 * Resolve `chipos.backend.mode`:
 	 *   1. developerMode + explicit value → respect user's choice
 	 *   2. Otherwise auto-detect:
-	 *      a. workspace is SSH remote → Manual (chipos-remote-ssh / REH owns spawn)
-	 *      b. local /health already responds → Manual (don't fight existing process)
-	 *      c. reasoningUrl points to non-loopback host → CloudReasoning (only spawn worker locally)
-	 *      d. fallback → Local
+	 *      a. workspace is SSH remote → Manual (chipos-remote-ssh / REH owns
+	 *         worker spawning + tunnel)
+	 *      b. reasoningUrl points to non-loopback host → CloudReasoning
+	 *         (typical model A: cloud Reasoner + remote Worker)
+	 *      c. fallback → Manual (user must configure reasoningUrl;
+	 *         IDE never spawns local backends)
 	 */
 	private async _resolveMode(): Promise<BackendMode> {
 		const configured = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
@@ -266,13 +261,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			return BackendMode.Manual;
 		}
 
-		// (b) Local Reasoner already running → adopt it instead of spawning a duplicate.
-		if (await this._localReasonerAlreadyRunning()) {
-			this._logService.info('[ChipOS SidecarElectron] auto: local reasoner already serving, mode=manual');
-			return BackendMode.Manual;
-		}
-
-		// (c) Reasoner URL points to a remote host (either via settings or
+		// (b) Reasoner URL points to a remote host (either via settings or
 		// product.json default). Use the same resolver as `reasoningUrl` getter
 		// so the mode decision sees what the rest of the code will actually use.
 		const reasoningUrl = resolveReasoningUrl(this._configurationService, this._productService);
@@ -281,16 +270,20 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			return BackendMode.CloudReasoning;
 		}
 
-		// (d) Default — spawn everything on this machine.
-		this._logService.info('[ChipOS SidecarElectron] auto: defaulting to mode=local');
-		return BackendMode.Local;
+		// (c) Default — Manual. The IDE never spawns local backends; if the
+		// user wants to talk to a backend on this machine, they deploy it
+		// themselves (Docker / direct python run) and point the IDE at it.
+		this._logService.info('[ChipOS SidecarElectron] auto: defaulting to mode=manual');
+		return BackendMode.Manual;
 	}
 
 	private _parseModeOrAuto(value: string): BackendMode {
 		switch (value) {
-			case 'local': return BackendMode.Local;
 			case 'cloud-reasoning': return BackendMode.CloudReasoning;
 			case 'manual': return BackendMode.Manual;
+			// 'local' was removed 2026-04-27 (IDE never spawns backends).
+			// Treat any unknown / legacy value as auto so older user settings
+			// don't crash the resolver.
 			default: return BackendMode.Auto;
 		}
 	}
@@ -524,23 +517,6 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		}
 	}
 
-	private async _localReasonerAlreadyRunning(): Promise<boolean> {
-		// Only probe loopback addresses — never touch a configured remote URL here.
-		const url = this.reasoningUrl;
-		if (!this._isLoopback(url)) {
-			return false;
-		}
-		try {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 1500);
-			const resp = await fetch(`${url}/health`, { signal: controller.signal });
-			clearTimeout(timer);
-			return resp.ok;
-		} catch {
-			return false;
-		}
-	}
-
 	/**
 	 * Manual / adopted-existing-process variant of the health check.
 	 *
@@ -603,98 +579,35 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	async stopBackend(): Promise<void> {
 		this._logService.info('[ChipOS SidecarElectron] stopBackend()');
-
-		if (this._isSharedInstance) {
-			const remaining = await this._invokeIpc('chipos:releaseRef', {
-				workspaceRoot: this._resolveWorkspaceRoot(),
-				callerId: this._callerId,
-			});
-			this._logService.info(`[ChipOS SidecarElectron] Released ref, remaining=${remaining}`);
-			if (remaining && remaining > 0) {
-				this._workerPid = undefined;
-				this._setWorkerState(WorkerState.NotStarted);
-				this._setState(SidecarState.NotStarted);
-				return;
-			}
-		}
-
-		await this._killProcessViaIpc('worker');
+		// Tear down our own observation state. We don't kill backend processes —
+		// IDE never owned them in the first place.
 		this._setWorkerState(WorkerState.NotStarted);
-
-		if (this._mode === BackendMode.Local) {
-			await this._killProcessViaIpc('reasoner');
-		}
-
 		this._setState(SidecarState.NotStarted);
 	}
 
 	async restartWorker(): Promise<void> {
-		this._logService.info('[ChipOS SidecarElectron] restartWorker()');
+		// IDE doesn't own the worker process; "restart" here just means
+		// re-observing health and re-minting the auth token. Actual respawn
+		// is the responsibility of chipos-remote-ssh (REH/SSH path) or
+		// whoever deployed the worker (Docker / direct).
+		this._logService.info('[ChipOS SidecarElectron] restartWorker() — re-observing health');
 		this._clearWorkerTokenRefreshTimer();
-		await this._killProcessViaIpc('worker');
-		await this._spawnWorkerViaIpc();
+		this._setWorkerState(WorkerState.Starting);
+		void this._observeWorkerRegistration().catch(() => { /* best effort */ });
 	}
 
 	// ── Worker JWT auto-refresh ──────────────────────────────────────────
-
-	/**
-	 * Schedule a one-shot timer that re-mints the worker_token + respawns the
-	 * Worker process before the current token expires. Reads ``exp`` straight
-	 * from the JWT so we honor whatever the website handed us, falling back to
-	 * ``expires_in`` when the JWT can't be parsed.
-	 *
-	 * Clears any existing timer first — the most recent spawn always wins.
-	 */
-	private _scheduleWorkerTokenRefresh(token: string | undefined, fallbackExpiresInS: number | undefined): void {
-		this._clearWorkerTokenRefreshTimer();
-		if (!token) {
-			return; // dev / api_key path — nothing to refresh
-		}
-		const expEpochMs = parseJwtExpMs(token);
-		const nowMs = Date.now();
-		const expiresInMs = expEpochMs > 0
-			? expEpochMs - nowMs
-			: (fallbackExpiresInS ?? 0) * 1000;
-		// Refresh 30 min before expiry, but never sooner than 60s (avoid spin)
-		// and never more than 23h out (so a misconfigured server-side exp can't
-		// stretch our refresh interval indefinitely).
-		const REFRESH_MARGIN_MS = 30 * 60 * 1000;
-		const MIN_DELAY_MS = 60 * 1000;
-		const MAX_DELAY_MS = 23 * 60 * 60 * 1000;
-		const delayMs = Math.min(MAX_DELAY_MS, Math.max(MIN_DELAY_MS, expiresInMs - REFRESH_MARGIN_MS));
-		this._workerTokenRefreshTimer = setTimeout(() => {
-			this._workerTokenRefreshTimer = undefined;
-			this._refreshWorkerTokenAndRespawn().catch(err => {
-				const msg = err instanceof Error ? err.message : String(err);
-				// Audit fix: a silent log-only failure here means the worker
-				// dies a few hours later (token expired, no respawn) and the
-				// user sees "WORKER_UNAVAILABLE" with no clue why. Surface a
-				// toast pointing them at the recovery action.
-				this._logService.warn(`[ChipOS SidecarElectron] worker_token auto-refresh failed: ${msg}`);
-				void this._notificationService.prompt(
-					Severity.Warning,
-					localize('chipos.tokenRefreshFailed',
-						'ChipOS: failed to refresh worker authentication. Tools will stop working when the current token expires.'),
-					[
-						{
-							label: localize('chipos.reloadWindow', 'Reload Window'),
-							run: () => {
-								void this._commandService.executeCommand('workbench.action.reloadWindow');
-							},
-						},
-						{
-							label: localize('chipos.retryNow', 'Retry Now'),
-							run: () => {
-								void this._refreshWorkerTokenAndRespawn().catch(() => { /* retry already best-effort */ });
-							},
-						},
-					],
-					{ sticky: false },
-				);
-			});
-		}, delayMs);
-		this._logService.info('[ChipOS SidecarElectron] worker_token auto-refresh scheduled in %dms', delayMs);
-	}
+	//
+	// IDE no longer spawns the worker process, so it doesn't own the
+	// worker_token either. The chipos-remote-ssh extension (SSH path) and
+	// the REH-side ChiposRemoteWorkerService (RPC path) each manage their
+	// own token refresh — see scheduleWorkerTokenRefresh() in
+	// extensions/chipos-remote-ssh/src/extension.ts.
+	//
+	// Kept here as a stub because:
+	//   - login state changes still trigger restartWorker()
+	//   - dispose still has a clear-timer call
+	// Both call into the no-op timer guard below.
 
 	private _clearWorkerTokenRefreshTimer(): void {
 		if (this._workerTokenRefreshTimer !== undefined) {
@@ -715,7 +628,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				this._logService.info('[ChipOS SidecarElectron] worker_token auto-refresh skipped — user signed out');
 				return;
 			}
-			this._logService.info('[ChipOS SidecarElectron] worker_token nearing expiry — respawning Worker');
+			this._logService.info('[ChipOS SidecarElectron] login state changed — re-observing worker registration');
 			await this.restartWorker();
 		} finally {
 			this._refreshingWorkerToken = false;
@@ -724,18 +637,6 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	override dispose(): void {
 		this._clearWorkerTokenRefreshTimer();
-		if (this._isSharedInstance) {
-			// R50 fix: dispose 时也要检查 ref_count 归零并 kill Worker
-			this._invokeIpc('chipos:releaseRef', {
-				workspaceRoot: this._resolveWorkspaceRoot(),
-				callerId: this._callerId,
-			}).then((remaining: number | undefined) => {
-				if (!remaining || remaining <= 0) {
-					this._logService.info('[ChipOS SidecarElectron] dispose: ref_count=0, killing Worker');
-					this._invokeIpc('chipos:killProcess', 'worker').catch(() => {});
-				}
-			}).catch(() => {});
-		}
 
 		// Path-3 Stage-2/3: release ref_count on REH if we used the RPC path.
 		if (this._rpcSpawnedWorkspaceRoot) {
@@ -763,221 +664,22 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	async kill(): Promise<void> { return this.stopBackend(); }
 	setManualUrl(_url: string | undefined): void { /* noop */ }
 
-	// ── Private: IPC 委托 ────────────────────────────────────────────────
-
-	private _resolveBackendDir(): string {
-		const explicit = this._configurationService.getValue<string>('chipos.backend.dir');
-		if (explicit) {
-			return explicit;
-		}
-		const appRoot = this._environmentService.appRoot;
-		const productDir = join(appRoot, 'resources', 'chipos-backend');
-		const devDir = join(appRoot, '..', 'backend_v2');
-		if (appRoot.includes('/out/') || appRoot.endsWith('/out')) {
-			return devDir;
-		}
-		return productDir;
-	}
-
-	private _resolveWorkspaceRoot(): string {
-		const folders = this._workspaceContextService.getWorkspace().folders;
-		if (folders.length > 0) {
-			return folders[0].uri.fsPath;
-		}
-		return '';
-	}
-
-	private async _spawnReasonerViaIpc(): Promise<void> {
-		this._logService.info('[ChipOS SidecarElectron] Spawning reasoner via IPC...');
-
-		const pythonPath = this._configurationService.getValue<string>('chipos.backend.pythonPath') ?? 'python3';
-		const httpPort = this._configurationService.getValue<number>('chipos.backend.httpPort') ?? 8080;
-		const grpcPort = this._configurationService.getValue<number>('chipos.backend.grpcPort') ?? 50051;
-
-		const env: Record<string, string> = {
-			CHIPOS_REASONING_HTTP_PORT: String(httpPort),
-			CHIPOS_REASONING_GRPC_PORT: String(grpcPort),
-			CHIPOS_DEPLOYMENT_MODE: 'local',
-		};
-
-		try {
-			const result = await this._invokeIpc('chipos:spawnProcess', {
-				pythonPath,
-				moduleArgs: ['-m', 'reasoning.server.cli', 'start'],
-				env,
-				cwd: this._resolveBackendDir(),
-				role: 'reasoner',
-			});
-			this._logService.info(`[ChipOS SidecarElectron] Reasoner spawned: pid=${result?.pid}`);
-		} catch (err) {
-			throw new Error(`IPC spawn reasoner failed: ${err}`);
-		}
-	}
-
-	/**
-	 * R49 + R50: Worker 启动（二进制优先 + 多窗口隔离）
-	 *
-	 * 启动策略：
-	 *   1. chipos:checkInstance → 已有 Worker → acquireRef → done
-	 *   2. chipos:findBinary → 有缓存二进制 → spawn 二进制
-	 *   3. chipos:downloadBinary → 自动下载 → spawn 二进制
-	 *   4. fallback → spawn Python
-	 */
-	private async _spawnWorkerViaIpc(): Promise<void> {
-		this._setWorkerState(WorkerState.Starting);
-
-		const grpcTarget = this.grpcAddress;
-		// Phase 1 Unified Auth: settings > product.json > legacy backend.token.
-		const workerApiKey = resolveWorkerApiKey(this._configurationService, this._productService);
-		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
-		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false;
-		const workspaceRoot = this._resolveWorkspaceRoot();
-		const configDownloadUrl = this._configurationService.getValue<string>('chipos.worker.downloadUrl') || '';
-		const configVersion = this._configurationService.getValue<string>('chipos.worker.version') || 'latest';
-		const backendDir = this._resolveBackendDir();
-		// NEW-1: pin --mcp-config explicitly so the worker doesn't fall through
-		// to `cwd/mcp_servers.json` (which is whatever directory cp.spawn used).
-		// We pass `~/...` literally because the worker's CLI runs Path(...).expanduser()
-		// — see resolve_mcp_config_path in execution.executor.mcp_loader.
-		const mcpConfigPath = resolveWorkerMcpConfigPath(this._configurationService);
-
-		// Phase 1.5 Worker JWT: when the user is logged in, mint a Worker JWT
-		// from the website. Reasoner trusts the embedded user_id and hard-rejects
-		// cross-user task scheduling. Falls back to the legacy api_key path when
-		// the user is not logged in or the website is unreachable — that mode
-		// keeps the existing dev-only loopback behavior.
-		let workerToken: string | undefined;
-		let workerTokenExpiresInS: number | undefined;
-		if (this._authService.isLoggedIn()) {
-			try {
-				const tokenResult = await this._authService.getWorkerToken();
-				workerToken = tokenResult?.worker_token;
-				workerTokenExpiresInS = tokenResult?.expires_in;
-				if (workerToken) {
-					this._logService.info('[ChipOS SidecarElectron] Minted worker_token (expires_in=%ds)', tokenResult!.expires_in);
-				} else {
-					this._logService.warn('[ChipOS SidecarElectron] worker_token mint returned empty; falling back to api_key path');
-				}
-			} catch (err) {
-				this._logService.warn('[ChipOS SidecarElectron] worker_token mint threw, falling back to api_key:', String(err));
-			}
-		}
-		// Phase 2: schedule auto-refresh ahead of expiry. Without this the Worker
-		// keeps presenting an expired token after ~24h and Reasoner UNAUTHENTICATEDs
-		// every reconnect — user has to manually restart the IDE. We respawn the
-		// sidecar with a freshly-minted token instead.
-		this._scheduleWorkerTokenRefresh(workerToken, workerTokenExpiresInS);
-
-		const env: Record<string, string> = {
-			CHIPOS_REASONING_SERVER: grpcTarget,
-			CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
-			CHIPOS_TLS_ENABLED: String(tlsEnabled),
-			// Phase 1.5: signed Worker JWT (preferred). Reasoner verifies the
-			// signature and extracts user_id from the payload — the Worker no
-			// longer needs to self-report user identity.
-			...(workerToken ? { CHIPOS_WORKER_TOKEN: workerToken } : {}),
-			// P1-6: Worker → Reasoner gRPC API key (legacy / dev fallback).
-			// Reasoner reads CHIPOS_WORKER_OUTBOUND_KEY (preferred) and falls back
-			// to CHIPOS_API_KEY, so we set both for forward + backward compatibility.
-			...(workerApiKey ? {
-				CHIPOS_WORKER_OUTBOUND_KEY: workerApiKey,
-				CHIPOS_API_KEY: workerApiKey,
-			} : {}),
-			...(workspaceRoot ? { CHIPOS_WORKSPACE_ROOT: workspaceRoot } : {}),
-		};
-
-		// --- Step 1: Check existing Worker instance (R50 multi-window) ---
-		const existing = await this._invokeIpc('chipos:checkInstance', { workspaceRoot });
-		if (existing?.alive) {
-			this._logService.info(`[ChipOS SidecarElectron] Existing Worker (pid=${existing.pid}), acquiring ref`);
-			await this._invokeIpc('chipos:acquireRef', { workspaceRoot, callerId: this._callerId });
-			this._workerPid = existing.pid;
-			this._isSharedInstance = true;
-			this._setWorkerState(WorkerState.Starting);
-			// Audit fix: PID alive ≠ HTTP serving. The other window may have
-			// just spawned the worker seconds ago and HTTP is still warming
-			// up. Observe Reasoner /health.workers_connected so the state
-			// transitions to Connected once the worker actually registers,
-			// instead of staying in Starting forever and the UI showing
-			// "worker starting" indefinitely.
-			void this._observeWorkerRegistrationAfterSpawn().catch(err => {
-				this._logService.warn(`[ChipOS SidecarElectron] post-acquire health observation failed: ${err}`);
-			});
-			return;
-		}
-
-		// --- Step 2: Find cached binary (R49) ---
-		let binaryPath = await this._invokeIpc('chipos:findBinary', {
-			version: configVersion !== 'latest' ? configVersion : undefined,
-		});
-
-		// --- Step 3: Auto-download if no cache ---
-		if (!binaryPath) {
-			this._logService.info('[ChipOS SidecarElectron] No cached binary, trying download...');
-			binaryPath = await this._invokeIpc('chipos:downloadBinary', {
-				version: configVersion,
-				downloadUrl: configDownloadUrl || undefined,
-			});
-		}
-
-		// --- Step 4: Spawn binary or fallback to Python ---
-		if (binaryPath) {
-			this._logService.info(`[ChipOS SidecarElectron] Spawning binary: ${binaryPath}`);
-			try {
-				const result = await this._invokeIpc('chipos:spawnProcess', {
-					binaryPath,
-					args: ['start', '--server', grpcTarget, '--workspace', workspaceRoot,
-						'--http-port', String(workerHttpPort),
-						'--mcp-config', mcpConfigPath],
-					env,
-					cwd: workspaceRoot,
-					role: 'worker',
-					workspaceRoot,
-				});
-				this._workerPid = result?.pid;
-				this._isSharedInstance = true;
-				this._logService.info(`[ChipOS SidecarElectron] Binary Worker spawned: pid=${this._workerPid}`);
-				return;
-			} catch (err) {
-				this._logService.warn(`[ChipOS SidecarElectron] Binary spawn failed: ${err}, falling back to Python`);
-			}
-		}
-
-		// --- Fallback: Python ---
-		const pythonPath = this._configurationService.getValue<string>('chipos.backend.pythonPath') ?? 'python3';
-
-		try {
-			const result = await this._invokeIpc('chipos:spawnProcess', {
-				pythonPath,
-				moduleArgs: ['-m', 'execution.server.cli', 'start', '--server', grpcTarget,
-					'--workspace', workspaceRoot, '--http-port', String(workerHttpPort),
-					'--mcp-config', mcpConfigPath],
-				env,
-				cwd: backendDir,
-				role: 'worker',
-				workspaceRoot,
-			});
-			this._workerPid = result?.pid;
-			this._isSharedInstance = true;
-			this._logService.info(`[ChipOS SidecarElectron] Python Worker spawned: pid=${this._workerPid}`);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this._logService.error(`[ChipOS SidecarElectron] Worker start failed: ${msg}`);
-			this._setWorkerState(WorkerState.Error);
-		}
-	}
-
-	private async _killProcessViaIpc(role: 'reasoner' | 'worker'): Promise<void> {
-		try {
-			await this._invokeIpc('chipos:killProcess', role);
-			if (role === 'worker') {
-				this._workerPid = undefined;
-				this._isSharedInstance = false;
-			}
-		} catch (err) {
-			this._logService.warn(`[ChipOS SidecarElectron] kill ${role} failed: ${err}`);
-		}
-	}
+	// (Removed 2026-04-27)
+	// IDE no longer spawns Reasoner / Worker. Both processes are deployed
+	// independently — Reasoner on the cloud (or wherever
+	// chiposDefaults.reasoningUrl points), Worker on the remote EDA box
+	// (chipos-remote-ssh / chipos-server REH spawns it). The workbench
+	// only:
+	//   - reads the resolved URLs and probes /health
+	//   - mints + auto-refreshes worker_token (auth)
+	//   - releases ref_count on the REH RPC channel during dispose
+	//
+	// The deleted methods were: _resolveBackendDir, _spawnReasonerViaIpc,
+	// _spawnWorkerViaIpc, _killProcessViaIpc, the _isSharedInstance bookkeeping,
+	// and the corresponding electron-main IPC handlers (chipos:spawnProcess,
+	// chipos:killProcess, chipos:findBinary, chipos:downloadBinary,
+	// chipos:checkInstance, chipos:acquireRef, chipos:releaseRef — see
+	// sidecarManagerMain.ts).
 
 	/**
 	 * Two-phase health check (P0-3):
@@ -1055,16 +757,6 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		this._setWorkerState(WorkerState.Error);
 	}
 
-	private async _invokeIpc(channel: string, ...args: any[]): Promise<any> {
-		const bridge = (globalThis as any).chiposIpc;
-		if (!bridge) {
-			const msg = `ChipOS IPC bridge not available for "${channel}". IDE installation may be incomplete.`;
-			this._logService.error(`[ChipOS SidecarElectron] ${msg}`);
-			throw new Error(msg);
-		}
-		return bridge.invoke(channel, ...args);
-	}
-
 	// ── State helpers ────────────────────────────────────────────────────
 
 	private _setState(s: SidecarState): void {
@@ -1082,25 +774,3 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	}
 }
 
-/**
- * Decode the ``exp`` claim from a JWT without verifying the signature.
- * Returns 0 when the token is malformed — caller should use a fallback.
- *
- * Signature verification is the Reasoner's job; here we only need the expiry
- * timestamp to schedule a local refresh, so we deliberately skip verification.
- */
-function parseJwtExpMs(token: string): number {
-	try {
-		const parts = token.split('.');
-		if (parts.length !== 3) {
-			return 0;
-		}
-		// JWT base64url → base64
-		const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-		const padded = b64 + '==='.slice((b64.length + 3) % 4);
-		const json = JSON.parse(atob(padded));
-		return typeof json.exp === 'number' ? json.exp * 1000 : 0;
-	} catch {
-		return 0;
-	}
-}

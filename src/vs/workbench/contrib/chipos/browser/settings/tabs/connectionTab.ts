@@ -127,9 +127,6 @@ export class ConnectionTab extends Disposable {
 			case 'auto':
 				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.auto', 'Auto-Detected Endpoints');
 				break;
-			case 'local':
-				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.local', 'Local Backend');
-				break;
 			case 'cloud-reasoning':
 				this._modeSpecificTitleEl.textContent = localize('chipos.settings.section.cloud', 'Cloud Reasoning');
 				break;
@@ -150,11 +147,10 @@ export class ConnectionTab extends Disposable {
 			localize('chipos.settings.mode.desc', 'Override auto-detection. "auto" looks at workspace remoteness and existing processes to pick the right mode — recommended.')
 		));
 
-		const modeValues = ['auto', 'local', 'cloud-reasoning', 'manual'];
+		const modeValues = ['auto', 'cloud-reasoning', 'manual'];
 		const modeOptions: ISelectOptionItem[] = [
-			{ text: localize('chipos.mode.auto', 'Auto (recommended — detect from environment)') },
-			{ text: localize('chipos.mode.local', 'Local (spawn reasoning + execution on this machine)') },
-			{ text: localize('chipos.mode.cloud', 'Cloud Reasoning (local execution + remote reasoning)') },
+			{ text: localize('chipos.mode.auto', 'Auto (recommended — detect from workspace + product defaults)') },
+			{ text: localize('chipos.mode.cloud', 'Cloud Reasoning (SSH-Remote forwards a remote Worker; chat goes direct to cloud Reasoner)') },
 			{ text: localize('chipos.mode.manual', 'Manual (connect to pre-deployed URLs)') },
 		];
 
@@ -308,13 +304,6 @@ export class ConnectionTab extends Disposable {
 				this._renderWorkerHttpUrlInput(container);
 				break;
 
-			case 'local':
-				this._renderWorkerHttpPortInput(container);
-				this._renderWorkerHttpUrlInput(container);
-				this._renderPythonPathInput(container);
-				this._renderBackendDirInput(container);
-				break;
-
 			case 'cloud-reasoning':
 				// Authentication has moved to the General tab.
 				// `grpcAddress` is the cross-network gRPC URL the Worker uses to
@@ -329,8 +318,6 @@ export class ConnectionTab extends Disposable {
 				this._renderTlsEnabled(container);
 				this._renderWorkerHttpPortInput(container);
 				this._renderWorkerHttpUrlInput(container);
-				this._renderPythonPathInput(container);
-				this._renderBackendDirInput(container);
 				break;
 
 			case 'manual':
@@ -594,47 +581,11 @@ export class ConnectionTab extends Disposable {
 		}));
 	}
 
-	// ── v2: Python Path ──────────────────────────────────────────────────
-
-	private _renderPythonPathInput(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.pythonPath', 'Python Path')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.pythonPath.desc', 'Path to Python executable for spawning backend processes (default: python3).')
-		));
-
-		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
-			placeholder: 'python3',
-			inputBoxStyles: defaultInputBoxStyles,
-		}));
-		inputBox.value = this._configurationService.getValue<string>('chipos.backend.pythonPath') || '';
-
-		this._disposables.add(inputBox.onDidChange(value => {
-			this._configurationService.updateValue('chipos.backend.pythonPath', value, ConfigurationTarget.USER);
-		}));
-	}
-
-	// ── v2: Backend Directory ────────────────────────────────────────────
-
-	private _renderBackendDirInput(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.backendDir', 'Backend Directory')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.backendDir.desc', 'Path to the ChipOS backend directory. Leave empty for auto-detection.')
-		));
-
-		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
-			placeholder: '/path/to/backend',
-			inputBoxStyles: defaultInputBoxStyles,
-		}));
-		inputBox.value = this._configurationService.getValue<string>('chipos.backend.dir') || '';
-
-		this._disposables.add(inputBox.onDidChange(value => {
-			this._configurationService.updateValue('chipos.backend.dir', value, ConfigurationTarget.USER);
-		}));
-	}
+	// (Removed 2026-04-27)
+	// `_renderPythonPathInput` and `_renderBackendDirInput` were UI rows for
+	// `chipos.backend.pythonPath` / `chipos.backend.dir`, which only mattered
+	// when the IDE could spawn a local backend. Both settings + their UI rows
+	// are deleted; backend deployment is the user's responsibility now.
 
 	// ── v2: TLS Enabled ─────────────────────────────────────────────────
 
