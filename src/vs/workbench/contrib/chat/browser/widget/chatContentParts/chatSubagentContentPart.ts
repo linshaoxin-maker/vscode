@@ -75,7 +75,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	private readonly isInitiallyComplete: boolean;
 	private promptContainer: HTMLElement | undefined;
 	private resultContainer: HTMLElement | undefined;
-	private lastItemWrapper: HTMLElement | undefined;
+	private autoScrollEnabled: boolean = true;
 	private readonly layoutScheduler: AnimationFrameScheduler;
 	private description: string;
 	private agentName: string | undefined;
@@ -272,8 +272,18 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		// Use ResizeObserver to trigger layout when wrapper content changes
 		const resizeObserver = this._register(new DisposableResizeObserver(() => this.layoutScheduler.schedule()));
 		this._register(resizeObserver.observe(this.wrapper));
+		this._register(dom.addDisposableListener(this.wrapper, dom.EventType.SCROLL, () => this.updateAutoScrollState()));
 
 		return this.wrapper;
+	}
+
+	private updateAutoScrollState(): void {
+		if (!this.wrapper) {
+			return;
+		}
+
+		const maxScrollTop = this.wrapper.scrollHeight - this.wrapper.clientHeight;
+		this.autoScrollEnabled = maxScrollTop <= 0 || this.wrapper.scrollTop >= maxScrollTop - 8;
 	}
 
 	/**
@@ -352,6 +362,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 
 	public markAsInactive(): void {
 		this.isActive = false;
+		this.autoScrollEnabled = false;
 		this.domNode.classList.remove('chat-thinking-active');
 		if (this._collapseButton) {
 			this._collapseButton.icon = Codicon.check;
@@ -740,7 +751,6 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 				this.wrapper.appendChild(itemWrapper);
 			}
 		}
-		this.lastItemWrapper = itemWrapper;
 		this.layoutScheduler.schedule();
 	}
 
@@ -766,9 +776,8 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 				this.wrapper.appendChild(itemWrapper);
 			}
 		}
-		this.lastItemWrapper = itemWrapper;
 
-		// Schedule layout to measure last item and scroll
+		// Schedule layout to keep the streaming preview pinned only when appropriate.
 		this.layoutScheduler.schedule();
 	}
 
@@ -839,9 +848,8 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 				this.wrapper.appendChild(itemWrapper);
 			}
 		}
-		this.lastItemWrapper = itemWrapper;
 
-		// Schedule layout to measure last item and scroll
+		// Schedule layout to keep the streaming preview pinned only when appropriate.
 		this.layoutScheduler.schedule();
 	}
 
@@ -902,18 +910,9 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	}
 
 	private performLayout(): void {
-		// Measure last item height once after layout, set CSS variable for collapsed max-height
-		if (this.lastItemWrapper && this.wrapper) {
-			const height = this.lastItemWrapper.offsetHeight;
-			if (height > 0) {
-				this.wrapper.style.setProperty('--chat-subagent-last-item-height', `${height}px`);
-			}
-		}
-
-		// Auto-scroll to bottom only when actively streaming (not for completed responses)
-		if (this.isActive && !this.isInitiallyComplete && this.wrapper) {
-			const scrollHeight = this.wrapper.scrollHeight;
-			this.wrapper.scrollTop = scrollHeight;
+		// Follow streaming content only while the user is already at the bottom.
+		if (this.isActive && !this.isInitiallyComplete && this.wrapper && this.autoScrollEnabled) {
+			this.wrapper.scrollTop = this.wrapper.scrollHeight;
 		}
 	}
 

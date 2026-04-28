@@ -177,6 +177,7 @@ export class ChatThinkingContentPart extends ChatCollapsibleContentPart implemen
 	private pendingScrollDisposable: IDisposable | undefined;
 	private mutationObserverDisposable: IDisposable | undefined;
 	private isUpdatingDimensions: boolean = false;
+	private userManuallyExpanded: boolean = false;
 	private titleShimmerSpan: HTMLElement | undefined;
 	private titleDetailContainer: HTMLElement | undefined;
 	private titleDetailRendered: IRenderedMarkdown | undefined;
@@ -343,10 +344,16 @@ export class ChatThinkingContentPart extends ChatCollapsibleContentPart implemen
 		if (this._collapseButton) {
 			this._register(this._collapseButton.onDidClick(() => {
 				if (this.streamingCompleted || this.fixedScrollingMode) {
+					if (this.isExpanded()) {
+						this.userManuallyExpanded = true;
+					}
 					return;
 				}
 
 				const expanded = this.isExpanded();
+				if (expanded) {
+					this.userManuallyExpanded = true;
+				}
 				if (expanded) {
 					// Just expanded: show plain 'Working' with no detail
 					this.setTitle(this.defaultTitle, true);
@@ -749,6 +756,7 @@ export class ChatThinkingContentPart extends ChatCollapsibleContentPart implemen
 		this.isActive = false;
 		this.domNode.classList.remove('chat-thinking-active');
 		this.processPendingRemovals();
+		this.autoScrollEnabled = false;
 		if (this.workingSpinnerElement) {
 			this.workingSpinnerElement.remove();
 			this.workingSpinnerElement = undefined;
@@ -758,6 +766,10 @@ export class ChatThinkingContentPart extends ChatCollapsibleContentPart implemen
 		// Clear the attached-to-thinking flag on all tool invocations
 		for (const toolInvocation of this.toolInvocations) {
 			toolInvocation.isAttachedToThinking = false;
+		}
+
+		if (!this.userManuallyExpanded && !this.fixedScrollingMode) {
+			this.setExpanded(false);
 		}
 	}
 

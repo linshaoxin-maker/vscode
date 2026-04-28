@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
-import { AgentSessionsDataSource, AgentSessionListItem, IAgentSessionsFilter, sessionDateFromNow } from '../../../browser/agentSessions/agentSessionsViewer.js';
+import { AgentSessionsDataSource, AgentSessionsListDelegate, AgentSessionListItem, IAgentSessionsFilter, sessionDateFromNow } from '../../../browser/agentSessions/agentSessionsViewer.js';
 import { AgentSessionSection, IAgentSession, IAgentSessionSection, IAgentSessionsModel, isAgentSessionSection } from '../../../browser/agentSessions/agentSessionsModel.js';
 import { ChatSessionStatus } from '../../../common/chatSessionsService.js';
 import { ITreeSorter } from '../../../../../../base/browser/ui/tree/tree.js';
@@ -176,6 +176,21 @@ suite('AgentSessionsDataSource', () => {
 	function getSectionsFromResult(result: Iterable<AgentSessionListItem>): IAgentSessionSection[] {
 		return Array.from(result).filter((item): item is IAgentSessionSection => isAgentSessionSection(item));
 	}
+
+	suite('AgentSessionsListDelegate', () => {
+		test('uses compact row metrics for the side-by-side sessions list', () => {
+			const delegate = new AgentSessionsListDelegate();
+			const session = createMockSession();
+			const section: IAgentSessionSection = {
+				section: AgentSessionSection.Today,
+				label: 'Today',
+				sessions: [session],
+			};
+
+			assert.strictEqual(delegate.getHeight(session), 50);
+			assert.strictEqual(delegate.getHeight(section), 24);
+		});
+	});
 
 	suite('groupSessionsIntoSections', () => {
 

@@ -100,6 +100,7 @@
 	.chat-used-context-list.chat-thinking-collapsible {
 		border: 1px solid var(--vscode-chat-requestBorder);
 		border-radius: var(--vscode-cornerRadius-medium);
+		background: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-foreground) 4%);
 		margin-bottom: 0;
 		position: relative;
 		overflow: hidden;
@@ -110,6 +111,10 @@
 		}
 
 		.chat-thinking-tool-wrapper {
+			min-height: 24px;
+			border-radius: 4px;
+			margin: 1px 2px;
+
 			.chat-used-context {
 				margin-bottom: 0px;
 				margin-left: 4px;
@@ -139,6 +144,11 @@
 			.progress-container,
 			.chat-confirmation-widget-container {
 				margin: 0 0 2px 6px;
+			}
+
+			.progress-container {
+				min-height: 22px;
+				gap: 6px;
 			}
 
 			/* todo: ideally not !important, but the competing css has 14 specificity */
@@ -259,7 +269,8 @@
 		}
 
 		.chat-thinking-spinner-item {
-			padding: 6px 12px 6px 24px;
+			padding: 4px 12px 4px 24px;
+			min-height: 24px;
 			font-size: var(--vscode-chat-font-size-body-s);
 
 			.chat-thinking-spinner-label {
@@ -282,6 +293,10 @@
 		font-size: var(--vscode-chat-font-size-body-s);
 		padding: 0 10px;
 		display: block;
+	}
+
+	&:not(.chat-thinking-active) > .chat-used-context-list.chat-thinking-collapsible {
+		opacity: 0.92;
 	}
 
 	.rendered-markdown > p {

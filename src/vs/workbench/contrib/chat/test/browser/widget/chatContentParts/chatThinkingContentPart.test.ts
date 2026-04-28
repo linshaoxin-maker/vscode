@@ -1051,6 +1051,61 @@ suite('ChatThinkingContentPart', () => {
 			const iconElement = part.domNode.querySelector('.codicon-check');
 			assert.ok(iconElement, 'Should have check icon after finalization');
 		});
+
+		test('auto-expanded thinking should collapse when completed', () => {
+			mockConfigurationService.setUserConfiguration('chat.agent.thinkingStyle', ThinkingDisplayMode.CollapsedPreview);
+
+			const content = createThinkingPart('**Content**\nSome detailed reasoning that differs from the title');
+			const context = createMockRenderContext(false);
+
+			const part = store.add(instantiationService.createInstance(
+				ChatThinkingContentPart,
+				content,
+				context,
+				mockMarkdownRenderer,
+				false
+			));
+
+			mainWindow.document.body.appendChild(part.domNode);
+			disposables.add(toDisposable(() => part.domNode.remove()));
+
+			assert.strictEqual(part.domNode.classList.contains('chat-used-context-collapsed'), false,
+				'CollapsedPreview should auto-expand while streaming');
+
+			part.finalizeTitleIfDefault();
+			part.markAsInactive();
+
+			assert.strictEqual(part.domNode.classList.contains('chat-used-context-collapsed'), true,
+				'Auto-expanded progress should collapse back to a summary when complete');
+		});
+
+		test('manually expanded thinking should stay expanded when completed', () => {
+			const content = createThinkingPart('**Content**\nSome detailed reasoning that differs from the title');
+			const context = createMockRenderContext(false);
+
+			const part = store.add(instantiationService.createInstance(
+				ChatThinkingContentPart,
+				content,
+				context,
+				mockMarkdownRenderer,
+				false
+			));
+
+			mainWindow.document.body.appendChild(part.domNode);
+			disposables.add(toDisposable(() => part.domNode.remove()));
+
+			const button = part.domNode.querySelector('.monaco-button') as HTMLElement;
+			button?.click();
+
+			assert.strictEqual(part.domNode.classList.contains('chat-used-context-collapsed'), false,
+				'User click should expand the thinking details');
+
+			part.finalizeTitleIfDefault();
+			part.markAsInactive();
+
+			assert.strictEqual(part.domNode.classList.contains('chat-used-context-collapsed'), false,
+				'Manually expanded details should stay open after completion');
+		});
 	});
 
 	suite('hasSameContent', () => {

@@ -286,12 +286,17 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 	}
 
 	protected getCompositeBarPosition(): CompositeBarPosition {
+		// [ChipOS] We pass hasTitle:false to AbstractPaneCompositePart, which means
+		// `this.titleContainer` is never created. CompositeBarPosition.TITLE would
+		// then resolve to an undefined container in paneCompositePart.updateCompositeBar
+		// and throw "Invalid composite bar state". Fall back to TOP (creates a header
+		// area on demand) for any position that would have been TITLE.
 		switch (this.configuration.position) {
 			case ActivityBarPosition.TOP: return CompositeBarPosition.TOP;
 			case ActivityBarPosition.BOTTOM: return CompositeBarPosition.BOTTOM;
-			case ActivityBarPosition.HIDDEN: return CompositeBarPosition.TITLE;
-			case ActivityBarPosition.DEFAULT: return CompositeBarPosition.TITLE;
-			default: return CompositeBarPosition.TITLE;
+			case ActivityBarPosition.HIDDEN: return CompositeBarPosition.TOP;
+			case ActivityBarPosition.DEFAULT: return CompositeBarPosition.TOP;
+			default: return CompositeBarPosition.TOP;
 		}
 	}
 

@@ -9,6 +9,7 @@ import { StandardMouseEvent } from '../../../../../../base/browser/mouseEvent.js
 import { Button } from '../../../../../../base/browser/ui/button/button.js';
 import { Orientation, Sash } from '../../../../../../base/browser/ui/sash/sash.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
+import { Codicon } from '../../../../../../base/common/codicons.js';
 import { Event } from '../../../../../../base/common/event.js';
 import { MutableDisposable, toDisposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
 import { MarshalledId } from '../../../../../../base/common/marshallingIds.js';
@@ -396,8 +397,8 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 		// New Session Button
 		const newSessionButtonContainer = this.sessionsNewButtonContainer = append(sessionsContainer, $('.agent-sessions-new-button-container'));
-		const newSessionButton = this._register(new Button(newSessionButtonContainer, { ...defaultButtonStyles, secondary: true }));
-		newSessionButton.label = localize('newAgent', "New Agent"); // [ChipOS] Renamed from "New Session" to match Cursor
+		const newSessionButton = this._register(new Button(newSessionButtonContainer, { ...defaultButtonStyles, secondary: true, supportIcons: true }));
+		newSessionButton.label = `$(${Codicon.add.id}) ${localize('newAgent', "New Agent")}`; // [ChipOS] Renamed from "New Session" to match Cursor
 		this._register(newSessionButton.onDidClick(() => this.commandService.executeCommand(ACTION_ID_NEW_CHAT)));
 
 		// Sessions Control

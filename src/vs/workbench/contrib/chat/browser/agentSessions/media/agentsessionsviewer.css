@@ -10,11 +10,11 @@
 	min-height: 0;
 
 	.pane-body & .monaco-scrollable-element {
-		padding: 0 6px;
+		padding: 0 4px 8px;
 	}
 
 	.monaco-list-row {
-		border-radius: 6px;
+		border-radius: 5px;
 	}
 
 	.monaco-list-row .force-no-twistie {
@@ -78,10 +78,23 @@
 	.agent-session-item {
 		display: flex;
 		flex-direction: row;
-		padding: 8px 6px;
+		padding: 6px 6px 5px;
+		position: relative;
+		min-width: 0;
 
 		&.archived {
 			color: var(--vscode-descriptionForeground);
+		}
+
+		.monaco-list-row.selected &::before {
+			content: '';
+			position: absolute;
+			left: 0;
+			top: 6px;
+			bottom: 6px;
+			width: 2px;
+			border-radius: 2px;
+			background: var(--vscode-focusBorder);
 		}
 
 		.agent-session-main-col,
@@ -98,8 +111,9 @@
 
 			.agent-session-icon {
 				flex-shrink: 0;
-				font-size: 12px;
+				font-size: 11px;
 				height: 16px;
+				width: 14px;
 				display: flex;
 				align-items: center;
 				justify-content: center;
@@ -110,6 +124,7 @@
 
 				&.codicon.codicon-error {
 					color: var(--vscode-errorForeground);
+					opacity: 0.78;
 				}
 
 				&.codicon.codicon-report {
@@ -127,7 +142,7 @@
 		}
 
 		.agent-session-main-col {
-			padding-left: 6px;
+			padding-left: 7px;
 		}
 
 		.agent-session-title-row,
@@ -138,12 +153,12 @@
 
 		.agent-session-title-row {
 			line-height: 17px;
-			padding-bottom: 4px;
+			padding-bottom: 2px;
 		}
 
 		.agent-session-details-row {
 			gap: 4px;
-			font-size: 12px;
+			font-size: 11px;
 			line-height: 15px;
 			max-height: 15px;
 			color: var(--vscode-descriptionForeground);
@@ -224,7 +239,8 @@
 		}
 
 		.agent-session-title {
-			font-size: 13px;
+			font-size: 12px;
+			font-weight: 500;
 		}
 
 		.agent-session-details-right {
@@ -234,6 +250,7 @@
 			margin-left: auto;
 			white-space: nowrap;
 			flex-shrink: 0;
+			opacity: 0.82;
 		}
 
 		.agent-session-status {
@@ -304,10 +321,11 @@
 		display: flex;
 		align-items: center;
 		font-size: 11px;
-		font-weight: 500;
+		font-weight: 600;
 		color: var(--vscode-descriptionForeground);
 		/* align with session item padding */
-		padding: 0 6px;
+		padding: 1px 6px 0;
+		text-transform: none;
 
 		.agent-session-section-label {
 			flex: 1;
