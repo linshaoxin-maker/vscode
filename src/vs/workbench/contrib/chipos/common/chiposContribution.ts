@@ -315,6 +315,42 @@ CommandsRegistry.registerCommand('chipos.runtime.clearOverride', (accessor, key?
 	}
 });
 
+/**
+ * PHASE2-AUTH-7: stop ALL active backend connections (sidecar + remote-ssh).
+ *
+ * Triggered by ChipOSAuthService.logout to kill any worker processes that
+ * were spawned with the now-being-revoked credentials. Without this, a
+ * worker spawned with worker_token JWT keeps running on the EDA box (or
+ * locally) after logout, and its stream stays alive until the JWT expires
+ * naturally (24h) or the reasoner reverify cycle catches it.
+ *
+ * Best-effort: failures in either path don't block the other or the
+ * surrounding logout flow. The caller (logout) catches and ignores.
+ */
+CommandsRegistry.registerCommand('chipos.backend.stopAll', async (accessor) => {
+	const logService = accessor.get(ILogService);
+	const commandService = accessor.get(ICommandService);
+
+	// 1. Stop the locally-managed sidecar (B2 path: Electron worker).
+	try {
+		const sidecar = accessor.get(ISidecarManagerService);
+		await sidecar.stopBackend();
+		logService.info('[ChipOS Logout] Stopped local sidecar backend');
+	} catch (err) {
+		logService.warn('[ChipOS Logout] sidecar.stopBackend failed (continuing):', String(err));
+	}
+
+	// 2. Tell chipos-remote-ssh extension to disconnect all sessions
+	//    (each cleanupSession calls worker.stopWorker → stops remote worker).
+	//    Older / non-installed extension: command not found, swallow.
+	try {
+		await commandService.executeCommand('chipos-remote-ssh.disconnect');
+		logService.info('[ChipOS Logout] Triggered remote-ssh disconnect');
+	} catch (err) {
+		logService.warn('[ChipOS Logout] remote-ssh.disconnect failed (continuing):', String(err));
+	}
+});
+
 CommandsRegistry.registerCommand(ChipOSCommandId.LegacyLogin, accessor => {
 	const commandService = accessor.get(ICommandService);
 	return commandService.executeCommand(ChipOSCommandId.Login);

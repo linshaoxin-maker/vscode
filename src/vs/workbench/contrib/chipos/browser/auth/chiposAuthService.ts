@@ -20,6 +20,7 @@ import { createDecorator } from '../../../../../platform/instantiation/common/in
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IChipOSTokenManager, type ChipOSAuthUserResponse, type IChipOSUserInfo } from './chiposTokenManager.js';
 
 export interface IChipOSWorkerTokenResult {
@@ -62,6 +63,7 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@ILogService private readonly _logService: ILogService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 
@@ -88,6 +90,21 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 	}
 
 	async logout(): Promise<void> {
+		// PHASE2-AUTH-7: kill any running workers spawned with the credentials
+		// we're about to clear. Without this, a worker process keeps running
+		// on the EDA box (or locally) with its still-valid worker_token JWT,
+		// holding an open gRPC stream to reasoner until the JWT expires
+		// (worst case 24h). Done BEFORE clearing tokens so any RPC the stop
+		// path needs (e.g. SSH session metadata) is still authenticated.
+		try {
+			await this._commandService.executeCommand('chipos.backend.stopAll');
+		} catch (err) {
+			// Best-effort. The stopAll command itself swallows individual
+			// failures; if the command isn't registered (very old build) we
+			// also ignore — better to log out cleanly than to refuse logout.
+			this._logService.warn('[ChipOS Auth] chipos.backend.stopAll on logout failed (continuing):', String(err));
+		}
+
 		// Best-effort: tell the website to revoke the refresh_token before we
 		// clear it locally. Failure (network, 4xx, etc.) must not block local
 		// logout — the user expects the IDE to forget them either way.
@@ -105,7 +122,7 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 			}
 		}
 		await this._tokenManager.clearTokens();
-		this._logService.info('[ChipOS Auth] Logged out');
+		this._logService.info('[ChipOS Auth] Logged out (workers stopped, tokens cleared)');
 	}
 
 	async getWorkerToken(workerId?: string): Promise<IChipOSWorkerTokenResult | undefined> {
