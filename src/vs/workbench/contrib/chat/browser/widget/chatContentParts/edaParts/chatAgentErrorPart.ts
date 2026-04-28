@@ -27,6 +27,11 @@ export class ChatAgentErrorContentPart extends Disposable implements IChatConten
 		dom.clearNode(this.domNode);
 
 		const { error_code, message, retryable, suggestion } = this._data;
+		// UX-AUTH-1: AUTH_FAILED is a distinct case — Retry won't help (token
+		// is missing/expired), the right action is to re-authenticate. Render
+		// a "Log in" button instead of Retry, and replace the misleading
+		// "check your API token" suggestion with sign-in guidance.
+		const isAuthFailure = error_code === 'AUTH_FAILED' || error_code === 'AUTH_TOKEN_EXPIRED' || error_code === 'AUTH_TOKEN_INVALID';
 
 		const header = dom.append(this.domNode, dom.$('.chat-agent-error-header'));
 		dom.append(header, dom.$('.codicon.codicon-error'));
@@ -34,14 +39,33 @@ export class ChatAgentErrorContentPart extends Disposable implements IChatConten
 		codeEl.textContent = error_code;
 
 		const msgEl = dom.append(this.domNode, dom.$('.chat-agent-error-message'));
-		msgEl.textContent = message;
+		msgEl.textContent = isAuthFailure
+			? localize('chipos.error.auth.message', "Not signed in or your session has expired. Please log in to continue.")
+			: message;
 
-		if (suggestion) {
+		if (suggestion && !isAuthFailure) {
+			// Skip suggestion text in auth case — the Log in button below IS
+			// the suggestion. Avoid the legacy "check your API token" string
+			// which doesn't apply to OAuth-based auth.
 			const sugEl = dom.append(this.domNode, dom.$('.chat-agent-error-suggestion'));
 			sugEl.textContent = suggestion;
 		}
 
-		if (retryable) {
+		if (isAuthFailure) {
+			const btnContainer = dom.append(this.domNode, dom.$('.chat-agent-error-actions'));
+			const loginBtn = dom.append(btnContainer, dom.$<HTMLButtonElement>('button.chat-agent-error-retry'));
+			loginBtn.type = 'button';
+			loginBtn.textContent = localize('chipos.error.login', "Log In");
+
+			this._register(dom.addDisposableListener(loginBtn, 'click', () => {
+				if (loginBtn.disabled) {
+					return;
+				}
+				loginBtn.disabled = true;
+				loginBtn.setAttribute('aria-busy', 'true');
+				this._commandService.executeCommand('chipos.auth.login');
+			}));
+		} else if (retryable) {
 			const btnContainer = dom.append(this.domNode, dom.$('.chat-agent-error-actions'));
 			const retryBtn = dom.append(btnContainer, dom.$<HTMLButtonElement>('button.chat-agent-error-retry'));
 			retryBtn.type = 'button';

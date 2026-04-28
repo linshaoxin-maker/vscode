@@ -264,9 +264,14 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			this._logService?.error('[SseClient] sendTask failed: %s', err);
 			const status = (err as any).httpStatus as number | undefined;
 			if (status === 401 || status === 403) {
-				// Auth failure — do NOT retry, give actionable guidance
+				// Auth failure — do NOT retry. The chat error UI (UX-AUTH-1)
+				// detects AUTH_FAILED and renders an inline "Log In" button
+				// instead of a Retry button, so the message text just needs
+				// to convey "you need to authenticate" without prescribing
+				// the wrong action ("check your API token" — irrelevant in
+				// the OAuth path).
 				this._emitError(
-					`Authentication failed (${status}). Check your API token in ChipOS Settings → Connection.`,
+					`Not signed in or session expired (${status}).`,
 					'AUTH_FAILED',
 					'AUTH',
 					false,  // not retryable
