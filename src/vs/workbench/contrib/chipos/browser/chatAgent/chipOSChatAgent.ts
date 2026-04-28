@@ -952,18 +952,54 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			// ── Error → IChatAgentError content part ──
+			// X-1: backend now classifies exceptions into ErrorCategory
+			// (AUTH/SESSION/WORKER/TOOL/PROTO/INTERNAL). Render category-aware
+			// UI: icon + label + actionable suggestion + retry hint, instead of
+			// the generic "执行过程中发生异常" red box.
 			case AgentEventType.Error: {
 				const p = event.payload as { message: string; error_code?: string; retryable?: boolean; suggestion?: string; category?: string; details?: Record<string, unknown> };
 				ctx.trackFirstProgress?.();
-				const errorMsg = p.category ? `[${p.category}] ${p.message}` : p.message;
+				const cat = (p.category ?? 'INTERNAL').toUpperCase();
+				// Per-category visual prefix + default suggestion (used if backend
+				// didn't supply one). Suggestion is appended to message so it
+				// renders inline under the error.
+				const categoryPresets: Record<string, { icon: string; label: string; suggestion: string }> = {
+					AUTH: { icon: '🔐', label: '认证失败', suggestion: '请重新登录后再试。' },
+					SESSION: { icon: '⏱️', label: '会话已结束', suggestion: '请刷新页面或开启新对话。' },
+					WORKER: { icon: '🔌', label: 'Worker 连接异常', suggestion: '正在尝试恢复，可稍后重试。' },
+					TOOL: { icon: '🛠️', label: '工具执行失败', suggestion: '可重新发送以重试，或换一种描述。' },
+					PROTO: { icon: '⚠️', label: '请求参数错误', suggestion: '已记录详情，可重新发送让模型修正。' },
+					INTERNAL: { icon: '❌', label: '内部错误', suggestion: '请稍后重试，问题持续可联系支持。' },
+				};
+				const preset = categoryPresets[cat] ?? categoryPresets.INTERNAL;
+				const suggestion = p.suggestion?.trim() || preset.suggestion;
+				// Format: [icon label] message — suggestion
+				const errorMsg = `${preset.icon} **${preset.label}**：${p.message}\n\n💡 ${suggestion}`;
+
+				// details: show validation errors / tool name etc inline (collapsed-ish)
+				let detailsLine = '';
+				if (p.details && Object.keys(p.details).length > 0) {
+					try {
+						const ve = (p.details as { validation_errors?: Array<{ loc: unknown[]; msg: string; type: string }> }).validation_errors;
+						if (Array.isArray(ve) && ve.length > 0) {
+							detailsLine = '\n\n参数错误详情：\n' + ve.map(e => `• \`${e.loc.join('.')}\`: ${e.msg}`).join('\n');
+						} else {
+							const exType = (p.details as { exception_type?: string }).exception_type;
+							if (exType) {
+								detailsLine = `\n\n（异常类型：\`${exType}\`）`;
+							}
+						}
+					} catch { /* ignore */ }
+				}
+
 				ctx.progress([{
 					kind: 'agentError',
 					error_code: p.error_code ?? 'AGENT_ERROR',
-					message: errorMsg,
-					retryable: p.retryable ?? true,
-					suggestion: p.suggestion,
+					message: errorMsg + detailsLine,
+					retryable: p.retryable ?? (cat === 'WORKER' || cat === 'TOOL' || cat === 'PROTO'),
+					suggestion: suggestion,
 				} satisfies IChatAgentError]);
-				ctx.finish({ errorDetails: { message: errorMsg } });
+				ctx.finish({ errorDetails: { message: `[${cat}] ${p.message}` } });
 				break;
 			}
 
