@@ -131,6 +131,15 @@ export class WorkerManager {
 
 		this._log(`[WorkerManager] ensureWorkerRunning workspace=${ws} hash=${wsHash}`);
 
+		// NEW-13: make sure the MCP config file exists on the remote before
+		// any spawn path. Without this, a fresh remote box gets a worker
+		// spawned with --mcp-config pointing at a non-existent file, MCP
+		// loader silently does nothing, and the user sees tools_count=18
+		// (no EDA tools). User reported "为什么 worker 只能 ls 不能跑 yosys"
+		// 2026-04-28; root cause was missing /root/.chipos/mcp_servers.json.
+		// Fixing in the resolver path so it self-heals for every new user.
+		await this._ensureMcpConfigFile();
+
 		// --- Step 1: Atomic check + acquire (flock protected) ---
 		const acquireResult = await this._tryAcquireExisting();
 		if (acquireResult) {
@@ -255,6 +264,70 @@ export class WorkerManager {
 		this._workerToken = newToken;
 		this._log('[WorkerManager] refreshWorkerToken: starting worker with new token');
 		await this.ensureWorkerRunning(reasonerGrpcTarget, workspace);
+	}
+
+	// ── MCP config bootstrap (NEW-13) ────────────────────────────────────
+
+	/**
+	 * Ensure the MCP config file exists on the remote box. Idempotent —
+	 * existing user-customized files are left untouched.
+	 *
+	 * Background: a fresh remote box doesn't have `~/.chipos/mcp_servers.json`.
+	 * The worker is spawned with `--mcp-config <that-path>`. Worker's
+	 * mcp_loader hits "config file does not exist", returns 0 MCP tools
+	 * silently, only the 18 base tools register. User sees a worker that
+	 * can run `ls` / `git` but can't run `yosys_synthesis` / `verilog_simulate`
+	 * etc and has no idea why.
+	 *
+	 * Default config points at the worker's bundled
+	 * `execution.mcp_server.server` module. The worker's
+	 * `_resolve_mcp_subprocess_command` rewrites `python -m execution.mcp_server.server`
+	 * to `chipos-worker mcp-server` when running as a frozen Nuitka binary,
+	 * so this single config works for both binary-mode and dev-mode workers.
+	 */
+	private async _ensureMcpConfigFile(): Promise<void> {
+		// Expand `~` to `$HOME` for shell — bash variable expansion doesn't
+		// expand tilde inside quoted/parameter contexts the same way.
+		const remotePath = this._mcpConfigPath.startsWith('~/')
+			? `$HOME/${this._mcpConfigPath.slice(2)}`
+			: this._mcpConfigPath;
+
+		try {
+			const checkResult = await this._ssh.exec(
+				`if [ -f "${remotePath}" ]; then echo EXISTS; else echo MISSING; fi`
+			);
+			if (checkResult.trim() === 'EXISTS') {
+				this._log(`[WorkerManager] MCP config exists at ${remotePath}`);
+				return;
+			}
+
+			this._log(`[WorkerManager] MCP config missing at ${remotePath}, writing default`);
+
+			// Single-quoted heredoc marker (`'__CHIPOS_MCP_EOF__'`) prevents
+			// shell variable expansion in the JSON body — keeps `$HOME` etc
+			// literal inside the file.
+			const defaultConfig = `{
+  "mcpServers": {
+    "coderust-eda-tools": {
+      "command": "python",
+      "args": ["-m", "execution.mcp_server.server"],
+      "cwd": ".",
+      "env": {}
+    }
+  }
+}`;
+
+			await this._ssh.exec(
+				`mkdir -p "$(dirname "${remotePath}")" && cat > "${remotePath}" <<'__CHIPOS_MCP_EOF__'\n${defaultConfig}\n__CHIPOS_MCP_EOF__`
+			);
+			this._log('[WorkerManager] Default MCP config written');
+		} catch (err) {
+			// Non-fatal: worker spawn will continue. If the file genuinely
+			// can't be written (permissions, disk full), the worker will
+			// register with 18 tools and the user gets a degraded but
+			// functional chat. Better than refusing to spawn.
+			this._log(`[WorkerManager] _ensureMcpConfigFile failed (non-fatal): ${err}`);
+		}
 	}
 
 	// ── Binary management ────────────────────────────────────────────────
