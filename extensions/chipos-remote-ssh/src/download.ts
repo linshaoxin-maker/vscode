@@ -43,6 +43,15 @@ export interface ProductInfo {
 		websiteUrl: string;
 		workerApiKey: string;
 	};
+	/**
+	 * Single source of truth for Worker / REH binary distribution.
+	 * `repo` is `owner/name` of a public GitHub repo whose Releases page
+	 * holds the binaries. Empty in source-tree dev builds — callers
+	 * fall back to the hardcoded value in `releaseConfig.ts`.
+	 */
+	chiposReleases: {
+		repo: string;
+	};
 }
 
 /**
@@ -63,6 +72,7 @@ export function getProductInfo(): ProductInfo {
 			? JSON.parse(fs.readFileSync(productPath, 'utf-8'))
 			: require('../../../../product.json');
 		const defaults = product.chiposDefaults || {};
+		const releases = product.chiposReleases || {};
 		return {
 			commit: product.commit || '',
 			quality: product.quality || 'insider',
@@ -74,6 +84,9 @@ export function getProductInfo(): ProductInfo {
 				websiteUrl: defaults.websiteUrl || '',
 				workerApiKey: defaults.workerApiKey || '',
 			},
+			chiposReleases: {
+				repo: releases.repo || '',
+			},
 		};
 	} catch {
 		// Fallback for development
@@ -83,6 +96,7 @@ export function getProductInfo(): ProductInfo {
 			updateUrl: '',
 			serverApplicationName: 'chipos-server',
 			chiposDefaults: { reasoningUrl: '', reasonerGrpcAddress: '', websiteUrl: '', workerApiKey: '' },
+			chiposReleases: { repo: '' },
 		};
 	}
 }

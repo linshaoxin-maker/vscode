@@ -39,6 +39,10 @@
 		"workerApiKey": "",
 		"developerBuild": true
 	},
+	"chiposReleases": {
+		"_comment": "Single source of truth for ChipOS Worker / REH binary distribution. `repo` is owner/name on GitHub. Both releaseConfig.ts files (workbench-side + chipos-remote-ssh extension) read this field. When changing this, ALSO update updateUrl + downloadUrl below — they must match the same repo.",
+		"repo": "linshaoxin-maker/chipos-releases"
+	},
 	"webviewContentExternalBaseUrlTemplate": "https://{{uuid}}.vscode-cdn.net/insider/ef65ac1ba57f57f2a3961bfe94aa20481caca4c6/out/vs/workbench/contrib/webview/browser/pre/",
 	"builtInExtensions": [
 		{

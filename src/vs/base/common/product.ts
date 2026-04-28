@@ -115,6 +115,32 @@ export interface IProductConfiguration {
 		readonly developerBuild?: boolean;
 	};
 
+	/**
+	 * Single source of truth for ChipOS Worker / REH binary distribution.
+	 *
+	 * `repo` is `owner/name` of a public GitHub repo whose Releases page
+	 * holds the platform-specific worker binaries (e.g. `chipos-worker-linux-x64.tar.gz`).
+	 * The IDE + chipos-remote-ssh extension both read this field via
+	 * `IProductService.chiposReleases?.repo` (workbench) /
+	 * `getProductInfo().chiposReleases.repo` (extension).
+	 *
+	 * If this field is empty (source-tree dev build), code falls back to
+	 * the hardcoded constants in `releaseConfig.ts` files for dev convenience.
+	 *
+	 * Derived URLs (computed at runtime, not stored):
+	 *   - `https://github.com/{repo}/releases/download/v{version}/{asset}.tar.gz`
+	 *   - `https://api.github.com/repos/{repo}/releases/latest`
+	 *
+	 * IMPORTANT: when changing `repo`, ALSO update:
+	 *   - `chiposDefaults.updateUrl`   (same `releases/download` URL)
+	 *   - `chiposDefaults.downloadUrl` (same `releases` URL — REH updater uses this)
+	 * Otherwise REH auto-update will fetch from a different repo than the
+	 * worker download path. A dev validator script could enforce this.
+	 */
+	readonly chiposReleases?: {
+		readonly repo?: string;
+	};
+
 	readonly builtInExtensions?: IBuiltInExtension[];
 	readonly walkthroughMetadata?: IProductWalkthrough[];
 	readonly featuredExtensions?: IFeaturedExtension[];
