@@ -36,6 +36,28 @@ import './media/chatQuestionCarousel.css';
 
 const PREVIOUS_QUESTION_ACTION_ID = 'workbench.action.chat.previousQuestion';
 const NEXT_QUESTION_ACTION_ID = 'workbench.action.chat.nextQuestion';
+
+function getQuestionOptionKey(index: number): string {
+	let key = '';
+	let value = index;
+	do {
+		key = String.fromCharCode(65 + (value % 26)) + key;
+		value = Math.floor(value / 26) - 1;
+	} while (value >= 0);
+	return key;
+}
+
+function getLetterKeyIndex(keyCode: KeyCode): number | undefined {
+	if (keyCode >= KeyCode.KeyA && keyCode <= KeyCode.KeyZ) {
+		return keyCode - KeyCode.KeyA;
+	}
+	return undefined;
+}
+
+function setSubmitButtonLabel(button: Button): void {
+	button.label = `${localize('submit', 'Submit')} $(${Codicon.arrowRight.id})`;
+}
+
 export interface IChatQuestionCarouselOptions {
 	onSubmit: (answers: Map<string, IChatQuestionAnswerValue> | undefined) => void;
 	shouldAutoFocus?: boolean;
@@ -743,9 +765,9 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 			rightControls.appendChild(hint);
 			this._submitHint = hint;
 
-			const submitButton = interactiveStore.add(new Button(rightControls, { ...defaultButtonStyles }));
+			const submitButton = interactiveStore.add(new Button(rightControls, { ...defaultButtonStyles, supportIcons: true }));
 			submitButton.element.classList.add('chat-question-submit-button');
-			submitButton.label = localize('submit', 'Submit');
+			setSubmitButtonLabel(submitButton);
 			interactiveStore.add(submitButton.onDidClick(() => this.submit()));
 			this._submitButton = submitButton;
 
@@ -815,9 +837,9 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 			rightControls.appendChild(hint);
 			this._submitHint = hint;
 
-			const submitButton = interactiveStore.add(new Button(rightControls, { ...defaultButtonStyles }));
+			const submitButton = interactiveStore.add(new Button(rightControls, { ...defaultButtonStyles, supportIcons: true }));
 			submitButton.element.classList.add('chat-question-submit-button');
-			submitButton.label = localize('submit', 'Submit');
+			setSubmitButtonLabel(submitButton);
 			interactiveStore.add(submitButton.onDidClick(() => this.submit()));
 			this._submitButton = submitButton;
 
@@ -955,15 +977,16 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 
 		options.forEach((option, index) => {
 			const isSelected = index === selectedIndex;
+			const optionKey = getQuestionOptionKey(index);
 			const listItem = dom.$('.chat-question-list-item');
 			listItem.setAttribute('role', 'option');
 			listItem.setAttribute('aria-selected', String(isSelected));
-			listItem.setAttribute('aria-label', localize('chat.questionCarousel.optionLabel', "Option {0}: {1}", index + 1, option.label));
+			listItem.setAttribute('aria-label', localize('chat.questionCarousel.optionLabel', "Option {0}: {1}", optionKey, option.label));
 			listItem.id = `option-${question.id}-${index}`;
 			listItem.tabIndex = -1;
 
 			const number = dom.$('.chat-question-list-number');
-			number.textContent = `${index + 1}`;
+			number.textContent = optionKey;
 			listItem.appendChild(number);
 
 			// Selection indicator (checkmark when selected)
@@ -1030,7 +1053,7 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 			const freeformContainer = dom.$('.chat-question-freeform');
 
 			const freeformNumber = dom.$('.chat-question-freeform-number');
-			freeformNumber.textContent = `${options.length + 1}`;
+			freeformNumber.textContent = getQuestionOptionKey(options.length);
 			freeformContainer.appendChild(freeformNumber);
 
 			freeformTextarea = dom.$<HTMLTextAreaElement>('textarea.chat-question-freeform-textarea');
@@ -1099,6 +1122,19 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 				return;
 			}
 
+			const letterIndex = getLetterKeyIndex(event.keyCode);
+			if (letterIndex !== undefined && !event.metaKey && !event.ctrlKey && !event.altKey) {
+				if (letterIndex < listItems.length) {
+					e.preventDefault();
+					updateSelection(letterIndex);
+				} else if (freeformTextarea && letterIndex === listItems.length) {
+					e.preventDefault();
+					updateSelection(-1);
+					freeformTextarea.focus();
+				}
+				return;
+			}
+
 			if (newIndex !== data.selectedIndex && newIndex >= 0) {
 				updateSelection(newIndex);
 			}
@@ -1158,15 +1194,16 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 				isChecked = true;
 			}
 
+			const optionKey = getQuestionOptionKey(index);
 			const listItem = dom.$('.chat-question-list-item.multi-select');
 			listItem.setAttribute('role', 'option');
 			listItem.setAttribute('aria-selected', String(isChecked));
-			listItem.setAttribute('aria-label', localize('chat.questionCarousel.optionLabel', "Option {0}: {1}", index + 1, option.label));
+			listItem.setAttribute('aria-label', localize('chat.questionCarousel.optionLabel', "Option {0}: {1}", optionKey, option.label));
 			listItem.id = `option-${question.id}-${index}`;
 			listItem.tabIndex = -1;
 
 			const number = dom.$('.chat-question-list-number');
-			number.textContent = `${index + 1}`;
+			number.textContent = optionKey;
 			listItem.appendChild(number);
 
 			// Create checkbox using the VS Code Checkbox component
@@ -1238,7 +1275,7 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 
 			// Number indicator for freeform (comes after all options)
 			const freeformNumber = dom.$('.chat-question-freeform-number');
-			freeformNumber.textContent = `${options.length + 1}`;
+			freeformNumber.textContent = getQuestionOptionKey(options.length);
 			freeformContainer.appendChild(freeformNumber);
 
 			freeformTextarea = dom.$<HTMLTextAreaElement>('textarea.chat-question-freeform-textarea');
@@ -1297,6 +1334,17 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 					e.preventDefault();
 					checkboxes[numberIndex].domNode.click();
 				} else if (freeformTextarea && numberIndex === checkboxes.length) {
+					e.preventDefault();
+					freeformTextarea.focus();
+				}
+			}
+
+			const letterIndex = getLetterKeyIndex(event.keyCode);
+			if (letterIndex !== undefined && !event.metaKey && !event.ctrlKey && !event.altKey) {
+				if (letterIndex < checkboxes.length) {
+					e.preventDefault();
+					checkboxes[letterIndex].domNode.click();
+				} else if (freeformTextarea && letterIndex === checkboxes.length) {
 					e.preventDefault();
 					freeformTextarea.focus();
 				}
@@ -1411,9 +1459,10 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 			return;
 		}
 
-		const summaryContainer = dom.$('.chat-question-carousel-summary');
+		const summaryContainer = dom.$('.chat-question-carousel-summary.chat-question-decision-summary');
+		const hasSingleQuestion = this.carousel.questions.length === 1;
 
-		for (const question of this.carousel.questions) {
+		for (const [index, question] of this.carousel.questions.entries()) {
 			const answer = this._answers.get(question.id);
 
 			const summaryItem = dom.$('.chat-question-summary-item');
@@ -1422,13 +1471,17 @@ export class ChatQuestionCarouselPart extends Disposable implements IChatContent
 			const questionText = question.message ?? question.title;
 			let labelText = typeof questionText === 'string' ? questionText : questionText.value;
 			labelText = labelText.replace(/[:\s]+$/, '');
-			questionRow.textContent = localize('chat.questionCarousel.summaryQuestion', 'Q: {0}', labelText);
+			questionRow.textContent = hasSingleQuestion
+				? localize('chat.questionCarousel.summaryDecision', 'Decision')
+				: localize('chat.questionCarousel.summaryDecisionWithIndex', 'Decision {0}', index + 1);
+			questionRow.title = labelText;
 			summaryItem.appendChild(questionRow);
 
 			if (answer !== undefined) {
 				const formattedAnswer = this.formatAnswerForSummary(question, answer);
 				const answerRow = dom.$('div.chat-question-summary-answer-title');
-				answerRow.textContent = localize('chat.questionCarousel.summaryAnswer', 'A: {0}', formattedAnswer);
+				answerRow.textContent = formattedAnswer;
+				answerRow.title = formattedAnswer;
 				summaryItem.appendChild(answerRow);
 			} else {
 				const unanswered = dom.$('div.chat-question-summary-unanswered');

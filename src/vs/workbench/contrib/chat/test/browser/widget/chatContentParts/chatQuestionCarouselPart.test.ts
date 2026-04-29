@@ -133,6 +133,17 @@ suite('ChatQuestionCarouselPart', () => {
 			assert.ok(stepIndicator?.textContent?.includes('3'));
 		});
 
+		test('renders submit button with trailing arrow icon', () => {
+			const carousel = createMockCarousel([
+				{ id: 'q1', type: 'text', title: 'Question 1' }
+			]);
+			createWidget(carousel);
+
+			const submitButton = widget.domNode.querySelector('.chat-question-submit-button');
+			assert.ok(submitButton, 'Submit button should exist');
+			assert.ok(submitButton?.querySelector('.codicon-arrow-right'), 'Submit button should include an arrow icon');
+		});
+
 		test('renders close button in title row for multi-question carousels', () => {
 			const carousel = createMockCarousel([
 				{ id: 'q1', type: 'text', title: 'Question 1' },
@@ -180,6 +191,24 @@ suite('ChatQuestionCarouselPart', () => {
 
 			const listItems = widget.domNode.querySelectorAll('.chat-question-list-item');
 			assert.strictEqual(listItems.length, 2, 'Should have 2 list items');
+		});
+
+		test('renders letter keycaps for singleSelect options and freeform input', () => {
+			const carousel = createMockCarousel([
+				{
+					id: 'q1',
+					type: 'singleSelect',
+					title: 'Choose one',
+					options: [
+						{ id: 'a', label: 'Option A', value: 'a' },
+						{ id: 'b', label: 'Option B', value: 'b' }
+					]
+				}
+			]);
+			createWidget(carousel);
+
+			const keycaps = Array.from(widget.domNode.querySelectorAll('.chat-question-list-number, .chat-question-freeform-number')).map(element => element.textContent);
+			assert.deepStrictEqual(keycaps, ['A', 'B', 'C']);
 		});
 
 		test('renders list items with checkboxes for multiSelect type questions', () => {
@@ -745,6 +774,37 @@ suite('ChatQuestionCarouselPart', () => {
 			assert.ok(summary, 'Should show summary container when isUsed is true');
 			const summaryValue = summary?.querySelector('.chat-question-summary-answer-title');
 			assert.ok(summaryValue?.textContent?.includes('saved answer'), 'Summary should show saved answer from data');
+		});
+
+		test('renders used single-select answers as a compact decision summary', () => {
+			const carousel: IChatQuestionCarousel = {
+				kind: 'questionCarousel',
+				questions: [
+					{
+						id: 'q1',
+						type: 'singleSelect',
+						title: 'Choose synthesis tool',
+						options: [
+							{ id: 'yosys', label: 'Yosys (local)', value: 'yosys' },
+							{ id: 'vivado', label: 'Vivado', value: 'vivado' }
+						]
+					}
+				],
+				allowSkip: true,
+				isUsed: true,
+				data: { q1: { selectedValue: 'yosys' } }
+			};
+			createWidget(carousel);
+
+			const summary = widget.domNode.querySelector('.chat-question-decision-summary');
+			assert.ok(summary, 'Used carousel should render the compact decision summary variant');
+
+			const label = summary?.querySelector('.chat-question-summary-label');
+			assert.strictEqual(label?.textContent, 'Decision', 'Single used question should use a compact decision label');
+			assert.strictEqual(label?.getAttribute('title'), 'Choose synthesis tool', 'Full question should remain available as tooltip text');
+
+			const answer = summary?.querySelector('.chat-question-summary-answer-title');
+			assert.strictEqual(answer?.textContent, 'Yosys (local)', 'Summary should show the selected label without a form-style answer prefix');
 		});
 
 		test('shows skipped message when constructed with isUsed but no data', () => {

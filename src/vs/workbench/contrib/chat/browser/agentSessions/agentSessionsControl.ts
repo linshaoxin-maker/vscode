@@ -298,7 +298,7 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 
 		this._register(model.onDidChangeSessions(() => {
 			if (this.visible) {
-				this.update();
+				this.update(true);
 			}
 		}));
 
@@ -503,9 +503,13 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 		return this.agentSessionsService.model.resolve(undefined);
 	}
 
-	async update(): Promise<void> {
+	async update(preserveScrollTop = false): Promise<void> {
 		return this.updateSessionsListThrottler.queue(async () => {
+			const previousScrollTop = preserveScrollTop ? this.sessionsList?.scrollTop : undefined;
 			await this.sessionsList?.updateChildren();
+			if (typeof previousScrollTop === 'number' && this.sessionsList) {
+				this.sessionsList.scrollTop = previousScrollTop;
+			}
 
 			this._onDidUpdate.fire();
 		});

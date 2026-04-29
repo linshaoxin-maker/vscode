@@ -175,6 +175,40 @@ suite('ChatTodoListWidget Accessibility', () => {
 		assert.strictEqual(emptyWidget.domNode.style.display, 'none', 'Widget should be hidden when no todos');
 	});
 
+	test('widget hides stale todos when a rendered session becomes empty', () => {
+		let todos = sampleTodos;
+		const mutableTodoListService: IChatTodoListService = {
+			_serviceBrand: undefined,
+			onDidUpdateTodos: Event.None,
+			getTodos: () => todos,
+			setTodos: (_sessionResource: URI, updatedTodos: IChatTodo[]) => {
+				todos = updatedTodos;
+			},
+			migrateTodos: () => { }
+		};
+		const mutableConfigurationService = new TestConfigurationService();
+		const instantiationService = workbenchInstantiationService(undefined, store);
+		instantiationService.stub(IChatTodoListService, mutableTodoListService);
+		instantiationService.stub(IConfigurationService, mutableConfigurationService);
+		const mutableWidget = store.add(instantiationService.createInstance(ChatTodoListWidget));
+		mainWindow.document.body.appendChild(mutableWidget.domNode);
+
+		mutableWidget.render(testSessionUri);
+		assert.strictEqual(mutableWidget.domNode.style.display, 'block', 'Widget should be visible when todos exist');
+		assert.strictEqual(mutableWidget.hasTodos(), true, 'Widget should report todos after rendering a non-empty list');
+
+		todos = [];
+		mutableWidget.render(testSessionUri);
+
+		assert.strictEqual(mutableWidget.domNode.style.display, 'none', 'Widget should hide after todos are cleared');
+		assert.strictEqual(mutableWidget.domNode.classList.contains('has-todos'), false, 'Widget should remove the has-todos state');
+		assert.strictEqual(mutableWidget.hasTodos(), false, 'Widget should not report stale todos after clearing');
+
+		if (mutableWidget.domNode.parentNode) {
+			mutableWidget.domNode.parentNode.removeChild(mutableWidget.domNode);
+		}
+	});
+
 	test('clear button has proper accessibility', () => {
 		widget.render(testSessionUri);
 

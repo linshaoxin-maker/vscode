@@ -17,6 +17,19 @@
 		border-radius: 5px;
 	}
 
+	.monaco-list .monaco-list-row.selected,
+	.monaco-list:focus .monaco-list-row.focused.selected {
+		background-color: color-mix(in srgb, var(--vscode-list-activeSelectionBackground) 14%, transparent) !important;
+		color: var(--vscode-foreground) !important;
+		outline: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 28%, transparent);
+		outline-offset: -1px;
+	}
+
+	.monaco-list .monaco-list-row:hover:not(.selected),
+	.monaco-list .monaco-list-row.focused:not(.selected) {
+		background-color: color-mix(in srgb, var(--vscode-list-hoverBackground) 72%, transparent) !important;
+	}
+
 	.monaco-list-row .force-no-twistie {
 		display: none !important;
 	}

@@ -277,6 +277,20 @@ export class ChatTodoListWidget extends Disposable {
 
 		if (!shouldShow) {
 			this.domNode.classList.remove('has-todos');
+			this.hideWidget();
+			this._isExpanded = false;
+			this._userManuallyExpanded = false;
+			this.expandoButton.element.setAttribute('aria-expanded', 'false');
+			this.todoListContainer.style.display = 'none';
+			this.expandIcon.classList.remove('codicon-chevron-down');
+			this.expandIcon.classList.add('codicon-chevron-right');
+			this.titleElement.textContent = localize('chat.todoList.title', 'Todos');
+
+			if (this._todoList) {
+				this._todoList.splice(0, this._todoList.length);
+				this._todoList.layout(0);
+				this._todoList.getHTMLElement().style.height = '0px';
+			}
 			return;
 		}
 
