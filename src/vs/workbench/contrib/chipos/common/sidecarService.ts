@@ -27,17 +27,30 @@ export const enum SidecarState {
  * 默认值是 `Auto` —— SidecarManager 根据 workspace 是否是 SSH-Remote、
  * product.json 是否注入了 reasoningUrl 等信号自动决定具体行为。
  *
- * 设计原则：**IDE 永远不 spawn 任何 backend 进程**. Reasoner 和 Worker
- * 都由开发者/运维手动部署（121 host / 云端 / Docker / chipos-server REH），
- * IDE 通过 `chipos.backend.reasoningUrl` + workerHttpUrl 连过去.
+ * 设计原则（修订 2026-04-30）：
+ *   - **Reasoner 永远由部署方运维**（云端 / Docker / chipos-server REH），IDE
+ *     通过 `chipos.backend.reasoningUrl` 连过去；IDE 不 spawn Reasoner.
+ *   - **Worker 的 spawn 取决于 workspace 类型**：
+ *       · SSH-Remote workspace → chipos-remote-ssh 扩展在远端 spawn (path A)
+ *       · chipos-server REH → REH 自己 spawn (path B)
+ *       · 本地 workspace → IDE 在本机 spawn binary（cache → download fallback)
+ *         IPC 由 `vs/platform/chipos/electron-main/sidecarManagerMain.ts` 提供
  *
- * 历史上有过 `Local` 模式（IDE 自己 spawn 一对 reasoning + worker），
- * 已于 2026-04-27 移除 — 见 backend_v2/Makefile commit / chipos-configuration-reference §0.
+ * 历史注：2026-04-27 的 refactor (aca4974224a) 把本地 spawn 路径整体删掉了
+ * （理由是 "IDE never spawns backends"），但这条理由只对 Reasoner 成立 ——
+ * 对纯本地 workspace 用户来说，没有 SSH 也没有 REH，谁来 spawn Worker？
+ * 答案是 IDE 自己。本次（2026-04-30）把这条路径接回来。
  */
 export enum BackendMode {
-	/** 自适应：根据环境自动选择最合适的模式（默认） */
+	/** 自适应：根据 workspace 类型 + reasoningUrl 自动选模式（默认） */
 	Auto = 'auto',
-	/** 本地执行 + 云端推理（chipos-remote-ssh / chipos-server REH 在远端 spawn worker, IDE 连云端 reasoner） */
+	/**
+	 * 本地 workspace + 远端 Reasoner —— IDE 在本机 spawn worker 二进制
+	 * (扫 ~/.chipos/workers/ 缓存，没有则从 chiposReleases.repo 下载)，
+	 * worker 通过 gRPC 连 reasoningUrl 配置的远端 Reasoner.
+	 */
+	Local = 'local',
+	/** SSH-Remote / REH workspace —— 远端 spawn worker, IDE 连云端 reasoner */
 	CloudReasoning = 'cloud-reasoning',
 	/** 手动指定 reasoner / worker URL（pre-deployed backend）*/
 	Manual = 'manual',

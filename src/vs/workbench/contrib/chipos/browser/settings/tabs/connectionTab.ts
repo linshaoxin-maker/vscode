@@ -118,9 +118,10 @@ export class ConnectionTab extends Disposable {
 			localize('chipos.settings.mode.desc', 'Override auto-detection. "auto" looks at workspace remoteness and existing processes to pick the right mode — recommended.')
 		));
 
-		const modeValues = ['auto', 'cloud-reasoning', 'manual'];
+		const modeValues = ['auto', 'local', 'cloud-reasoning', 'manual'];
 		const modeOptions: ISelectOptionItem[] = [
 			{ text: localize('chipos.mode.auto', 'Auto (recommended — detect from workspace + product defaults)') },
+			{ text: localize('chipos.mode.local', 'Local (IDE spawns Worker on this machine; cache → download from chiposReleases.repo)') },
 			{ text: localize('chipos.mode.cloud', 'Cloud Reasoning (SSH-Remote forwards a remote Worker; chat goes direct to cloud Reasoner)') },
 			{ text: localize('chipos.mode.manual', 'Manual (connect to pre-deployed URLs)') },
 		];

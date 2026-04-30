@@ -21,6 +21,7 @@ import { assertType } from '../../base/common/types.js';
 import { URI } from '../../base/common/uri.js';
 import { generateUuid } from '../../base/common/uuid.js';
 import { registerContextMenuListener } from '../../base/parts/contextmenu/electron-main/contextmenu.js';
+import { registerSidecarIpcHandlers } from '../../platform/chipos/electron-main/sidecarManagerMain.js';
 import { getDelayedChannel, ProxyChannel, StaticRouter } from '../../base/parts/ipc/common/ipc.js';
 import { Server as ElectronIPCServer } from '../../base/parts/ipc/electron-main/ipc.electron.js';
 import { Client as MessagePortClient } from '../../base/parts/ipc/electron-main/ipc.mp.js';
@@ -540,6 +541,12 @@ export class CodeApplication extends Disposable {
 				window.notifyZoomLevel(zoomLevel);
 			}
 		});
+
+		// ChipOS — local Worker lifecycle IPC (cache lookup / download / spawn).
+		// Replaces the path that was over-eagerly removed by aca4974224a; the
+		// renderer-side SidecarManagerElectron orchestrates and calls into here
+		// for the Node-API mechanics. Idempotent — safe to call repeatedly.
+		registerSidecarIpcHandlers();
 
 		//#endregion
 	}
