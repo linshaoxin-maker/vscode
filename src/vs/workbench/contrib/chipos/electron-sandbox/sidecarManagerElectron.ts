@@ -231,7 +231,14 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		// just health-check.
 		if (this._mode === BackendMode.Local) {
 			try {
-				await this._ensureLocalWorker();
+				const spawned = await this._ensureLocalWorker();
+				if (!spawned) {
+					// Deferred (e.g. empty workbench). Health-check the Reasoner
+					// only — Worker is intentionally absent. Same code path as
+					// Manual mode: reasoner reachable = green-light Chat.
+					await this._reasonerOnlyHealthCheck();
+					return;
+				}
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				this._logService.error(`[ChipOS SidecarElectron] local worker spawn failed: ${msg}`);
@@ -668,7 +675,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				this._logService.info('[ChipOS SidecarElectron] login state changed — Local mode, respawning worker with fresh token');
 				try {
 					await this._releaseLocalWorkerRef();
-					await this._invokeIpc('chipos:killProcess', 'worker').catch(() => { /* best effort */ });
+					await this._invokeIpc('vscode:chipos:killProcess', 'worker').catch(() => { /* best effort */ });
 					await this._ensureLocalWorker();
 				} catch (err) {
 					this._logService.warn(`[ChipOS SidecarElectron] Local respawn during token refresh failed: ${err}`);
@@ -736,11 +743,17 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	// Auth: same precedence as the SSH path (workerToken > workerApiKey).
 	// JWT auto-refresh logic stays where it is (no token mutation needed
 	// here; respawn is what the refresh path does).
-	private async _ensureLocalWorker(): Promise<void> {
+	/** @returns true if a worker is up (spawned or adopted), false if deferred. */
+	private async _ensureLocalWorker(): Promise<boolean> {
 		const folders = this._workspaceContextService.getWorkspace().folders;
 		const workspaceRoot = folders[0]?.uri.fsPath ?? '';
 		if (!workspaceRoot) {
-			throw new Error('Local mode requires an open workspace');
+			// Empty workbench — no point spawning a Worker since there's nothing
+			// to operate on. Workspace hash would be empty and instance.json
+			// keying breaks. Skip gracefully; chiposContribution will re-trigger
+			// startBackend() when the user opens a folder.
+			this._logService.info('[ChipOS Local] no workspace folder open — deferring worker spawn');
+			return false;
 		}
 
 		const grpcTarget = resolveReasonerGrpcAddress(this._configurationService, this._productService);
@@ -765,21 +778,21 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 		// 1. Existing instance? Adopt + ref++.
 		const inst = await this._invokeIpc<{ alive: boolean; pid?: number; http_port?: number; ref_count?: number }>(
-			'chipos:checkInstance',
+			'vscode:chipos:checkInstance',
 			{ workspaceRoot },
 		);
 		if (inst?.alive && inst.pid) {
-			const newCount = await this._invokeIpc<number>('chipos:acquireRef', {
+			const newCount = await this._invokeIpc<number>('vscode:chipos:acquireRef', {
 				workspaceRoot,
 				callerId: this._localCallerId,
 			});
 			this._localWorkerWorkspaceRoot = workspaceRoot;
 			this._logService.info(`[ChipOS Local] adopted existing worker pid=${inst.pid} ref_count=${newCount}`);
-			return;
+			return true;
 		}
 
 		// 2. Cache lookup.
-		let binaryPath = await this._invokeIpc<string | null>('chipos:findBinary', {});
+		let binaryPath = await this._invokeIpc<string | null>('vscode:chipos:findBinary', {});
 		if (!binaryPath) {
 			// 3. Download from GitHub release. Repo from product.json.
 			const repo = (this._productService as { chiposReleases?: { repo?: string } }).chiposReleases?.repo;
@@ -787,7 +800,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				throw new Error('Cannot download Worker — product.chiposReleases.repo is unset');
 			}
 			this._logService.info(`[ChipOS Local] no cached binary; downloading from ${repo}`);
-			binaryPath = await this._invokeIpc<string | null>('chipos:downloadBinary', {
+			binaryPath = await this._invokeIpc<string | null>('vscode:chipos:downloadBinary', {
 				repo,
 				version: 'latest',
 			});
@@ -803,7 +816,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const expandedMcp = mcpConfigPath.startsWith('~/')
 			? `${process.env['HOME'] ?? ''}${mcpConfigPath.slice(1)}`
 			: mcpConfigPath;
-		await this._invokeIpc('chipos:ensureMcpConfig', { mcpConfigPath: expandedMcp });
+		await this._invokeIpc('vscode:chipos:ensureMcpConfig', { mcpConfigPath: expandedMcp });
 
 		// 5. Spawn.
 		const env: Record<string, string> = {
@@ -829,7 +842,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		];
 
 		this._logService.info(`[ChipOS Local] spawning worker (token=${workerToken ? 'set' : 'unset'}, apiKey=${workerApiKey ? 'set' : 'unset'}, tls=${tlsEnabled})`);
-		const result = await this._invokeIpc<{ pid?: number; alreadyRunning?: boolean }>('chipos:spawnProcess', {
+		const result = await this._invokeIpc<{ pid?: number; alreadyRunning?: boolean }>('vscode:chipos:spawnProcess', {
 			binaryPath,
 			args,
 			env,
@@ -839,12 +852,13 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		});
 		this._localWorkerWorkspaceRoot = workspaceRoot;
 		this._logService.info(`[ChipOS Local] worker spawned pid=${result?.pid} alreadyRunning=${result?.alreadyRunning ?? false}`);
+		return true;
 	}
 
 	private async _releaseLocalWorkerRef(): Promise<void> {
 		if (!this._localWorkerWorkspaceRoot) { return; }
 		try {
-			const remaining = await this._invokeIpc<number>('chipos:releaseRef', {
+			const remaining = await this._invokeIpc<number>('vscode:chipos:releaseRef', {
 				workspaceRoot: this._localWorkerWorkspaceRoot,
 				callerId: this._localCallerId,
 			});
@@ -852,7 +866,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			if (remaining === 0) {
 				// Last ref — kill the process. Worker writes its instance.json
 				// itself, so on next IDE start without the file we'll spawn fresh.
-				await this._invokeIpc('chipos:killProcess', 'worker');
+				await this._invokeIpc('vscode:chipos:killProcess', 'worker');
 			}
 		} catch (err) {
 			this._logService.warn(`[ChipOS Local] release ref failed (non-fatal): ${err}`);

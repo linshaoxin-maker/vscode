@@ -20,15 +20,16 @@
  * the Worker, leaving the IDE pointing at a dead 127.0.0.1:8081. This file
  * brings back the local spawn path on parity with the SSH path.
  *
- * IPC contract (renderer ↔ main):
- *   chipos:findBinary       → scan ~/.chipos/workers/<ver>/<binary> cache
- *   chipos:downloadBinary   → GitHub release tar.gz → extract → cache
- *   chipos:spawnProcess     → spawn binary with args/env, track per-window
- *   chipos:killProcess      → SIGTERM → wait → SIGKILL by role/window
- *   chipos:checkInstance    → read instance.json + verify PID alive
- *   chipos:acquireRef       → ref_count++ (multi-window share)
- *   chipos:releaseRef       → ref_count--
- *   chipos:ensureMcpConfig  → write default ~/.chipos/mcp_servers.json if missing
+ * IPC contract (renderer ↔ main). Channels prefixed `vscode:chipos:` because
+ * `validatedIpcMain.validateEvent` rejects anything not under `vscode:`:
+ *   vscode:chipos:findBinary       scan ~/.chipos/workers/<ver>/<binary> cache
+ *   vscode:chipos:downloadBinary   GitHub release tar.gz → extract → cache
+ *   vscode:chipos:spawnProcess     spawn binary with args/env, track per-window
+ *   vscode:chipos:killProcess      SIGTERM → wait → SIGKILL by role/window
+ *   vscode:chipos:checkInstance    read instance.json + verify PID alive
+ *   vscode:chipos:acquireRef       ref_count++ (multi-window share)
+ *   vscode:chipos:releaseRef       ref_count--
+ *   vscode:chipos:ensureMcpConfig  write default ~/.chipos/mcp_servers.json
  */
 
 import * as cp from 'child_process';
@@ -398,7 +399,7 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:findBinary ────────────────────────────────────────────────────
-	validatedIpcMain.handle('chipos:findBinary', async (_event, args: FindBinaryArgs = {}) => {
+	validatedIpcMain.handle('vscode:chipos:findBinary', async (_event, args: FindBinaryArgs = {}) => {
 		const name = args.binaryName || defaultBinaryName();
 		const workersDir = path.join(chiposHome(), 'workers');
 
@@ -427,7 +428,7 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:downloadBinary ──────────────────────────────────────────────────
-	validatedIpcMain.handle('chipos:downloadBinary', async (_event, args: DownloadBinaryArgs) => {
+	validatedIpcMain.handle('vscode:chipos:downloadBinary', async (_event, args: DownloadBinaryArgs) => {
 		try {
 			const tag = detectPlatformTag();
 			const binaryName = args.binaryName || `chipos-worker-${tag}`;
@@ -482,7 +483,7 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:spawnProcess ───────────────────────────────────────────────────
-	validatedIpcMain.handle('chipos:spawnProcess', async (event, args: SpawnProcessArgs) => {
+	validatedIpcMain.handle('vscode:chipos:spawnProcess', async (event, args: SpawnProcessArgs) => {
 		const windowId = event.sender.id;
 		const { binaryPath, env, cwd, role, workspaceRoot } = args;
 
@@ -535,7 +536,7 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:killProcess ────────────────────────────────────────────────────
-	validatedIpcMain.handle('chipos:killProcess', async (event, role: 'worker' | 'reasoner') => {
+	validatedIpcMain.handle('vscode:chipos:killProcess', async (event, role: 'worker' | 'reasoner') => {
 		const windowId = event.sender.id;
 		const managed = getProc(windowId, role);
 		if (!managed || managed.process.killed) {
@@ -548,7 +549,7 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:checkInstance ──────────────────────────────────────────────────
-	validatedIpcMain.handle('chipos:checkInstance', async (_event, args: CheckInstanceArgs) => {
+	validatedIpcMain.handle('vscode:chipos:checkInstance', async (_event, args: CheckInstanceArgs) => {
 		const meta = readInstanceJson(args.workspaceRoot);
 		if (!meta || !meta.pid) { return { alive: false }; }
 		const alive = isPidAlive(meta.pid);
@@ -565,7 +566,7 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:acquireRef ────────────────────────────────────────────────────
-	validatedIpcMain.handle('chipos:acquireRef', async (_event, args: RefArgs) => {
+	validatedIpcMain.handle('vscode:chipos:acquireRef', async (_event, args: RefArgs) => {
 		return withInstanceLock(args.workspaceRoot, () => {
 			const meta = readInstanceJson(args.workspaceRoot);
 			if (!meta) { return 0; }
@@ -578,7 +579,7 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:releaseRef ────────────────────────────────────────────────────
-	validatedIpcMain.handle('chipos:releaseRef', async (_event, args: RefArgs) => {
+	validatedIpcMain.handle('vscode:chipos:releaseRef', async (_event, args: RefArgs) => {
 		return withInstanceLock(args.workspaceRoot, () => {
 			const meta = readInstanceJson(args.workspaceRoot);
 			if (!meta) { return 0; }
@@ -593,7 +594,7 @@ export function registerSidecarIpcHandlers(): void {
 	// Mirrors WorkerManager._ensureMcpConfigFile — same default config, same
 	// idempotent semantics. A fresh box without ~/.chipos/mcp_servers.json
 	// otherwise gets a worker that loads 0 MCP tools silently.
-	validatedIpcMain.handle('chipos:ensureMcpConfig', async (_event, args: EnsureMcpConfigArgs) => {
+	validatedIpcMain.handle('vscode:chipos:ensureMcpConfig', async (_event, args: EnsureMcpConfigArgs) => {
 		try {
 			const target = args.mcpConfigPath;
 			if (fs.existsSync(target)) { return { existed: true, path: target }; }
