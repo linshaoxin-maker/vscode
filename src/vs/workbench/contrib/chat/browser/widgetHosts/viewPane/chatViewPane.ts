@@ -479,10 +479,14 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		if (!this.configurationService.getValue<boolean>(ChatConfiguration.ChatViewSessionsEnabled)) {
 			newSessionsContainerVisible = false; // disabled in settings
 		} else {
+			// [ChipOS] Don't show an empty sessions sidebar — it just covers the chat
+			// welcome banner with a useless "Search Agents..." box on fresh installs.
+			const hasSessions = this.agentSessionsService.model.sessions.length > 0;
 
 			// Sessions control: stacked
 			if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
 				newSessionsContainerVisible =
+					hasSessions &&																// [ChipOS] only when at least one session exists
 					!!this.chatEntitlementService.sentiment.installed &&						// chat is installed (otherwise make room for terms and welcome)
 					(!this._widget || (this._widget.isEmpty() && !!this._widget.viewModel && !this._widget.viewModel.model.title)) &&	// chat widget empty (but not when model is loading or has a title)
 					!this.welcomeController?.isShowingWelcome.get();							// welcome not showing
@@ -491,6 +495,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 			// Sessions control: sidebar
 			else {
 				newSessionsContainerVisible =
+					hasSessions &&																						// [ChipOS] only when at least one session exists
 					!this.welcomeController?.isShowingWelcome.get() &&													// welcome not showing
 					!!this.lastDimensions && this.lastDimensions.width >= ChatViewPane.SESSIONS_SIDEBAR_VIEW_MIN_WIDTH;	// has sessions or is showing all sessions
 			}
@@ -714,8 +719,16 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		}));
 
 		// When sessions change (e.g., after first message in a new session)
-		// reveal it unless the user is interacting with the list already
+		// reveal it unless the user is interacting with the list already.
+		// Also re-evaluate sidebar visibility — on fresh installs we hide the
+		// sessions sidebar until at least one session exists, so we need to
+		// re-show it once sessions appear (and re-hide if all are removed).
 		this._register(this.agentSessionsService.model.onDidChangeSessions(() => {
+			const { changed: visibilityChanged } = this.updateSessionsControlVisibility();
+			if (visibilityChanged) {
+				this.relayout();
+			}
+
 			if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
 				return; // only reveal in side-by-side mode
 			}
