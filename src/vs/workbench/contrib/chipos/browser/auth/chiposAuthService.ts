@@ -108,18 +108,30 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 		// Best-effort: tell the website to revoke the refresh_token before we
 		// clear it locally. Failure (network, 4xx, etc.) must not block local
 		// logout — the user expects the IDE to forget them either way.
+		// SEC: chiops `/auth/logout` now requires Bearer access_token to
+		// authenticate the caller (prevents third-party RT abuse). If our
+		// in-memory access_token is missing or near-expired, we skip the
+		// server call entirely — local cleanup still proceeds and the
+		// orphaned RT expires naturally. We deliberately do NOT trigger a
+		// refresh just to log out.
 		const refreshToken = await this._tokenManager.getRefreshTokenForLogout();
+		const accessToken = this._tokenManager.getAccessTokenForLogout();
 		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
-		if (websiteUrl && refreshToken) {
+		if (websiteUrl && refreshToken && accessToken) {
 			try {
 				await fetch(`${websiteUrl}/api/auth/logout`, {
 					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
+					headers: {
+						'Content-Type': 'application/json',
+						Authorization: `Bearer ${accessToken}`,
+					},
 					body: JSON.stringify({ refresh_token: refreshToken }),
 				});
 			} catch (err) {
 				this._logService.warn('[ChipOS Auth] /api/auth/logout failed (continuing local logout):', String(err));
 			}
+		} else if (websiteUrl && refreshToken && !accessToken) {
+			this._logService.info('[ChipOS Auth] skipping server-side logout — no live access_token (RT will expire naturally)');
 		}
 		await this._tokenManager.clearTokens();
 		this._logService.info('[ChipOS Auth] Logged out (workers stopped, tokens cleared)');

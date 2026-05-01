@@ -69,6 +69,16 @@ export interface IChipOSTokenManager {
 	 * the IDE process.
 	 */
 	getRefreshTokenForLogout(): Promise<string | undefined>;
+	/**
+	 * Returns the current in-memory access_token WITHOUT triggering a refresh.
+	 * Required by the logout flow: chiops `/auth/logout` now demands a Bearer
+	 * access_token to authenticate the caller, but we don't want to mint a
+	 * fresh token (and thereby a new RT in a soon-to-be-revoked family) just
+	 * to log out. If the token is missing or expired, returns undefined and
+	 * the caller skips the server-side revoke step (local logout still
+	 * proceeds; the orphaned RT will expire naturally).
+	 */
+	getAccessTokenForLogout(): string | undefined;
 	storeTokens(accessToken: string, refreshToken: string, user?: IChipOSUserInfo): Promise<void>;
 	clearTokens(): Promise<void>;
 	getUser(): IChipOSUserInfo | undefined;
@@ -180,6 +190,23 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 
 	async getRefreshTokenForLogout(): Promise<string | undefined> {
 		return this._refreshToken;
+	}
+
+	getAccessTokenForLogout(): string | undefined {
+		// SEC: deliberately does NOT refresh. See interface docstring — minting
+		// a fresh access_token + RT just to log out wastes RTs and races the
+		// revocation we're about to issue. Best-effort: if the in-memory
+		// access_token is still good, use it; otherwise the caller skips the
+		// server-side revoke leg.
+		if (!this._accessToken) {
+			return undefined;
+		}
+		// Treat a token within REFRESH_MARGIN_MS of expiry as already invalid
+		// for logout purposes — chiops will 401 it anyway.
+		if (this._tokenExpiry > 0 && Date.now() >= this._tokenExpiry - REFRESH_MARGIN_MS) {
+			return undefined;
+		}
+		return this._accessToken;
 	}
 
 	async storeTokens(accessToken: string, refreshToken: string, user?: IChipOSUserInfo): Promise<void> {
