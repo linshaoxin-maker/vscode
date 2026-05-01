@@ -812,11 +812,10 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			this._logService.info(`[ChipOS Local] using cached worker → ${binaryPath}`);
 		}
 
-		// 4. Default MCP config (no-op if present).
-		const expandedMcp = mcpConfigPath.startsWith('~/')
-			? `${process.env['HOME'] ?? ''}${mcpConfigPath.slice(1)}`
-			: mcpConfigPath;
-		await this._invokeIpc('vscode:chipos:ensureMcpConfig', { mcpConfigPath: expandedMcp });
+		// 4. Default MCP config (no-op if present). Pass the raw path; main
+		// process expands `~/` (renderer is sandboxed and has no Node `process`
+		// global, so we can't read HOME here).
+		await this._invokeIpc('vscode:chipos:ensureMcpConfig', { mcpConfigPath });
 
 		// 5. Spawn.
 		const env: Record<string, string> = {
@@ -838,7 +837,9 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			'--server', grpcTarget,
 			'--workspace', workspaceRoot,
 			'--http-port', String(workerHttpPort),
-			'--mcp-config', expandedMcp,
+			// Worker side does its own Path(...).expanduser(); shell expansion
+			// not strictly needed here. Pass through verbatim.
+			'--mcp-config', mcpConfigPath,
 		];
 
 		this._logService.info(`[ChipOS Local] spawning worker (token=${workerToken ? 'set' : 'unset'}, apiKey=${workerApiKey ? 'set' : 'unset'}, tls=${tlsEnabled})`);

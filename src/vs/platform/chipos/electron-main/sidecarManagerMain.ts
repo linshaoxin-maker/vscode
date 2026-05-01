@@ -596,7 +596,12 @@ export function registerSidecarIpcHandlers(): void {
 	// otherwise gets a worker that loads 0 MCP tools silently.
 	validatedIpcMain.handle('vscode:chipos:ensureMcpConfig', async (_event, args: EnsureMcpConfigArgs) => {
 		try {
-			const target = args.mcpConfigPath;
+			// Renderer is sandboxed (no Node `process` global) so it can't
+			// expand `~`; we do it here. Falls through verbatim if the path
+			// is already absolute.
+			const target = args.mcpConfigPath.startsWith('~/')
+				? path.join(os.homedir(), args.mcpConfigPath.slice(2))
+				: args.mcpConfigPath;
 			if (fs.existsSync(target)) { return { existed: true, path: target }; }
 			fs.mkdirSync(path.dirname(target), { recursive: true });
 			const defaultConfig = JSON.stringify({
