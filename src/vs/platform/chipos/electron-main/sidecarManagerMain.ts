@@ -525,9 +525,33 @@ export function registerSidecarIpcHandlers(): void {
 			console.error(`[ChipOS ${role}] spawn error: ${err.message} (window ${windowId})`);
 			setProc(windowId, role, undefined);
 		});
+		// EDA-PACK-IDE-WIRING gap-2 落地: parse worker stderr for [EdaPack]
+		// progress lines and forward to the renderer via IPC. The renderer's
+		// `vscode-extension/src/edaPackStatus.ts:EdaPackStatusBar.ingestStderrLine`
+		// picks this up and shows the status bar item + first-time notification.
+		// Buffer partial lines across data chunks (TCP/pipe buffers split arbitrarily).
+		let stderrLineBuffer = '';
 		child.stderr?.on('data', (data: Buffer) => {
-			const line = data.toString().trim();
-			if (line) { console.log(`[ChipOS ${role} stderr] ${line}`); }
+			stderrLineBuffer += data.toString();
+			const lines = stderrLineBuffer.split('\n');
+			// Last item may be a partial line — keep for next chunk
+			stderrLineBuffer = lines.pop() ?? '';
+			for (const rawLine of lines) {
+				const line = rawLine.trim();
+				if (!line) { continue; }
+				console.log(`[ChipOS ${role} stderr] ${line}`);
+				// Forward [EdaPack] lines to the renderer (status bar item).
+				// `event.sender` is the BrowserWindow.webContents that called
+				// vscode:chipos:spawnProcess — same window gets the progress.
+				if (line.startsWith('[EdaPack]') && !event.sender.isDestroyed()) {
+					try {
+						event.sender.send('chipos:eda-pack-progress', { line, role });
+					} catch (e) {
+						// Renderer may have closed mid-download — best effort
+						console.warn(`[ChipOS ${role}] failed to forward EdaPack line: ${e}`);
+					}
+				}
+			}
 		});
 		// Drain stdout so the kernel pipe buffer doesn't fill up and stall the worker.
 		child.stdout?.on('data', () => { /* discard */ });
