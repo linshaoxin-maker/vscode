@@ -530,6 +530,12 @@ export function registerSidecarIpcHandlers(): void {
 		// `vscode-extension/src/edaPackStatus.ts:EdaPackStatusBar.ingestStderrLine`
 		// picks this up and shows the status bar item + first-time notification.
 		// Buffer partial lines across data chunks (TCP/pipe buffers split arbitrarily).
+		//
+		// ROADMAP §11 P2-d: also parse [EdaEnv] lines (ADR-009 worker startup
+		// EDA scan protocol — see backend_v2/packages/execution/src/execution/
+		// eda_pack/environment.py). [EdaEnv] reports per-tool present/missing
+		// status + install_hint URLs; renderer surfaces a notification with a
+		// "Open install guide" button for each missing tool.
 		let stderrLineBuffer = '';
 		child.stderr?.on('data', (data: Buffer) => {
 			stderrLineBuffer += data.toString();
@@ -540,15 +546,28 @@ export function registerSidecarIpcHandlers(): void {
 				const line = rawLine.trim();
 				if (!line) { continue; }
 				console.log(`[ChipOS ${role} stderr] ${line}`);
+				if (event.sender.isDestroyed()) { continue; }
 				// Forward [EdaPack] lines to the renderer (status bar item).
 				// `event.sender` is the BrowserWindow.webContents that called
 				// vscode:chipos:spawnProcess — same window gets the progress.
-				if (line.startsWith('[EdaPack]') && !event.sender.isDestroyed()) {
+				if (line.startsWith('[EdaPack]')) {
 					try {
 						event.sender.send('chipos:eda-pack-progress', { line, role });
 					} catch (e) {
 						// Renderer may have closed mid-download — best effort
 						console.warn(`[ChipOS ${role}] failed to forward EdaPack line: ${e}`);
+					}
+					continue;
+				}
+				// ROADMAP §11 P2-d: forward [EdaEnv] lines on a separate IPC
+				// channel. Renderer extension consumes via
+				// `chipos:eda-env-status` to show install guidance / status
+				// pill ('all_ready' / 'core_ready' / 'missing <tool>').
+				if (line.startsWith('[EdaEnv]')) {
+					try {
+						event.sender.send('chipos:eda-env-status', { line, role });
+					} catch (e) {
+						console.warn(`[ChipOS ${role}] failed to forward EdaEnv line: ${e}`);
 					}
 				}
 			}
