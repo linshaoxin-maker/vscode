@@ -219,6 +219,17 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		// ── Trace upload (T6b ADR-009 §4.2 / T11 opt-out tier 2) ──
+		'chipos.trace.uploadEnabled': {
+			type: 'boolean',
+			default: true,
+			description: localize(
+				'chipos.trace.uploadEnabled.desc',
+				'Upload IDE-side trace events (chat bubble renders, tool calls, errors) to the configured Reasoner at task complete. Reasoner stores them under artifacts/ide/<render-id>/events.jsonl and links to the master trace.jsonl for cross-tier replay. Disable to keep IDE events purely local. Equivalent to env var CHIPOS_TRACE_UPLOAD=0 on reasoner side (which controls worker→reasoner upload).'
+			),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── v1 Legacy (deprecated, kept for backward compatibility) ──
 		'chipos.sidecar.autoStart': {
 			type: 'boolean',
