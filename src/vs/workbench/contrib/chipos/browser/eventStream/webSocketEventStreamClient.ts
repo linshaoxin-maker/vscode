@@ -67,6 +67,14 @@ interface IServerMessage {
 		| string;
 	readonly data: unknown;
 	readonly session_id: string | null;
+	/**
+	 * Trace ID — reasoner emits at the top level of every ServerEvent
+	 * (stream_manager.py:build_event). The WS client extracts and forwards
+	 * via IAgentEventBase.trace_id (eventTypes.ts:53). Optional because
+	 * not every event type has trace context (heartbeat / connection-level
+	 * messages do not).
+	 */
+	readonly trace_id?: string;
 }
 
 /**
@@ -291,6 +299,13 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 
 	// ── Message handling ─────────────────────────────────────────────────────
 
+	/**
+	 * Per-message trace_id (ADR-009 §4.1). Set in _handleRawMessage before
+	 * dispatch, read by _emit so downstream AgentEvent has trace_id correlated
+	 * with reasoner master trace.jsonl. Cleared after dispatch.
+	 */
+	private _currentTraceId: string | undefined;
+
 	private _handleRawMessage(raw: unknown): void {
 		if (typeof raw !== 'string') {
 			return;
@@ -305,6 +320,10 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 		}
 
 		this._resetHeartbeatTimer();
+
+		// Capture top-level trace_id (set by reasoner stream_manager.py:build_event)
+		// so all _emit calls in this dispatch get it injected. Cleared after dispatch.
+		this._currentTraceId = typeof msg.trace_id === 'string' && msg.trace_id ? msg.trace_id : undefined;
 
 		switch (msg.type) {
 			// ── Streaming text from LLM (the actual delta chunks) ──
@@ -661,6 +680,12 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 	}
 
 	private _emit(event: AgentEvent): void {
+		// Inject current msg's trace_id (captured in _handleRawMessage) so
+		// downstream consumers (chat bubble pill / admin UI) can correlate
+		// with reasoner master trace.jsonl. ADR-009 §4.1.
+		if (this._currentTraceId && !event.trace_id) {
+			(event as { trace_id?: string }).trace_id = this._currentTraceId;
+		}
 		this._onDidReceiveEvent.fire(event);
 	}
 

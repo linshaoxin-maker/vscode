@@ -57,6 +57,20 @@ export interface IAgentEventBase {
 	readonly timestamp: number;
 	/** Session ID for multi-session isolation (R20). Injected by SSE client. */
 	readonly session_id?: string;
+	/**
+	 * Trace ID for cross-tier correlation (ADR-009 §4.1).
+	 *
+	 * Reasoner emits trace_id at the top level of every ServerEvent
+	 * (stream_manager.py:build_event). The WebSocket / SSE client extracts it
+	 * from the raw message and injects here so downstream consumers (chat
+	 * bubble pill / replay CLI / admin UI) can correlate IDE-side rendering
+	 * with reasoner master trace.jsonl + worker artifact 上传 ref.
+	 *
+	 * 2026-05-08: this is the chipos IDE side (vscode/ fork) of the same
+	 * fix that vscode-extension/src/ws/WebSocketClient.ts:_handleMessage 早
+	 * 期实现过。两端独立实现，不共享代码（unified-clients plan §二）。
+	 */
+	readonly trace_id?: string;
 }
 
 // ── Core payload interfaces ─────────────────────────────────────────────────
