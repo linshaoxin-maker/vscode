@@ -61,6 +61,7 @@ import { ConnectionBannerHandler } from './connectionBannerHandler.js';
 import type { IChatResponseModel } from '../../../../contrib/chat/common/model/chatModel.js';
 import { SseEventStreamClient } from '../eventStream/grpcSseEventStreamClient.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
+import { FullTracer } from '../eventStream/fullTracer.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
 import { ChipOSEditorEffects } from './editorEffects.js';
 import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
@@ -160,6 +161,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
 	private readonly _connectionBanners = new ResourceMap<ConnectionBannerHandler>();
+	/** T6b IDE FullTracer — created in constructor (DI), buffers per chat round. */
+	private readonly _fullTracer!: FullTracer;
 	private _editorEffects: ChipOSEditorEffects | undefined;
 	private _contextCollector: ContextCollector | undefined;
 	private _sessionCounter = 0;
@@ -187,6 +190,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
+		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
+		// chat round and POSTs to reasoner /v1/trace/upload at TaskComplete.
+		this._fullTracer = this._register(this._instantiationService.createInstance(FullTracer));
 		this._register(this._chatService.onDidDisposeSession(e => {
 			for (const sessionResource of e.sessionResource) {
 				this._disposeRuntime(sessionResource);
@@ -612,6 +618,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				const p = event.payload as ITextDeltaPayload;
 				ctx.trackFirstProgress?.();
 				ctx.runtime.inInitPhase = false;
+				// T6b: best-effort begin() in case server skipped RoundStart
+				// or it arrived ordered AFTER first TextDelta. begin() is
+				// idempotent within a trace_id (no double-buffer).
+				if (event.trace_id && this._fullTracer.activeTraceId !== event.trace_id) {
+					this._fullTracer.begin(event.trace_id);
+				}
+				this._fullTracer.record('chat_text_delta', { role: p.role, content_len: p.content.length });
 				if (p.role === 'thinking') {
 					ctx.progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
 				} else {
@@ -913,6 +926,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// ── Round start ──
 			case AgentEventType.RoundStart: {
 				const p = event.payload as IRoundStartPayload;
+				// T6b: kick off IDE-side trace buffering for this round so
+				// downstream events (chat bubbles / tool calls / errors)
+				// land in the per-trace_id batch we POST at TaskComplete.
+				if (event.trace_id) {
+					this._fullTracer.begin(event.trace_id);
+					this._fullTracer.record('round_start_seen', { round: p.round });
+				}
 				// A1: backend sometimes uses round labels like "model_run" instead
 				// of a numeric index — those leak protocol naming to users.
 				// Numeric rounds we still surface (Step 1, Step 2, …); string
@@ -1438,6 +1458,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// ── Task complete → resolve ──
 			case AgentEventType.TaskComplete: {
 				const p = event.payload as ITaskCompletePayload;
+				// T6b: record terminal status + flush IDE-side batch to reasoner
+				// /v1/trace/upload. Fire-and-forget — flush failures degrade
+				// observability gracefully (logged in FullTracer.flush).
+				this._fullTracer.record('task_complete', { status: p.status, has_error: !!p.message });
+				this._fullTracer.flush().catch(err => {
+					this._logService.warn('[ChipOS Agent] FullTracer.flush failed:', err);
+				});
+				// 2026-05-08 reviewer Gap #1 (proper port to vscode/, replacing the
+				// earlier wrong-target work in vscode-extension/): emit trace_id
+				// pill at end of response so users can copy it for bug reports +
+				// ops can correlate IDE-side render with reasoner master trace.jsonl.
+				// The trace_id was injected by webSocketEventStreamClient._emit
+				// from the top-level reasoner ServerEvent (ADR-009 §4.1).
+				if (event.trace_id) {
+					const tid = event.trace_id;
+					const last12 = tid.length > 12 ? tid.slice(-12) : tid;
+					// Small dim italics so it doesn't dominate the bubble. Wraps
+					// in <sub> via theme icon support in MarkdownString.
+					ctx.progress([this._markdown(`\n\n*<sub>trace: \`${last12}\` (full: ${tid})</sub>*`)]);
+				}
 				if (p.status === 'error' && p.message) {
 					ctx.progress([this._warning(p.message)]);
 					ctx.finish({ errorDetails: { message: p.message } });
