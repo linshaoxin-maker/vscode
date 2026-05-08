@@ -48,9 +48,15 @@ export interface ProductInfo {
 	 * `repo` is `owner/name` of a public GitHub repo whose Releases page
 	 * holds the binaries. Empty in source-tree dev builds — callers
 	 * fall back to the hardcoded value in `releaseConfig.ts`.
+	 *
+	 * `workerVersion` pins this IDE build to a specific Worker tag
+	 * (e.g. `"v0.2.2"`). When set, `workerManager` always loads / downloads
+	 * exactly this version, skipping GitHub `latest` lookup. Empty /
+	 * unset → legacy "query latest tag" behavior (dev builds).
 	 */
 	chiposReleases: {
 		repo: string;
+		workerVersion: string;
 	};
 }
 
@@ -86,6 +92,7 @@ export function getProductInfo(): ProductInfo {
 			},
 			chiposReleases: {
 				repo: releases.repo || '',
+				workerVersion: releases.workerVersion || '',
 			},
 		};
 	} catch {
@@ -96,7 +103,7 @@ export function getProductInfo(): ProductInfo {
 			updateUrl: '',
 			serverApplicationName: 'chipos-server',
 			chiposDefaults: { reasoningUrl: '', reasonerGrpcAddress: '', websiteUrl: '', workerApiKey: '' },
-			chiposReleases: { repo: '' },
+			chiposReleases: { repo: '', workerVersion: '' },
 		};
 	}
 }

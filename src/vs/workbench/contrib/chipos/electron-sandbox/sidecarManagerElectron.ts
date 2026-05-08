@@ -432,6 +432,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const args: IEnsureRemoteWorkerArgs = {
 			reasonerGrpcTarget,
 			workspaceRoot,
+			// IDE-pinned worker version: REH-side `findCachedBinary` uses this
+			// to load EXACTLY this Worker release (skip "newest cached" logic).
+			// Set at IDE build time via product.json `chiposReleases.workerVersion`.
+			// Empty / undefined → REH falls back to "newest cached" (dev mode).
+			preferredVersion: this._productService.chiposReleases?.workerVersion,
 			workerHttpPort,
 			workerApiKey: workerApiKey || undefined,
 			workerToken,

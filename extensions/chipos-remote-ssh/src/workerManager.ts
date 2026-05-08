@@ -15,7 +15,7 @@
  */
 
 import { SshConnection } from './sshConnection';
-import { downloadAndInstallWorker } from './download';
+import { downloadAndInstallWorker, getProductInfo } from './download';
 import { createHash } from 'crypto';
 import { CHIPOS_RELEASE_REPO, CHIPOS_RELEASE_BASE_URL, CHIPOS_RELEASE_API_URL } from './releaseConfig';
 
@@ -334,6 +334,27 @@ export class WorkerManager {
 
 	private async _findRemoteBinary(): Promise<string | null> {
 		try {
+			// IDE-pinned worker version from product.json (set at IDE build time).
+			// When set, ALWAYS look for this exact version — never the highest
+			// cached. This anchors the IDE to a specific Worker release so
+			// IDE↔Worker protocol drift is impossible.
+			const pinned = getProductInfo().chiposReleases?.workerVersion;
+			if (pinned) {
+				const explicit = `$HOME/.chipos/workers/${pinned}/chipos-worker-linux-x64`;
+				const isExec = await this._ssh.exec(`test -x "${explicit}" && echo yes || echo no`);
+				if (isExec.trim() === 'yes') {
+					this._log(`[WorkerManager] Using pinned ${pinned} cached binary`);
+					return explicit;
+				}
+				// Pinned but not cached — return null so _tryDownloadBinary
+				// fetches THIS exact version (also pinned in download URL).
+				this._log(`[WorkerManager] Pinned ${pinned} not cached yet, will download`);
+				return null;
+			}
+
+			// Legacy fallback (source-tree dev builds with empty workerVersion):
+			// pick the highest cached version. Kept for dev convenience —
+			// production IDEs always have workerVersion pinned.
 			const result = await this._ssh.exec(
 				'ls -d $HOME/.chipos/workers/*/chipos-worker-linux-x64 2>/dev/null | sort -V | tail -1'
 			);
@@ -349,9 +370,33 @@ export class WorkerManager {
 	/**
 	 * R51: 尝试在远端直接 curl 下载二进制（Mode A: 远端直下）。
 	 * 如果远端无外网访问，返回 null（由调用方 fallback 到 Python）。
+	 *
+	 * Pinned mode: when product.json `chiposReleases.workerVersion` is set,
+	 * download exactly that version — skip GitHub `latest` lookup. This
+	 * pairs with `_findRemoteBinary` so IDE↔Worker version is locked at
+	 * IDE build time.
 	 */
 	private async _tryDownloadBinary(): Promise<string | null> {
 		try {
+			// IDE-pinned worker version path: download an exact tag.
+			const pinned = getProductInfo().chiposReleases?.workerVersion;
+			if (pinned) {
+				const binaryName = 'chipos-worker-linux-x64';
+				const targetDir = `$HOME/.chipos/workers/${pinned}`;
+				const targetPath = `${targetDir}/${binaryName}`;
+				this._log(`[WorkerManager] Downloading pinned worker ${pinned} on remote...`);
+				await this._ssh.exec(
+					`mkdir -p ${targetDir} && ` +
+					`curl -fSL --retry 2 --max-time 120 ` +
+					`"${CHIPOS_RELEASE_BASE_URL}/${pinned}/${binaryName}.tar.gz" ` +
+					`| tar xz -C ${targetDir} && chmod +x ${targetPath}`
+				);
+				const verify = await this._ssh.exec(`test -x ${targetPath} && echo ok || echo fail`);
+				if (verify.trim() === 'ok') { return targetPath; }
+				return null;
+			}
+
+			// Legacy "use latest" path (source-tree dev builds only).
 			const checkNet = await this._ssh.exec(
 				`curl -sf --max-time 5 ${CHIPOS_RELEASE_API_URL} 2>/dev/null | head -c 200`
 			);

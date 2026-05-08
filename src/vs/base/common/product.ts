@@ -139,6 +139,14 @@ export interface IProductConfiguration {
 	 */
 	readonly chiposReleases?: {
 		readonly repo?: string;
+		/**
+		 * Worker binary version pinned to this IDE build (e.g. `"v0.2.2"`).
+		 * IDE always loads / downloads this exact version — never queries
+		 * GitHub `latest`. Bump together with the IDE release that ships a
+		 * matching Worker. Empty / undefined → legacy "use latest cached"
+		 * behavior (kept for source-tree dev builds).
+		 */
+		readonly workerVersion?: string;
 	};
 
 	readonly builtInExtensions?: IBuiltInExtension[];
