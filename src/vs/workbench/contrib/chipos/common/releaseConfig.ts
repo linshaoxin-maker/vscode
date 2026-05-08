@@ -16,8 +16,11 @@
  *
  * To switch release host (e.g. linshaoxin-maker → chip-os):
  *   1. Edit `product.json` → `chiposReleases.repo`
- *   2. Edit `product.json` → `chiposDefaults.updateUrl` + `downloadUrl`
- *      (must point at the same repo; REH auto-update reads them directly)
+ *   2. Edit `product.json` → top-level `updateUrl` + `downloadUrl`
+ *      (must point at the same repo; REH auto-update reads them directly).
+ *      Note: these are TOP-LEVEL product.json fields, NOT under
+ *      `chiposDefaults`. (Earlier comments said `chiposDefaults.updateUrl`
+ *      which doesn't exist — this is a doc-only fix, no runtime impact.)
  *   3. Re-build the IDE
  *
  * The hardcoded `DEFAULT_REPO` below is only used in source-tree dev builds

@@ -92,6 +92,11 @@ const SSE_TYPE_MAP: Record<string, AgentEventType> = {
 	'timing_highlight': AgentEventType.TimingHighlight,
 	'pre_review_report': AgentEventType.PreReviewReport,
 	'ide_tool_call': AgentEventType.IdeToolCall,  // FEAT-R72
+	'ppa_report': AgentEventType.PpaReport,  // wiring fix 2026-05-08:
+	// reasoner ppa_optimize_loop emits "ppa_report" but wire-string map
+	// missed this entry, so events were silently dropped at SSE parse.
+	// AgentEventType.PpaReport + IPpaReportPayload were already defined
+	// in eventTypes.ts; just needed this map line.
 };
 
 /**

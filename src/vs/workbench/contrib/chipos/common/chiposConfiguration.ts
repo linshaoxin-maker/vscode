@@ -262,6 +262,62 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 			deprecationMessage: localize('chipos.sidecar.port.deprecated', 'Use chipos.backend.httpPort instead.'),
 		},
+
+		// ── Backend (v2 remote-all): IDE → Reasoner connection ──────────────
+		// 2026-05-08 wiring fix: these were read by chiposEndpoints / sidecar
+		// resolvers but never registered in the schema, so settings.json
+		// changes triggered "unknown configuration" warnings and the UI
+		// (Settings panel) couldn't surface defaults.
+		'chipos.backend.mode': {
+			type: 'string',
+			enum: ['auto', 'cloud', 'local', 'manual'],
+			default: 'auto',
+			description: localize('chipos.backend.mode.desc', 'Backend connection mode. auto: detect from chiposDefaults; cloud: always use chiposDefaults.reasoningUrl; local: assume local sidecar; manual: use chipos.backend.reasoningUrl override.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.backend.reasoningUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.reasoningUrl.desc', 'HTTP/SSE URL of the Reasoner (e.g. http://121.89.82.122:8080). Empty falls back to chiposDefaults.reasoningUrl baked into product.json.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.backend.grpcAddress': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.grpcAddress.desc', 'gRPC address of the Reasoner (e.g. 121.89.82.122:50051). Empty falls back to chiposDefaults.reasonerGrpcAddress.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.backend.tlsEnabled': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.backend.tlsEnabled.desc', 'Use TLS for the Reasoner gRPC connection.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.backend.token': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.token.desc', 'JWT bearer token for IDE → Reasoner HTTP/SSE auth (issued by chiops). Usually populated automatically after login.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.backend.workerHttpPort': {
+			type: 'number',
+			default: 8081,
+			description: localize('chipos.backend.workerHttpPort.desc', 'Local Worker HTTP API port (used by the Worker Tools panel). Defaults to the worker sidecar port.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.backend.workerHttpUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.workerHttpUrl.desc', 'Override Worker HTTP URL (e.g. http://127.0.0.1:8081). Empty derives from workerHttpPort.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.logLevel': {
+			type: 'string',
+			enum: ['debug', 'info', 'warn', 'error'],
+			default: 'info',
+			description: localize('chipos.logLevel.desc', 'IDE-side ChipOS log verbosity (renderer + sidecar manager).'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 	},
 });
 

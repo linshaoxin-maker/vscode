@@ -2689,8 +2689,58 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 */
 	private _collectAndReportMcpTools(streamClient: IEventStreamClient, sessionId: string): void {
 		try {
-			const servers = this._mcpService.servers.get();
 			const tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }> = [];
+
+			// IDE-builtin tools that ARE LLM-callable. The other ide_tool_call
+			// names (`agent_ask`, `*_confirm`, `file_edit`, `sim/lint/coverage_report`)
+			// are reasoner-PUSH events and must NOT show up in the LLM tool list —
+			// they're rendered as confirmation cards / report cards by the chat
+			// view based on reasoner's flow, not chosen by the LLM.
+			//
+			// Wiring fix 2026-05-08: this builtin list was missing entirely;
+			// when no user-configured MCP server existed, the function early-
+			// returned without ever calling registerIdeMcpTools, so reasoner's
+			// `_ide_mcp_tool_names = {}` and the LLM had no awareness of
+			// terminal capabilities at all.
+			tools.push({
+				name: 'run_in_terminal',
+				description:
+					"Execute a shell command in the user's IDE terminal with sandbox protection. " +
+					'The command runs in a sandboxed environment that restricts file system and network access. ' +
+					'Use this for: running scripts (python, node, bash), installing packages (pip, npm), ' +
+					'building / testing / linting code, executing EDA tools (yosys, verilator, iverilog), ' +
+					'or any other shell command the user explicitly requested. ' +
+					'Returns the command stdout/stderr and a `terminal_id` that can be passed to ' +
+					'`get_terminal_output` to read further output of long-running commands.',
+				parameters_json_schema: JSON.stringify({
+					type: 'object',
+					properties: {
+						command: { type: 'string', description: 'The shell command to run.' },
+						explanation: { type: 'string', description: 'Brief explanation of why this command is being run (shown to user in approval dialog).' },
+						isBackground: { type: 'boolean', description: 'Whether the command should be started as a background task (default false).' },
+					},
+					required: ['command'],
+				}),
+				source: 'ide-builtin',
+			});
+			tools.push({
+				name: 'get_terminal_output',
+				description:
+					'Get the output from a previously started terminal. ' +
+					'Use after `run_in_terminal` to check on background tasks or get additional output ' +
+					'when the initial response was truncated or the task is still running.',
+				parameters_json_schema: JSON.stringify({
+					type: 'object',
+					properties: {
+						terminal_id: { type: 'string', description: 'The terminal ID returned by run_in_terminal.' },
+					},
+					required: ['terminal_id'],
+				}),
+				source: 'ide-builtin',
+			});
+
+			// User-configured MCP servers (additive on top of builtins)
+			const servers = this._mcpService.servers.get();
 			for (const server of servers) {
 				const serverTools = server.tools.get();
 				if (!serverTools) { continue; }
@@ -2703,10 +2753,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					});
 				}
 			}
-			if (tools.length > 0) {
-				this._logService.info('[ChipOS Agent] Reporting %d MCP tools to Reasoner', tools.length);
-				streamClient.registerIdeMcpTools(sessionId, tools);
-			}
+
+			// Always call register, even with just builtins. (Reasoner needs
+			// the registration to populate `_ide_mcp_tool_names`; otherwise
+			// LLM never sees `run_in_terminal`.)
+			this._logService.info('[ChipOS Agent] Reporting %d IDE tools to Reasoner (%d builtin + %d MCP)',
+				tools.length, 2, tools.length - 2);
+			streamClient.registerIdeMcpTools(sessionId, tools);
 		} catch (err: any) {
 			this._logService.warn('[ChipOS Agent] Failed to collect MCP tools: %s', err.message);
 		}
