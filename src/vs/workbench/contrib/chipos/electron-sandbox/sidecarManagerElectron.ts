@@ -38,6 +38,7 @@ import { IEnvironmentService, INativeEnvironmentService } from '../../../../plat
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
 import { resolveReasoningUrl, resolveReasonerGrpcAddress, resolveWorkerApiKey, resolveWorkerMcpConfigPath, resolveWorkerHttpUrl } from '../common/chiposEndpoints.js';
@@ -166,6 +167,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSAuthService private readonly _authService: IChipOSAuthService,
 		@IChipOSRuntimeOverridesService private readonly _runtimeOverrides: IChipOSRuntimeOverridesService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super();
 
@@ -240,8 +242,18 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 					return;
 				}
 			} catch (err) {
+				// Surface the spawn failure as a notification too, not just to
+				// the Output panel. Without this the user only ever sees
+				// reasoner's downstream "WORKER_UNAVAILABLE" 503 in the chat
+				// and has no way to discover the actual cause (download 404 /
+				// network blocked / cache permission, etc.). 2026-05-09 fix.
 				const msg = err instanceof Error ? err.message : String(err);
 				this._logService.error(`[ChipOS SidecarElectron] local worker spawn failed: ${msg}`);
+				this._notificationService.notify({
+					severity: Severity.Error,
+					message: `ChipOS Worker spawn failed — ${msg}`,
+					sticky: true,
+				});
 				this._setState(SidecarState.Error);
 				return;
 			}
@@ -796,25 +808,45 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			return true;
 		}
 
-		// 2. Cache lookup.
-		let binaryPath = await this._invokeIpc<string | null>('vscode:chipos:findBinary', {});
+		// 2. Cache lookup. Honor the product.json pin (chiposReleases.workerVersion)
+		// so an IDE built against v0.2.2 doesn't accidentally adopt a v0.2.1 binary
+		// that happened to be left in cache. The contract documented at
+		// vs/base/common/product.ts:140 is "IDE always loads / downloads this exact
+		// version — never queries GitHub `latest`". Previously this path violated
+		// that contract by passing empty args (find any version) + version: 'latest'
+		// (download whatever GitHub /releases/latest resolves to). 2026-05-09 fix.
+		const releases = (this._productService as {
+			chiposReleases?: { repo?: string; workerVersion?: string };
+		}).chiposReleases;
+		const pinnedVersion = releases?.workerVersion?.replace(/^v/, '') || undefined;
+
+		let binaryPath = await this._invokeIpc<string | null>(
+			'vscode:chipos:findBinary',
+			pinnedVersion ? { version: pinnedVersion } : {},
+		);
 		if (!binaryPath) {
 			// 3. Download from GitHub release. Repo from product.json.
-			const repo = (this._productService as { chiposReleases?: { repo?: string } }).chiposReleases?.repo;
+			const repo = releases?.repo;
 			if (!repo) {
 				throw new Error('Cannot download Worker — product.chiposReleases.repo is unset');
 			}
-			this._logService.info(`[ChipOS Local] no cached binary; downloading from ${repo}`);
+			const downloadVersion = pinnedVersion || 'latest';
+			this._logService.info(`[ChipOS Local] no cached binary for version=${downloadVersion}; downloading from ${repo}`);
 			binaryPath = await this._invokeIpc<string | null>('vscode:chipos:downloadBinary', {
 				repo,
-				version: 'latest',
+				version: downloadVersion,
 			});
 			if (!binaryPath) {
-				throw new Error(`Worker download failed (repo=${repo}, version=latest). Check network / chiposReleases.repo / GitHub release tag.`);
+				const versionStr = pinnedVersion ? `v${pinnedVersion}` : 'latest';
+				throw new Error(
+					`Worker download failed (repo=${repo}, version=${versionStr}). ` +
+					`Likely cause: the ${versionStr} GitHub release is missing the chipos-worker-<platform>.tar.gz asset for this platform. ` +
+					`Verify at https://github.com/${repo}/releases/tag/${versionStr}`,
+				);
 			}
 			this._logService.info(`[ChipOS Local] downloaded worker → ${binaryPath}`);
 		} else {
-			this._logService.info(`[ChipOS Local] using cached worker → ${binaryPath}`);
+			this._logService.info(`[ChipOS Local] using cached worker (version=${pinnedVersion ?? 'latest-available'}) → ${binaryPath}`);
 		}
 
 		// 4. Default MCP config (no-op if present). Pass the raw path; main
