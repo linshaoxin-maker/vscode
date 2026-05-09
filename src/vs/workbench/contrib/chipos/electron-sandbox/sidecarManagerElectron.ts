@@ -39,6 +39,7 @@ import { INativeHostService } from '../../../../platform/native/common/native.js
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IProgressService, ProgressLocation, IProgress, IProgressStep } from '../../../../platform/progress/common/progress.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
 import { resolveReasoningUrl, resolveReasonerGrpcAddress, resolveWorkerApiKey, resolveWorkerMcpConfigPath, resolveWorkerHttpUrl } from '../common/chiposEndpoints.js';
@@ -168,6 +169,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		@IChipOSAuthService private readonly _authService: IChipOSAuthService,
 		@IChipOSRuntimeOverridesService private readonly _runtimeOverrides: IChipOSRuntimeOverridesService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IProgressService private readonly _progressService: IProgressService,
 	) {
 		super();
 
@@ -832,10 +834,31 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			}
 			const downloadVersion = pinnedVersion || 'latest';
 			this._logService.info(`[ChipOS Local] no cached binary for version=${downloadVersion}; downloading from ${repo}`);
-			binaryPath = await this._invokeIpc<string | null>('vscode:chipos:downloadBinary', {
-				repo,
-				version: downloadVersion,
-			});
+
+			// Wrap the IPC in a progress notification so the user actually
+			// sees what's happening during the 70+MB download (was previously
+			// silent — user just stared at a "ChipOS: Connected" status with
+			// no chat working until the download finished, sometimes 30s+).
+			// 2026-05-09 fix.
+			binaryPath = await this._progressService.withProgress<string | null>(
+				{
+					location: ProgressLocation.Notification,
+					title: `Downloading ChipOS Worker v${downloadVersion}`,
+					cancellable: false,
+				},
+				async (progress) => {
+					const off = this._subscribeDownloadProgress(progress);
+					try {
+						return await this._invokeIpc<string | null>('vscode:chipos:downloadBinary', {
+							repo,
+							version: downloadVersion,
+						});
+					} finally {
+						off();
+					}
+				},
+			);
+
 			if (!binaryPath) {
 				const versionStr = pinnedVersion ? `v${pinnedVersion}` : 'latest';
 				throw new Error(
@@ -890,6 +913,17 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		});
 		this._localWorkerWorkspaceRoot = workspaceRoot;
 		this._logService.info(`[ChipOS Local] worker spawned pid=${result?.pid} alreadyRunning=${result?.alreadyRunning ?? false}`);
+
+		// Briefly confirm to the user. `alreadyRunning` means we adopted an
+		// existing process — no need to celebrate; that's quiet by design.
+		// 2026-05-09: was silent before, contributing to the "is anything
+		// happening?" UX problem.
+		if (!result?.alreadyRunning) {
+			this._notificationService.notify({
+				severity: Severity.Info,
+				message: `ChipOS Worker ready (pid=${result?.pid}).`,
+			});
+		}
 		return true;
 	}
 
@@ -921,6 +955,65 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			throw err;
 		}
 	}
+
+	/**
+	 * Forward progress events from the main-process download into a
+	 * renderer-side IProgress. Returns an unsubscribe function. 2026-05-09:
+	 * added so the worker download stops being silent.
+	 */
+	private _subscribeDownloadProgress(progress: IProgress<IProgressStep>): () => void {
+		const channel = 'vscode:chipos:workerDownloadProgress';
+		type ProgressPayload = {
+			phase: 'starting' | 'downloading' | 'extracting' | 'done' | 'error';
+			loaded?: number;
+			total?: number;
+			message?: string;
+		};
+		const onProgress = (_e: unknown, ...args: unknown[]) => {
+			const payload = args[0] as ProgressPayload | undefined;
+			if (!payload) { return; }
+			switch (payload.phase) {
+				case 'starting':
+					progress.report({ message: 'Connecting to GitHub Releases…' });
+					return;
+				case 'downloading': {
+					const loaded = payload.loaded ?? 0;
+					const total = payload.total;
+					if (total && total > 0) {
+						const mbLoaded = (loaded / 1024 / 1024).toFixed(1);
+						const mbTotal = (total / 1024 / 1024).toFixed(1);
+						const pct = Math.min(100, Math.round((loaded / total) * 100));
+						progress.report({
+							message: `${mbLoaded} / ${mbTotal} MB`,
+							increment: pct - (this._lastDownloadPct ?? 0),
+						});
+						this._lastDownloadPct = pct;
+					} else {
+						const mbLoaded = (loaded / 1024 / 1024).toFixed(1);
+						progress.report({ message: `${mbLoaded} MB downloaded` });
+					}
+					return;
+				}
+				case 'extracting':
+					progress.report({ message: 'Extracting…' });
+					return;
+				case 'done':
+					progress.report({ message: 'Complete', increment: 100 - (this._lastDownloadPct ?? 0) });
+					this._lastDownloadPct = undefined;
+					return;
+				case 'error':
+					this._logService.warn(`[ChipOS Local] download progress error: ${payload.message ?? '?'}`);
+					return;
+			}
+		};
+		ipcRenderer.on(channel, onProgress);
+		return () => {
+			try { ipcRenderer.removeListener(channel, onProgress); } catch { /* ignore */ }
+			this._lastDownloadPct = undefined;
+		};
+	}
+
+	private _lastDownloadPct: number | undefined;
 
 	/**
 	 * Two-phase health check (P0-3):

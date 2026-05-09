@@ -345,7 +345,18 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Ht
 	});
 }
 
-function downloadFile(url: string, dest: string, redirectsLeft = 5): Promise<void> {
+/**
+ * Download a file. Optional `onProgress` is called with bytes loaded and
+ * total bytes (or undefined when Content-Length is missing). 2026-05-09:
+ * progress hook added so the renderer can show a progress notification
+ * during worker binary download (was silently spinning).
+ */
+function downloadFile(
+	url: string,
+	dest: string,
+	onProgress?: (loaded: number, total: number | undefined) => void,
+	redirectsLeft = 5,
+): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const req = https.get(url, {
 			headers: { 'User-Agent': 'chipos-ide-sidecar' },
@@ -362,13 +373,29 @@ function downloadFile(url: string, dest: string, redirectsLeft = 5): Promise<voi
 				}
 				const next = new URL(res.headers.location, url).toString();
 				res.resume();
-				resolve(downloadFile(next, dest, redirectsLeft - 1));
+				resolve(downloadFile(next, dest, onProgress, redirectsLeft - 1));
 				return;
 			}
 			if (!res.statusCode || res.statusCode >= 400) {
 				reject(new Error(`HTTP ${res.statusCode} ${res.statusMessage} for ${url}`));
 				return;
 			}
+			const totalHeader = res.headers['content-length'];
+			const total = totalHeader ? parseInt(Array.isArray(totalHeader) ? totalHeader[0] : totalHeader, 10) : undefined;
+			let loaded = 0;
+			let lastReport = 0;
+			res.on('data', (chunk: Buffer) => {
+				loaded += chunk.length;
+				if (onProgress) {
+					// Throttle to ~10/s so we don't spam the renderer with IPC
+					// for every TCP packet on a fast link.
+					const now = Date.now();
+					if (now - lastReport >= 100 || (total && loaded >= total)) {
+						lastReport = now;
+						onProgress(loaded, total);
+					}
+				}
+			});
 			const out = fs.createWriteStream(dest);
 			res.pipe(out);
 			out.on('finish', () => out.close(() => resolve()));
@@ -428,7 +455,11 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:downloadBinary ──────────────────────────────────────────────────
-	validatedIpcMain.handle('vscode:chipos:downloadBinary', async (_event, args: DownloadBinaryArgs) => {
+	// `event.sender` is used to ship progress updates back to the renderer
+	// while the download streams. The renderer subscribes to the
+	// 'vscode:chipos:workerDownloadProgress' channel and feeds these into
+	// IProgressService.withProgress. 2026-05-09: was silent before.
+	validatedIpcMain.handle('vscode:chipos:downloadBinary', async (event, args: DownloadBinaryArgs) => {
 		try {
 			const tag = detectPlatformTag();
 			const binaryName = args.binaryName || `chipos-worker-${tag}`;
@@ -466,7 +497,38 @@ export function registerSidecarIpcHandlers(): void {
 			fs.mkdirSync(cacheDir, { recursive: true });
 
 			console.log(`[ChipOS Sidecar] Downloading ${url} → ${archivePath}`);
-			await downloadFile(url, archivePath);
+
+			// Tell the renderer we're starting the download (so it can open a
+			// progress notification BEFORE Content-Length lands).
+			try {
+				event.sender.send('vscode:chipos:workerDownloadProgress', {
+					phase: 'starting',
+					version,
+					binaryName,
+					loaded: 0,
+					total: undefined,
+				});
+			} catch { /* renderer may have gone away — non-fatal */ }
+
+			await downloadFile(url, archivePath, (loaded, total) => {
+				try {
+					event.sender.send('vscode:chipos:workerDownloadProgress', {
+						phase: 'downloading',
+						version,
+						binaryName,
+						loaded,
+						total,
+					});
+				} catch { /* ignore */ }
+			});
+
+			try {
+				event.sender.send('vscode:chipos:workerDownloadProgress', {
+					phase: 'extracting',
+					version,
+					binaryName,
+				});
+			} catch { /* ignore */ }
 
 			// Extract via tar — every supported platform ships tar in PATH.
 			cp.execSync(`tar xzf "${archivePath}" -C "${dir}"`, { timeout: 60000 });
@@ -475,9 +537,23 @@ export function registerSidecarIpcHandlers(): void {
 			}
 			try { fs.unlinkSync(archivePath); } catch { /* ignore */ }
 
+			try {
+				event.sender.send('vscode:chipos:workerDownloadProgress', {
+					phase: 'done',
+					version,
+					binaryName,
+				});
+			} catch { /* ignore */ }
+
 			return fs.existsSync(binaryPath) ? binaryPath : null;
 		} catch (err) {
 			console.error('[ChipOS Sidecar] downloadBinary failed:', err);
+			try {
+				event.sender.send('vscode:chipos:workerDownloadProgress', {
+					phase: 'error',
+					message: err instanceof Error ? err.message : String(err),
+				});
+			} catch { /* ignore */ }
 			return null;
 		}
 	});
