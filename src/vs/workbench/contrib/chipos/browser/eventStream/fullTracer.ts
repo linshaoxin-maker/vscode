@@ -56,7 +56,6 @@ import { IConfigurationService } from '../../../../../platform/configuration/com
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
-import type { IChipOSRuntimeOverridesService } from '../../common/chiposRuntimeOverrides.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 
 /**
@@ -194,7 +193,7 @@ export class FullTracer extends Disposable {
 		// Resolve endpoint + auth
 		let endpoint: string;
 		try {
-			const reasoningUrl = resolveReasoningUrl(this._configurationService, this._productService, undefined as unknown as IChipOSRuntimeOverridesService);
+			const reasoningUrl = resolveReasoningUrl(this._configurationService, this._productService);
 			endpoint = reasoningUrl.replace(/\/+$/, '') + '/v1/trace/upload';
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);

@@ -453,8 +453,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return this._listenForContinuation(streamClient, progress, token, request);
 		}
 
-		const sessionId = `native_chat_${++this._sessionCounter}_${Date.now()}`;
-		this._setSessionBackendId(request.sessionResource, sessionId);
+		// ── Memory fix (2026-05-09) ───────────────────────────────────────────
+		// Reuse existing backendSessionId across turns of the same chat thread.
+		// Reasoner's Memory is keyed on session_id; minting a fresh id on every
+		// `invoke()` made the agent appear stateless ("无法访问上一轮的对话历史")
+		// because each turn allocated a new Memory bucket on the backend.
+		// First turn: no backendSessionId set yet → generate one and stash it.
+		// Subsequent turns: runtime.backendSessionId already populated by the
+		// initial invoke / by `_setSessionBackendId` → reuse it verbatim.
+		// _disposeRuntime clears it when the chat thread is closed, so a new
+		// thread still gets a fresh id.
+		let sessionId = runtime.backendSessionId;
+		if (!sessionId) {
+			sessionId = `native_chat_${++this._sessionCounter}_${Date.now()}`;
+			this._setSessionBackendId(request.sessionResource, sessionId);
+			this._logService.info('[ChipOS Agent] New backend session:', sessionId);
+		} else {
+			this._logService.info('[ChipOS Agent] Reusing backend session:', sessionId);
+		}
 		const userMessage = request.message;
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
