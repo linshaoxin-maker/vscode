@@ -477,6 +477,21 @@ MenuRegistry.appendMenuItems([
 			command: { id: ChipOSCommandId.OpenSettings, title: localize('chipos.openSettings.title', 'ChipOS: Open Settings'), icon: Codicon.gear },
 		},
 	},
+	// 2026-05-11 — Surface Restart Backend / Restart Worker in the Command
+	// Palette so users can recover from a dead worker without reloading the
+	// window. Previously these existed only as keybinding-reachable commands.
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.RestartBackend, title: localize('chipos.restartBackend.title', 'ChipOS: Restart Backend'), icon: Codicon.refresh },
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.RestartWorker, title: localize('chipos.restartWorker.title', 'ChipOS: Restart Worker'), icon: Codicon.debugRestart },
+		},
+	},
 	{
 		id: MenuId.CommandPalette,
 		item: {

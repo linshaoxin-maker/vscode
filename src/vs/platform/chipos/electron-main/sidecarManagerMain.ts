@@ -37,6 +37,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
+import * as http from 'http';
 import * as https from 'https';
 import { app, BrowserWindow } from 'electron';
 // `validatedIpcMain` adds sender + origin validation that bare `ipcMain` lacks;
@@ -256,6 +257,60 @@ function isPidAlive(pid: number): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Probe the worker's loopback HTTP /health endpoint.
+ *
+ * 2026-05-11 fix for the "adopted dead worker" bug: `isPidAlive` alone is
+ * insufficient on macOS Nuitka onefile builds. The launcher process and the
+ * Python child have separate pids; instance.json records the child's pid
+ * (`os.getpid()` inside cli.py). When the parent dies under stopBackend's
+ * SIGTERM, the child may briefly remain in a zombie/exiting state — `kill -0`
+ * still reports it alive even though it has unbound its HTTP socket and
+ * cannot serve requests. The next `startBackend` then reads the stale
+ * instance.json, sees an "alive" pid, calls `acquireRef` and reports
+ * `[ChipOS Local] adopted existing worker`. The adopted worker is a corpse
+ * with no HTTP server, so all subsequent SSE/decide/health requests fail
+ * with "Failed to fetch" or hang.
+ *
+ * Verifying HTTP /health within a tight timeout (1.5s on loopback) gives a
+ * trustworthy aliveness signal. Returns true only when the socket accepts a
+ * connection AND the response is 200 within the budget. Any other outcome
+ * — refused, ECONNREFUSED, timeout, 5xx — is treated as "not alive" and the
+ * caller will unlink instance.json so the next spawn is fresh.
+ */
+function isWorkerHttpResponsive(port: number): Promise<boolean> {
+	if (!port || port <= 0) {
+		// Pre-permission-token worker builds didn't reliably emit http_port to
+		// instance.json. Fall back to pid-only liveness for those — same as
+		// the original behavior, just gated on the field being present.
+		return Promise.resolve(true);
+	}
+	return new Promise<boolean>(resolve => {
+		let settled = false;
+		const finish = (value: boolean) => {
+			if (!settled) {
+				settled = true;
+				resolve(value);
+			}
+		};
+		try {
+			const req = http.get({
+				hostname: '127.0.0.1',
+				port,
+				path: '/health',
+				timeout: 1500,
+			}, res => {
+				res.resume();
+				finish(res.statusCode === 200);
+			});
+			req.on('error', () => finish(false));
+			req.on('timeout', () => { req.destroy(); finish(false); });
+		} catch {
+			finish(false);
+		}
+	});
 }
 
 // ── per-window process tracking ────────────────────────────────────────────
@@ -677,7 +732,20 @@ export function registerSidecarIpcHandlers(): void {
 	validatedIpcMain.handle('vscode:chipos:checkInstance', async (_event, args: CheckInstanceArgs) => {
 		const meta = readInstanceJson(args.workspaceRoot);
 		if (!meta || !meta.pid) { return { alive: false }; }
-		const alive = isPidAlive(meta.pid);
+
+		// Two-stage aliveness check. `kill -0` is necessary but not sufficient
+		// — the Nuitka onefile launcher/child split (see comment on
+		// isWorkerHttpResponsive) can leave the recorded pid in a zombie state
+		// where it answers `kill -0` but has already torn down its HTTP server.
+		// We additionally verify the worker actually responds on /health,
+		// which is the contract used by sidecar health-check and worker tools
+		// panel anyway. Adopting a worker that can't respond produces all the
+		// "Failed to fetch" + "Worker API unavailable" symptoms we hit during
+		// permission-ASK bring-up.
+		let alive = isPidAlive(meta.pid);
+		if (alive) {
+			alive = await isWorkerHttpResponsive(meta.http_port ?? 0);
+		}
 		if (!alive) {
 			// Stale instance.json — clean up so next start gets a fresh one.
 			try { fs.unlinkSync(instanceJsonPath(args.workspaceRoot)); } catch { /* ignore */ }

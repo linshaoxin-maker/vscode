@@ -643,12 +643,27 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	}
 
 	async restartWorker(): Promise<void> {
-		// IDE doesn't own the worker process; "restart" here just means
-		// re-observing health and re-minting the auth token. Actual respawn
-		// is the responsibility of chipos-remote-ssh (REH/SSH path) or
-		// whoever deployed the worker (Docker / direct).
-		this._logService.info('[ChipOS SidecarElectron] restartWorker() — re-observing health');
+		// 2026-05-11 — In **Local mode** the IDE *does* own the worker process
+		// (spawnProcess IPC), so a real restart means: kill the existing
+		// worker, wipe its instance.json, then spawn a new one with a freshly
+		// minted token. The previous version of this method was a no-op stub
+		// that only re-observed registration — useful for REH/SSH-mode where
+		// the worker lives elsewhere, but in Local mode it left dead workers
+		// adopted and a fresh `worker_token` un-applied. CloudReasoning/
+		// Manual modes keep the lightweight behavior.
+		this._logService.info(`[ChipOS SidecarElectron] restartWorker() — mode=${this._mode}`);
 		this._clearWorkerTokenRefreshTimer();
+
+		if (this._mode === BackendMode.Local) {
+			try {
+				await this._refreshWorkerTokenAndRespawn();
+				return;
+			} catch (err) {
+				this._logService.warn(`[ChipOS SidecarElectron] Local restartWorker failed: ${err}`);
+				// fall through to legacy re-observe path below
+			}
+		}
+
 		this._setWorkerState(WorkerState.Starting);
 		void this._observeWorkerRegistration().catch(() => { /* best effort */ });
 	}
