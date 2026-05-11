@@ -26,4 +26,9 @@ registerSingleton(IChipOSUsageService, ChipOSUsageService, InstantiationType.Del
 import { IChipOSRuntimeOverridesService, ChipOSRuntimeOverridesService } from '../../../../workbench/contrib/chipos/common/chiposRuntimeOverrides.js';
 registerSingleton(IChipOSRuntimeOverridesService, ChipOSRuntimeOverridesService, InstantiationType.Delayed);
 
+// WORKER-PERMISSION-ASK-TRANSPORT: side-effect import so the
+// WorkerPermissionService singleton registers itself at startup. The chat
+// agent injects it to surface worker→IDE permission ASK confirmations.
+import '../../../../workbench/contrib/chipos/browser/permission/workerPermissionService.js';
+
 import '../../../../workbench/contrib/chipos/common/chiposContribution.js';

@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
@@ -67,6 +67,7 @@ import { ChipOSEditorEffects } from './editorEffects.js';
 import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
+import { IChipOSWorkerPermissionService, IWorkerPermissionAsk } from '../permission/workerPermissionService.js';
 import {
 	AgentEventType,
 	ConnectionState,
@@ -144,6 +145,25 @@ interface IChatSessionRuntime {
 	 * each invoke alongside the other transient maps.
 	 */
 	emittedFileRefs: Set<string>;
+	/**
+	 * Worker permission ASK channel (WORKER-PERMISSION-ASK-TRANSPORT):
+	 * - `activeProgress`: when invoke() is mid-flight, points at the same
+	 *   progress callback so worker SSE asks can be surfaced as confirmations
+	 *   asynchronously.
+	 * - `pendingWorkerAsks`: asks received between invokes are queued and
+	 *   flushed on the next invoke entry.
+	 * - `permissionSub`: SSE EventSource subscription, owned by the runtime
+	 *   so dispose() closes it.
+	 */
+	activeProgress?: (parts: IChatProgress[]) => void;
+	/** Bound to invoke()'s `finish()` so worker-permission asks can finalize
+	 * the current invoke immediately on card emission — without this, VS Code
+	 * chat keeps the invoke "in flight" and the confirmation Submit button is
+	 * disabled until the invoke ends naturally (which can be 30-60s while
+	 * reasoner waits for tool result). */
+	activeFinish?: (result: IChatAgentResult, thinkingTitle?: string) => void;
+	pendingWorkerAsks: Map<string, IWorkerPermissionAsk>;
+	permissionSub?: IDisposable;
 }
 
 /**
@@ -188,6 +208,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IDialogService private readonly _dialogService: IDialogService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IProductService private readonly _productService: IProductService,
+		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -209,6 +230,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// 当 servers 或任何 server 的 tools 变化时，重新上报
 			this._onMcpToolsChanged();
 		}));
+
+		// WORKER-PERMISSION-ASK-TRANSPORT: subscribe once to worker→IDE SSE
+		// asks. When a permission ASK arrives we look up the matching session
+		// runtime by backendSessionId, and either fire it through the active
+		// progress callback (if invoke() is mid-flight) or queue it to be
+		// flushed on the next invoke. The actual subscription is per-session
+		// and opened in `_setSessionBackendId` once we know the sessionId.
+		this._register(this._workerPermissionService.onAsk(ask => this._onWorkerPermissionAsk(ask)));
 	}
 
 	// ── R62: MCP 工具变更通知 ──────────────────────────────────────────────
@@ -310,6 +339,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// ── FEAT-32: Connection status feedback ──
 		progress([this._progress('$(sync~spin) Connecting to backend...', true)]);
 		const runtime = this._getOrCreateRuntime(request.sessionResource);
+
+		// WORKER-PERMISSION-ASK-TRANSPORT: tee the active progress so the
+		// worker→IDE SSE channel can surface ASK confirmations asynchronously
+		// while this invoke is mid-flight. Also flush any asks that arrived
+		// between invokes (or before this runtime had progress).
+		runtime.activeProgress = progress;
+		if (runtime.pendingWorkerAsks.size) {
+			const flushed: IChatProgress[] = [];
+			for (const [, ask] of runtime.pendingWorkerAsks) {
+				flushed.push(this._buildWorkerAskConfirmation(ask));
+			}
+			runtime.pendingWorkerAsks.clear();
+			if (flushed.length) {
+				progress(flushed);
+			}
+		}
+
 		const streamClient = await this._ensureClient(request.sessionResource);
 		if (!streamClient || streamClient.connectionState !== ConnectionState.Connected) {
 			// B-5: classify the failure into one of a small number of buckets so the
@@ -400,6 +446,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				{ sticky: bucket === 'unconfigured' || bucket === 'manual-misconfigured' },
 			);
 
+			// WORKER-PERMISSION-ASK-TRANSPORT: invoke is bailing out before any
+			// finish() runs, so clear the activeProgress slot we set at the top
+			// of the method so a later worker ASK doesn't fire into this stale
+			// progress callback.
+			if (runtime.activeProgress === progress) {
+				runtime.activeProgress = undefined;
+			}
+			runtime.activeFinish = undefined;
 			return { errorDetails: { message: 'Backend not connected' } };
 		}
 
@@ -415,6 +469,25 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				} else {
 					action = data.options[0]?.action ?? data.options[0]?.action_id ?? 'approve';
 				}
+			}
+			// WORKER-PERMISSION-ASK-TRANSPORT: when the confirmation originated
+			// from the worker (carries `__chiposWorkerAskId`), route the
+			// decision back to the worker's local HTTP endpoint instead of the
+			// reasoner stream. Mapping: any non-deny → allow.
+			if (this._isWorkerAskConfirmationData(data)) {
+				const decision = action === 'deny' ? 'deny' : 'allow';
+				this._logService.info('[ChipOS Agent] Worker confirm response (accepted):', data.__chiposWorkerAskId, decision);
+				try {
+					await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision);
+					progress([this._progress(decision === 'allow' ? '$(check) Permission granted' : '$(circle-slash) Permission denied')]);
+				} catch (err) {
+					this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
+					// Surface the failure so the user knows the click didn't
+					// land — otherwise the LLM ends up reporting a permission
+					// failure with no UI explanation.
+					progress([this._progress(`$(error) Permission delivery failed: ${err instanceof Error ? err.message : String(err)}`)]);
+				}
+				return this._listenForContinuation(streamClient, progress, token, request);
 			}
 			// Use the sessionId stored in the confirmation data, NOT a new one
 			const confirmSessionId = data.sessionId ?? runtime.backendSessionId;
@@ -442,6 +515,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 			} else {
 				this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId, 'session:', confirmSessionId);
+			}
+
+			// Same worker-direct fast path on reject.
+			if (this._isWorkerAskConfirmationData(data)) {
+				this._logService.info('[ChipOS Agent] Worker confirm response (rejected):', data.__chiposWorkerAskId, action);
+				try {
+					await this._workerPermissionService.decide(data.__chiposWorkerAskId, 'deny');
+					progress([this._progress('$(circle-slash) Permission denied')]);
+				} catch (err) {
+					this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
+					progress([this._progress(`$(error) Permission delivery failed: ${err instanceof Error ? err.message : String(err)}`)]);
+				}
+				return this._listenForContinuation(streamClient, progress, token, request);
 			}
 
 			streamClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
@@ -551,9 +637,21 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							firstProgress: firstProgressTime,
 						},
 					};
+					// WORKER-PERMISSION-ASK-TRANSPORT: invoke is done — clear the
+					// activeProgress + activeFinish slots so the next worker
+					// ASK queues into pendingWorkerAsks instead of pushing into
+					// this resolved progress callback.
+					if (runtime.activeProgress === progress) {
+						runtime.activeProgress = undefined;
+					}
+					if (runtime.activeFinish === finish) {
+						runtime.activeFinish = undefined;
+					}
 					resolve(result);
 				}
 			};
+			// Bind finish to runtime so _onWorkerPermissionAsk can call it.
+			runtime.activeFinish = finish;
 
 			const listener = streamClient.onDidReceiveEvent((event: AgentEvent) => {
 				if (resolved) {
@@ -1659,6 +1757,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalArtifacts: new Map(),
 				inInitPhase: true,
 				emittedFileRefs: new Set<string>(),
+				pendingWorkerAsks: new Map<string, IWorkerPermissionAsk>(),
 			  } as IChatSessionRuntime;
 
 		return new Promise<IChatAgentResult>((resolve) => {
@@ -1677,9 +1776,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						...result,
 						timings: { totalElapsed: Date.now() - startTime },
 					};
+					// WORKER-PERMISSION-ASK-TRANSPORT: continuation done; mirror
+					// the cleanup invoke() does so a later worker ASK queues
+					// rather than firing into this stale callback.
+					if (runtime.activeProgress === progress) {
+						runtime.activeProgress = undefined;
+					}
+					if (runtime.activeFinish === finish) {
+						runtime.activeFinish = undefined;
+					}
 					resolve(result);
 				}
 			};
+			runtime.activeFinish = finish;
 
 			const listener = streamClient.onDidReceiveEvent((event: AgentEvent) => {
 				if (resolved) { return; }
@@ -2884,6 +2993,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalArtifacts: new Map(),
 				inInitPhase: true,
 				emittedFileRefs: new Set<string>(),
+				pendingWorkerAsks: new Map<string, IWorkerPermissionAsk>(),
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
 		}
@@ -2917,6 +3027,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.terminalSessionMap.clear();
 		runtime.terminalCommandLines.clear();
 		runtime.terminalArtifacts.clear();
+		// WORKER-PERMISSION-ASK-TRANSPORT: close SSE subscription + drop any
+		// queued asks; auto-deny outstanding requests since the chat thread
+		// is going away.
+		for (const askId of runtime.pendingWorkerAsks.keys()) {
+			this._workerPermissionService.decide(askId, 'deny', 'chat session disposed').catch(() => { /* swallow */ });
+		}
+		runtime.pendingWorkerAsks.clear();
+		runtime.permissionSub?.dispose();
+		runtime.permissionSub = undefined;
+		runtime.activeProgress = undefined;
+		runtime.activeFinish = undefined;
 		this._ensureEditorEffects().clearSessionState(sessionResource);
 		this._sessionRuntimes.delete(sessionResource);
 		// Clean up any connection banner for this session
@@ -3002,7 +3123,103 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private _setSessionBackendId(sessionResource: URI, backendSessionId: string | undefined): void {
 		const runtime = this._getOrCreateRuntime(sessionResource);
+		const previous = runtime.backendSessionId;
 		runtime.backendSessionId = backendSessionId;
+
+		// WORKER-PERMISSION-ASK-TRANSPORT: open the SSE channel as soon as we
+		// know the backend session id. If the id changes for the same chat
+		// thread (rare — only when a runtime is reused across sign-in events),
+		// dispose the old subscription before opening a new one.
+		if (previous !== backendSessionId) {
+			runtime.permissionSub?.dispose();
+			runtime.permissionSub = undefined;
+			if (backendSessionId) {
+				this._workerPermissionService.startSubscription(backendSessionId).then(sub => {
+					// Only keep the new subscription if the runtime still cares
+					// about it; otherwise close it immediately.
+					if (this._sessionRuntimes.get(sessionResource) === runtime
+						&& runtime.backendSessionId === backendSessionId) {
+						runtime.permissionSub = sub;
+					} else {
+						sub.dispose();
+					}
+				}).catch(err => {
+					this._logService.warn('[ChipOS Agent] WorkerPermission subscribe failed:', String(err));
+				});
+			}
+		}
+	}
+
+	// ── WORKER-PERMISSION-ASK-TRANSPORT helpers ─────────────────────────────
+
+	private _onWorkerPermissionAsk(ask: IWorkerPermissionAsk): void {
+		const runtime = this._findRuntimeByBackendSessionId(ask.sessionId);
+		if (!runtime) {
+			this._logService.info(`[ChipOS Agent] worker ASK ${ask.askId} dropped — no runtime for session ${ask.sessionId}`);
+			// Best-effort: auto-deny so the worker doesn't hang on a 5-min TTL
+			// when the IDE has no UI for the asking session.
+			this._workerPermissionService.decide(ask.askId, 'deny', 'no IDE runtime for session').catch(() => { /* swallow */ });
+			return;
+		}
+
+		const confirmation = this._buildWorkerAskConfirmation(ask);
+		if (runtime.activeProgress) {
+			runtime.activeProgress([confirmation]);
+			// CRITICAL: end the invoke so VS Code chat's Submit button activates.
+			// Without this the framework keeps the round "in flight" and the
+			// confirmation row's Submit is greyed out until the round ends
+			// (typically via reasoner tool-timeout 30-60s later — too late).
+			// Mirrors what the reasoner-side ConfirmRequest handler does
+			// (`ctx.finish({}, 'Awaiting confirmation')`).
+			runtime.activeFinish?.({}, 'Awaiting worker permission');
+		} else {
+			// Defer until the next invoke flushes pendingWorkerAsks.
+			runtime.pendingWorkerAsks.set(ask.askId, ask);
+		}
+	}
+
+	private _buildWorkerAskConfirmation(ask: IWorkerPermissionAsk): IChatConfirmation {
+		const title = localize('chipos.workerPermission.title', 'Worker requests permission');
+		const lines = [
+			`**${ask.tool}** → \`${ask.specifier}\``,
+			ask.actionSummary ? `_${ask.actionSummary}_` : '',
+			ask.matchedRule ? `Rule: \`${ask.matchedRule}\` (${ask.matchedLayer || 'default'})` : '',
+		].filter(Boolean);
+		const message = new MarkdownString(lines.join('\n\n'), { supportThemeIcons: true, isTrusted: true });
+		return {
+			kind: 'confirmation',
+			title,
+			message,
+			data: {
+				// Mark this so the accept/reject path knows to route the
+				// response back to the worker via the local HTTP endpoint
+				// instead of the reasoner stream.
+				__chiposWorkerAskId: ask.askId,
+				requestId: ask.askId,
+				sessionId: ask.sessionId,
+				options: [
+					{ label: 'Allow', action_id: 'allow' },
+					{ label: 'Deny', action_id: 'deny' },
+				],
+			},
+			buttons: ['Allow', 'Deny'],
+		};
+	}
+
+	private _findRuntimeByBackendSessionId(sessionId: string): IChatSessionRuntime | undefined {
+		if (!sessionId) {
+			return undefined;
+		}
+		for (const [, runtime] of this._sessionRuntimes) {
+			if (runtime.backendSessionId === sessionId) {
+				return runtime;
+			}
+		}
+		return undefined;
+	}
+
+	private _isWorkerAskConfirmationData(data: unknown): data is { __chiposWorkerAskId: string; requestId?: string; options?: unknown } {
+		return !!data && typeof data === 'object' && typeof (data as { __chiposWorkerAskId?: unknown }).__chiposWorkerAskId === 'string';
 	}
 
 	// ── Client lifecycle ───────────────────────────────────────────────────

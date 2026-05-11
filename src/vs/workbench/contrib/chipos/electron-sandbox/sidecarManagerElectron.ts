@@ -53,6 +53,7 @@ import {
 } from '../../../../platform/chipos/common/chiposRemoteWorker.js';
 import {
 	ISidecarManagerService,
+	IWorkerInstanceMeta,
 	SidecarState,
 	BackendMode,
 	WorkerState,
@@ -955,6 +956,23 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			throw err;
 		}
 	}
+
+	/**
+	 * Read instance.json metadata via the existing `checkInstance` IPC — same
+	 * payload, additionally surfaces `permission_token` after 2026-05-11.
+	 * Used by WorkerPermissionService (Worker→IDE permission ASK channel).
+	 */
+	readInstanceMeta = async (workspaceRoot: string): Promise<IWorkerInstanceMeta | undefined> => {
+		if (!workspaceRoot) {
+			return undefined;
+		}
+		try {
+			return await this._invokeIpc<IWorkerInstanceMeta>('vscode:chipos:checkInstance', { workspaceRoot });
+		} catch (err) {
+			this._logService.debug(`[ChipOS Local] readInstanceMeta failed: ${err}`);
+			return undefined;
+		}
+	};
 
 	/**
 	 * Forward progress events from the main-process download into a

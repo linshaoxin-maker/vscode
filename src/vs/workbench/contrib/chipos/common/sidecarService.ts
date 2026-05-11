@@ -67,6 +67,19 @@ export const enum WorkerState {
 	Error = 'Error',
 }
 
+/**
+ * Subset of the worker instance.json the renderer cares about. Mirrors the
+ * fields written by `_write_pid_file` in `backend_v2/packages/execution/src/
+ * execution/server/cli.py`.
+ */
+export interface IWorkerInstanceMeta {
+	readonly alive: boolean;
+	readonly pid?: number;
+	readonly ref_count?: number;
+	readonly http_port?: number;
+	readonly permission_token?: string;
+}
+
 export const ISidecarManagerService = createDecorator<ISidecarManagerService>('chiposSidecarManagerService');
 
 export interface ISidecarManagerService {
@@ -98,6 +111,17 @@ export interface ISidecarManagerService {
 	// ── Worker HTTP URL（工具管理面板直连地址）─────────────────────────────
 
 	readonly workerHttpUrl: string;
+
+	/**
+	 * Read instance.json metadata for the current workspace (electron-sandbox
+	 * only — talks to the main process via IPC). Returns undefined in web
+	 * builds or older sidecar implementations that don't expose this.
+	 *
+	 * Used by the WorkerPermissionService to obtain the per-worker Bearer
+	 * token (WORKER-PERMISSION-ASK-TRANSPORT §5.7) without each consumer
+	 * having to know about the underlying IPC channel.
+	 */
+	readonly readInstanceMeta?: (workspaceRoot: string) => Promise<IWorkerInstanceMeta | undefined>;
 
 	// ── 生命周期 ────────────────────────────────────────────────────────
 

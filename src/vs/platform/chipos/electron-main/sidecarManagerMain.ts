@@ -183,6 +183,12 @@ interface InstanceMeta {
 	refs?: { caller_id: string; acquired_at: string }[];
 	started_at?: string;
 	version?: string;
+	/**
+	 * Per-worker Bearer token for the Worker→IDE permission ASK SSE channel.
+	 * See WORKER-PERMISSION-ASK-TRANSPORT §5.7. Empty/missing when the worker
+	 * is a legacy build that doesn't expose permission endpoints.
+	 */
+	permission_token?: string;
 	[k: string]: unknown;
 }
 
@@ -681,6 +687,11 @@ export function registerSidecarIpcHandlers(): void {
 			pid: meta.pid,
 			ref_count: meta.ref_count,
 			http_port: meta.http_port,
+			// WORKER-PERMISSION-ASK-TRANSPORT §5.7: surface the Bearer token so
+			// the renderer's WorkerPermissionService can authenticate against
+			// the worker's /api/v1/permissions/* endpoints. Empty when missing
+			// (legacy worker — IDE-side service should fall back to disabled).
+			permission_token: typeof meta.permission_token === 'string' ? meta.permission_token : '',
 		};
 	});
 
