@@ -494,22 +494,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			//   allow_always     → allow, scope=user         (written to ~/.chipos/permissions.json)
 			//   deny             → deny  (scope ignored)
 			if (this._isWorkerAskConfirmationData(data)) {
-				let decision: 'allow' | 'deny' = 'allow';
-				let scope: 'once' | 'workspace' | 'user' = 'once';
-				switch (action) {
-					case 'deny':
-						decision = 'deny';
-						break;
-					case 'allow_workspace':
-						scope = 'workspace';
-						break;
-					case 'allow_always':
-						scope = 'user';
-						break;
-					case 'allow_once':
-					default:
-						scope = 'once';
-				}
+				const { decision, scope } = this._mapWorkerActionToDecision(action);
 				this._logService.info('[ChipOS Agent] Worker confirm response (accepted):', data.__chiposWorkerAskId, decision, scope);
 				try {
 					await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision, undefined, scope);
@@ -561,12 +546,35 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				this._logService.info('[ChipOS Agent] Confirm response (rejected):', data.requestId, 'session:', confirmSessionId);
 			}
 
-			// Same worker-direct fast path on reject.
+			// Worker-direct fast path on reject.
+			//
+			// v2 (PERMISSION-APPROVAL-UX-V2 §3.3) caveat: VS Code routes the
+			// non-primary buttons of a multi-option confirmation through the
+			// REJECTED data slot — so "Always in workspace" / "Always globally"
+			// land here even though they're allow choices. We re-use the same
+			// action_id → (decision, scope) mapping as the accepted branch
+			// instead of hard-coding deny, otherwise users who click
+			// "Always in workspace" would silently get denied + persisted
+			// nothing (E2E bug observed 2026-05-12).
 			if (this._isWorkerAskConfirmationData(data)) {
-				this._logService.info('[ChipOS Agent] Worker confirm response (rejected):', data.__chiposWorkerAskId, action);
+				const { decision, scope } = this._mapWorkerActionToDecision(action);
+				this._logService.info(
+					'[ChipOS Agent] Worker confirm response (resolved via reject path):',
+					data.__chiposWorkerAskId, action, '→', decision, scope,
+				);
 				try {
-					await this._workerPermissionService.decide(data.__chiposWorkerAskId, 'deny');
-					progress([this._progress('$(circle-slash) Permission denied')]);
+					await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision, undefined, scope);
+					let progressMsg: string;
+					if (decision === 'deny') {
+						progressMsg = '$(circle-slash) Permission denied';
+					} else if (scope === 'workspace') {
+						progressMsg = '$(check) Allowed + remembered in workspace';
+					} else if (scope === 'user') {
+						progressMsg = '$(check) Allowed + remembered globally';
+					} else {
+						progressMsg = '$(check) Permission granted';
+					}
+					progress([this._progress(progressMsg)]);
 				} catch (err) {
 					this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
 					progress([this._progress(`$(error) Permission delivery failed: ${err instanceof Error ? err.message : String(err)}`)]);
@@ -3290,6 +3298,36 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			},
 			buttons: [allowOnce, allowWorkspace, allowAlways, deny],
 		};
+	}
+
+	/**
+	 * Map a worker-permission card action_id to the (decision, scope) tuple
+	 * expected by the worker `/decide` HTTP endpoint.
+	 *
+	 * v2 (PERMISSION-APPROVAL-UX-V2 §3.3): the card is rendered with four
+	 * buttons — Allow once / Always in workspace / Always globally / Deny.
+	 * VS Code's IChatConfirmation may route the user's pick through either
+	 * `acceptedConfirmationData` or `rejectedConfirmationData` depending on
+	 * which button index was clicked (only the primary button hits accepted);
+	 * the worker doesn't care, so the same mapping table covers both paths.
+	 *
+	 * Unknown or missing action defaults to a single-call allow — matches the
+	 * legacy v1 behaviour of treating an empty multi-option pick as "Allow
+	 * once" rather than denying silently.
+	 */
+	private _mapWorkerActionToDecision(action: string): { decision: 'allow' | 'deny'; scope: 'once' | 'workspace' | 'user' } {
+		switch (action) {
+			case 'deny':
+			case 'reject':
+				return { decision: 'deny', scope: 'once' };
+			case 'allow_workspace':
+				return { decision: 'allow', scope: 'workspace' };
+			case 'allow_always':
+				return { decision: 'allow', scope: 'user' };
+			case 'allow_once':
+			default:
+				return { decision: 'allow', scope: 'once' };
+		}
 	}
 
 	private _toolIcon(tool: string): string {
