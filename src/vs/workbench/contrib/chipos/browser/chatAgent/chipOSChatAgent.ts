@@ -68,6 +68,7 @@ import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
 import { IChipOSWorkerPermissionService, IWorkerPermissionAsk } from '../permission/workerPermissionService.js';
+import { ChatPermissionLevel, isAutoApproveLevel } from '../../../chat/common/constants.js';
 import {
 	AgentEventType,
 	ConnectionState,
@@ -164,6 +165,11 @@ interface IChatSessionRuntime {
 	activeFinish?: (result: IChatAgentResult, thinkingTitle?: string) => void;
 	pendingWorkerAsks: Map<string, IWorkerPermissionAsk>;
 	permissionSub?: IDisposable;
+	/** v2 (PERMISSION-APPROVAL-UX-V2 §1): IDE chat permission level for the
+	 * **current** invoke. When AutoApprove or Autopilot, worker permission
+	 * ASKs are silently auto-allowed instead of rendered as a card. Updated
+	 * at every invoke() entry from `request.modeInfo?.permissionLevel`. */
+	permissionLevel?: ChatPermissionLevel;
 }
 
 /**
@@ -339,6 +345,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// ── FEAT-32: Connection status feedback ──
 		progress([this._progress('$(sync~spin) Connecting to backend...', true)]);
 		const runtime = this._getOrCreateRuntime(request.sessionResource);
+
+		// v2 PERMISSION-APPROVAL-UX-V2 §1: snapshot the IDE chat permission
+		// level for this invoke. `_onWorkerPermissionAsk` consults this to
+		// decide whether to render a confirmation card or silently allow.
+		// Default → render; AutoApprove / Autopilot → auto-allow without UI.
+		runtime.permissionLevel = request.permissionLevel;
 
 		// WORKER-PERMISSION-ASK-TRANSPORT: tee the active progress so the
 		// worker→IDE SSE channel can surface ASK confirmations asynchronously
@@ -3159,6 +3171,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// Best-effort: auto-deny so the worker doesn't hang on a 5-min TTL
 			// when the IDE has no UI for the asking session.
 			this._workerPermissionService.decide(ask.askId, 'deny', 'no IDE runtime for session').catch(() => { /* swallow */ });
+			return;
+		}
+
+		// v2 PERMISSION-APPROVAL-UX-V2 §1: when the user has selected Bypass
+		// Approvals / Autopilot from the chat permission dropdown, silently
+		// auto-allow ASKs instead of rendering a confirmation card. The
+		// existing in-progress invoke continues uninterrupted, the user
+		// never sees a card, and the file write completes within the
+		// normal latency budget.
+		if (runtime.permissionLevel && isAutoApproveLevel(runtime.permissionLevel)) {
+			this._logService.info(`[ChipOS Agent] auto-allow ASK ${ask.askId} (permission level: ${runtime.permissionLevel})`);
+			this._workerPermissionService.decide(ask.askId, 'allow', `auto: ${runtime.permissionLevel}`).catch(err => {
+				this._logService.warn(`[ChipOS Agent] auto-allow decide failed for ${ask.askId}: ${err}`);
+			});
 			return;
 		}
 
