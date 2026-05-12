@@ -485,13 +485,45 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// WORKER-PERMISSION-ASK-TRANSPORT: when the confirmation originated
 			// from the worker (carries `__chiposWorkerAskId`), route the
 			// decision back to the worker's local HTTP endpoint instead of the
-			// reasoner stream. Mapping: any non-deny → allow.
+			// reasoner stream.
+			//
+			// v2 (PERMISSION-APPROVAL-UX-V2 §3.3): 4-button card maps action
+			// IDs to (decision, scope) tuples for the worker decide POST:
+			//   allow_once       → allow, scope=once         (no rule written)
+			//   allow_workspace  → allow, scope=workspace    (written to .chipos/permissions.local.json)
+			//   allow_always     → allow, scope=user         (written to ~/.chipos/permissions.json)
+			//   deny             → deny  (scope ignored)
 			if (this._isWorkerAskConfirmationData(data)) {
-				const decision = action === 'deny' ? 'deny' : 'allow';
-				this._logService.info('[ChipOS Agent] Worker confirm response (accepted):', data.__chiposWorkerAskId, decision);
+				let decision: 'allow' | 'deny' = 'allow';
+				let scope: 'once' | 'workspace' | 'user' = 'once';
+				switch (action) {
+					case 'deny':
+						decision = 'deny';
+						break;
+					case 'allow_workspace':
+						scope = 'workspace';
+						break;
+					case 'allow_always':
+						scope = 'user';
+						break;
+					case 'allow_once':
+					default:
+						scope = 'once';
+				}
+				this._logService.info('[ChipOS Agent] Worker confirm response (accepted):', data.__chiposWorkerAskId, decision, scope);
 				try {
-					await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision);
-					progress([this._progress(decision === 'allow' ? '$(check) Permission granted' : '$(circle-slash) Permission denied')]);
+					await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision, undefined, scope);
+					let progressMsg: string;
+					if (decision === 'deny') {
+						progressMsg = '$(circle-slash) Permission denied';
+					} else if (scope === 'workspace') {
+						progressMsg = '$(check) Allowed + remembered in workspace';
+					} else if (scope === 'user') {
+						progressMsg = '$(check) Allowed + remembered globally';
+					} else {
+						progressMsg = '$(check) Permission granted';
+					}
+					progress([this._progress(progressMsg)]);
 				} catch (err) {
 					this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
 					// Surface the failure so the user knows the click didn't
@@ -3206,12 +3238,38 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private _buildWorkerAskConfirmation(ask: IWorkerPermissionAsk): IChatConfirmation {
 		const title = localize('chipos.workerPermission.title', 'Worker requests permission');
-		const lines = [
-			`**${ask.tool}** → \`${ask.specifier}\``,
-			ask.actionSummary ? `_${ask.actionSummary}_` : '',
-			ask.matchedRule ? `Rule: \`${ask.matchedRule}\` (${ask.matchedLayer || 'default'})` : '',
-		].filter(Boolean);
+
+		// v2 PERMISSION-APPROVAL-UX-V2 §4.1: rich-markdown card. Codicons give
+		// visual anchor; backticks render path/rule as inline code (monospace,
+		// theme-aware); fenced lines so wrap behavior is predictable across
+		// chat width. Reasoner-side ConfirmRequest used a similar format so
+		// the UX feels consistent across both confirm paths.
+		const toolIcon = this._toolIcon(ask.tool);
+		const lines: string[] = [
+			`${toolIcon} **${ask.tool}** — ${this._toolActionSummary(ask)}`,
+			`$(folder-opened) \`${ask.specifier}\``,
+		];
+		if (ask.matchedRule) {
+			lines.push(`$(law) Rule \`${ask.matchedRule}\` (${ask.matchedLayer || 'default'})`);
+		}
+		lines.push(
+			'',
+			localize('chipos.workerPermission.howto',
+				'_Choose **once** for this call only, **workspace** to remember in this project, or **globally** to remember everywhere._'),
+		);
 		const message = new MarkdownString(lines.join('\n\n'), { supportThemeIcons: true, isTrusted: true });
+
+		// v2 PERMISSION-APPROVAL-UX-V2 §3: 4-button card so the user can
+		// "remember this choice". Worker side has supported the 4 action_ids
+		// since FEAT-003; we just never exposed them. Mapping:
+		//   Allow once       → decide(allow, scope=once)
+		//   Always workspace → decide(allow, scope=workspace) → .chipos/permissions.local.json
+		//   Always globally  → decide(allow, scope=user)      → ~/.chipos/permissions.json
+		//   Deny             → decide(deny)
+		const allowOnce = localize('chipos.workerPermission.allowOnce', 'Allow once');
+		const allowWorkspace = localize('chipos.workerPermission.allowWorkspace', 'Always in workspace');
+		const allowAlways = localize('chipos.workerPermission.allowAlways', 'Always globally');
+		const deny = localize('chipos.workerPermission.deny', 'Deny');
 		return {
 			kind: 'confirmation',
 			title,
@@ -3224,12 +3282,50 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				requestId: ask.askId,
 				sessionId: ask.sessionId,
 				options: [
-					{ label: 'Allow', action_id: 'allow' },
-					{ label: 'Deny', action_id: 'deny' },
+					{ label: allowOnce,      action_id: 'allow_once' },
+					{ label: allowWorkspace, action_id: 'allow_workspace' },
+					{ label: allowAlways,    action_id: 'allow_always' },
+					{ label: deny,           action_id: 'deny' },
 				],
 			},
-			buttons: ['Allow', 'Deny'],
+			buttons: [allowOnce, allowWorkspace, allowAlways, deny],
 		};
+	}
+
+	private _toolIcon(tool: string): string {
+		switch (tool) {
+			case 'Write':
+			case 'Edit':
+				return '$(file-symlink-file)';
+			case 'Read':
+				return '$(file)';
+			case 'Bash':
+			case 'BashCommandLine':
+				return '$(terminal)';
+			default:
+				return '$(shield)';
+		}
+	}
+
+	private _toolActionSummary(ask: IWorkerPermissionAsk): string {
+		// One-line human description; mirrors what Claude Code shows inline.
+		// Worker → IDE payload already carries `action_summary`, but it's
+		// usually `Tool(specifier)` which is redundant with the body. Prefer
+		// per-tool phrasing when we can infer; fall back to action_summary
+		// only when nothing better is available.
+		switch (ask.tool) {
+			case 'Write':
+				return localize('chipos.workerPermission.summary.write', 'create or overwrite a file');
+			case 'Edit':
+				return localize('chipos.workerPermission.summary.edit', 'modify an existing file');
+			case 'Read':
+				return localize('chipos.workerPermission.summary.read', 'read file contents');
+			case 'Bash':
+			case 'BashCommandLine':
+				return localize('chipos.workerPermission.summary.bash', 'run a shell command');
+			default:
+				return ask.actionSummary || ask.tool.toLowerCase();
+		}
 	}
 
 	private _findRuntimeByBackendSessionId(sessionId: string): IChatSessionRuntime | undefined {

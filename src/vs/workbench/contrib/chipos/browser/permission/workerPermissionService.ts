@@ -62,6 +62,17 @@ export interface IWorkerPermissionAsk {
 
 export type WorkerPermissionDecision = 'allow' | 'deny';
 
+/**
+ * Persistence scope for an allow decision (PERMISSION-APPROVAL-UX-V2 §3).
+ * - `once`     — answer the current ASK, do not write a rule
+ * - `workspace`— write Tool(path)=allow to <workspace>/.chipos/permissions.local.json
+ * - `user`     — write to ~/.chipos/permissions.json
+ *
+ * Worker hot-reloads either file on change, so subsequent equivalent tool
+ * calls match the new rule directly and never fire an ASK again.
+ */
+export type WorkerPermissionScope = 'once' | 'workspace' | 'user';
+
 interface IWorkerCheckInstanceResult {
 	readonly alive: boolean;
 	readonly pid?: number;
@@ -85,8 +96,12 @@ export interface IChipOSWorkerPermissionService {
 	/**
 	 * POST a decision back to the worker. Idempotent on the worker side — a
 	 * second call for the same askId returns 200 with resolved=false.
+	 *
+	 * `scope` (default `once`) controls whether the answer becomes a permanent
+	 * rule on the worker disk; see {@link WorkerPermissionScope}. Only
+	 * meaningful for `decision === 'allow'`; deny is always per-ask.
 	 */
-	decide(askId: string, decision: WorkerPermissionDecision, comment?: string): Promise<void>;
+	decide(askId: string, decision: WorkerPermissionDecision, comment?: string, scope?: WorkerPermissionScope): Promise<void>;
 }
 
 interface IPermissionEndpointMeta {
@@ -406,7 +421,7 @@ export class ChipOSWorkerPermissionService extends Disposable implements IChipOS
 		}, delay);
 	}
 
-	async decide(askId: string, decision: WorkerPermissionDecision, comment?: string): Promise<void> {
+	async decide(askId: string, decision: WorkerPermissionDecision, comment?: string, scope: WorkerPermissionScope = 'once'): Promise<void> {
 		if (!askId) {
 			return;
 		}
@@ -419,7 +434,7 @@ export class ChipOSWorkerPermissionService extends Disposable implements IChipOS
 			headers['Authorization'] = `Bearer ${meta.token}`;
 		}
 
-		const body = JSON.stringify({ decision, comment: comment ?? '' });
+		const body = JSON.stringify({ decision, comment: comment ?? '', scope });
 
 		const response = await fetch(url, {
 			method: 'POST',
