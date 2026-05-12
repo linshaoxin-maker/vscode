@@ -733,23 +733,39 @@ export function registerSidecarIpcHandlers(): void {
 		const meta = readInstanceJson(args.workspaceRoot);
 		if (!meta || !meta.pid) { return { alive: false }; }
 
-		// Two-stage aliveness check. `kill -0` is necessary but not sufficient
-		// — the Nuitka onefile launcher/child split (see comment on
-		// isWorkerHttpResponsive) can leave the recorded pid in a zombie state
-		// where it answers `kill -0` but has already torn down its HTTP server.
-		// We additionally verify the worker actually responds on /health,
-		// which is the contract used by sidecar health-check and worker tools
-		// panel anyway. Adopting a worker that can't respond produces all the
-		// "Failed to fetch" + "Worker API unavailable" symptoms we hit during
-		// permission-ASK bring-up.
-		let alive = isPidAlive(meta.pid);
-		if (alive) {
-			alive = await isWorkerHttpResponsive(meta.http_port ?? 0);
-		}
-		if (!alive) {
-			// Stale instance.json — clean up so next start gets a fresh one.
+		// Two-stage aliveness check with NON-destructive HTTP probe.
+		//
+		// Stage 1: `kill -0` — necessary baseline. If the recorded pid is
+		// definitively dead, the worker is gone and instance.json is stale:
+		// unlink it so the next startBackend spawns fresh.
+		//
+		// Stage 2: HTTP /health probe — `kill -0` is not sufficient on
+		// macOS Nuitka onefile builds (the launcher/child pid split lets a
+		// dying child remain `kill -0`-alive briefly after tearing down its
+		// HTTP server). We probe /health to confirm responsiveness.
+		//
+		// 2026-05-12 regression fix: a failed HTTP probe **does NOT** delete
+		// instance.json any more. Nuitka onefile binaries take ~25 s to bind
+		// their HTTP port during startup; during that window pid is alive,
+		// HTTP is not. The previous logic deleted instance.json and the
+		// freshly-minted permission_token along with it — every subsequent
+		// renderer-side `readInstanceMeta()` then returned an empty token
+		// and the permission SSE could never authenticate.
+		//
+		// New contract: instance.json is deleted only when the pid itself
+		// is dead. HTTP unresponsiveness in spite of a live pid yields
+		// `alive: false` (so the caller does NOT adopt-without-spawn), but
+		// the file is preserved so the next probe a few seconds later can
+		// see the worker come online and surface the token.
+		const pidAlive = isPidAlive(meta.pid);
+		if (!pidAlive) {
 			try { fs.unlinkSync(instanceJsonPath(args.workspaceRoot)); } catch { /* ignore */ }
 		}
+		const httpAlive = pidAlive
+			? await isWorkerHttpResponsive(meta.http_port ?? 0)
+			: false;
+		const alive = pidAlive && httpAlive;
+
 		return {
 			alive,
 			pid: meta.pid,
@@ -759,7 +775,10 @@ export function registerSidecarIpcHandlers(): void {
 			// the renderer's WorkerPermissionService can authenticate against
 			// the worker's /api/v1/permissions/* endpoints. Empty when missing
 			// (legacy worker — IDE-side service should fall back to disabled).
-			permission_token: typeof meta.permission_token === 'string' ? meta.permission_token : '',
+			// Always surfaced when pid is alive, even if HTTP isn't ready yet
+			// — caller can decide to retry instead of giving up.
+			permission_token: pidAlive && typeof meta.permission_token === 'string'
+				? meta.permission_token : '',
 		};
 	});
 
