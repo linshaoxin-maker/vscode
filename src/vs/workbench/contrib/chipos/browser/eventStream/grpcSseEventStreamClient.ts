@@ -409,6 +409,43 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			const decoder = new TextDecoder();
 			let buffer = '';
 
+			// Idle-watchdog: the reasoner's event stream emits a ``heartbeat``
+			// event every 30s when the agent queue is idle (see
+			// reasoning/session/agent_session.py:event_stream). If we see
+			// NOTHING — not even a heartbeat — for IDLE_TIMEOUT_MS, the
+			// underlying TCP must be half-open (NAT idle, proxy timeout,
+			// laptop sleep, etc.) and ``reader.read()`` will block forever
+			// without this guard. On timeout we abort the controller which
+			// surfaces as an AbortError below, then ``_scheduleReconnect``
+			// picks up with ``last_sequence_id`` so no event is lost.
+			//
+			// Observed 2026-05-13: Full Auto E2E completed on the reasoner
+			// in 35 s, but the IDE never saw the final 'done' event because
+			// the SSE silently dropped sometime after the auto-allow burst;
+			// UI stayed stuck on "Connecting to backend..." indefinitely.
+			// Detail: HANDOFF doc, but symptom is "task done backend-side,
+			// UI spinner stuck".
+			const IDLE_TIMEOUT_MS = 60_000;
+			const abortOnIdle = this._sseAbortController!;
+			let idleTimer: ReturnType<typeof setTimeout> | null = null;
+			const resetIdleTimer = () => {
+				if (idleTimer !== null) {
+					clearTimeout(idleTimer);
+				}
+				idleTimer = setTimeout(() => {
+					this._logService?.warn(
+						'[SseClient] SSE idle for %dms (no heartbeat) — aborting + reconnecting',
+						IDLE_TIMEOUT_MS,
+					);
+					try {
+						abortOnIdle.abort();
+					} catch {
+						// best-effort
+					}
+				}, IDLE_TIMEOUT_MS);
+			};
+			resetIdleTimer();
+
 			const processStream = async () => {
 				try {
 					while (true) {
@@ -416,6 +453,9 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 						if (done) {
 							break;
 						}
+						// Any byte from the server resets the idle watchdog —
+						// includes heartbeat comment lines AND data events.
+						resetIdleTimer();
 						buffer += decoder.decode(value, { stream: true });
 
 						// Parse SSE lines
@@ -434,12 +474,20 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 					}
 				} catch (err: any) {
 					if (err.name === 'AbortError') {
-						return; // intentional close
+						// Either intentional close OR our idle-watchdog
+						// fired. The next block decides if we reconnect.
+					} else {
+						this._logService?.error('[SseClient] SSE stream error: %s', err);
 					}
-					this._logService?.error('[SseClient] SSE stream error: %s', err);
+				} finally {
+					if (idleTimer !== null) {
+						clearTimeout(idleTimer);
+						idleTimer = null;
+					}
 				}
 
-				// Stream ended
+				// Stream ended (clean close, error, or idle-abort) — same
+				// recovery path: reconnect unless session is already done.
 				if (!this._sessionDone) {
 					this._logService?.info('[SseClient] SSE stream ended, scheduling reconnect');
 					this._closeEventSource();
