@@ -798,7 +798,41 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		const mcpConfigPath = resolveWorkerMcpConfigPath(this._configurationService);
 
 		// Phase 1.5 Worker JWT (preferred when logged in).
+		//
+		// Startup race (fix 2026-05-13): at IDE cold start, sidecarManager's
+		// startBackend() runs synchronously before ChipOSAuthService finishes
+		// restoring tokens from SecretStorage. Result: isLoggedIn() returns
+		// false here, no worker_token gets minted, worker spawns with
+		// env.CHIPOS_WORKER_TOKEN unset → gRPC register hits
+		// WORKER_AUTH_FAILED 5× and the worker self-terminates. The
+		// onDidChangeLoginState listener (line ~185) ALSO doesn't help
+		// because it bails when workerState===NotStarted, and the
+		// false→true transition fires during that window.
+		//
+		// Fix: if not logged in yet, wait up to 2s for the next login
+		// state change. SecretStorage restore typically completes in
+		// 200-500ms, so 2s is a generous upper bound. If the user really
+		// isn't logged in (manual logout / fresh install), the wait still
+		// returns false after 2s and we fall through to api_key path —
+		// same behavior as before, just delayed.
 		let workerToken: string | undefined;
+		if (!this._authService.isLoggedIn()) {
+			await new Promise<void>(resolve => {
+				let resolved = false;
+				const done = () => { if (!resolved) { resolved = true; resolve(); } };
+				const timer = setTimeout(done, 2000);
+				const disposable = this._authService.onDidChangeLoginState(isLoggedIn => {
+					if (isLoggedIn) {
+						clearTimeout(timer);
+						disposable.dispose();
+						done();
+					}
+				});
+			});
+			if (this._authService.isLoggedIn()) {
+				this._logService.info('[ChipOS Local] auth restored from SecretStorage during spawn wait');
+			}
+		}
 		if (this._authService.isLoggedIn()) {
 			try {
 				const tokenResult = await this._authService.getWorkerToken();
