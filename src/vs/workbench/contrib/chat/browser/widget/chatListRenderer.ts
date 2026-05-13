@@ -76,6 +76,7 @@ import { ChatCheckpointFileChangesSummaryContentPart } from './chatContentParts/
 import { ChatCodeCitationContentPart } from './chatContentParts/chatCodeCitationContentPart.js';
 import { ChatCommandButtonContentPart } from './chatContentParts/chatCommandContentPart.js';
 import { ChatConfirmationContentPart } from './chatContentParts/chatConfirmationContentPart.js';
+import { ChipOSPermissionCardContentPart, isChipOSPermissionCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
 import { DiffEditorPool, EditorPool } from './chatContentParts/chatContentCodePools.js';
 import { IChatContentPart, IChatContentPartRenderContext, InlineTextModelCollection } from './chatContentParts/chatContentParts.js';
 import { ChatElicitationContentPart } from './chatContentParts/chatElicitationContentPart.js';
@@ -2175,6 +2176,9 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 
 	private renderConfirmation(context: IChatContentPartRenderContext, confirmation: IChatConfirmation, templateData: IChatListItemTemplate): IChatContentPart {
+		if (isChipOSPermissionCardData(confirmation.data)) {
+			return this.instantiationService.createInstance(ChipOSPermissionCardContentPart, confirmation, context);
+		}
 		const part = this.instantiationService.createInstance(ChatConfirmationContentPart, confirmation, context);
 		return part;
 	}

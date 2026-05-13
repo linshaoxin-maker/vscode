@@ -3245,28 +3245,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	private _buildWorkerAskConfirmation(ask: IWorkerPermissionAsk): IChatConfirmation {
+		// Phase B (PERMISSION-APPROVAL-UX-V2 §5): data carries all Phase A
+		// extras so ChipOSPermissionCardContentPart can render the full card
+		// without relying on the markdown message (which was cramped into 3
+		// lines by BaseChatConfirmationWidget._getPreview).  The message field
+		// is kept as a short plain string for accessibility / screen-readers;
+		// the custom DOM renderer ignores it.
 		const title = localize('chipos.workerPermission.title', 'Worker requests permission');
-
-		// Phase A (PERMISSION-APPROVAL-UX-V2 §4.1): rich-markdown card.
-		// Codicons give visual anchor; backticks render path/rule/session as
-		// inline code (monospace, theme-aware); <details>/<summary> wraps the
-		// content preview so it stays out of the way until the user wants it.
-		// Each metadata line is independent and only emitted when the worker
-		// actually sent the field — older workers that omit Phase A extras
-		// degrade to the v1 layout (path + optional rule line).
-		const message = new MarkdownString(this._renderWorkerAskMarkdown(ask), {
-			supportThemeIcons: true,
-			isTrusted: true,
-			supportHtml: true, // <details>/<summary> for the collapsible content preview
-		});
-
-		// v2 PERMISSION-APPROVAL-UX-V2 §3: 4-button card so the user can
-		// "remember this choice". Worker side has supported the 4 action_ids
-		// since FEAT-003; we just never exposed them. Mapping:
-		//   Allow once       → decide(allow, scope=once)
-		//   Always workspace → decide(allow, scope=workspace) → .chipos/permissions.local.json
-		//   Always globally  → decide(allow, scope=user)      → ~/.chipos/permissions.json
-		//   Deny             → decide(deny)
 		const allowOnce = localize('chipos.workerPermission.allowOnce', 'Allow once');
 		const allowWorkspace = localize('chipos.workerPermission.allowWorkspace', 'Always in workspace');
 		const allowAlways = localize('chipos.workerPermission.allowAlways', 'Always globally');
@@ -3274,14 +3259,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return {
 			kind: 'confirmation',
 			title,
-			message,
+			message: localize(
+				'chipos.workerPermission.message',
+				'{0} {1}',
+				ask.tool,
+				ask.specifier,
+			),
 			data: {
-				// Mark this so the accept/reject path knows to route the
-				// response back to the worker via the local HTTP endpoint
-				// instead of the reasoner stream.
+				// WORKER-PERMISSION-ASK-TRANSPORT marker — triggers chipos
+				// routing in chipOSChatAgent's acceptedConfirmationData handler.
 				__chiposWorkerAskId: ask.askId,
 				requestId: ask.askId,
 				sessionId: ask.sessionId,
+				// Phase A extras for ChipOSPermissionCardContentPart rendering.
+				tool: ask.tool,
+				specifier: ask.specifier,
+				targetExists: ask.targetExists,
+				targetSizeBytes: ask.targetSizeBytes,
+				matchedRule: ask.matchedRule,
+				matchedLayer: ask.matchedLayer,
+				contentPreview: ask.contentPreview,
 				options: [
 					{ label: allowOnce,      action_id: 'allow_once' },
 					{ label: allowWorkspace, action_id: 'allow_workspace' },
@@ -3291,144 +3288,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			},
 			buttons: [allowOnce, allowWorkspace, allowAlways, deny],
 		};
-	}
-
-	/**
-	 * Phase A markdown body — packed into AT MOST 3 visible lines because
-	 * VS Code's BaseChatConfirmationWidget runs every confirmation message
-	 * through `_getPreview(content, 3)` (see
-	 * vscode/.../chatConfirmationContentPart.ts:70) which renders only the
-	 * first 3 non-blank, non-heading lines + a "Click to view full content..."
-	 * disclosure for the rest. We want all the high-value Phase A info
-	 * (path/size, matched rule + layer, session) **inline** so users don't
-	 * have to click through to make a decision; the content preview is
-	 * intentionally last so it lands in the collapsible/click-through area.
-	 *
-	 * Layout (3 paragraphs):
-	 *   ① $(file-symlink-file) **Write** `<path>` · (new file | ~28 bytes)
-	 *   ② $(law) Rule: `Write(**)` (bundled) · $(person) Session: `…6800129`
-	 *   ③ <details>Preview content (~26 bytes)</details>
-	 *      (the how-to footer is dropped — the 4 button labels are
-	 *      self-explanatory: Allow once / Always in workspace / Always
-	 *      globally / Deny.)
-	 *
-	 * Older workers that omit Phase A optional fields degrade by simply
-	 * dropping the bits they didn't send — line ① always renders (path is
-	 * required); line ② drops session / rule individually; line ③ skipped
-	 * entirely when content_preview is missing.
-	 */
-	private _renderWorkerAskMarkdown(ask: IWorkerPermissionAsk): string {
-		const toolIcon = this._toolIcon(ask.tool);
-
-		// ── Line 1: tool + path + size/exists (single inline paragraph) ──
-		const sizeSegment: string = ask.targetExists === true
-			? (typeof ask.targetSizeBytes === 'number'
-				? this._formatBytes(ask.targetSizeBytes)
-				: localize('chipos.workerPermission.unknownSize', 'unknown size'))
-			: ask.targetExists === false
-				? localize('chipos.workerPermission.newFile', '(new file)')
-				: ''; // worker pre-Phase A — omit
-		const line1Parts = [`${toolIcon} **${ask.tool}** \`${ask.specifier}\``];
-		if (sizeSegment) {
-			line1Parts.push(`· ${sizeSegment}`);
-		}
-		const line1 = line1Parts.join(' ');
-
-		// ── Line 2: matched rule + session (single inline paragraph) ──
-		const line2Parts: string[] = [];
-		if (ask.matchedRule) {
-			line2Parts.push(localize(
-				'chipos.workerPermission.ruleInline',
-				'$(law) Rule: `{0}` ({1})',
-				ask.matchedRule,
-				ask.matchedLayer || 'default',
-			));
-		}
-		const sessionTag = this._truncateSession(ask.sessionId);
-		if (sessionTag) {
-			line2Parts.push(localize(
-				'chipos.workerPermission.sessionInline',
-				'$(person) Session: `{0}`',
-				sessionTag,
-			));
-		}
-		const line2 = line2Parts.length > 0 ? line2Parts.join(' · ') : '';
-
-		// ── Line 3: collapsible content preview (counts as 1 line in widget
-		// preview because <details>/<summary> renders to a single disclosure
-		// element; the actual code block lives in the overlay full view) ──
-		let line3 = '';
-		if (ask.contentPreview) {
-			const lang = this._inferPreviewLanguage(ask.specifier);
-			const summary = localize(
-				'chipos.workerPermission.previewSummary',
-				'Preview content ({0})',
-				typeof ask.targetSizeBytes === 'number' && ask.targetExists
-					? this._formatBytes(ask.targetSizeBytes)
-					: this._formatBytes(ask.contentPreview.length),
-			);
-			line3 = [
-				`<details><summary>${summary}</summary>`,
-				'',
-				'```' + lang,
-				ask.contentPreview,
-				'```',
-				'',
-				'</details>',
-			].join('\n');
-		}
-
-		const paragraphs = [line1];
-		if (line2) {
-			paragraphs.push(line2);
-		}
-		if (line3) {
-			paragraphs.push(line3);
-		}
-		return paragraphs.join('\n\n');
-	}
-
-	private _formatBytes(n: number): string {
-		if (n < 1024) {
-			return `~${n} bytes`;
-		}
-		if (n < 1024 * 1024) {
-			return `~${(n / 1024).toFixed(1)} KB`;
-		}
-		return `~${(n / (1024 * 1024)).toFixed(1)} MB`;
-	}
-
-	private _truncateSession(sessionId: string): string {
-		if (!sessionId) {
-			return '';
-		}
-		// Tail 8 chars — the meaningful entropy in 'native_chat_2_177855…' lives at the end.
-		return sessionId.length <= 8 ? sessionId : `…${sessionId.slice(-8)}`;
-	}
-
-	private _inferPreviewLanguage(path: string): string {
-		const dot = path.lastIndexOf('.');
-		if (dot === -1) {
-			return '';
-		}
-		const ext = path.slice(dot + 1).toLowerCase();
-		// Tiny lookup — only the extensions worth highlighting in this card.
-		// Anything else falls through to the unfenced default (still valid markdown).
-		switch (ext) {
-			case 'v': case 'sv': case 'vh': case 'svh': return 'verilog';
-			case 'py': return 'python';
-			case 'ts': case 'tsx': return 'typescript';
-			case 'js': case 'jsx': return 'javascript';
-			case 'json': return 'json';
-			case 'md': return 'markdown';
-			case 'yaml': case 'yml': return 'yaml';
-			case 'sh': case 'bash': case 'zsh': return 'bash';
-			case 'rs': return 'rust';
-			case 'go': return 'go';
-			case 'c': case 'h': return 'c';
-			case 'cpp': case 'cc': case 'hpp': return 'cpp';
-			default: return '';
-		}
 	}
 
 	/**
@@ -3458,42 +3317,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'allow_once':
 			default:
 				return { decision: 'allow', scope: 'once' };
-		}
-	}
-
-	private _toolIcon(tool: string): string {
-		switch (tool) {
-			case 'Write':
-			case 'Edit':
-				return '$(file-symlink-file)';
-			case 'Read':
-				return '$(file)';
-			case 'Bash':
-			case 'BashCommandLine':
-				return '$(terminal)';
-			default:
-				return '$(shield)';
-		}
-	}
-
-	private _toolActionSummary(ask: IWorkerPermissionAsk): string {
-		// One-line human description; mirrors what Claude Code shows inline.
-		// Worker → IDE payload already carries `action_summary`, but it's
-		// usually `Tool(specifier)` which is redundant with the body. Prefer
-		// per-tool phrasing when we can infer; fall back to action_summary
-		// only when nothing better is available.
-		switch (ask.tool) {
-			case 'Write':
-				return localize('chipos.workerPermission.summary.write', 'create or overwrite a file');
-			case 'Edit':
-				return localize('chipos.workerPermission.summary.edit', 'modify an existing file');
-			case 'Read':
-				return localize('chipos.workerPermission.summary.read', 'read file contents');
-			case 'Bash':
-			case 'BashCommandLine':
-				return localize('chipos.workerPermission.summary.bash', 'run a shell command');
-			default:
-				return ask.actionSummary || ask.tool.toLowerCase();
 		}
 	}
 

@@ -1,0 +1,189 @@
+/*---------------------------------------------------------------------------------------------
+ *  ChipOS Permission Card — Phase B visual polish
+ *  Uses VS Code CSS variables so light / dark / high-contrast modes all work.
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── Root card ──────────────────────────────────────────────────────────────── */
+
+.chipos-permission-card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin: 6px 0;
+	padding: 10px 12px 8px 14px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.35));
+	background: var(--vscode-editor-background);
+	font-size: 12px;
+	line-height: 1.5;
+	/* Left color bar differentiates by tool type */
+	border-left-width: 3px;
+	border-left-style: solid;
+	border-left-color: var(--vscode-foreground); /* fallback; overridden per tool below */
+}
+
+/* Tool-type color bars */
+.chipos-permission-card.tool-write  { border-left-color: var(--vscode-charts-blue,   #0078d4); }
+.chipos-permission-card.tool-read   { border-left-color: var(--vscode-charts-green,  #388a34); }
+.chipos-permission-card.tool-bash   { border-left-color: var(--vscode-charts-yellow, #d18616); }
+.chipos-permission-card.tool-edit   { border-left-color: var(--vscode-charts-purple, #652d90); }
+.chipos-permission-card.tool-bashcommandline { border-left-color: var(--vscode-charts-yellow, #d18616); }
+
+/* ── Header row ─────────────────────────────────────────────────────────────── */
+
+.chipos-permission-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.chipos-tool-icon {
+	font-size: 14px;
+	flex-shrink: 0;
+	color: var(--vscode-foreground);
+}
+
+.chipos-tool-label {
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	flex-shrink: 0;
+}
+
+.chipos-path {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11.5px;
+	color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+	background: var(--vscode-textPreformat-background, rgba(127, 127, 127, 0.12));
+	border-radius: 3px;
+	padding: 0 4px;
+	word-break: break-all;
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.chipos-size-badge {
+	flex-shrink: 0;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background, rgba(127, 127, 127, 0.2));
+	border-radius: 10px;
+	padding: 1px 7px;
+	white-space: nowrap;
+}
+
+/* ── Metadata row ───────────────────────────────────────────────────────────── */
+
+.chipos-permission-meta {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.4;
+}
+
+/* ── Code preview ───────────────────────────────────────────────────────────── */
+
+.chipos-permission-preview {
+	max-height: 160px;  /* ~8 monospace lines */
+	overflow-y: auto;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.3));
+	background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.05));
+}
+
+.chipos-code-preview {
+	margin: 0;
+	padding: 8px 10px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11.5px;
+	line-height: 1.45;
+	color: var(--vscode-editor-foreground);
+	white-space: pre;
+	overflow-x: auto;
+}
+
+/* ── Buttons row ────────────────────────────────────────────────────────────── */
+
+.chipos-permission-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 2px;
+}
+
+.chipos-action-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 26px;
+	padding: 0 10px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.4));
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 11.5px;
+	font-family: inherit;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background 0.1s, border-color 0.1s;
+	outline-offset: 2px;
+}
+
+.chipos-action-btn:hover {
+	background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.12));
+	border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.chipos-action-btn:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, #007fd4);
+	outline-offset: 2px;
+}
+
+.chipos-action-btn:active {
+	background: var(--vscode-list-activeSelectionBackground, rgba(127, 127, 127, 0.25));
+}
+
+/* "Allow once" — neutral, no fill */
+.chipos-btn-allow-once {
+	border-color: var(--vscode-input-border, rgba(127, 127, 127, 0.4));
+}
+
+/* "Always in workspace" / "Always globally" — accent border */
+.chipos-btn-allow-workspace,
+.chipos-btn-allow-always {
+	border-color: var(--vscode-button-background, #0078d4);
+	color: var(--vscode-button-background, #0078d4);
+}
+
+.chipos-btn-allow-workspace:hover,
+.chipos-btn-allow-always:hover {
+	background: color-mix(in srgb, var(--vscode-button-background, #0078d4) 10%, transparent);
+}
+
+/* "Deny" — red border */
+.chipos-btn-deny {
+	border-color: var(--vscode-inputValidation-errorBorder, #f48771);
+	color: var(--vscode-inputValidation-errorBorder, #f48771);
+}
+
+.chipos-btn-deny:hover {
+	background: color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #f48771) 10%, transparent);
+}
+
+/* Disabled state after user clicks */
+.chipos-action-btn:disabled,
+.chipos-action-btn.chipos-btn-used {
+	opacity: 0.45;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+
+/* ── Used pill (historical cards) ───────────────────────────────────────────── */
+
+.chipos-used-pill {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	padding: 2px 8px;
+	border-radius: 10px;
+	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.3));
+}
