@@ -865,6 +865,25 @@ class ChipOSContribution extends Disposable {
 			order: 20,
 		} as ITreeViewDescriptor], chiposViewContainer);
 
+		// Auto-refresh the Worker Tools panel when the sidecar transitions
+		// INTO Connected. This fixes a cold-start race where the panel's
+		// initial getChildren() ran before the worker had bound port 8081,
+		// the fetch threw "Failed to fetch", the panel rendered a "Worker
+		// API unavailable" error item, and there was no signal to retry
+		// other than the user manually clicking the refresh ↻ button. We
+		// observed this 2026-05-13: worker_spawn finished at 11:05:05 but
+		// the panel had probed at 11:04:44 and stayed stale until manual
+		// refresh. By piggy-backing on the sidecar state event the panel
+		// now self-heals within a second or two of the worker coming up.
+		let lastSidecarState = this._sidecarManager.state;
+		this._register(this._sidecarManager.onDidChangeState(state => {
+			if (state === SidecarState.Connected && lastSidecarState !== SidecarState.Connected) {
+				this._logService.info('[ChipOS] Worker Tools panel auto-refresh on sidecar Connected');
+				workerToolsTreeView.refresh();
+			}
+			lastSidecarState = state;
+		}));
+
 		this._logService.info('[ChipOS] Worker Tools view registered (R26)');
 	}
 
