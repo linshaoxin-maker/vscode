@@ -1012,7 +1012,7 @@ export class LanguageModelToolsService extends Disposable implements ILanguageMo
 
 	/**
 	 * Returns true if enterprise policy has explicitly disabled the global auto-approve setting.
-	 * When this is the case, Bypass Approvals and Autopilot permission levels should not auto-approve tools.
+	 * When this is the case, the Auto-Run and Full Auto permission levels should not auto-approve tools.
 	 */
 	private _isAutoApprovePolicyRestricted(): boolean {
 		const inspected = this._configurationService.inspect<boolean>(ChatConfiguration.GlobalAutoApprove);

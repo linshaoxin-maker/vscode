@@ -65,13 +65,13 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 					{
 						...action,
 						id: 'chat.permissions.default',
-						label: localize('permissions.default', "Default Approvals"),
-						description: localize('permissions.default.subtext', "Uses your configured settings"),
+						label: localize('permissions.default', "Default"),
+						description: localize('permissions.default.subtext', "Use rules; ask before risky actions"),
 						icon: ThemeIcon.fromId(Codicon.shield.id),
 						checked: currentLevel === ChatPermissionLevel.Default,
 						tooltip: '',
 						hover: {
-							content: localize('permissions.default.description', "Use configured approval settings"),
+							content: localize('permissions.default.description', "Apply the 5-layer PermissionGate; show a 4-button card when a tool needs approval."),
 							position: pickerOptions.hoverPosition
 						},
 						run: async () => {
@@ -84,8 +84,8 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 					{
 						...action,
 						id: 'chat.permissions.autoApprove',
-						label: localize('permissions.autoApprove', "Bypass Approvals"),
-						description: localize('permissions.autoApprove.subtext', "All tool calls are auto-approved"),
+						label: localize('permissions.autoApprove', "Auto-Run"),
+						description: localize('permissions.autoApprove.subtext', "Auto-approve all tools within a turn; stop after each turn"),
 						icon: ThemeIcon.fromId(Codicon.warning.id),
 						checked: currentLevel === ChatPermissionLevel.AutoApprove,
 						enabled: !policyRestricted,
@@ -93,14 +93,14 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 						hover: {
 							content: policyRestricted
 								? localize('permissions.autoApprove.policyDescription', "Disabled by enterprise policy")
-								: localize('permissions.autoApprove.description', "Auto-approve all tool calls and retry on errors"),
+								: localize('permissions.autoApprove.description', "Skip every approval card within a turn. The agent still stops after each turn so you can decide what to do next."),
 							position: pickerOptions.hoverPosition
 						},
 						run: async () => {
 							if (!hasShownElevatedWarning(ChatPermissionLevel.AutoApprove)) {
 								const result = await this.dialogService.prompt({
 									type: Severity.Warning,
-									message: localize('permissions.autoApprove.warning.title', "Enable Bypass Approvals?"),
+									message: localize('permissions.autoApprove.warning.title', "Enable Auto-Run?"),
 									buttons: [
 										{
 											label: localize('permissions.autoApprove.warning.confirm', "Enable"),
@@ -114,7 +114,7 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 									custom: {
 										icon: Codicon.warning,
 										markdownDetails: [{
-											markdown: new MarkdownString(localize('permissions.autoApprove.warning.detail', "Bypass Approvals will auto-approve all tool calls without asking for confirmation. This includes file edits, terminal commands, and external tool calls.")),
+											markdown: new MarkdownString(localize('permissions.autoApprove.warning.detail', "Auto-Run will auto-approve every tool call within a turn — file edits, terminal commands, and external tools — without asking for confirmation. The agent still stops after each turn so you can decide what to do next.")),
 										}],
 									},
 								});
@@ -134,8 +134,8 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 					actions.push({
 						...action,
 						id: 'chat.permissions.autopilot',
-						label: localize('permissions.autopilot', "Autopilot (Preview)"),
-						description: localize('permissions.autopilot.subtext', "Autonomously iterates from start to finish"),
+						label: localize('permissions.autopilot', "Full Auto"),
+						description: localize('permissions.autopilot.subtext', "Auto-approve and auto-continue across turns until the task is done"),
 						icon: ThemeIcon.fromId(Codicon.rocket.id),
 						checked: currentLevel === ChatPermissionLevel.Autopilot,
 						enabled: !policyRestricted,
@@ -143,14 +143,14 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 						hover: {
 							content: policyRestricted
 								? localize('permissions.autopilot.policyDescription', "Disabled by enterprise policy")
-								: localize('permissions.autopilot.description', "Auto-approve all tool calls and continue until the task is done"),
+								: localize('permissions.autopilot.description', "Auto-approve every tool call AND automatically continue working across turns until the task is done."),
 							position: pickerOptions.hoverPosition
 						},
 						run: async () => {
 							if (!hasShownElevatedWarning(ChatPermissionLevel.Autopilot)) {
 								const result = await this.dialogService.prompt({
 									type: Severity.Warning,
-									message: localize('permissions.autopilot.warning.title', "Enable Autopilot?"),
+									message: localize('permissions.autopilot.warning.title', "Enable Full Auto?"),
 									buttons: [
 										{
 											label: localize('permissions.autopilot.warning.confirm', "Enable"),
@@ -164,7 +164,7 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 									custom: {
 										icon: Codicon.rocket,
 										markdownDetails: [{
-											markdown: new MarkdownString(localize('permissions.autopilot.warning.detail', "Autopilot will auto-approve all tool calls and continue working autonomously until the task is complete. The agent will make decisions on your behalf without asking for confirmation.\n\nYou can stop the agent at any time by clicking the stop button. This applies to the current session only.")),
+											markdown: new MarkdownString(localize('permissions.autopilot.warning.detail', "Full Auto will auto-approve every tool call AND automatically continue working across turns until the task is done. The agent will make decisions on your behalf without asking for confirmation, and will not stop after each turn.\n\nYou can stop the agent at any time by clicking the stop button. This applies to the current session only.")),
 										}],
 									},
 								});
@@ -200,15 +200,15 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 		switch (level) {
 			case ChatPermissionLevel.Autopilot:
 				icon = Codicon.rocket;
-				label = localize('permissions.autopilot.label', "Autopilot (Preview)");
+				label = localize('permissions.autopilot.label', "Full Auto");
 				break;
 			case ChatPermissionLevel.AutoApprove:
 				icon = Codicon.warning;
-				label = localize('permissions.autoApprove.label', "Bypass Approvals");
+				label = localize('permissions.autoApprove.label', "Auto-Run");
 				break;
 			default:
 				icon = Codicon.shield;
-				label = localize('permissions.default.label', "Default Approvals");
+				label = localize('permissions.default.label', "Default");
 				break;
 		}
 

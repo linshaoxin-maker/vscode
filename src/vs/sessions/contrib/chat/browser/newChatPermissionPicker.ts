@@ -30,7 +30,17 @@ interface IPermissionItem {
 
 /**
  * A permission picker for the new-session welcome view.
- * Shows Default Approvals, Bypass Approvals, and Autopilot options.
+ *
+ * Shows three Approval Modes:
+ *   - Default   — use rules; ask before risky actions (5-layer PermissionGate)
+ *   - Auto-Run  — auto-approve all tools within a turn; stop after each turn
+ *   - Full Auto — auto-approve AND auto-continue across turns until done
+ *
+ * Renamed 2026-05-13 (was: Default Approvals / Bypass Approvals / Autopilot
+ * Preview). The internal `ChatPermissionLevel` enum and the backend-side
+ * `CHIPOS_APPROVAL_MODE` env value are unchanged for backward-compat — only
+ * the UI labels move. See document/handbook/06-ide/11-mode-and-model-picker.md
+ * for the rename rationale.
  */
 export class NewChatPermissionPicker extends Disposable {
 
@@ -103,12 +113,12 @@ export class NewChatPermissionPicker extends Disposable {
 				group: { kind: ActionListItemKind.Header, title: '', icon: Codicon.shield },
 				item: {
 					level: ChatPermissionLevel.Default,
-					label: localize('permissions.default', "Default Approvals"),
+					label: localize('permissions.default', "Default"),
 					icon: Codicon.shield,
 					checked: this._currentLevel === ChatPermissionLevel.Default,
 				},
-				label: localize('permissions.default', "Default Approvals"),
-				description: localize('permissions.default.subtext', "Copilot uses your configured settings"),
+				label: localize('permissions.default', "Default"),
+				description: localize('permissions.default.subtext', "Use rules; ask before risky actions"),
 				disabled: false,
 			},
 			{
@@ -116,12 +126,12 @@ export class NewChatPermissionPicker extends Disposable {
 				group: { kind: ActionListItemKind.Header, title: '', icon: Codicon.warning },
 				item: {
 					level: ChatPermissionLevel.AutoApprove,
-					label: localize('permissions.autoApprove', "Bypass Approvals"),
+					label: localize('permissions.autoApprove', "Auto-Run"),
 					icon: Codicon.warning,
 					checked: this._currentLevel === ChatPermissionLevel.AutoApprove,
 				},
-				label: localize('permissions.autoApprove', "Bypass Approvals"),
-				description: localize('permissions.autoApprove.subtext', "All tool calls are auto-approved"),
+				label: localize('permissions.autoApprove', "Auto-Run"),
+				description: localize('permissions.autoApprove.subtext', "Auto-approve all tools within a turn; stop after each turn"),
 				disabled: policyRestricted,
 			},
 		];
@@ -132,12 +142,12 @@ export class NewChatPermissionPicker extends Disposable {
 				group: { kind: ActionListItemKind.Header, title: '', icon: Codicon.rocket },
 				item: {
 					level: ChatPermissionLevel.Autopilot,
-					label: localize('permissions.autopilot', "Autopilot (Preview)"),
+					label: localize('permissions.autopilot', "Full Auto"),
 					icon: Codicon.rocket,
 					checked: this._currentLevel === ChatPermissionLevel.Autopilot,
 				},
-				label: localize('permissions.autopilot', "Autopilot (Preview)"),
-				description: localize('permissions.autopilot.subtext', "Autonomously iterates from start to finish"),
+				label: localize('permissions.autopilot', "Full Auto"),
+				description: localize('permissions.autopilot.subtext', "Auto-approve and auto-continue across turns until the task is done"),
 				disabled: policyRestricted,
 			});
 		}
@@ -170,7 +180,7 @@ export class NewChatPermissionPicker extends Disposable {
 		if (level === ChatPermissionLevel.AutoApprove && !shownWarnings.has(ChatPermissionLevel.AutoApprove)) {
 			const result = await this.dialogService.prompt({
 				type: Severity.Warning,
-				message: localize('permissions.autoApprove.warning.title', "Enable Bypass Approvals?"),
+				message: localize('permissions.autoApprove.warning.title', "Enable Auto-Run?"),
 				buttons: [
 					{
 						label: localize('permissions.autoApprove.warning.confirm', "Enable"),
@@ -184,7 +194,7 @@ export class NewChatPermissionPicker extends Disposable {
 				custom: {
 					icon: Codicon.warning,
 					markdownDetails: [{
-						markdown: new MarkdownString(localize('permissions.autoApprove.warning.detail', "Bypass Approvals will auto-approve all tool calls without asking for confirmation. This includes file edits, terminal commands, and external tool calls.")),
+						markdown: new MarkdownString(localize('permissions.autoApprove.warning.detail', "Auto-Run will auto-approve every tool call within a turn — file edits, terminal commands, and external tools — without asking for confirmation. The agent still stops after each turn so you can decide what to do next.")),
 					}],
 				},
 			});
@@ -197,7 +207,7 @@ export class NewChatPermissionPicker extends Disposable {
 		if (level === ChatPermissionLevel.Autopilot && !shownWarnings.has(ChatPermissionLevel.Autopilot)) {
 			const result = await this.dialogService.prompt({
 				type: Severity.Warning,
-				message: localize('permissions.autopilot.warning.title', "Enable Autopilot?"),
+				message: localize('permissions.autopilot.warning.title', "Enable Full Auto?"),
 				buttons: [
 					{
 						label: localize('permissions.autopilot.warning.confirm', "Enable"),
@@ -211,7 +221,7 @@ export class NewChatPermissionPicker extends Disposable {
 				custom: {
 					icon: Codicon.rocket,
 					markdownDetails: [{
-						markdown: new MarkdownString(localize('permissions.autopilot.warning.detail', "Autopilot will auto-approve all tool calls and continue working autonomously until the task is complete. The agent will make decisions on your behalf without asking for confirmation.\n\nYou can stop the agent at any time by clicking the stop button. This applies to the current session only.")),
+						markdown: new MarkdownString(localize('permissions.autopilot.warning.detail', "Full Auto will auto-approve every tool call AND automatically continue working across turns until the task is done. The agent will make decisions on your behalf without asking for confirmation, and will not stop after each turn.\n\nYou can stop the agent at any time by clicking the stop button. This applies to the current session only.")),
 					}],
 				},
 			});
@@ -237,15 +247,15 @@ export class NewChatPermissionPicker extends Disposable {
 		switch (this._currentLevel) {
 			case ChatPermissionLevel.Autopilot:
 				icon = Codicon.rocket;
-				label = localize('permissions.autopilot.label', "Autopilot (Preview)");
+				label = localize('permissions.autopilot.label', "Full Auto");
 				break;
 			case ChatPermissionLevel.AutoApprove:
 				icon = Codicon.warning;
-				label = localize('permissions.autoApprove.label', "Bypass Approvals");
+				label = localize('permissions.autoApprove.label', "Auto-Run");
 				break;
 			default:
 				icon = Codicon.shield;
-				label = localize('permissions.default.label', "Default Approvals");
+				label = localize('permissions.default.label', "Default");
 				break;
 		}
 
