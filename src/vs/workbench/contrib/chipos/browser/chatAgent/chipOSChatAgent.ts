@@ -3294,71 +3294,70 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
-	 * Phase A markdown body — Tool header + path + size/exists + matched-rule
-	 * + session id + collapsible content preview. Each line is independent;
-	 * old workers (or tools that legitimately have no preview, e.g. Read)
-	 * silently skip lines instead of rendering empty placeholders.
+	 * Phase A markdown body — packed into AT MOST 3 visible lines because
+	 * VS Code's BaseChatConfirmationWidget runs every confirmation message
+	 * through `_getPreview(content, 3)` (see
+	 * vscode/.../chatConfirmationContentPart.ts:70) which renders only the
+	 * first 3 non-blank, non-heading lines + a "Click to view full content..."
+	 * disclosure for the rest. We want all the high-value Phase A info
+	 * (path/size, matched rule + layer, session) **inline** so users don't
+	 * have to click through to make a decision; the content preview is
+	 * intentionally last so it lands in the collapsible/click-through area.
 	 *
-	 * Kept as a discrete helper so it stays unit-testable and the noisy
-	 * branching doesn't crowd the IChatConfirmation construction above.
+	 * Layout (3 paragraphs):
+	 *   ① $(file-symlink-file) **Write** `<path>` · (new file | ~28 bytes)
+	 *   ② $(law) Rule: `Write(**)` (bundled) · $(person) Session: `…6800129`
+	 *   ③ <details>Preview content (~26 bytes)</details>
+	 *      (the how-to footer is dropped — the 4 button labels are
+	 *      self-explanatory: Allow once / Always in workspace / Always
+	 *      globally / Deny.)
+	 *
+	 * Older workers that omit Phase A optional fields degrade by simply
+	 * dropping the bits they didn't send — line ① always renders (path is
+	 * required); line ② drops session / rule individually; line ③ skipped
+	 * entirely when content_preview is missing.
 	 */
 	private _renderWorkerAskMarkdown(ask: IWorkerPermissionAsk): string {
 		const toolIcon = this._toolIcon(ask.tool);
-		const lines: string[] = [
-			`${toolIcon} **${ask.tool}** — ${this._toolActionSummary(ask)}`,
-		];
 
-		// $(folder) → path. Backticks for monospace + theme contrast.
-		lines.push(`$(folder) Path: \`${ask.specifier}\``);
-
-		// Size + new/existing — only when worker actually told us. The two
-		// states ('exists with N bytes' vs 'new file') deserve distinct
-		// phrasing because users care about overwrite-vs-create.
-		if (ask.targetExists === true) {
-			const sizeStr = typeof ask.targetSizeBytes === 'number'
+		// ── Line 1: tool + path + size/exists (single inline paragraph) ──
+		const sizeSegment: string = ask.targetExists === true
+			? (typeof ask.targetSizeBytes === 'number'
 				? this._formatBytes(ask.targetSizeBytes)
-				: localize('chipos.workerPermission.unknownSize', 'unknown size');
-			lines.push(localize(
-				'chipos.workerPermission.sizeExisting',
-				'$(file-zip) Size: {0} (existing)',
-				sizeStr,
-			));
-		} else if (ask.targetExists === false) {
-			lines.push(localize(
-				'chipos.workerPermission.sizeNew',
-				'$(file-zip) Size: (new file)',
-			));
+				: localize('chipos.workerPermission.unknownSize', 'unknown size'))
+			: ask.targetExists === false
+				? localize('chipos.workerPermission.newFile', '(new file)')
+				: ''; // worker pre-Phase A — omit
+		const line1Parts = [`${toolIcon} **${ask.tool}** \`${ask.specifier}\``];
+		if (sizeSegment) {
+			line1Parts.push(`· ${sizeSegment}`);
 		}
+		const line1 = line1Parts.join(' ');
 
-		// Matched rule — what fired this ASK. Useful so users can copy-paste
-		// the rule key into permissions.json themselves; layer tells them
-		// whether it's a default-bundled rule or one they wrote.
+		// ── Line 2: matched rule + session (single inline paragraph) ──
+		const line2Parts: string[] = [];
 		if (ask.matchedRule) {
-			lines.push(localize(
-				'chipos.workerPermission.matchedRule',
-				'$(law) Matched rule: `{0}` ({1})',
+			line2Parts.push(localize(
+				'chipos.workerPermission.ruleInline',
+				'$(law) Rule: `{0}` ({1})',
 				ask.matchedRule,
 				ask.matchedLayer || 'default',
 			));
 		}
-
-		// Session id — last 6-8 chars are enough to disambiguate stacked
-		// cards from concurrent chats. The full id is too noisy in the body.
 		const sessionTag = this._truncateSession(ask.sessionId);
 		if (sessionTag) {
-			lines.push(localize(
-				'chipos.workerPermission.session',
+			line2Parts.push(localize(
+				'chipos.workerPermission.sessionInline',
 				'$(person) Session: `{0}`',
 				sessionTag,
 			));
 		}
+		const line2 = line2Parts.length > 0 ? line2Parts.join(' · ') : '';
 
-		// Collapsible content preview. <details> renders natively in the VS
-		// Code chat markdown engine since 1.112; the worker truncates @ 500
-		// chars and appends a "(truncated, N more bytes)" hint, so we render
-		// the string verbatim. Build the whole block as ONE pre-formatted
-		// chunk because lines.join('\n\n') below would otherwise insert blank
-		// lines inside the code fence and split the highlight into two halves.
+		// ── Line 3: collapsible content preview (counts as 1 line in widget
+		// preview because <details>/<summary> renders to a single disclosure
+		// element; the actual code block lives in the overlay full view) ──
+		let line3 = '';
 		if (ask.contentPreview) {
 			const lang = this._inferPreviewLanguage(ask.specifier);
 			const summary = localize(
@@ -3368,7 +3367,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					? this._formatBytes(ask.targetSizeBytes)
 					: this._formatBytes(ask.contentPreview.length),
 			);
-			const detailsBlock = [
+			line3 = [
 				`<details><summary>${summary}</summary>`,
 				'',
 				'```' + lang,
@@ -3377,16 +3376,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				'',
 				'</details>',
 			].join('\n');
-			lines.push(detailsBlock);
 		}
 
-		// How-to footer — same wording as v1 so muscle memory is preserved.
-		lines.push(
-			localize('chipos.workerPermission.howto',
-				'_Choose **once** for this call only, **workspace** to remember in this project, or **globally** to remember everywhere._'),
-		);
-
-		return lines.join('\n\n');
+		const paragraphs = [line1];
+		if (line2) {
+			paragraphs.push(line2);
+		}
+		if (line3) {
+			paragraphs.push(line3);
+		}
+		return paragraphs.join('\n\n');
 	}
 
 	private _formatBytes(n: number): string {
