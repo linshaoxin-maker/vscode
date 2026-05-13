@@ -3247,25 +3247,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private _buildWorkerAskConfirmation(ask: IWorkerPermissionAsk): IChatConfirmation {
 		const title = localize('chipos.workerPermission.title', 'Worker requests permission');
 
-		// v2 PERMISSION-APPROVAL-UX-V2 §4.1: rich-markdown card. Codicons give
-		// visual anchor; backticks render path/rule as inline code (monospace,
-		// theme-aware); fenced lines so wrap behavior is predictable across
-		// chat width. Reasoner-side ConfirmRequest used a similar format so
-		// the UX feels consistent across both confirm paths.
-		const toolIcon = this._toolIcon(ask.tool);
-		const lines: string[] = [
-			`${toolIcon} **${ask.tool}** — ${this._toolActionSummary(ask)}`,
-			`$(folder-opened) \`${ask.specifier}\``,
-		];
-		if (ask.matchedRule) {
-			lines.push(`$(law) Rule \`${ask.matchedRule}\` (${ask.matchedLayer || 'default'})`);
-		}
-		lines.push(
-			'',
-			localize('chipos.workerPermission.howto',
-				'_Choose **once** for this call only, **workspace** to remember in this project, or **globally** to remember everywhere._'),
-		);
-		const message = new MarkdownString(lines.join('\n\n'), { supportThemeIcons: true, isTrusted: true });
+		// Phase A (PERMISSION-APPROVAL-UX-V2 §4.1): rich-markdown card.
+		// Codicons give visual anchor; backticks render path/rule/session as
+		// inline code (monospace, theme-aware); <details>/<summary> wraps the
+		// content preview so it stays out of the way until the user wants it.
+		// Each metadata line is independent and only emitted when the worker
+		// actually sent the field — older workers that omit Phase A extras
+		// degrade to the v1 layout (path + optional rule line).
+		const message = new MarkdownString(this._renderWorkerAskMarkdown(ask), {
+			supportThemeIcons: true,
+			isTrusted: true,
+			supportHtml: true, // <details>/<summary> for the collapsible content preview
+		});
 
 		// v2 PERMISSION-APPROVAL-UX-V2 §3: 4-button card so the user can
 		// "remember this choice". Worker side has supported the 4 action_ids
@@ -3298,6 +3291,145 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			},
 			buttons: [allowOnce, allowWorkspace, allowAlways, deny],
 		};
+	}
+
+	/**
+	 * Phase A markdown body — Tool header + path + size/exists + matched-rule
+	 * + session id + collapsible content preview. Each line is independent;
+	 * old workers (or tools that legitimately have no preview, e.g. Read)
+	 * silently skip lines instead of rendering empty placeholders.
+	 *
+	 * Kept as a discrete helper so it stays unit-testable and the noisy
+	 * branching doesn't crowd the IChatConfirmation construction above.
+	 */
+	private _renderWorkerAskMarkdown(ask: IWorkerPermissionAsk): string {
+		const toolIcon = this._toolIcon(ask.tool);
+		const lines: string[] = [
+			`${toolIcon} **${ask.tool}** — ${this._toolActionSummary(ask)}`,
+		];
+
+		// $(folder) → path. Backticks for monospace + theme contrast.
+		lines.push(`$(folder) Path: \`${ask.specifier}\``);
+
+		// Size + new/existing — only when worker actually told us. The two
+		// states ('exists with N bytes' vs 'new file') deserve distinct
+		// phrasing because users care about overwrite-vs-create.
+		if (ask.targetExists === true) {
+			const sizeStr = typeof ask.targetSizeBytes === 'number'
+				? this._formatBytes(ask.targetSizeBytes)
+				: localize('chipos.workerPermission.unknownSize', 'unknown size');
+			lines.push(localize(
+				'chipos.workerPermission.sizeExisting',
+				'$(file-zip) Size: {0} (existing)',
+				sizeStr,
+			));
+		} else if (ask.targetExists === false) {
+			lines.push(localize(
+				'chipos.workerPermission.sizeNew',
+				'$(file-zip) Size: (new file)',
+			));
+		}
+
+		// Matched rule — what fired this ASK. Useful so users can copy-paste
+		// the rule key into permissions.json themselves; layer tells them
+		// whether it's a default-bundled rule or one they wrote.
+		if (ask.matchedRule) {
+			lines.push(localize(
+				'chipos.workerPermission.matchedRule',
+				'$(law) Matched rule: `{0}` ({1})',
+				ask.matchedRule,
+				ask.matchedLayer || 'default',
+			));
+		}
+
+		// Session id — last 6-8 chars are enough to disambiguate stacked
+		// cards from concurrent chats. The full id is too noisy in the body.
+		const sessionTag = this._truncateSession(ask.sessionId);
+		if (sessionTag) {
+			lines.push(localize(
+				'chipos.workerPermission.session',
+				'$(person) Session: `{0}`',
+				sessionTag,
+			));
+		}
+
+		// Collapsible content preview. <details> renders natively in the VS
+		// Code chat markdown engine since 1.112; the worker truncates @ 500
+		// chars and appends a "(truncated, N more bytes)" hint, so we render
+		// the string verbatim. Build the whole block as ONE pre-formatted
+		// chunk because lines.join('\n\n') below would otherwise insert blank
+		// lines inside the code fence and split the highlight into two halves.
+		if (ask.contentPreview) {
+			const lang = this._inferPreviewLanguage(ask.specifier);
+			const summary = localize(
+				'chipos.workerPermission.previewSummary',
+				'Preview content ({0})',
+				typeof ask.targetSizeBytes === 'number' && ask.targetExists
+					? this._formatBytes(ask.targetSizeBytes)
+					: this._formatBytes(ask.contentPreview.length),
+			);
+			const detailsBlock = [
+				`<details><summary>${summary}</summary>`,
+				'',
+				'```' + lang,
+				ask.contentPreview,
+				'```',
+				'',
+				'</details>',
+			].join('\n');
+			lines.push(detailsBlock);
+		}
+
+		// How-to footer — same wording as v1 so muscle memory is preserved.
+		lines.push(
+			localize('chipos.workerPermission.howto',
+				'_Choose **once** for this call only, **workspace** to remember in this project, or **globally** to remember everywhere._'),
+		);
+
+		return lines.join('\n\n');
+	}
+
+	private _formatBytes(n: number): string {
+		if (n < 1024) {
+			return `~${n} bytes`;
+		}
+		if (n < 1024 * 1024) {
+			return `~${(n / 1024).toFixed(1)} KB`;
+		}
+		return `~${(n / (1024 * 1024)).toFixed(1)} MB`;
+	}
+
+	private _truncateSession(sessionId: string): string {
+		if (!sessionId) {
+			return '';
+		}
+		// Tail 8 chars — the meaningful entropy in 'native_chat_2_177855…' lives at the end.
+		return sessionId.length <= 8 ? sessionId : `…${sessionId.slice(-8)}`;
+	}
+
+	private _inferPreviewLanguage(path: string): string {
+		const dot = path.lastIndexOf('.');
+		if (dot === -1) {
+			return '';
+		}
+		const ext = path.slice(dot + 1).toLowerCase();
+		// Tiny lookup — only the extensions worth highlighting in this card.
+		// Anything else falls through to the unfenced default (still valid markdown).
+		switch (ext) {
+			case 'v': case 'sv': case 'vh': case 'svh': return 'verilog';
+			case 'py': return 'python';
+			case 'ts': case 'tsx': return 'typescript';
+			case 'js': case 'jsx': return 'javascript';
+			case 'json': return 'json';
+			case 'md': return 'markdown';
+			case 'yaml': case 'yml': return 'yaml';
+			case 'sh': case 'bash': case 'zsh': return 'bash';
+			case 'rs': return 'rust';
+			case 'go': return 'go';
+			case 'c': case 'h': return 'c';
+			case 'cpp': case 'cc': case 'hpp': return 'cpp';
+			default: return '';
+		}
 	}
 
 	/**

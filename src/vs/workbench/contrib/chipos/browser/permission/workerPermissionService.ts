@@ -58,6 +58,16 @@ export interface IWorkerPermissionAsk {
 	readonly matchedLayer: string;
 	readonly createdAtMs: number;
 	readonly lastEventId: number;
+	/**
+	 * Phase A (PERMISSION-APPROVAL-UX-V2 §4.1) — optional extras the worker
+	 * sends so the IDE card can render rule attribution, file context and a
+	 * collapsible content preview without an extra round-trip. Older workers
+	 * (pre-Phase A) leave these undefined; the renderer must degrade
+	 * gracefully when missing.
+	 */
+	readonly contentPreview?: string;
+	readonly targetExists?: boolean;
+	readonly targetSizeBytes?: number;
 }
 
 export type WorkerPermissionDecision = 'allow' | 'deny';
@@ -380,6 +390,9 @@ export class ChipOSWorkerPermissionService extends Disposable implements IChipOS
 			matched_layer?: string;
 			created_at_ms?: number;
 			last_event_id?: number;
+			content_preview?: string;
+			target_exists?: boolean;
+			target_size_bytes?: number;
 		};
 		try {
 			payload = JSON.parse(data);
@@ -402,6 +415,9 @@ export class ChipOSWorkerPermissionService extends Disposable implements IChipOS
 			matchedLayer: payload.matched_layer ?? '',
 			createdAtMs: payload.created_at_ms ?? Date.now(),
 			lastEventId: payload.last_event_id ?? lastEventId,
+			contentPreview: payload.content_preview,
+			targetExists: payload.target_exists,
+			targetSizeBytes: payload.target_size_bytes,
 		};
 		this._logService.info(`[ChipOS WorkerPermission] ASK received id=${ask.askId} tool=${ask.tool} session=${ask.sessionId}`);
 		this._onAsk.fire(ask);
