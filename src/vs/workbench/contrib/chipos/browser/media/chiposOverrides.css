@@ -50,3 +50,122 @@
 	max-height: 400px;
 	overflow-y: auto;
 }
+
+/*
+ * ChipOS Cursor-alignment polish (2026-05-14)
+ *
+ * Audit (document/backend-v2-migration/01-current-state/CURSOR-ALIGNMENT-AUDIT.md
+ * §0bis) found that framework chat content parts are largely already configured
+ * for cursor-quality rendering via chiposConfiguration defaults. These overrides
+ * add chipos-brand polish on top of framework rules WITHOUT touching the framework
+ * layout (no display / position / size changes — only colors, hover states,
+ * transitions, and code-block aesthetics).
+ *
+ * All rules use var(--vscode-*) tokens so light / dark / high-contrast themes
+ * keep working automatically.
+ */
+
+/* ── Thinking block polish (cursor-todo §13) ──────────────────────────────
+ *
+ * Framework thinking CSS (chat/.../chatThinkingContent.css §1-100+) already
+ * handles shimmer animation + chain-line. ChipOS adds:
+ *   1. Smoother chevron hover transition on collapsible thinking title.
+ *   2. Slightly stronger icon contrast (description tone is too dim against
+ *      chipos chat background on some themes).
+ *   3. Inline code in thinking text uses chipos pill style for readability.
+ */
+.interactive-session .interactive-response .chat-thinking-box {
+
+	> .chat-used-context-label .monaco-button.monaco-icon-button {
+		transition: background-color 0.12s ease, color 0.12s ease;
+	}
+
+	> .chat-used-context-label .monaco-button.monaco-icon-button:hover {
+		color: var(--vscode-textLink-activeForeground);
+	}
+
+	.chat-thinking-icon {
+		opacity: 0.85;
+	}
+
+	/* Inline code inside the streaming thinking text. The framework leaves it
+	 * unstyled, which makes single-backtick tokens blend into prose. */
+	.chat-thinking-text code,
+	.chat-thinking-streaming code {
+		padding: 1px 5px;
+		border-radius: 3px;
+		background: var(--vscode-textCodeBlock-background);
+		font-family: var(--vscode-editor-font-family);
+		font-size: 0.92em;
+	}
+}
+
+/* ── Tool invocation card hover affordance ────────────────────────────────
+ *
+ * Framework renders tool invocations as collapsible cards but provides no hover
+ * feedback on the title row. ChipOS adds a subtle background tint on hover so
+ * users notice the row is clickable.
+ */
+.interactive-session .interactive-response .chat-collapsible-list-action-bar {
+	transition: background-color 0.12s ease;
+}
+
+.interactive-session .interactive-response .chat-collapsible-list-action-bar:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+/* ── Error card polish (cursor-todo §40 — framework ChatErrorContentPart) ─
+ *
+ * Framework error parts (chatErrorContentPart.ts + chatErrorConfirmationPart.ts)
+ * render with default text-error foreground but no left border / spacing accent.
+ * ChipOS adds:
+ *   1. A 3px left border in error/warning color for quick scan.
+ *   2. Tighter padding so the error sits visually compact.
+ *   3. Retry-button hover transition.
+ *
+ * Selectors target framework error agent classes (chat-agent-error*) — these
+ * are present on every chat agent error path including chipos's
+ * `ctx.finish({ errorDetails })` (chipOSChatAgent.ts L492 / L1221 / L1688).
+ */
+.interactive-session .interactive-response .chat-agent-error {
+	border-left: 3px solid var(--vscode-editorError-foreground);
+	padding-left: 10px;
+	margin: 6px 0;
+	border-radius: 0 3px 3px 0;
+}
+
+.interactive-session .interactive-response .chat-agent-error-header {
+	font-weight: 500;
+	color: var(--vscode-editorError-foreground);
+}
+
+.interactive-session .interactive-response .chat-agent-error-retry {
+	transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+/* ── Edit-message hover affordance (cursor-todo §38) ──────────────────────
+ *
+ * Framework `chat.editRequests` default is 'inline' so a hover Edit pencil is
+ * already wired. ChipOS lifts the pencil opacity slightly on the parent
+ * request bubble hover so it's discoverable on first use.
+ */
+.interactive-session .interactive-request:hover .codicon.codicon-edit {
+	opacity: 1;
+}
+
+.interactive-session .interactive-request .codicon.codicon-edit {
+	opacity: 0.65;
+	transition: opacity 0.12s ease;
+}
+
+/* ── Confirmation widget container (cursor-todo §44) ──────────────────────
+ *
+ * Existing rule (above) styled the inner <details>; this adds a soft outer
+ * border around the whole widget container so confirmation prompts are
+ * visually grouped against neighbouring chat bubbles.
+ */
+.interactive-session .chat-confirmation-widget-container {
+	border-left: 3px solid var(--vscode-chat-requestBorder);
+	padding-left: 10px;
+	margin: 6px 0;
+}
