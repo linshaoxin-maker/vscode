@@ -233,6 +233,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -742,10 +743,35 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const filePart = fileCount === 1
 							? `\`${label}\``
 							: `${fileCount} files (starting with \`${label}\`)`;
+						// Reference framework chatEditing keybindings: ⌘⇧Y
+						// (Keep) and ⌘⇧N (Undo) per chatEditingEditorActions
+						// §195-200. Toast surfaces both as clickable primary
+						// actions so users don't need to remember either combo.
+						const commandService = this._commandService;
 						this._notificationService.notify({
 							severity: Severity.Info,
-							message: `ChipOS: Applied AI edits to ${filePart} — ⌘⇧Y to accept, ⌘⇧Backspace to reject`,
+							message: `ChipOS: Applied AI edits to ${filePart} — review & keep or undo below`,
 							source: 'ChipOS Inline Chat',
+							actions: {
+								primary: [
+									{
+										id: 'chipos.inlineChat.keepEdits',
+										label: 'Keep (⌘⇧Y)',
+										tooltip: 'Keep all chat edits in this file',
+										class: undefined,
+										enabled: true,
+										run: () => commandService.executeCommand('chatEditor.action.accept'),
+									},
+									{
+										id: 'chipos.inlineChat.undoEdits',
+										label: 'Undo (⌘⇧N)',
+										tooltip: 'Undo all chat edits in this file',
+										class: undefined,
+										enabled: true,
+										run: () => commandService.executeCommand('chatEditor.action.reject'),
+									},
+								],
+							},
 						});
 					}
 					// Set a meaningful thinking title so the framework doesn't fallback to "Finished with N steps"
