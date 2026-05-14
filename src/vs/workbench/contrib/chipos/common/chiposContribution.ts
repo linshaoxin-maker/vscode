@@ -873,13 +873,56 @@ class ChipOSContribution extends Disposable {
 		// other than the user manually clicking the refresh ↻ button. We
 		// observed this 2026-05-13: worker_spawn finished at 11:05:05 but
 		// the panel had probed at 11:04:44 and stayed stale until manual
-		// refresh. By piggy-backing on the sidecar state event the panel
-		// now self-heals within a second or two of the worker coming up.
+		// refresh.
+		//
+		// HANDOFF §8 / Phase B follow-up §12 #5: a single fire-on-Connected
+		// is racy too — Sidecar.state flips to Connected when the IPC
+		// adopts the worker pid, but the worker's HTTP server takes ~200 ms
+		// more to bind port 8081 and answer requests. The first refresh
+		// then still fails ("Failed to fetch"), the panel stays stuck on
+		// the error item, and the user is back to clicking ↻ manually.
+		//
+		// Replace the single fire with an exponential-backoff retry burst
+		// (200 ms, 600 ms, 1.5 s, 3 s, 6 s — total ~11 s window). Each
+		// retry just calls refresh(); the view provider re-runs its fetch.
+		// If the worker comes up at any point, the view picks up the
+		// healthy result on the next tick. Once any retry succeeds the
+		// later ones are no-ops on a healthy view (refresh is idempotent),
+		// so over-firing is harmless. The burst self-cancels if the
+		// sidecar leaves Connected mid-flight.
 		let lastSidecarState = this._sidecarManager.state;
+		const REFRESH_BACKOFF_MS = [200, 600, 1500, 3000, 6000] as const;
+		const refreshTimers: ReturnType<typeof setTimeout>[] = [];
+		const cancelRefreshBurst = () => {
+			for (const t of refreshTimers) {
+				clearTimeout(t);
+			}
+			refreshTimers.length = 0;
+		};
+		this._register({
+			dispose: () => cancelRefreshBurst(),
+		});
 		this._register(this._sidecarManager.onDidChangeState(state => {
 			if (state === SidecarState.Connected && lastSidecarState !== SidecarState.Connected) {
-				this._logService.info('[ChipOS] Worker Tools panel auto-refresh on sidecar Connected');
-				workerToolsTreeView.refresh();
+				this._logService.info('[ChipOS] Worker Tools panel auto-refresh burst on sidecar Connected');
+				cancelRefreshBurst(); // belt and suspenders for rapid state thrash
+				for (const delay of REFRESH_BACKOFF_MS) {
+					const timer = setTimeout(() => {
+						// Bail if we're no longer in Connected (worker died /
+						// user signed out etc.). Avoids flooding refresh()
+						// during a flapping sidecar.
+						if (this._sidecarManager.state !== SidecarState.Connected) {
+							return;
+						}
+						workerToolsTreeView.refresh();
+					}, delay);
+					refreshTimers.push(timer);
+				}
+			} else if (state !== SidecarState.Connected) {
+				// Cancel any in-flight retry burst when sidecar drops out
+				// of Connected — those retries would race with whatever
+				// recovery is bringing the worker back up.
+				cancelRefreshBurst();
 			}
 			lastSidecarState = state;
 		}));
