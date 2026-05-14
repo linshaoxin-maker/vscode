@@ -1,0 +1,75 @@
+/*---------------------------------------------------------------------------------------------
+ *  ChipOS chat input — approval-mode visual accent
+ *
+ *  When the user switches Approval Mode dropdown away from Default, the chat
+ *  input gets a colored left border + tinted background so they remember the
+ *  next prompt won't pop a permission card. The dropdown alone is too easy to
+ *  miss; this is the "do not fire-and-forget unsafe prompts" guardrail.
+ *
+ *  Class names come from chatInputPart.ts's autorun on _currentPermissionLevel
+ *  (commit pending) — applied to `.interactive-input-part`.
+ *--------------------------------------------------------------------------------------------*/
+
+/* Default mode — no decoration, baseline */
+.interactive-input-part.chipos-permission-default {
+	/* intentionally empty — default look */
+}
+
+/* Auto-Run — yellow/amber accent. Suggests "tools auto-fire" without alarm. */
+.interactive-input-part.chipos-permission-auto-run {
+	box-shadow: inset 3px 0 0 0 var(--vscode-charts-yellow, #d18616);
+	border-radius: 4px;
+}
+
+.interactive-input-part.chipos-permission-auto-run::before {
+	content: "Auto-Run";
+	display: inline-block;
+	position: absolute;
+	top: -8px;
+	left: 8px;
+	z-index: 2;
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+	text-transform: uppercase;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background: var(--vscode-charts-yellow, #d18616);
+	color: var(--vscode-editor-background, #1e1e1e);
+	pointer-events: none;
+	opacity: 0.95;
+}
+
+/* Full Auto — red/orange accent + pill. Highest-risk mode (agent loops by
+   itself across turns), strongest visual signal. */
+.interactive-input-part.chipos-permission-full-auto {
+	box-shadow: inset 3px 0 0 0 var(--vscode-inputValidation-errorBorder, #f48771);
+	border-radius: 4px;
+}
+
+.interactive-input-part.chipos-permission-full-auto::before {
+	content: "Full Auto";
+	display: inline-block;
+	position: absolute;
+	top: -8px;
+	left: 8px;
+	z-index: 2;
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+	text-transform: uppercase;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background: var(--vscode-inputValidation-errorBorder, #f48771);
+	color: var(--vscode-editor-background, #1e1e1e);
+	pointer-events: none;
+	opacity: 0.95;
+}
+
+/* .interactive-input-part is normally `position: relative` in stock chat;
+   re-state here in case a parent overrides it. Without `position: relative`
+   the ::before pseudo's `top: -8px / left: 8px` falls off the wrong anchor. */
+.interactive-input-part.chipos-permission-auto-run,
+.interactive-input-part.chipos-permission-full-auto {
+	position: relative;
+}

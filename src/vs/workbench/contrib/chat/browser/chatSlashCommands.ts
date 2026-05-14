@@ -257,6 +257,45 @@ export class ChatSlashCommandsContribution extends Disposable {
 					setPermissionLevelForSession(sessionResource, ChatPermissionLevel.Default);
 				}));
 			}
+
+			// ChipOS approval-mode aliases — match the renamed dropdown labels
+			// (Default / Auto-Run / Full Auto, commit f5af471c616) so power
+			// users typing the same words they see in the UI find the slash
+			// commands. Internally these still route to the same
+			// ChatPermissionLevel enum the stock commands use.
+			this._store.add(slashCommandService.registerSlashCommand({
+				command: 'auto-run',
+				detail: nls.localize('chipos.autoRun', "Switch to Auto-Run — auto-approve all tools within a turn"),
+				sortText: 'z1_chipos_auto_run',
+				executeImmediately: true,
+				silent: true,
+				locations: [ChatAgentLocation.Chat],
+				target: Target.VSCode
+			}, async (_prompt, _progress, _history, _location, sessionResource) => {
+				setPermissionLevelForSession(sessionResource, ChatPermissionLevel.AutoApprove);
+			}));
+			this._store.add(slashCommandService.registerSlashCommand({
+				command: 'full-auto',
+				detail: nls.localize('chipos.fullAuto', "Switch to Full Auto — auto-approve and auto-continue across turns"),
+				sortText: 'z1_chipos_full_auto',
+				executeImmediately: true,
+				silent: true,
+				locations: [ChatAgentLocation.Chat],
+				target: Target.VSCode
+			}, async (_prompt, _progress, _history, _location, sessionResource) => {
+				setPermissionLevelForSession(sessionResource, ChatPermissionLevel.Autopilot);
+			}));
+			this._store.add(slashCommandService.registerSlashCommand({
+				command: 'default',
+				detail: nls.localize('chipos.defaultMode', "Switch back to Default — use rules; ask before risky actions"),
+				sortText: 'z1_chipos_default',
+				executeImmediately: true,
+				silent: true,
+				locations: [ChatAgentLocation.Chat],
+				target: Target.VSCode
+			}, async (_prompt, _progress, _history, _location, sessionResource) => {
+				setPermissionLevelForSession(sessionResource, ChatPermissionLevel.Default);
+			}));
 		}
 		this._store.add(slashCommandService.registerSlashCommand({
 			command: 'help',

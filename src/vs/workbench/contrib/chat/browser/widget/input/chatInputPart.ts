@@ -2013,6 +2013,19 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this.container.append(this.chatInputOverlay);
 		this.container.classList.toggle('compact', this.options.renderStyle === 'compact');
 
+		// ChipOS #2 — visual reminder when the user is NOT in Default approval
+		// mode. The dropdown is small and easy to miss; a colored input border
+		// nags the user that the next prompt won't pop a permission card.
+		// Class names: chipos-permission-default / -auto-run / -full-auto.
+		// Styling lives in chipos/.../chatAgent/chipOSInputAccent.css (imported
+		// by chiposContribution.ts so it loads once at IDE startup).
+		this._register(autorun(reader => {
+			const level = this._currentPermissionLevel.read(reader);
+			this.container.classList.toggle('chipos-permission-default', level === ChatPermissionLevel.Default);
+			this.container.classList.toggle('chipos-permission-auto-run', level === ChatPermissionLevel.AutoApprove);
+			this.container.classList.toggle('chipos-permission-full-auto', level === ChatPermissionLevel.Autopilot);
+		}));
+
 		// Create a scoped context key service for option group visibility expressions
 		// This isolates chatSessionOption.* context keys to this specific chat input instance
 		this._scopedContextKeyService = this._register(this.contextKeyService.createScoped(this.container));
