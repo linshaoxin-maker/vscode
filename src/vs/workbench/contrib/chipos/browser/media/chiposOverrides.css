@@ -50,3 +50,96 @@
 	max-height: 400px;
 	overflow-y: auto;
 }
+
+/*-------------------------------------------------------------------------------
+ *  UX #6 — Empty-state starter prompts
+ *
+ *  ChipOS chat agent's `metadata.additionalWelcomeMessage` renders 4 starter
+ *  prompts as a `<ul>` of command links. The framework appends that markdown
+ *  into `.chat-welcome-view-disclaimer` (chatViewWelcomeController.ts §187),
+ *  NOT `.chat-welcome-view-message`. These rules dress the `<li><a>…</a>` items
+ *  up as compact "chip" buttons with leading codicon + hover state, so each
+ *  starter feels like a first-class affordance instead of a tiny blue link.
+ *
+ *  Scoped tightly: only links that live in a <ul> inside the welcome disclaimer
+ *  area get this treatment — same selector also applies to the older
+ *  chat-welcome-view-message slot for forward-compat.
+ *-----------------------------------------------------------------------------*/
+
+.chat-welcome-view .chat-welcome-view-message,
+.chat-welcome-view .chat-welcome-view-disclaimer {
+	max-width: 320px;
+}
+
+.chat-welcome-view .chat-welcome-view-message > ul,
+.chat-welcome-view .chat-welcome-view-disclaimer > ul {
+	list-style: none;
+	padding: 0;
+	margin: 12px 0 6px 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	align-items: stretch;
+}
+
+.chat-welcome-view .chat-welcome-view-message > ul > li,
+.chat-welcome-view .chat-welcome-view-disclaimer > ul > li {
+	margin: 0;
+}
+
+.chat-welcome-view .chat-welcome-view-message > ul > li > a,
+.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	box-sizing: border-box;
+	padding: 8px 12px;
+	border-radius: 6px;
+	background-color: var(--vscode-editorWidget-background, transparent);
+	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.3)));
+	color: var(--vscode-foreground);
+	font-size: 12px;
+	text-decoration: none;
+	cursor: pointer;
+	transition: background-color 0.1s, border-color 0.1s;
+}
+
+.chat-welcome-view .chat-welcome-view-message > ul > li > a:hover,
+.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a:hover {
+	background-color: var(--vscode-list-hoverBackground);
+	border-color: var(--vscode-focusBorder, #007fd4);
+	text-decoration: none;
+}
+
+.chat-welcome-view .chat-welcome-view-message > ul > li > a:focus-visible,
+.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, #007fd4);
+	outline-offset: 1px;
+}
+
+/*
+ * Codicon rendered inside the chip link via $(name) — give it a fixed metric
+ * width so chips align cleanly even when icon glyphs differ in stroke weight.
+ */
+.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a .codicon {
+	flex: 0 0 auto;
+	font-size: 14px;
+	color: var(--vscode-symbolIcon-classForeground, var(--vscode-foreground));
+}
+
+/*
+ * The chatViewWelcomeController DOM-swaps the first <a> with a Monaco
+ * `<button class="monaco-button">` when `firstLinkToButton: true`. Normalize
+ * its size to match the chips below so the column reads coherent.
+ */
+.chat-welcome-view .chat-welcome-view-message > ul > li > .monaco-button,
+.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > .monaco-button {
+	display: inline-flex;
+	width: 100%;
+	box-sizing: border-box;
+	padding: 8px 12px;
+	height: auto;
+	font-size: 12px;
+	border-radius: 6px;
+}

@@ -982,19 +982,19 @@ class ChipOSContribution extends Disposable {
 					// EDA-focused starter prompts rendered below the chat panel's
 					// "Build with ChipOS" empty state. Each is a `command:` link
 					// that fills the chat input with `isPartialQuery: true` so
-					// the user can tweak before sending.
-					const starterLink = (label: string, query: string): string => {
+					// the user can tweak before sending. Codicon prefix gives
+					// each row a semantic visual anchor (MarkdownString has
+					// supportThemeIcons: true so $(...) syntax renders as an icon).
+					const starterChip = (icon: string, label: string, query: string): string => {
 						const args = encodeURIComponent(JSON.stringify({ query, isPartialQuery: true }));
-						return `[${label}](command:workbench.action.chat.open?${args})`;
+						return `- [$(${icon}) ${label}](command:workbench.action.chat.open?${args})`;
 					};
 					return new MarkdownString(
 						[
-							'Try one of these starters:',
-							'',
-							`- ${starterLink('Generate an 8-bit counter with sync reset', 'Generate a Verilog module: an 8-bit free-running counter with synchronous active-low reset. Include a parameter for counter width.')}`,
-							`- ${starterLink('Write a testbench for the current file', 'Write a SystemVerilog testbench for the module in the currently open file. Include clock generation, reset sequence, and a few stimuli.')}`,
-							`- ${starterLink('Review my Verilog for synthesis issues', 'Review the Verilog code in my workspace for synthesis-related issues: latches, race conditions, blocking-vs-nonblocking misuse, and async clock domain crossings.')}`,
-							`- ${starterLink('Explain how AXI4-Lite handshake works', 'Explain the AXI4-Lite write and read handshake step by step, including AWVALID/AWREADY/WVALID/WREADY timing and a small Verilog example of a compliant slave.')}`,
+							starterChip('circuit-board', 'Generate an 8-bit counter with sync reset', 'Generate a Verilog module: an 8-bit free-running counter with synchronous active-low reset. Include a parameter for counter width.'),
+							starterChip('beaker', 'Write a testbench for the current file', 'Write a SystemVerilog testbench for the module in the currently open file. Include clock generation, reset sequence, and a few stimuli.'),
+							starterChip('checklist', 'Review my Verilog for synthesis issues', 'Review the Verilog code in my workspace for synthesis-related issues: latches, race conditions, blocking-vs-nonblocking misuse, and async clock domain crossings.'),
+							starterChip('book', 'Explain how AXI4-Lite handshake works', 'Explain the AXI4-Lite write and read handshake step by step, including AWVALID/AWREADY/WVALID/WREADY timing and a small Verilog example of a compliant slave.'),
 						].join('\n'),
 						{ isTrusted: true, supportThemeIcons: true }
 					);
@@ -1283,16 +1283,44 @@ class ChipOSContribution extends Disposable {
 	}
 
 	private _registerWelcomeView(): void {
+		// UX #6: Welcome card lists four EDA starter prompts as clickable
+		// command links. Uses the same `workbench.action.chat.open?{query,
+		// isPartialQuery}` pattern as the chat-agent metadata.additional
+		// WelcomeMessage so behavior is identical across both empty-state
+		// surfaces (chat view pane vs. inline chat widget).
+		//
+		// The framework's `firstLinkToButton: true` (hardcoded in chatView
+		// WelcomeController) renders the first <a> as a primary button — so
+		// "Explain a Verilog file" becomes the CTA. The rest are styled as
+		// chips via chiposOverrides.css.
+		const starterLink = (label: string, query: string): string => {
+			const args = encodeURIComponent(JSON.stringify({ query, isPartialQuery: true }));
+			return `[${label}](command:workbench.action.chat.open?${args})`;
+		};
+		const welcomeMd = localize(
+			'chiposWelcome.content',
+			'I can help with EDA design, Verilog/SystemVerilog coding, simulation, and verification.\n\n**Quick starts**\n\n- {0}\n- {1}\n- {2}\n- {3}\n\nTip: use `#file:` to attach project files to your prompt.',
+			starterLink(
+				'Explain a Verilog / SystemVerilog file',
+				'Explain the Verilog/SystemVerilog code in this file. Cover the design intent, key signals, and any non-obvious behavior. Use #file: to point me at the file.'
+			),
+			starterLink(
+				'Find bugs in my testbench',
+				'Review my testbench for issues — race conditions, missing assertions, incomplete coverage, reset/clock-domain bugs. Use #file: to attach the testbench.'
+			),
+			starterLink(
+				'Generate a UVM agent',
+				'Generate a UVM agent for the DUT in #file:. Include sequencer, driver, monitor, and a basic sequence library. Match existing project naming conventions.'
+			),
+			starterLink(
+				'Convert Verilog → SystemVerilog',
+				'Convert the Verilog in #file: to SystemVerilog using modern constructs: always_ff/always_comb instead of always @, typed enums for FSM states, logic over reg/wire. Preserve behavior exactly.'
+			),
+		);
 		chatViewsWelcomeRegistry.register({
 			icon: Codicon.chip,
 			title: localize('chiposWelcome.title', 'ChipOS AI Assistant'),
-			content: new MarkdownString(
-				localize(
-					'chiposWelcome.content',
-					'I can help you with EDA design, Verilog/SystemVerilog coding, simulation, and verification.\n\nType a message below to get started, or use `#file:` to reference project files.'
-				),
-				{ isTrusted: true }
-			),
+			content: new MarkdownString(welcomeMd, { isTrusted: true }),
 			when: ContextKeyExpr.true()!,
 		});
 		this._logService.info('[ChipOS] Welcome view registered');
