@@ -28,7 +28,7 @@ import { IChipOSUsageService } from '../../../../workbench/contrib/chipos/browse
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IURLService } from '../../../../platform/url/common/url.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { ISidecarManagerService, SidecarState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
+import { ISidecarManagerService, SidecarState, WorkerState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -39,7 +39,7 @@ import { CHAT_CONFIG_MENU_ID } from '../../../../workbench/contrib/chat/browser/
 import { ChatViewId, IChatWidgetService } from '../../../../workbench/contrib/chat/browser/chat.js';
 import { nullExtensionDescription } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ChipOSChatAgent } from '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
-import { StatusBarHandler } from '../../../../workbench/contrib/chipos/browser/migration/statusBarHandler.js';
+import { StatusBarHandler, ReconnectReason } from '../../../../workbench/contrib/chipos/browser/migration/statusBarHandler.js';
 import { ConnectionState } from '../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
 import { IStatusbarService } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
@@ -78,6 +78,7 @@ import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryServ
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSInputAccent.css';
 
 // ── Chat Quick Toggles Registration ────────────────────────────────────────
 registerChipOSQuickToggles();
@@ -875,6 +876,11 @@ class ChipOSContribution extends Disposable {
 			if (this._statusBarHandler) {
 				const connectionState = this._mapSidecarToConnectionState(state);
 				this._statusBarHandler.updateConnectionState(connectionState);
+				// UX #4: keep the Reconnect badge in sync with both the sidecar
+				// state and the worker state. Sidecar-Error is the dominant
+				// failure mode so we surface it preferentially over a stale
+				// worker state.
+				this._statusBarHandler.updateReconnectButton(this._computeReconnectReason());
 			}
 
 			if (state === SidecarState.Error) {
@@ -882,6 +888,16 @@ class ChipOSContribution extends Disposable {
 					severity: Severity.Error,
 					message: 'ChipOS: Backend failed to start. Check output panel for details.',
 				});
+			}
+		}));
+
+		// UX #4: Worker can drop out without the sidecar (reasoner connection)
+		// noticing — e.g. amfid kills the binary, port collision, or watchdog
+		// reaps it. Subscribe separately and recompute the badge.
+		this._register(this._sidecarManager.onDidChangeWorkerState(workerState => {
+			this._logService.info('[ChipOS] Worker state changed:', workerState);
+			if (this._statusBarHandler) {
+				this._statusBarHandler.updateReconnectButton(this._computeReconnectReason());
 			}
 		}));
 
@@ -911,6 +927,40 @@ class ChipOSContribution extends Disposable {
 		}
 	}
 
+	/**
+	 * UX #4: derive when the Reconnect status bar button should be visible
+	 * and what failure to label it with. We deliberately only surface it on
+	 * terminal-ish states (Error / Disconnected) rather than during transient
+	 * Spawning / HealthChecking — flashing a recovery button mid-startup is
+	 * noisy and trains users to ignore it.
+	 *
+	 * `undefined` means "hide it"; everything else maps to a tooltip variant.
+	 */
+	private _computeReconnectReason(): ReconnectReason | undefined {
+		const sidecarState = this._sidecarManager.state;
+		const workerState = this._sidecarManager.workerState;
+
+		// Sidecar (reasoner) error dominates — without it, the worker is
+		// effectively offline regardless of its own state.
+		if (sidecarState === SidecarState.Error) {
+			return 'sidecar-error';
+		}
+		if (workerState === WorkerState.Error) {
+			return 'worker-error';
+		}
+		// Don't show "disconnected" while the sidecar is mid-startup: worker
+		// hasn't been spawned yet, so "disconnected" is the expected state.
+		if (
+			workerState === WorkerState.Disconnected &&
+			sidecarState !== SidecarState.NotStarted &&
+			sidecarState !== SidecarState.Spawning &&
+			sidecarState !== SidecarState.HealthChecking
+		) {
+			return 'worker-disconnected';
+		}
+		return undefined;
+	}
+
 	private _registerChatAgent(): void {
 		this._logService.info('[ChipOS] Registering native chat agent');
 
@@ -928,6 +978,27 @@ class ChipOSContribution extends Disposable {
 			metadata: {
 				sampleRequest: 'Help me design a 32-bit AXI4 bus interface with configurable data width',
 				themeIcon: Codicon.chatSparkle,
+				additionalWelcomeMessage: (() => {
+					// EDA-focused starter prompts rendered below the chat panel's
+					// "Build with ChipOS" empty state. Each is a `command:` link
+					// that fills the chat input with `isPartialQuery: true` so
+					// the user can tweak before sending.
+					const starterLink = (label: string, query: string): string => {
+						const args = encodeURIComponent(JSON.stringify({ query, isPartialQuery: true }));
+						return `[${label}](command:workbench.action.chat.open?${args})`;
+					};
+					return new MarkdownString(
+						[
+							'Try one of these starters:',
+							'',
+							`- ${starterLink('Generate an 8-bit counter with sync reset', 'Generate a Verilog module: an 8-bit free-running counter with synchronous active-low reset. Include a parameter for counter width.')}`,
+							`- ${starterLink('Write a testbench for the current file', 'Write a SystemVerilog testbench for the module in the currently open file. Include clock generation, reset sequence, and a few stimuli.')}`,
+							`- ${starterLink('Review my Verilog for synthesis issues', 'Review the Verilog code in my workspace for synthesis-related issues: latches, race conditions, blocking-vs-nonblocking misuse, and async clock domain crossings.')}`,
+							`- ${starterLink('Explain how AXI4-Lite handshake works', 'Explain the AXI4-Lite write and read handshake step by step, including AWVALID/AWREADY/WVALID/WREADY timing and a small Verilog example of a compliant slave.')}`,
+						].join('\n'),
+						{ isTrusted: true, supportThemeIcons: true }
+					);
+				})(),
 			},
 			extensionId: nullExtensionDescription.identifier,
 			extensionVersion: undefined,
