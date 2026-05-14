@@ -229,3 +229,44 @@
 	line-height: 1.2;
 	margin-top: 8px;
 }
+
+/*-------------------------------------------------------------------------------
+ *  UX #10 — Mode picker accent
+ *
+ *  Stock framework renders the mode picker (Agent/Ask/Edit/Spec dropdown) as
+ *  a flat text+chevron. Easy to miss, and the active mode isn't visually
+ *  distinct from the rest of the chat input toolbar. Add a subtle accent
+ *  border + slightly heavier label so the picker reads as the chat's mode
+ *  selector rather than just a label.
+ *-----------------------------------------------------------------------------*/
+
+.interactive-session .chat-input-toolbar .action-item.chat-mode-picker-item {
+	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.3)));
+	border-radius: 4px;
+	padding: 0 6px 0 4px;
+	background-color: var(--vscode-editorWidget-background, transparent);
+	transition: border-color 0.1s, background-color 0.1s;
+}
+
+.interactive-session .chat-input-toolbar .action-item.chat-mode-picker-item:hover {
+	border-color: var(--vscode-focusBorder, #007fd4);
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+/*-------------------------------------------------------------------------------
+ *  UX #11 — Implicit attachment chip subtler styling
+ *
+ *  Framework renders implicit context (auto-attached active editor file) in
+ *  italic at the top of the chat input. The chip itself uses the same border
+ *  + bg as user-attached chips, so the only differentiator is the font
+ *  style — hard to read at a glance. Add a slightly more transparent border
+ *  for implicit chips so users can tell which they explicitly attached vs
+ *  which were auto-attached.
+ *-----------------------------------------------------------------------------*/
+
+.interactive-session .chat-attached-context-attachment.implicit {
+	border: 1px dashed var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.4)));
+	border-radius: 4px;
+	padding: 1px 6px;
+	opacity: 0.78;
+}
