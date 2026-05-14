@@ -7,6 +7,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
+import { stripIcons } from '../../../../../base/common/iconLabels.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
 import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
@@ -2479,7 +2480,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	private _progress(content: string, shimmer?: boolean): IChatProgressMessage {
-		return { kind: 'progressMessage', content: new MarkdownString(content, { supportThemeIcons: true }), shimmer };
+		// Strip codicon prefixes like "$(loading~spin)" from the message: the chat
+		// panel uses chatContentMarkdownRenderer which parses them as icons (works
+		// fine, but redundant since the chat row already shows its own spinner),
+		// while the inline-chat overlay renders progress via renderAsPlaintext
+		// (inlineChatOverlayWidget.ts §504) — which leaves "$(...)" as LITERAL TEXT.
+		// Stripping at the source keeps both render paths clean.
+		return { kind: 'progressMessage', content: new MarkdownString(stripIcons(content), { supportThemeIcons: true }), shimmer };
 	}
 
 	/**
