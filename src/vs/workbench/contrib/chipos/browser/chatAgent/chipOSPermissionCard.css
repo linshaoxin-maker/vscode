@@ -1,5 +1,13 @@
 /*---------------------------------------------------------------------------------------------
  *  ChipOS Permission Card — Phase B visual polish
+ *
+ *  UX #7 (2026-05-14): styling refactored to match the framework's
+ *  `.chat-question-carousel-container` (used by the `askQuestions` LLM
+ *  clarification tool). Both cards now share the same border, radius,
+ *  background, and focus-within glow tokens so that when a turn produces
+ *  both (LLM clarification ⟶ then worker permission ask), they read as
+ *  siblings rather than two disconnected widgets.
+ *
  *  Uses VS Code CSS variables so light / dark / high-contrast modes all work.
  *--------------------------------------------------------------------------------------------*/
 
@@ -9,17 +17,28 @@
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	margin: 6px 0;
+	margin: 8px 0;
 	padding: 10px 12px 8px 14px;
-	border-radius: 6px;
-	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.35));
-	background: var(--vscode-editor-background);
+	/* Matches `.chat-question-carousel-container` so cards align visually. */
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	border: 1px solid color-mix(in srgb, var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.35))) 80%, transparent);
+	background-color: var(--vscode-input-background, var(--vscode-editor-background));
+	box-shadow: 0 4px 14px color-mix(in srgb, var(--vscode-widget-shadow, transparent) 14%, transparent);
 	font-size: 12px;
 	line-height: 1.5;
 	/* Left color bar differentiates by tool type */
 	border-left-width: 3px;
 	border-left-style: solid;
 	border-left-color: var(--vscode-foreground); /* fallback; overridden per tool below */
+	outline: none;
+}
+
+/* Focus-within glow — mirrors what chat-question-carousel-container does,
+   so when the user tabs into the buttons row the whole card pops the same
+   way the clarification card does. */
+.chipos-permission-card:focus-within {
+	border-color: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 60%, var(--vscode-chat-requestBorder, var(--vscode-input-border)) 40%);
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 32%, transparent);
 }
 
 /* Tool-type color bars */
@@ -63,6 +82,22 @@
 	flex: 1 1 auto;
 }
 
+/* #3 — Clickable path: subtle hover affordance + pointer cursor. Keeps the
+   inline-code monospace look but signals "this opens something." */
+.chipos-path-link {
+	cursor: pointer;
+	transition: color 0.1s, background 0.1s;
+}
+.chipos-path-link:hover {
+	color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+	background: var(--vscode-textPreformat-background, rgba(127, 127, 127, 0.22));
+	text-decoration: underline;
+}
+.chipos-path-link:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, #007fd4);
+	outline-offset: 1px;
+}
+
 .chipos-size-badge {
 	flex-shrink: 0;
 	font-size: 11px;
@@ -79,6 +114,58 @@
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	line-height: 1.4;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0;
+}
+
+.chipos-meta-rule,
+.chipos-meta-session {
+	display: inline-flex;
+	align-items: center;
+}
+
+.chipos-meta-rule-code {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 10.5px;
+	color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+	background: var(--vscode-textPreformat-background, rgba(127, 127, 127, 0.12));
+	border-radius: 2px;
+	padding: 0 3px;
+	margin: 0 2px;
+}
+
+/* #5 — Copy rule key button. 18×18 icon-only; clipboard icon swaps to check
+   on success (handled in TS by toggling codicon classes). */
+.chipos-copy-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	margin-left: 3px;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	border-radius: 3px;
+	transition: background 0.1s, color 0.1s;
+}
+.chipos-copy-btn:hover {
+	background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.18));
+	color: var(--vscode-foreground);
+}
+.chipos-copy-btn:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, #007fd4);
+	outline-offset: 1px;
+}
+.chipos-copy-btn .codicon {
+	font-size: 12px;
+}
+.chipos-copy-btn .codicon-check {
+	color: var(--vscode-charts-green, #388a34);
 }
 
 /* ── Code preview ───────────────────────────────────────────────────────────── */
@@ -115,18 +202,52 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	gap: 6px;
 	height: 26px;
-	padding: 0 10px;
-	border-radius: 4px;
+	padding: 0 10px 0 6px;
+	/* UX #7: same radius token as `.chat-question-list-item` so the buttons
+	   feel like the same UI family as the LLM clarification chips. */
+	border-radius: var(--vscode-cornerRadius-medium, 4px);
 	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.4));
 	background: transparent;
 	color: var(--vscode-foreground);
-	font-size: 11.5px;
+	font-size: var(--vscode-chat-font-size-body-s, 11.5px);
 	font-family: inherit;
 	cursor: pointer;
 	white-space: nowrap;
 	transition: background 0.1s, border-color 0.1s;
 	outline-offset: 2px;
+}
+
+/* #1 — 1/2/3/4 number hint badge inside each button. Small monospace chip
+   in a contrasting pill so the keyboard shortcut is discoverable at a
+   glance without crowding the label text. */
+.chipos-btn-num {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 4px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background, rgba(127, 127, 127, 0.22));
+	border-radius: 8px;
+	flex-shrink: 0;
+}
+.chipos-action-btn:hover .chipos-btn-num {
+	color: var(--vscode-foreground);
+	background: var(--vscode-badge-background, rgba(127, 127, 127, 0.32));
+}
+.chipos-btn-label {
+	display: inline-block;
+}
+.chipos-permission-buttons:focus-visible {
+	outline: 1px dashed var(--vscode-focusBorder, #007fd4);
+	outline-offset: 4px;
+	border-radius: 4px;
 }
 
 .chipos-action-btn:hover {

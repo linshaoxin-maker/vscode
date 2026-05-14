@@ -18,8 +18,13 @@
  */
 
 import * as dom from '../../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../../base/browser/keyboardEvent.js';
+import { KeyCode } from '../../../../../base/common/keyCodes.js';
 import { Disposable, IDisposable } from '../../../../../base/common/lifecycle.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
+import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ChatSendResult, IChatConfirmation, IChatSendRequestOptions, IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
 import { IChatContentPart, IChatContentPartRenderContext } from '../../../../contrib/chat/browser/widget/chatContentParts/chatContentParts.js';
 import { IChatRendererContent, IChatResponseViewModel, isResponseVM } from '../../../../contrib/chat/common/model/chatViewModel.js';
@@ -60,6 +65,8 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		context: IChatContentPartRenderContext,
 		@IChatService private readonly chatService: IChatService,
 		@IChatWidgetService chatWidgetService: IChatWidgetService,
+		@ICommandService private readonly commandService: ICommandService,
+		@IClipboardService private readonly clipboardService: IClipboardService,
 	) {
 		super();
 
@@ -86,8 +93,27 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		toolLabel.textContent = data.tool;
 		header.appendChild(toolLabel);
 
-		const pathCode = dom.$('code.chipos-path');
+		// #3 — Path becomes clickable. For paths inside the workspace, open as
+		// editor; for everything else, reveal in OS Finder so the user can
+		// inspect what the AI is about to touch without losing the card.
+		// Hover gives a faint underline; the codicon hints "this is an action."
+		const pathCode = dom.$('code.chipos-path.chipos-path-link');
 		pathCode.textContent = data.specifier;
+		pathCode.setAttribute('role', 'link');
+		pathCode.setAttribute('tabindex', '0');
+		pathCode.setAttribute('title', localize('chipos.card.pathTooltip', 'Click to open / reveal {0}', data.specifier));
+		const openPath = () => {
+			void this._openSpecifier(data.specifier);
+		};
+		this._register(dom.addDisposableListener(pathCode, 'click', openPath));
+		this._register(dom.addDisposableListener(pathCode, 'keydown', (e: KeyboardEvent) => {
+			const ev = new StandardKeyboardEvent(e);
+			if (ev.keyCode === KeyCode.Enter || ev.keyCode === KeyCode.Space) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				openPath();
+			}
+		}));
 		header.appendChild(pathCode);
 
 		const badge = this._makeBadge(data);
@@ -96,22 +122,58 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		}
 
 		// ── Metadata row ──────────────────────────────────────────────────────
+		// #5 — Rule key gets a click-to-copy button so users can paste it
+		// straight into `~/.chipos/permissions.json` without selecting the
+		// text manually. Built as DOM nodes (not a single textContent string)
+		// so we can attach interactive bits selectively.
 		const meta = dom.$('.chipos-permission-meta');
 		card.appendChild(meta);
+		let hasMeta = false;
 
-		const metaParts: string[] = [];
 		if (data.matchedRule) {
-			metaParts.push(
-				localize('chipos.card.rule', 'Rule: {0} ({1})', data.matchedRule, data.matchedLayer || 'default'),
-			);
+			hasMeta = true;
+			const ruleSpan = dom.$('span.chipos-meta-rule');
+			ruleSpan.appendChild(document.createTextNode(localize('chipos.card.ruleLabel', 'Rule: ')));
+			const ruleCode = dom.$('code.chipos-meta-rule-code');
+			ruleCode.textContent = data.matchedRule;
+			ruleSpan.appendChild(ruleCode);
+			ruleSpan.appendChild(document.createTextNode(` (${data.matchedLayer || 'default'})`));
+
+			const copyBtn = dom.$('button.chipos-copy-btn');
+			copyBtn.setAttribute('type', 'button');
+			copyBtn.setAttribute('aria-label', localize('chipos.card.copyRuleAria', 'Copy rule key {0} to clipboard', data.matchedRule));
+			copyBtn.setAttribute('title', localize('chipos.card.copyRuleTooltip', 'Copy rule key'));
+			const copyIcon = dom.$('span.codicon.codicon-copy');
+			copyBtn.appendChild(copyIcon);
+			const matchedRule = data.matchedRule;
+			this._register(dom.addDisposableListener(copyBtn, 'click', async (e: MouseEvent) => {
+				e.preventDefault();
+				e.stopPropagation();
+				await this.clipboardService.writeText(matchedRule);
+				// Briefly swap the icon to a check to confirm the copy landed.
+				copyIcon.classList.remove('codicon-copy');
+				copyIcon.classList.add('codicon-check');
+				setTimeout(() => {
+					copyIcon.classList.remove('codicon-check');
+					copyIcon.classList.add('codicon-copy');
+				}, 1200);
+			}));
+			ruleSpan.appendChild(copyBtn);
+			meta.appendChild(ruleSpan);
 		}
+
 		const sessionTail = this._truncateSession(data.sessionId);
 		if (sessionTail) {
-			metaParts.push(localize('chipos.card.session', 'Session: {0}', sessionTail));
+			if (hasMeta) {
+				meta.appendChild(document.createTextNode(' · '));
+			}
+			hasMeta = true;
+			const sessionSpan = dom.$('span.chipos-meta-session');
+			sessionSpan.textContent = localize('chipos.card.session', 'Session: {0}', sessionTail);
+			meta.appendChild(sessionSpan);
 		}
-		if (metaParts.length > 0) {
-			meta.textContent = metaParts.join(' · ');
-		} else {
+
+		if (!hasMeta) {
 			meta.style.display = 'none';
 		}
 
@@ -222,15 +284,83 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			setDisabled(false);
 		};
 
-		for (const opt of data.options) {
+		for (let i = 0; i < data.options.length; i++) {
+			const opt = data.options[i];
 			const btn = document.createElement('button');
 			btn.className = `chipos-action-btn chipos-btn-${opt.action_id.replace(/_/g, '-')}`;
-			btn.textContent = opt.label;
+			// #1 — Show 1-4 number hint inside the button so users learn the
+			// keyboard shortcuts inline (Cursor / Claude Code pattern).
+			const numHint = dom.$('span.chipos-btn-num');
+			numHint.textContent = String(i + 1);
+			btn.appendChild(numHint);
+			const labelSpan = dom.$('span.chipos-btn-label');
+			labelSpan.textContent = opt.label;
+			btn.appendChild(labelSpan);
 			btn.setAttribute('aria-label', this._ariaLabel(opt.action_id, data.specifier));
+			btn.setAttribute('aria-keyshortcuts', String(i + 1));
 			btn.setAttribute('type', 'button');
 			this._register(dom.addDisposableListener(btn, 'click', () => { void sendAction(opt); }));
 			buttonsRow.appendChild(btn);
 			buttons.push(btn);
+		}
+
+		// #1 — Keyboard shortcuts on the card itself: 1/2/3/4 → action_ids in
+		// declaration order; Escape → deny. Listener lives on buttonsRow with
+		// tabindex so users can Tab into it from the chat input. The handler
+		// only fires when no input/textarea has focus (so typing 1 in chat
+		// input doesn't accidentally Allow).
+		buttonsRow.setAttribute('tabindex', '0');
+		buttonsRow.setAttribute('aria-label', localize('chipos.card.buttonsAria', 'Permission decision buttons. Press 1 to 4 to choose, Escape to deny.'));
+		this._register(dom.addDisposableListener(buttonsRow, 'keydown', (e: KeyboardEvent) => {
+			if (inFlight || this.confirmation.isUsed) {
+				return;
+			}
+			const target = e.target as HTMLElement | null;
+			// If focus is in an input/textarea/contenteditable, don't hijack.
+			if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+				return;
+			}
+			const ev = new StandardKeyboardEvent(e);
+			let actionIdx = -1;
+			switch (ev.keyCode) {
+				case KeyCode.Digit1: case KeyCode.Numpad1: actionIdx = 0; break;
+				case KeyCode.Digit2: case KeyCode.Numpad2: actionIdx = 1; break;
+				case KeyCode.Digit3: case KeyCode.Numpad3: actionIdx = 2; break;
+				case KeyCode.Digit4: case KeyCode.Numpad4: actionIdx = 3; break;
+				case KeyCode.Escape: {
+					// Map Escape → "deny" by action_id, since not all cards
+					// guarantee deny is the 4th option (older or customized
+					// servers might reorder).
+					actionIdx = data.options.findIndex(o => o.action_id === 'deny');
+					break;
+				}
+			}
+			if (actionIdx >= 0 && actionIdx < data.options.length) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				void sendAction(data.options[actionIdx]);
+			}
+		}));
+	}
+
+	/**
+	 * #3 — Open or reveal the specifier path. For paths inside the workspace
+	 * we prefer `vscode.open` (opens as an editor). For everything else, fall
+	 * back to `revealFileInOS` (Finder / Explorer). Both work for new-or-
+	 * existing files; if the path doesn't exist (Write to a new file), the
+	 * OS reveal shows the parent directory which is still useful.
+	 */
+	private async _openSpecifier(specifier: string): Promise<void> {
+		try {
+			const uri = URI.file(specifier);
+			await this.commandService.executeCommand('vscode.open', uri);
+		} catch {
+			try {
+				const uri = URI.file(specifier);
+				await this.commandService.executeCommand('revealFileInOS', uri);
+			} catch {
+				// best-effort — don't break the card if neither command exists
+			}
 		}
 	}
 
