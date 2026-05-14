@@ -240,6 +240,7 @@
  *  selector rather than just a label.
  *-----------------------------------------------------------------------------*/
 
+.interactive-session .chat-input-toolbar .action-item.chat-input-picker-item,
 .interactive-session .chat-input-toolbar .action-item.chat-mode-picker-item {
 	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.3)));
 	border-radius: 4px;
@@ -248,6 +249,7 @@
 	transition: border-color 0.1s, background-color 0.1s;
 }
 
+.interactive-session .chat-input-toolbar .action-item.chat-input-picker-item:hover,
 .interactive-session .chat-input-toolbar .action-item.chat-mode-picker-item:hover {
 	border-color: var(--vscode-focusBorder, #007fd4);
 	background-color: var(--vscode-list-hoverBackground);
