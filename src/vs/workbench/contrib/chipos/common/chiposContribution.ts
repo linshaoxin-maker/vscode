@@ -127,6 +127,9 @@ const enum ChipOSCommandId {
 	OpenSettings = 'chipos.openSettings',
 	AddToChat = 'chipos.addToChat',
 	AskAI = 'chipos.askAI',
+	ExplainSelection = 'chipos.explainSelection',
+	FixSelection = 'chipos.fixSelection',
+	ReviewSelection = 'chipos.reviewSelection',
 	RefactorSelection = 'chipos.refactorSelection',
 	GenerateDocsForSelection = 'chipos.generateDocsForSelection',
 	GenerateTestsForSelection = 'chipos.generateTestsForSelection',
@@ -215,6 +218,18 @@ async function _chiposAttachAndPromptChat(accessor: ServicesAccessor, prompt: st
 
 CommandsRegistry.registerCommand(ChipOSCommandId.AskAI, accessor => {
 	return _chiposAttachAndPromptChat(accessor, '');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.ExplainSelection, accessor => {
+	return _chiposAttachAndPromptChat(accessor, 'Explain what this code does, how it works, and any non-obvious behavior.');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.FixSelection, accessor => {
+	return _chiposAttachAndPromptChat(accessor, 'Identify and fix any bugs, issues, or anti-patterns in this code. Explain what was wrong.');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.ReviewSelection, accessor => {
+	return _chiposAttachAndPromptChat(accessor, 'Review this code for correctness, style, and potential issues. Suggest improvements.');
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.RefactorSelection, accessor => {
@@ -519,7 +534,7 @@ MenuRegistry.appendMenuItems([
 	{
 		id: MenuId.EditorContext,
 		item: {
-			command: { id: ChipOSCommandId.RefactorSelection, title: localize('chipos.refactorSelection', 'ChipOS: Refactor'), icon: Codicon.wand },
+			command: { id: ChipOSCommandId.ExplainSelection, title: localize('chipos.explainSelection', 'ChipOS: Explain'), icon: Codicon.commentDiscussion },
 			when: ContextKeyExpr.has('editorHasSelection'),
 			group: 'chipos',
 			order: 3,
@@ -528,7 +543,7 @@ MenuRegistry.appendMenuItems([
 	{
 		id: MenuId.EditorContext,
 		item: {
-			command: { id: ChipOSCommandId.GenerateDocsForSelection, title: localize('chipos.generateDocs', 'ChipOS: Generate Docs'), icon: Codicon.bookmark },
+			command: { id: ChipOSCommandId.FixSelection, title: localize('chipos.fixSelection', 'ChipOS: Fix'), icon: Codicon.bug },
 			when: ContextKeyExpr.has('editorHasSelection'),
 			group: 'chipos',
 			order: 4,
@@ -537,10 +552,37 @@ MenuRegistry.appendMenuItems([
 	{
 		id: MenuId.EditorContext,
 		item: {
-			command: { id: ChipOSCommandId.GenerateTestsForSelection, title: localize('chipos.generateTests', 'ChipOS: Generate Tests'), icon: Codicon.beaker },
+			command: { id: ChipOSCommandId.ReviewSelection, title: localize('chipos.reviewSelection', 'ChipOS: Review'), icon: Codicon.checklist },
 			when: ContextKeyExpr.has('editorHasSelection'),
 			group: 'chipos',
 			order: 5,
+		},
+	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: ChipOSCommandId.RefactorSelection, title: localize('chipos.refactorSelection', 'ChipOS: Refactor'), icon: Codicon.wand },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: 'chipos',
+			order: 6,
+		},
+	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: ChipOSCommandId.GenerateDocsForSelection, title: localize('chipos.generateDocs', 'ChipOS: Generate Docs'), icon: Codicon.bookmark },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: 'chipos',
+			order: 7,
+		},
+	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: ChipOSCommandId.GenerateTestsForSelection, title: localize('chipos.generateTests', 'ChipOS: Generate Tests'), icon: Codicon.beaker },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: 'chipos',
+			order: 8,
 		},
 	},
 	// Surface the 4 new right-click commands in the Command Palette so users
@@ -551,6 +593,27 @@ MenuRegistry.appendMenuItems([
 		id: MenuId.CommandPalette,
 		item: {
 			command: { id: ChipOSCommandId.AskAI, title: localize('chipos.askAI', 'ChipOS: Ask AI'), icon: Codicon.chatSparkle },
+			when: ContextKeyExpr.has('editorHasSelection'),
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.ExplainSelection, title: localize('chipos.explainSelection', 'ChipOS: Explain'), icon: Codicon.commentDiscussion },
+			when: ContextKeyExpr.has('editorHasSelection'),
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.FixSelection, title: localize('chipos.fixSelection', 'ChipOS: Fix'), icon: Codicon.bug },
+			when: ContextKeyExpr.has('editorHasSelection'),
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.ReviewSelection, title: localize('chipos.reviewSelection', 'ChipOS: Review'), icon: Codicon.checklist },
 			when: ContextKeyExpr.has('editorHasSelection'),
 		},
 	},
