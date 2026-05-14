@@ -143,3 +143,31 @@
 	font-size: 12px;
 	border-radius: 6px;
 }
+
+/*-------------------------------------------------------------------------------
+ *  UX #7 — Always-visible code-block action toolbar
+ *
+ *  Stock framework (codeBlockPart.css §11) renders the per-code-block toolbar
+ *  (Apply in Editor / Insert at Cursor / Copy …) with `opacity: 0` and only
+ *  fades it in on `.interactive-result-code-block:hover`. That hides a major
+ *  affordance from first-time users — they may never realize they can one-
+ *  click apply AI-generated code into their editor.
+ *
+ *  Cursor surfaces these actions as a persistent inline button row. Match
+ *  that pattern: force the toolbar visible at full opacity, with a tweak so
+ *  the icons sit inside the code block (not -15px above it which can be
+ *  clipped by the assistant-message header in narrow chat panels).
+ *-----------------------------------------------------------------------------*/
+
+.interactive-result-code-block .interactive-result-code-block-toolbar {
+	opacity: 1 !important;
+	pointer-events: auto !important;
+}
+
+.interactive-result-code-block .interactive-result-code-block-toolbar > .monaco-toolbar,
+.interactive-result-code-block .interactive-result-code-block-toolbar > .monaco-action-bar {
+	top: 4px;
+}
+.interactive-result-code-block .interactive-result-code-block-toolbar > .monaco-toolbar {
+	right: 4px;
+}
