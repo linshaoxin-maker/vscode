@@ -84,6 +84,23 @@ export interface WorkerRuntimeStatus {
 	uptime: number;
 }
 
+/** Aggregate EDA tool installation status — for IDE status bar. */
+export interface EdaStatusSummary {
+	total_mcp_tools: number;
+	installed_mcp_tools: number;
+	missing_mcp_tools: number;
+	missing_binaries: string[];
+	by_binary: Record<string, {
+		installed: boolean;
+		path: string;
+		version: string;
+		source: 'PATH' | 'known_location' | 'not_found';
+		affects: string[];
+		install_method: 'eda_pack' | 'elan' | 'docker' | 'verible_brew' | 'manual_vendor' | 'unknown';
+	}>;
+	summary_line: string;
+}
+
 interface IResolvedToolInfo extends ToolInfo {
 	status?: ToolStatus;
 }
@@ -133,6 +150,7 @@ export interface IWorkerToolManagerService {
 	getWorkerStatus(): Promise<WorkerRuntimeStatus>;
 	getTools(): Promise<ToolInfo[]>;
 	getToolStatus(toolName: string): Promise<ToolStatus>;
+	getEdaStatusSummary(): Promise<EdaStatusSummary>;
 	installTool(toolName: string, method?: string): Promise<InstallResult>;
 	listMcpServers(): Promise<McpServerListResult>;
 	addMcpServer(config: McpServerConfig): Promise<McpMutationResult>;
@@ -168,6 +186,10 @@ export class WorkerToolManagerService extends Disposable implements IWorkerToolM
 
 	async getToolStatus(toolName: string): Promise<ToolStatus> {
 		return this._requestJson<ToolStatus>(`/api/v1/tools/${encodeURIComponent(toolName)}/status`);
+	}
+
+	async getEdaStatusSummary(): Promise<EdaStatusSummary> {
+		return this._requestJson<EdaStatusSummary>('/api/v1/eda/status');
 	}
 
 	async installTool(toolName: string, method: string = 'auto'): Promise<InstallResult> {
