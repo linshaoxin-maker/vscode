@@ -171,3 +171,46 @@
 .interactive-result-code-block .interactive-result-code-block-toolbar > .monaco-toolbar {
 	right: 4px;
 }
+
+/*-------------------------------------------------------------------------------
+ *  UX #8 — Prominent send button in chat input
+ *
+ *  Framework renders the ChatSubmitAction (Codicon.arrowUp) as a small icon
+ *  in the chat-execute-toolbar, easily missed by first-time users. Cursor
+ *  surfaces the send affordance as a colored circular button.
+ *
+ *  Match Cursor: the arrow-up action in the chat-execute-toolbar becomes a
+ *  rounded button with accent background when enabled, dim+grey when
+ *  disabled (no input text). Stock behavior (Enter to submit) is untouched.
+ *-----------------------------------------------------------------------------*/
+
+.interactive-session .chat-execute-toolbar .action-item.menu-entry .action-label.codicon-arrow-up,
+.interactive-session .chat-execute-toolbar .action-item .action-label.codicon-arrow-up {
+	background-color: var(--vscode-button-background, var(--vscode-textLink-foreground));
+	color: var(--vscode-button-foreground, var(--vscode-editor-background)) !important;
+	border-radius: 999px;
+	padding: 4px 6px;
+	min-width: 24px;
+	min-height: 24px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background-color 0.1s, transform 0.08s;
+}
+
+.interactive-session .chat-execute-toolbar .action-item .action-label.codicon-arrow-up:hover {
+	background-color: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+	transform: scale(1.04);
+}
+
+/*
+ * When the action is disabled (no input text yet), monaco adds the
+ * `.disabled` class to its containing item. Use the descendant arrow-up
+ * style to render a muted state so the button doesn't look broken — but
+ * keep the shape so users still notice it.
+ */
+.interactive-session .chat-execute-toolbar .action-item.disabled .action-label.codicon-arrow-up {
+	background-color: var(--vscode-input-background, transparent);
+	color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)) !important;
+	opacity: 0.6;
+}
