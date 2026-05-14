@@ -76,6 +76,7 @@ import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos
 import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryService.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 
 // ── Chat Quick Toggles Registration ────────────────────────────────────────
@@ -125,6 +126,10 @@ const enum ChipOSCommandId {
 	CloseAllSessions = 'chipos.closeAllSessions',
 	OpenSettings = 'chipos.openSettings',
 	AddToChat = 'chipos.addToChat',
+	AskAI = 'chipos.askAI',
+	RefactorSelection = 'chipos.refactorSelection',
+	GenerateDocsForSelection = 'chipos.generateDocsForSelection',
+	GenerateTestsForSelection = 'chipos.generateTestsForSelection',
 	Disconnect = 'chipos.disconnect',
 	RestartSidecar = 'chipos.restartSidecar',
 	RestartBackend = 'chipos.restartBackend',
@@ -191,6 +196,37 @@ CommandsRegistry.registerCommand(ChipOSCommandId.OpenSettings, (accessor, tab?: 
 CommandsRegistry.registerCommand(ChipOSCommandId.AddToChat, accessor => {
 	const commandService = accessor.get(ICommandService);
 	commandService.executeCommand('workbench.action.chat.attachSelection');
+});
+
+// Helper: attach selection to chat then pre-fill chat input with a prompt.
+// Reuses framework `workbench.action.chat.attachSelection` for the open+attach+focus
+// path, then writes the prompt via the chat widget's setInput API. The user can
+// edit the prompt and press Enter to submit.
+async function _chiposAttachAndPromptChat(accessor: ServicesAccessor, prompt: string): Promise<void> {
+	const commandService = accessor.get(ICommandService);
+	const chatWidgetService = accessor.get(IChatWidgetService);
+	await commandService.executeCommand('workbench.action.chat.attachSelection');
+	const widget = chatWidgetService.lastFocusedWidget;
+	if (widget) {
+		widget.setInput(prompt);
+		widget.focusInput();
+	}
+}
+
+CommandsRegistry.registerCommand(ChipOSCommandId.AskAI, accessor => {
+	return _chiposAttachAndPromptChat(accessor, '');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.RefactorSelection, accessor => {
+	return _chiposAttachAndPromptChat(accessor, 'Refactor this code for clarity and maintainability. Explain the changes.');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.GenerateDocsForSelection, accessor => {
+	return _chiposAttachAndPromptChat(accessor, 'Generate documentation comments for this code in the appropriate style for the language.');
+});
+
+CommandsRegistry.registerCommand(ChipOSCommandId.GenerateTestsForSelection, accessor => {
+	return _chiposAttachAndPromptChat(accessor, 'Generate unit tests for this code, covering the main code paths and edge cases.');
 });
 
 CommandsRegistry.registerCommand(ChipOSCommandId.Disconnect, async accessor => {
@@ -469,6 +505,74 @@ MenuRegistry.appendMenuItems([
 			when: ContextKeyExpr.has('editorTextFocus'),
 			group: 'chipos',
 			order: 1,
+		},
+	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: ChipOSCommandId.AskAI, title: localize('chipos.askAI', 'ChipOS: Ask AI'), icon: Codicon.chatSparkle },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: 'chipos',
+			order: 2,
+		},
+	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: ChipOSCommandId.RefactorSelection, title: localize('chipos.refactorSelection', 'ChipOS: Refactor'), icon: Codicon.wand },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: 'chipos',
+			order: 3,
+		},
+	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: ChipOSCommandId.GenerateDocsForSelection, title: localize('chipos.generateDocs', 'ChipOS: Generate Docs'), icon: Codicon.bookmark },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: 'chipos',
+			order: 4,
+		},
+	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: ChipOSCommandId.GenerateTestsForSelection, title: localize('chipos.generateTests', 'ChipOS: Generate Tests'), icon: Codicon.beaker },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: 'chipos',
+			order: 5,
+		},
+	},
+	// Surface the 4 new right-click commands in the Command Palette so users
+	// (and CI/automation) can invoke them via Cmd+Shift+P. Without this entry
+	// `CommandsRegistry.registerCommand` alone makes them callable from code
+	// but invisible to the palette.
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.AskAI, title: localize('chipos.askAI', 'ChipOS: Ask AI'), icon: Codicon.chatSparkle },
+			when: ContextKeyExpr.has('editorHasSelection'),
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.RefactorSelection, title: localize('chipos.refactorSelection', 'ChipOS: Refactor'), icon: Codicon.wand },
+			when: ContextKeyExpr.has('editorHasSelection'),
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.GenerateDocsForSelection, title: localize('chipos.generateDocs', 'ChipOS: Generate Docs'), icon: Codicon.bookmark },
+			when: ContextKeyExpr.has('editorHasSelection'),
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: ChipOSCommandId.GenerateTestsForSelection, title: localize('chipos.generateTests', 'ChipOS: Generate Tests'), icon: Codicon.beaker },
+			when: ContextKeyExpr.has('editorHasSelection'),
 		},
 	},
 	{
