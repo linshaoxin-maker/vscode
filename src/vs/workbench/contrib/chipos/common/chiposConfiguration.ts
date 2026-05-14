@@ -86,8 +86,8 @@ configurationRegistry.registerConfiguration({
 
 		'chipos.showThinking': {
 			type: 'boolean',
-			default: false,
-			description: localize('chipos.showThinking.desc', 'Show LLM thinking/reasoning output in chat.'),
+			default: true,
+			description: localize('chipos.showThinking.desc', 'Show LLM thinking/reasoning output in chat. When enabled, the reasoning chain renders as a collapsible block above the assistant reply (with the framework chain-line CSS at chat/.../chatThinkingContent.css §221+).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
