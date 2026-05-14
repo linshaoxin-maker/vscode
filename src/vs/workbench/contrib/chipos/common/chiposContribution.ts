@@ -861,7 +861,7 @@ class ChipOSContribution extends Disposable {
 			modes: [ChatModeKind.Ask, ChatModeKind.Edit, ChatModeKind.Agent, ChatModeKind.Spec],
 			slashCommands: [],
 			disambiguation: [],
-			locations: [ChatAgentLocation.Chat],
+			locations: [ChatAgentLocation.Chat, ChatAgentLocation.EditorInline],
 			metadata: {
 				sampleRequest: 'Help me design a 32-bit AXI4 bus interface with configurable data width',
 				themeIcon: Codicon.chatSparkle,
