@@ -69,7 +69,7 @@ import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
 import { IChipOSWorkerPermissionService, IWorkerPermissionAsk } from '../permission/workerPermissionService.js';
-import { ChatPermissionLevel, isAutoApproveLevel } from '../../../chat/common/constants.js';
+import { ChatAgentLocation, ChatPermissionLevel, isAutoApproveLevel } from '../../../chat/common/constants.js';
 import {
 	AgentEventType,
 	ConnectionState,
@@ -171,6 +171,16 @@ interface IChatSessionRuntime {
 	 * ASKs are silently auto-allowed instead of rendered as a card. Updated
 	 * at every invoke() entry from `request.modeInfo?.permissionLevel`. */
 	permissionLevel?: ChatPermissionLevel;
+	/** InlineChat v2 — tracks whether the current invoke emitted any FileEdit
+	 * (i.e. the response was edit-style). If false at completion AND the
+	 * request came from EditorInline location, we treat the response as
+	 * chat-style and surface it (the inline overlay's "Done, 0 changes"
+	 * collapse otherwise drops it into the void). Reset at every invoke entry. */
+	emittedTextEdit?: boolean;
+	/** InlineChat v2 — accumulates TextDelta chunks during an EditorInline
+	 * invoke so the final inline-overlay progress message can show a short
+	 * answer preview. Cleared at every invoke entry. */
+	inlineAccumulator?: string;
 }
 
 /**
@@ -216,6 +226,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -669,6 +680,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.emittedFileRefs?.clear();
 		runtime.terminalCommandLines.clear();
 		runtime.terminalArtifacts.clear();
+		// InlineChat v2: reset per-invoke tracking.
+		runtime.emittedTextEdit = false;
+		runtime.inlineAccumulator = '';
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -683,6 +697,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			const finish = (result: IChatAgentResult, thinkingTitle?: string) => {
 				if (!resolved) {
+					// InlineChat v2: if this invoke came from Cmd+I (EditorInline)
+					// and produced NO file edits but DID produce some answer text,
+					// surface a preview as a final progress message + auto-focus
+					// the chat panel — otherwise the inline overlay's "Done, 0
+					// changes" status collapses and the answer is invisible.
+					if (
+						request.location === ChatAgentLocation.EditorInline &&
+						!runtime.emittedTextEdit &&
+						runtime.inlineAccumulator?.trim()
+					) {
+						const preview = runtime.inlineAccumulator.trim();
+						const truncated = preview.length > 240 ? preview.slice(0, 240).trimEnd() + '…' : preview;
+						// First line of the answer goes into the inline overlay
+						// status (renderAsPlaintext path — strip codicons + take
+						// the leading sentence so the row stays readable).
+						const firstLine = stripIcons(truncated).split('\n').find(l => l.trim().length > 0)?.slice(0, 200) ?? truncated;
+						progress([this._progress(`Reply in chat panel — ${firstLine}`)]);
+						// Bring the chat view forward so the user sees the full
+						// streamed answer in the same session.
+						void this._commandService.executeCommand('workbench.action.chat.open');
+					}
 					// Set a meaningful thinking title so the framework doesn't fallback to "Finished with N steps"
 					if (thinkingTitle || stepCount > 0) {
 						const title = thinkingTitle ?? `Completed ${stepCount} step${stepCount === 1 ? '' : 's'}`;
@@ -803,6 +838,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					ctx.progress([{ kind: 'thinking', value: p.content } satisfies IChatThinkingPart]);
 				} else {
 					ctx.progress([this._markdown(p.content)]);
+					// InlineChat v2: accumulate assistant text so finish() can
+					// surface a preview in the inline-chat overlay when the
+					// response is chat-style (no FileEdit emitted).
+					if (ctx.request?.location === ChatAgentLocation.EditorInline) {
+						ctx.runtime.inlineAccumulator = (ctx.runtime.inlineAccumulator ?? '') + p.content;
+					}
 				}
 				break;
 			}
@@ -1684,6 +1725,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						kind: 'textEdit',
 						done: true,
 					} satisfies IChatTextEdit]);
+					// InlineChat v2: flag this invoke as edit-style so finish()
+					// skips the "surface chat-style response" path.
+					ctx.runtime.emittedTextEdit = true;
 				}
 				break;
 			}
