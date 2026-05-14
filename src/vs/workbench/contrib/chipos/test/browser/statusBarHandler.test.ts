@@ -138,15 +138,61 @@ suite('StatusBarHandler', () => {
 		assert.strictEqual(statusbarService.entries.has('chipos.statusbar.agent'), false);
 	});
 
+	// ── Reconnect button (UX #4) ─────────────────────────────────────────
+
+	test('reconnect button: hidden by default', () => {
+		assert.strictEqual(statusbarService.entries.has('chipos.statusbar.reconnect'), false);
+	});
+
+	test('reconnect button: appears for sidecar-error', () => {
+		handler.updateReconnectButton('sidecar-error');
+		const text = statusbarService.getLastText('chipos.statusbar.reconnect');
+		assert.ok(text);
+		assert.ok(text!.includes('Reconnect'));
+	});
+
+	test('reconnect button: appears for worker-error', () => {
+		handler.updateReconnectButton('worker-error');
+		const text = statusbarService.getLastText('chipos.statusbar.reconnect');
+		assert.ok(text!.includes('Reconnect'));
+	});
+
+	test('reconnect button: appears for worker-disconnected', () => {
+		handler.updateReconnectButton('worker-disconnected');
+		const text = statusbarService.getLastText('chipos.statusbar.reconnect');
+		assert.ok(text!.includes('Reconnect'));
+	});
+
+	test('reconnect button: hides when reason is undefined', () => {
+		handler.updateReconnectButton('worker-error');
+		const accessor = statusbarService.entries.get('chipos.statusbar.reconnect');
+		assert.ok(accessor);
+
+		handler.updateReconnectButton(undefined);
+		assert.strictEqual(accessor!.disposed, true);
+	});
+
+	test('reconnect button: updates existing entry when reason changes', () => {
+		handler.updateReconnectButton('worker-error');
+		handler.updateReconnectButton('sidecar-error');
+
+		const accessor = statusbarService.entries.get('chipos.statusbar.reconnect');
+		// Only one entry created; subsequent calls update in place.
+		assert.strictEqual(accessor!.updates.length, 2);
+	});
+
 	// ── Dispose ───────────────────────────────────────────────────────────
 
 	test('dispose cleans up all entries', () => {
 		handler.updateAgentState(true);
+		handler.updateReconnectButton('worker-error');
 		handler.dispose();
 
 		const connectionAccessor = statusbarService.entries.get('chipos.statusbar.connection');
 		const agentAccessor = statusbarService.entries.get('chipos.statusbar.agent');
+		const reconnectAccessor = statusbarService.entries.get('chipos.statusbar.reconnect');
 		assert.strictEqual(connectionAccessor!.disposed, true);
 		assert.strictEqual(agentAccessor!.disposed, true);
+		assert.strictEqual(reconnectAccessor!.disposed, true);
 	});
 });

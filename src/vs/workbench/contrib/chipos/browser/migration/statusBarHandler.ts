@@ -20,6 +20,17 @@ const STATUSBAR_AGENT_ID = 'chipos.statusbar.agent';
 const STATUSBAR_FILES_ID = 'chipos.statusbar.files';
 const STATUSBAR_MCP_ID = 'chipos.statusbar.mcp';
 const STATUSBAR_USAGE_ID = 'chipos.statusbar.usage';
+const STATUSBAR_RECONNECT_ID = 'chipos.statusbar.reconnect';
+
+/**
+ * Why the reconnect entry is visible. Each variant maps to a slightly
+ * different label/tooltip so the user knows what specifically went wrong.
+ */
+export type ReconnectReason =
+	| 'sidecar-error'    // reasoner connection died
+	| 'worker-error'     // worker process errored
+	| 'worker-disconnected'; // worker fell off but didn't error
+
 
 export interface IChipOSUsageDisplay {
 	totalTokens: number;
@@ -34,6 +45,7 @@ export class StatusBarHandler extends Disposable {
 	private _filesEntry: IStatusbarEntryAccessor | undefined;
 	private _mcpEntry: IStatusbarEntryAccessor | undefined;
 	private _usageEntry: IStatusbarEntryAccessor | undefined;
+	private _reconnectEntry: IStatusbarEntryAccessor | undefined;
 
 	constructor(
 		@IStatusbarService private readonly _statusbarService: IStatusbarService,
@@ -219,6 +231,68 @@ export class StatusBarHandler extends Disposable {
 		}
 	}
 
+	// ── Reconnect Worker (UX #4) ──────────────────────────────────────────
+	//
+	// Surfaces a one-click recovery path when the sidecar / worker drops out.
+	// Stock VS Code only shows a generic "Disconnected" pill; users have had to
+	// open the command palette and type out "ChipOS: Restart Worker" to recover.
+	// This entry appears next to the connection pill specifically when something
+	// is wrong and disappears once the user fixes it (or the worker comes back
+	// on its own).
+	updateReconnectButton(reason: ReconnectReason | undefined): void {
+		if (reason === undefined) {
+			if (this._reconnectEntry) {
+				this._reconnectEntry.dispose();
+				this._reconnectEntry = undefined;
+			}
+			return;
+		}
+
+		const text = '$(debug-restart) Reconnect';
+		// Tooltip varies so users know what specifically failed. The command
+		// itself is always restartWorker — it's a no-op for sidecar errors but
+		// also serves as a "kick the system" recovery action that often clears
+		// transient reasoner issues too.
+		let tooltip: string;
+		switch (reason) {
+			case 'sidecar-error':
+				tooltip = 'ChipOS backend connection failed.\nClick to restart the worker (often clears the issue).';
+				break;
+			case 'worker-error':
+				tooltip = 'ChipOS worker errored out.\nClick to restart it.';
+				break;
+			case 'worker-disconnected':
+				tooltip = 'ChipOS worker is disconnected.\nClick to reconnect.';
+				break;
+		}
+
+		const entry = {
+			name: 'ChipOS Reconnect',
+			text,
+			ariaLabel: 'Reconnect ChipOS worker',
+			command: 'chipos.restartWorker',
+			tooltip,
+			// `warning` background draws the eye without screaming "error"; the
+			// underlying issue might be transient or recoverable.
+			backgroundColor: { id: 'statusBarItem.warningBackground' },
+			color: { id: 'statusBarItem.warningForeground' },
+		};
+
+		if (this._reconnectEntry) {
+			this._reconnectEntry.update(entry);
+		} else {
+			this._reconnectEntry = this._statusbarService.addEntry(
+				entry,
+				STATUSBAR_RECONNECT_ID,
+				StatusbarAlignment.LEFT,
+				// Higher priority than the connection pill (100) so it appears
+				// to its immediate right and is the first thing the eye lands on.
+				{ location: { id: STATUSBAR_CONNECTION_ID, priority: 102 }, alignment: StatusbarAlignment.LEFT, compact: false },
+			);
+			this._register(this._reconnectEntry);
+		}
+	}
+
 	override dispose(): void {
 		this._connectionEntry?.dispose();
 		this._connectionEntry = undefined;
@@ -230,6 +304,8 @@ export class StatusBarHandler extends Disposable {
 		this._mcpEntry = undefined;
 		this._usageEntry?.dispose();
 		this._usageEntry = undefined;
+		this._reconnectEntry?.dispose();
+		this._reconnectEntry = undefined;
 		super.dispose();
 	}
 
