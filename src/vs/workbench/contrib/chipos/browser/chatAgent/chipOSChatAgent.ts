@@ -226,7 +226,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
-		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -699,24 +698,25 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (!resolved) {
 					// InlineChat v2: if this invoke came from Cmd+I (EditorInline)
 					// and produced NO file edits but DID produce some answer text,
-					// surface a preview as a final progress message + auto-focus
-					// the chat panel — otherwise the inline overlay's "Done, 0
-					// changes" status collapses and the answer is invisible.
+					// surface the answer as a notification toast. The inline
+					// overlay's "Done, 0 changes" status collapses immediately
+					// after invoke resolves, and the chat-panel session is a
+					// different sessionResource than the inline session — so
+					// neither surface naturally shows the answer. A notification
+					// is the simplest path that doesn't require routing the same
+					// prompt through a second LLM call.
 					if (
 						request.location === ChatAgentLocation.EditorInline &&
 						!runtime.emittedTextEdit &&
 						runtime.inlineAccumulator?.trim()
 					) {
-						const preview = runtime.inlineAccumulator.trim();
-						const truncated = preview.length > 240 ? preview.slice(0, 240).trimEnd() + '…' : preview;
-						// First line of the answer goes into the inline overlay
-						// status (renderAsPlaintext path — strip codicons + take
-						// the leading sentence so the row stays readable).
-						const firstLine = stripIcons(truncated).split('\n').find(l => l.trim().length > 0)?.slice(0, 200) ?? truncated;
-						progress([this._progress(`Reply in chat panel — ${firstLine}`)]);
-						// Bring the chat view forward so the user sees the full
-						// streamed answer in the same session.
-						void this._commandService.executeCommand('workbench.action.chat.open');
+						const answer = stripIcons(runtime.inlineAccumulator.trim());
+						const truncated = answer.length > 600 ? answer.slice(0, 600).trimEnd() + '…' : answer;
+						this._notificationService.notify({
+							severity: Severity.Info,
+							message: `ChipOS: ${truncated}`,
+							source: 'ChipOS Inline Chat',
+						});
 					}
 					// Set a meaningful thinking title so the framework doesn't fallback to "Finished with N steps"
 					if (thinkingTitle || stepCount > 0) {
