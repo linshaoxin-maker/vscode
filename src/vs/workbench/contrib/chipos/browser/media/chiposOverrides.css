@@ -72,7 +72,7 @@
 }
 
 .chat-welcome-view .chat-welcome-view-message > ul,
-.chat-welcome-view .chat-welcome-view-disclaimer > ul {
+.chat-welcome-view .chat-welcome-view-disclaimer ul {
 	list-style: none;
 	padding: 0;
 	margin: 12px 0 6px 0;
@@ -83,12 +83,12 @@
 }
 
 .chat-welcome-view .chat-welcome-view-message > ul > li,
-.chat-welcome-view .chat-welcome-view-disclaimer > ul > li {
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li {
 	margin: 0;
 }
 
 .chat-welcome-view .chat-welcome-view-message > ul > li > a,
-.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a {
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li > a {
 	display: inline-flex;
 	align-items: center;
 	gap: 8px;
@@ -106,14 +106,14 @@
 }
 
 .chat-welcome-view .chat-welcome-view-message > ul > li > a:hover,
-.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a:hover {
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li > a:hover {
 	background-color: var(--vscode-list-hoverBackground);
 	border-color: var(--vscode-focusBorder, #007fd4);
 	text-decoration: none;
 }
 
 .chat-welcome-view .chat-welcome-view-message > ul > li > a:focus-visible,
-.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a:focus-visible {
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li > a:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder, #007fd4);
 	outline-offset: 1px;
 }
@@ -122,7 +122,7 @@
  * Codicon rendered inside the chip link via $(name) — give it a fixed metric
  * width so chips align cleanly even when icon glyphs differ in stroke weight.
  */
-.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > a .codicon {
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li > a .codicon {
 	flex: 0 0 auto;
 	font-size: 14px;
 	color: var(--vscode-symbolIcon-classForeground, var(--vscode-foreground));
@@ -134,7 +134,7 @@
  * its size to match the chips below so the column reads coherent.
  */
 .chat-welcome-view .chat-welcome-view-message > ul > li > .monaco-button,
-.chat-welcome-view .chat-welcome-view-disclaimer > ul > li > .monaco-button {
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li > .monaco-button {
 	display: inline-flex;
 	width: 100%;
 	box-sizing: border-box;
