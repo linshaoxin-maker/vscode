@@ -214,3 +214,18 @@
 	color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)) !important;
 	opacity: 0.6;
 }
+
+/*-------------------------------------------------------------------------------
+ *  UX #9 — Bigger welcome view title
+ *
+ *  Stock framework (chatViewWelcome.css §88) sizes "Build with ChipOS" at
+ *  13px — same as body text. The title needs more visual weight to anchor
+ *  the empty state. Bump to 17px with slightly tighter line-height; the
+ *  starter-prompt chips below take care of the action affordance.
+ *-----------------------------------------------------------------------------*/
+
+.chat-welcome-view > .chat-welcome-view-title {
+	font-size: 17px;
+	line-height: 1.2;
+	margin-top: 8px;
+}
