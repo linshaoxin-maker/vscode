@@ -19,7 +19,7 @@ import { localize } from '../../../../../../nls.js';
 import { MenuWorkbenchToolBar } from '../../../../../../platform/actions/browser/toolbar.js';
 import { MenuId } from '../../../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
-import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { IContextKey, IContextKeyService } from '../../../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../../../platform/hover/browser/hover.js';
@@ -442,11 +442,15 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		return this.sessionsViewerOrientation;
 	}
 
-	updateConfiguredSessionsViewerOrientation(orientation: 'stacked' | 'sideBySide' | unknown): void {
-		return this.doUpdateConfiguredSessionsViewerOrientation(orientation, { updateConfiguration: true, layout: true });
+	updateConfiguredSessionsViewerOrientation(orientation: 'stacked' | 'sideBySide' | unknown, options?: { transient?: boolean }): void {
+		return this.doUpdateConfiguredSessionsViewerOrientation(orientation, {
+			updateConfiguration: true,
+			layout: true,
+			transient: options?.transient ?? false,
+		});
 	}
 
-	private doUpdateConfiguredSessionsViewerOrientation(orientation: 'stacked' | 'sideBySide' | unknown, options: { updateConfiguration: boolean; layout: boolean }): void {
+	private doUpdateConfiguredSessionsViewerOrientation(orientation: 'stacked' | 'sideBySide' | unknown, options: { updateConfiguration: boolean; layout: boolean; transient?: boolean }): void {
 		const oldSessionsViewerOrientationConfiguration = this.sessionsViewerOrientationConfiguration;
 
 		let validatedOrientation: 'stacked' | 'sideBySide';
@@ -462,7 +466,17 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		}
 
 		if (options.updateConfiguration) {
-			this.configurationService.updateValue(ChatConfiguration.ChatViewSessionsOrientation, validatedOrientation);
+			// [ChipOS] When the orientation flip is a side effect of the
+			// transient "Show / Hide Agent Sessions Sidebar" toggle, write
+			// to MEMORY so settings.json stays clean (Cursor-style behaviour
+			// — the sessions sidebar is treated as session-scoped UI state).
+			// Direct user interaction with the orientation submenu still
+			// passes transient=false so the choice persists.
+			if (options.transient) {
+				this.configurationService.updateValue(ChatConfiguration.ChatViewSessionsOrientation, validatedOrientation, ConfigurationTarget.MEMORY);
+			} else {
+				this.configurationService.updateValue(ChatConfiguration.ChatViewSessionsOrientation, validatedOrientation);
+			}
 		}
 
 		if (options.layout) {

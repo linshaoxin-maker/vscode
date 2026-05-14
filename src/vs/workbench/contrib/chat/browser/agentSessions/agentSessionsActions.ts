@@ -24,7 +24,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { LocalChatSessionUri } from '../../common/model/chatUri.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ChatConfiguration } from '../../common/constants.js';
 import { ACTION_ID_NEW_CHAT } from '../actions/chatActions.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
@@ -65,7 +65,19 @@ export class ToggleShowAgentSessionsAction extends Action2 {
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const configurationService = accessor.get(IConfigurationService);
 		const currentValue = configurationService.getValue<boolean>(ChatConfiguration.ChatViewSessionsEnabled);
-		await configurationService.updateValue(ChatConfiguration.ChatViewSessionsEnabled, !currentValue);
+		// [ChipOS] Cursor-style toggle: don't persist this to user settings.
+		// `ConfigurationTarget.MEMORY` puts the override into the in-memory
+		// configuration model so the chat panel reacts immediately
+		// (`onDidChangeConfiguration` fires) but settings.json is left alone.
+		// On the next IDE launch the user sees the chipos default again
+		// (sessions sidebar hidden), and a misclick of this toggle no longer
+		// saddles them with a permanently-on sessions list. Showing the
+		// sidebar remains a single click; we just stop persisting it.
+		await configurationService.updateValue(
+			ChatConfiguration.ChatViewSessionsEnabled,
+			!currentValue,
+			ConfigurationTarget.MEMORY,
+		);
 	}
 }
 
@@ -886,10 +898,18 @@ abstract class UpdateChatViewWidthAction extends Action2 {
 		const panelPosition = layoutService.getPanelPosition();
 		const canResizeView = chatLocation !== ViewContainerLocation.Panel || (panelPosition === Position.LEFT || panelPosition === Position.RIGHT);
 
-		// Update configuration if needed
+		// Update configuration if needed.
+		// [ChipOS] Cursor-style toggle: write to MEMORY so the chat panel
+		// reacts immediately but settings.json stays clean. Sessions sidebar
+		// is treated as transient UI state — a misclick of "Show Agent
+		// Sessions Sidebar" will not stick across IDE relaunches.
 		const chatViewSessionsEnabled = configurationService.getValue<boolean>(ChatConfiguration.ChatViewSessionsEnabled);
 		if (!chatViewSessionsEnabled) {
-			await configurationService.updateValue(ChatConfiguration.ChatViewSessionsEnabled, true);
+			await configurationService.updateValue(
+				ChatConfiguration.ChatViewSessionsEnabled,
+				true,
+				ConfigurationTarget.MEMORY,
+			);
 		}
 
 		let chatView = viewsService.getActiveViewWithId<ChatViewPane>(ChatViewId);
@@ -911,10 +931,14 @@ abstract class UpdateChatViewWidthAction extends Action2 {
 		const newOrientation = this.getOrientation();
 		const lastWidthForOrientation = chatView?.getLastDimensions(newOrientation)?.width;
 
+		// [ChipOS] Show/Hide sidebar action triggers an orientation flip; mark
+		// it transient so the underlying configuration write goes to MEMORY
+		// instead of settings.json (Cursor-style). Direct user interaction
+		// with the orientation submenu uses the no-arg form and persists.
 		if ((!canResizeView || validatedConfiguredOrientation === 'sideBySide') && newOrientation === AgentSessionsViewerOrientation.Stacked) {
-			chatView.updateConfiguredSessionsViewerOrientation('stacked');
+			chatView.updateConfiguredSessionsViewerOrientation('stacked', { transient: true });
 		} else if ((!canResizeView || validatedConfiguredOrientation === 'stacked') && newOrientation === AgentSessionsViewerOrientation.SideBySide) {
-			chatView.updateConfiguredSessionsViewerOrientation('sideBySide');
+			chatView.updateConfiguredSessionsViewerOrientation('sideBySide', { transient: true });
 		}
 
 		if (!canResizeView) {
