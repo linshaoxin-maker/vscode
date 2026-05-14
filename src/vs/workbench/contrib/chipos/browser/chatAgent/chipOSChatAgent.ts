@@ -177,6 +177,13 @@ interface IChatSessionRuntime {
 	 * chat-style and surface it (the inline overlay's "Done, 0 changes"
 	 * collapse otherwise drops it into the void). Reset at every invoke entry. */
 	emittedTextEdit?: boolean;
+	/** InlineChat v2 (F) — count of distinct files edited in this invoke +
+	 * the *first* edited file's basename. Used when the invoke comes from
+	 * EditorInline to fire a "Applied N edits to file — ⌘⇧Y to accept" toast
+	 * so users see an obvious next-action affordance after AI edits land.
+	 * Reset alongside emittedTextEdit. */
+	editedFiles?: Set<string>;
+	firstEditedFileLabel?: string;
 	/** InlineChat v2 — accumulates TextDelta chunks during an EditorInline
 	 * invoke so the final inline-overlay progress message can show a short
 	 * answer preview. Cleared at every invoke entry. */
@@ -682,6 +689,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// InlineChat v2: reset per-invoke tracking.
 		runtime.emittedTextEdit = false;
 		runtime.inlineAccumulator = '';
+		runtime.editedFiles = new Set<string>();
+		runtime.firstEditedFileLabel = undefined;
 
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
@@ -715,6 +724,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						this._notificationService.notify({
 							severity: Severity.Info,
 							message: `ChipOS: ${truncated}`,
+							source: 'ChipOS Inline Chat',
+						});
+					}
+					// InlineChat F: when the response WAS edit-style, the file
+					// just silently mutated under the user's cursor. Without a
+					// visible Accept/Reject affordance users miss that edits
+					// applied ("where is the output?" complaint). Surface a
+					// toast naming the file + chipos keybindings.
+					if (
+						request.location === ChatAgentLocation.EditorInline &&
+						runtime.emittedTextEdit &&
+						runtime.editedFiles && runtime.editedFiles.size > 0
+					) {
+						const fileCount = runtime.editedFiles.size;
+						const label = runtime.firstEditedFileLabel ?? 'file';
+						const filePart = fileCount === 1
+							? `\`${label}\``
+							: `${fileCount} files (starting with \`${label}\`)`;
+						this._notificationService.notify({
+							severity: Severity.Info,
+							message: `ChipOS: Applied AI edits to ${filePart} — ⌘⇧Y to accept, ⌘⇧Backspace to reject`,
 							source: 'ChipOS Inline Chat',
 						});
 					}
@@ -1728,6 +1758,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// InlineChat v2: flag this invoke as edit-style so finish()
 					// skips the "surface chat-style response" path.
 					ctx.runtime.emittedTextEdit = true;
+					// InlineChat F: track distinct files edited so the finish()
+					// toast can read "Applied N edits to <file>".
+					const key = fileUri.toString();
+					if (!ctx.runtime.editedFiles?.has(key)) {
+						ctx.runtime.editedFiles?.add(key);
+						if (!ctx.runtime.firstEditedFileLabel) {
+							// Use basename for a compact label; full path is in
+							// the chat panel's references section if user wants it.
+							const segments = fileUri.path.split('/');
+							ctx.runtime.firstEditedFileLabel = segments[segments.length - 1] || fileUri.path;
+						}
+					}
 				}
 				break;
 			}
