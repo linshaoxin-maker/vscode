@@ -78,6 +78,7 @@ import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryServ
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposInlineCompletions.js';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposEdaSnippetPicker.js';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSInputAccent.css';
 
@@ -601,6 +602,15 @@ MenuRegistry.appendMenuItems([
 			order: 8,
 		},
 	},
+	{
+		id: MenuId.EditorContext,
+		item: {
+			command: { id: 'chipos.insertEdaSnippet', title: localize('chipos.insertEdaSnippet', 'ChipOS: Insert EDA Snippet…'), icon: Codicon.symbolSnippet },
+			when: ContextKeyExpr.has('editorTextFocus'),
+			group: 'chipos',
+			order: 9,
+		},
+	},
 	// Surface the 4 new right-click commands in the Command Palette so users
 	// (and CI/automation) can invoke them via Cmd+Shift+P. Without this entry
 	// `CommandsRegistry.registerCommand` alone makes them callable from code
@@ -652,6 +662,12 @@ MenuRegistry.appendMenuItems([
 		item: {
 			command: { id: ChipOSCommandId.GenerateTestsForSelection, title: localize('chipos.generateTests', 'ChipOS: Generate Tests'), icon: Codicon.beaker },
 			when: ContextKeyExpr.has('editorHasSelection'),
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: 'chipos.insertEdaSnippet', title: localize('chipos.insertEdaSnippet', 'ChipOS: Insert EDA Snippet…'), icon: Codicon.symbolSnippet },
 		},
 	},
 	{

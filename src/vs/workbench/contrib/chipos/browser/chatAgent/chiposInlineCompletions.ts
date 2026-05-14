@@ -48,6 +48,12 @@ interface IMagicSnippet {
 
 const VERILOG_LANGS = new Set(['verilog', 'systemverilog']);
 
+export interface IChipOSEdaSnippet {
+	readonly label: string;
+	readonly body: string;
+	readonly languages?: ReadonlySet<string>;
+}
+
 const SNIPPETS: readonly IMagicSnippet[] = [
 	{
 		trigger: /\/\/\s*gen\s+counter\s*$/i,
@@ -417,3 +423,10 @@ export class ChipOSInlineCompletionsContribution extends Disposable implements I
 }
 
 registerWorkbenchContribution2(ChipOSInlineCompletionsContribution.ID, ChipOSInlineCompletionsContribution, WorkbenchPhase.AfterRestored);
+
+/** Public snapshot of all EDA snippets — used by the right-click
+ *  "Insert EDA Snippet" quick pick (chiposEdaSnippetPicker.ts) to
+ *  surface them without needing to remember magic-comment triggers. */
+export function getChipOSEdaSnippets(): readonly IChipOSEdaSnippet[] {
+	return SNIPPETS.map(s => ({ label: s.label, body: s.body, languages: s.languages }));
+}
