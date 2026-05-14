@@ -453,11 +453,15 @@ export class InlineChatSessionOverlayWidget extends Disposable {
 			}
 
 			if (response.isComplete) {
-				// Check for errors first
+				// Check for errors first — show the agent's specific message
+				// instead of a generic "Sorry, your request failed" so the user
+				// knows whether it's e.g. a backend timeout, a permission deny,
+				// or a quota error. Falls back to the generic localized string
+				// when the agent didn't supply detail.
 				const result = response.result;
 				if (result?.errorDetails) {
 					return {
-						message: localize('error', "Sorry, your request failed"),
+						message: result.errorDetails.message?.trim() || localize('error', "Sorry, your request failed"),
 						icon: Codicon.error
 					};
 				}

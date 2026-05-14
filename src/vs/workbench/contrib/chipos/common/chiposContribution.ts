@@ -77,6 +77,7 @@ import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryService.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposInlineCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSInputAccent.css';
 
@@ -493,6 +494,20 @@ KeybindingsRegistry.registerKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyY,
 	when: ContextKeyExpr.has('chatIsVisible'),
+});
+
+// Cursor-style Cmd+L: toggle chat panel (focus when hidden, hide when
+// visible). The stock framework binds `chat.toggle` to no keys; chipos
+// surfaces it on Cmd+L for parity with Cursor.
+// `when: chatInputHasFocus.negate()` so typing Cmd+L inside the chat
+// input box does NOT immediately hide the chat (lets the editor's
+// stock `expandLineSelection` continue to work there if the input is
+// implemented as a Monaco editor).
+KeybindingsRegistry.registerKeybindingRule({
+	id: 'workbench.action.chat.toggle',
+	weight: KeybindingWeight.WorkbenchContrib,
+	primary: KeyMod.CtrlCmd | KeyCode.KeyL,
+	when: ContextKeyExpr.has('chatInputHasFocus').negate(),
 });
 
 KeybindingsRegistry.registerKeybindingRule({
