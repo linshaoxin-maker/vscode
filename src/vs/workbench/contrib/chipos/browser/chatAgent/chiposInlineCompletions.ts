@@ -7,7 +7,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { Position } from '../../../../../editor/common/core/position.js';
 import { Range } from '../../../../../editor/common/core/range.js';
-import { InlineCompletionContext, InlineCompletions, InlineCompletionsProvider, InlineCompletionsDisposeReason } from '../../../../../editor/common/languages.js';
+import { CompletionContext, CompletionItem, CompletionItemKind, CompletionItemProvider, CompletionList, InlineCompletionContext, InlineCompletions, InlineCompletionsProvider, InlineCompletionsDisposeReason } from '../../../../../editor/common/languages.js';
 import { ITextModel } from '../../../../../editor/common/model.js';
 import { ILanguageFeaturesService } from '../../../../../editor/common/services/languageFeatures.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
@@ -538,6 +538,75 @@ const SNIPPETS: readonly IMagicSnippet[] = [
 	},
 ];
 
+/**
+ * Discoverability companion to the inline-completions provider: when the user
+ * types `// gen ` (with at least one trailing space) in a Verilog/SystemVerilog
+ * file, surface every chipos EDA snippet trigger as a regular completion
+ * popup. Picking one completes the trigger comment, which then materializes
+ * via the inline-completions ghost-text provider below.
+ *
+ * Without this, users had to read docs / use the picker quickPick to know
+ * triggers exist; now the editor's standard completion popup teaches them.
+ */
+class ChipOSEdaTriggerCompletionsProvider implements CompletionItemProvider {
+
+	readonly _debugDisplayName = 'chipos.edaTriggerCompletions';
+	readonly triggerCharacters = [' '];
+
+	constructor(
+		@ILogService private readonly _logService: ILogService,
+	) { }
+
+	provideCompletionItems(
+		model: ITextModel,
+		position: Position,
+		_context: CompletionContext,
+		_token: CancellationToken,
+	): CompletionList | null {
+		const langId = model.getLanguageId();
+		if (!VERILOG_LANGS.has(langId)) {
+			return null;
+		}
+		const lineText = model.getLineContent(position.lineNumber);
+		const beforeCursor = lineText.substring(0, position.column - 1);
+		// Allow "// gen " plus any partial alphanumeric/dash suffix.
+		const match = /^\s*\/\/\s*gen\s+([\w-]*)$/i.exec(beforeCursor);
+		if (!match) {
+			return null;
+		}
+		const [, partial] = match;
+		const partialLower = partial.toLowerCase();
+
+		const suggestions: CompletionItem[] = [];
+		for (const snippet of SNIPPETS) {
+			// Snippet label format: "gen <trigger> — <description>"
+			const labelMatch = /^gen\s+(.+?)\s+—\s+(.+)$/.exec(snippet.label);
+			if (!labelMatch) {
+				continue;
+			}
+			const [, triggerName, description] = labelMatch;
+			if (partialLower && !triggerName.toLowerCase().includes(partialLower)) {
+				continue;
+			}
+			suggestions.push({
+				label: { label: triggerName, description },
+				insertText: triggerName,
+				kind: CompletionItemKind.Snippet,
+				range: new Range(
+					position.lineNumber,
+					position.column - partial.length,
+					position.lineNumber,
+					position.column,
+				),
+				sortText: triggerName,
+				filterText: triggerName,
+			});
+		}
+		this._logService.trace(`[ChipOS EdaTriggerCompletions] partial="${partial}" matched ${suggestions.length}`);
+		return { suggestions };
+	}
+}
+
 class ChipOSInlineCompletionsProvider implements InlineCompletionsProvider<InlineCompletions> {
 
 	readonly debugDisplayName = 'chipos.inlineCompletions';
@@ -607,7 +676,15 @@ export class ChipOSInlineCompletionsContribution extends Disposable implements I
 		// testbenches, Tcl scripts, etc. v2 will narrow by language or
 		// add a config gate.
 		this._register(languageFeaturesService.inlineCompletionsProvider.register({ pattern: '**' }, provider));
-		logService.info('[ChipOS] InlineCompletions provider registered (v1.5 — 14 magic-comment snippets: counter / testbench / fsm / synchronizer / edge / fifo / axi-lite / uart tx / bram / clock-divider / debouncer / round-robin / one-hot / priority; LLM endpoint pending)');
+
+		// Companion: regular completion popup teaches users which `// gen …`
+		// triggers exist. Restricted to Verilog/SV files (snippets are
+		// Verilog-shaped) and shown only after the user types `// gen ` so
+		// it doesn't compete with general IntelliSense in unrelated lines.
+		const triggerProvider = new ChipOSEdaTriggerCompletionsProvider(logService);
+		this._register(languageFeaturesService.completionProvider.register({ pattern: '**' }, triggerProvider));
+
+		logService.info('[ChipOS] InlineCompletions provider registered (v1.5 — 14 magic-comment snippets + trigger-name discovery popup; LLM endpoint pending)');
 	}
 }
 
