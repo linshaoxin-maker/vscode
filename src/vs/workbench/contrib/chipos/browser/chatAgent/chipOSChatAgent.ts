@@ -1854,6 +1854,47 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return new Promise<IChatAgentResult>((resolve) => {
 			let resolved = false;
 			let contStepCount = 0;
+			// Idle-watchdog (HANDOFF §8 / Phase B follow-up §12 #2): in
+			// multi-step Full Auto chains the IDE listener occasionally
+			// stops receiving events even though the round is still
+			// progressing on the reasoner side, leaving the chat spinner
+			// stuck forever. Symptoms point at a hot-event drop window
+			// between `await decide()` returning and the listener being
+			// registered, plus SSE reconnect races. Until that root cause
+			// is fully traced, guarantee the round terminates with a
+			// graceful error after a long idle period so the user can
+			// reopen the chat and try again rather than restart the IDE.
+			//
+			// Threshold tuned to be generous: a 50-line LLM completion
+			// streams in ~5 s on the slowest configured backend; 90 s
+			// without ANY event is well outside legitimate quiet periods
+			// (heartbeat events arrive every 30 s from the SseClient idle
+			// watchdog, so this watchdog effectively detects a dead SSE
+			// stream that the lower layer also failed to reconnect).
+			const IDLE_TIMEOUT_MS = 90_000;
+			let idleTimer: ReturnType<typeof setTimeout> | undefined;
+			const armIdleTimer = () => {
+				if (idleTimer !== undefined) {
+					clearTimeout(idleTimer);
+				}
+				idleTimer = setTimeout(() => {
+					if (resolved) {
+						return;
+					}
+					this._logService.warn(
+						'[ChipOS Agent] _listenForContinuation idle for %dms — finishing with graceful error',
+						IDLE_TIMEOUT_MS,
+					);
+					progress([{
+						kind: 'agentError',
+						error_code: 'CONTINUATION_IDLE_TIMEOUT',
+						message: '⏱️ **会话静默超时**：未在预期时间内收到后端事件，请重新发送或刷新对话。',
+						retryable: true,
+						suggestion: '若经常发生，请检查与 reasoner 的网络连通或开启开发者工具查看 SSE 错误。',
+					} satisfies IChatAgentError]);
+					finish({ errorDetails: { message: '_listenForContinuation idle timeout' } });
+				}, IDLE_TIMEOUT_MS);
+			};
 
 			const finish = (result: IChatAgentResult, thinkingTitle?: string) => {
 				if (!resolved) {
@@ -1862,6 +1903,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						progress([{ kind: 'thinking', value: '', generatedTitle: title } satisfies IChatThinkingPart]);
 					}
 					resolved = true;
+					if (idleTimer !== undefined) {
+						clearTimeout(idleTimer);
+						idleTimer = undefined;
+					}
 					listener.dispose();
 					result = {
 						...result,
@@ -1887,6 +1932,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					this._logService.trace('[ChipOS Agent] Ignoring continuation event for different session', event.session_id, 'expected', runtime.backendSessionId, 'type', event.event_type);
 					return;
 				}
+
+				// Any event observed from the backend resets the idle
+				// watchdog. Includes heartbeat / status events as well
+				// as real content — a live SSE stream is enough to keep
+				// the round open even if no LLM tokens are arriving.
+				armIdleTimer();
 
 				try {
 					if (request) {
@@ -1917,6 +1968,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 				finish({});
 			});
+
+			// Arm the watchdog *after* the listener is installed so any
+			// event we already missed during the await/POST window does
+			// not count against the idle window — the timer only starts
+			// counting from now.
+			armIdleTimer();
 		});
 	}
 
