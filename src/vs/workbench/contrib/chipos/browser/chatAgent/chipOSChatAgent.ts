@@ -170,6 +170,29 @@ interface IChatSessionRuntime {
 	 * ASKs are silently auto-allowed instead of rendered as a card. Updated
 	 * at every invoke() entry from `request.modeInfo?.permissionLevel`. */
 	permissionLevel?: ChatPermissionLevel;
+	/**
+	 * Backend single-shot session compensation.
+	 *
+	 * The reasoner's AgentSession is single-shot by design: once the per-round
+	 * `run()` reaches `_finalize()`, `stream_manager.close()` flips
+	 * `_closed = True` permanently. Any subsequent task submitted to the same
+	 * session id silently drops every emit (`StreamManager.emit` early-returns
+	 * when `_closed`), so the IDE sees SSE connect → immediately end → reconnect
+	 * in a 1 Hz storm and the user's second prompt appears to hang forever
+	 * (observed 2026-05-13 22:25, ~50 consecutive "SSE stream ended,
+	 * scheduling reconnect" lines).
+	 *
+	 * IDE-side compensation: when a TaskComplete event arrives we mark the
+	 * session as exhausted, and the next user-prompt `invoke()` mints a fresh
+	 * `backendSessionId`. The chat thread continues to work; the trade-off is
+	 * that the reasoner's session-scoped Memory does not carry over the round
+	 * boundary (every new prompt starts fresh from the reasoner's POV).
+	 *
+	 * Confirmation-response invokes (acceptedConfirmationData /
+	 * rejectedConfirmationData) keep the existing session — those are part of
+	 * the same round and depend on the live worker decide pipeline.
+	 */
+	sessionExhausted?: boolean;
 }
 
 /**
@@ -591,24 +614,34 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return this._listenForContinuation(streamClient, progress, token, request);
 		}
 
-		// ── Memory fix (2026-05-09) ───────────────────────────────────────────
-		// Reuse existing backendSessionId across turns of the same chat thread.
-		// Reasoner's Memory is keyed on session_id; minting a fresh id on every
-		// `invoke()` made the agent appear stateless ("无法访问上一轮的对话历史")
-		// because each turn allocated a new Memory bucket on the backend.
-		// First turn: no backendSessionId set yet → generate one and stash it.
-		// Subsequent turns: runtime.backendSessionId already populated by the
-		// initial invoke / by `_setSessionBackendId` → reuse it verbatim.
-		// _disposeRuntime clears it when the chat thread is closed, so a new
-		// thread still gets a fresh id.
-		let sessionId = runtime.backendSessionId;
-		if (!sessionId) {
-			sessionId = `native_chat_${++this._sessionCounter}_${Date.now()}`;
-			this._setSessionBackendId(request.sessionResource, sessionId);
-			this._logService.info('[ChipOS Agent] New backend session:', sessionId);
-		} else {
-			this._logService.info('[ChipOS Agent] Reusing backend session:', sessionId);
-		}
+		// ── Single-shot backend session compensation (2026-05-13) ──
+		// Originally (Memory fix 2026-05-09) chipOSChatAgent reused the same
+		// backendSessionId across every turn so the reasoner's Memory
+		// (keyed on session_id) carried prior context. That premise broke
+		// after the reasoner started single-shot session lifecycle: every
+		// TaskComplete triggers _finalize() → stream_manager.close() which
+		// permanently flips StreamManager._closed = True (every subsequent
+		// emit() silently no-ops). With reuse, the second user prompt would
+		// submit a server-side task whose events never reached us — SSE
+		// connected/ended/reconnected at 1 Hz indefinitely and the user
+		// stared at "Connecting to backend..." forever.
+		//
+		// Empirically the reasoner does NOT always emit a TaskComplete event
+		// observable on the IDE side (we tried gating on it via a
+		// sessionExhausted flag; the flag never tripped). So we take the
+		// blunt instrument route: mint a fresh sessionId on every
+		// user-prompt invoke. The visible regression is that the reasoner's
+		// session-scoped Memory does not carry across turns; the workaround
+		// is acceptable until the reasoner supports per-task lifecycle on a
+		// long-lived session (tracked as a follow-up to PERMISSION-APPROVAL-UX-V2).
+		//
+		// Confirmation-response invokes (acceptedConfirmationData /
+		// rejectedConfirmationData) bail out earlier in this method via
+		// _listenForContinuation, so they never hit this branch — those
+		// remain on the same session id, preserving the in-flight round.
+		const sessionId = `native_chat_${++this._sessionCounter}_${Date.now()}`;
+		this._setSessionBackendId(request.sessionResource, sessionId);
+		this._logService.info('[ChipOS Agent] New backend session:', sessionId);
 		const userMessage = request.message;
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
@@ -1624,6 +1657,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// ── Task complete → resolve ──
 			case AgentEventType.TaskComplete: {
 				const p = event.payload as ITaskCompletePayload;
+				// Backend single-shot compensation: the reasoner closes the
+				// session's stream_manager in _finalize(), so subsequent
+				// emits on the same session id are silently dropped. Tag the
+				// runtime here so the next user-prompt invoke mints a fresh
+				// backendSessionId instead of reusing the now-dead one.
+				ctx.runtime.sessionExhausted = true;
 				// T6b: record terminal status + flush IDE-side batch to reasoner
 				// /v1/trace/upload. Fire-and-forget — flush failures degrade
 				// observability gracefully (logged in FullTracer.flush).

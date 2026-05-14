@@ -325,7 +325,16 @@ configurationRegistry.registerConfiguration({
 // Override defaults for built-in chat settings to provide Cursor-quality UX.
 configurationRegistry.registerDefaultConfigurations([{
 	overrides: {
-		'chat.viewSessions.enabled': true,
+		// chat.viewSessions.enabled: in narrow auxiliary-bar layouts (the
+		// ChipOS default) `true` forces the sessions sidebar into a stacked
+		// layout that occupies the upper half of the chat panel, hiding the
+		// welcome banner and the active conversation. The user is then left
+		// with a "Search Agents..." list and an isolated chat input at the
+		// bottom of the pane. Default to `false` so opening Chat lands on the
+		// welcome / active conversation directly; users who want the sessions
+		// browser can re-enable it via Settings or the "Toggle Agent Sessions
+		// View" command.
+		'chat.viewSessions.enabled': false,
 		'chat.viewSessions.orientation': 'stacked',
 		'chat.viewProgressBadge.enabled': true,
 		'chat.agent.thinkingStyle': 'animated',

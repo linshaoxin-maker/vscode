@@ -35,6 +35,7 @@ import { CodeBlockPart } from './chatContentParts/codeBlockPart.js';
 import { ChatListDelegate, ChatListItemRenderer, IChatListItemTemplate, IChatRendererDelegate } from './chatListRenderer.js';
 import { ChatEditorOptions } from './chatOptions.js';
 import { ChatPendingDragController } from './chatPendingDragAndDrop.js';
+import { isChipOSPermissionCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
 
 export interface IChatListWidgetStyles {
 	listForeground?: string;
@@ -335,8 +336,32 @@ export class ChatListWidget extends Disposable {
 			// If the element contains a pending confirmation card, reveal it so the
 			// action buttons are visible. relativeTop=1 aligns the element's bottom
 			// to the viewport bottom.
+			//
+			// Phase B: chipos worker-permission cards skip this height-driven
+			// reveal entirely. Stock confirmation cards use a fixed-position
+			// floating button overlay, so revealing the element is harmless —
+			// the buttons stay visible regardless of where the card scrolls.
+			// The chipos card renders its action buttons INLINE in the part,
+			// so revealing on every height delta drags the entire response
+			// back to the viewport and makes upward scrolling impossible.
+			// We previously tried gating on `isScrolledToBottom`, but the
+			// 2px tolerance in that check still fires while the user has
+			// just begun a wheel-up gesture, snapping them back to the card.
+			// Instead, rely on the chat list's standard auto-follow behaviour
+			// (`_withPersistedAutoScroll` in `refresh()`): if the user is at
+			// the bottom when content arrives, the list scrolls to end; if
+			// they've moved away, the list respects that position. The chipos
+			// card is always the response tail (chatListRenderer drops parts
+			// after a pending confirmation), so first-emission visibility is
+			// covered by that same auto-follow on the first refresh after the
+			// card is appended.
 			if (isResponseVM(e.element) && e.element.model?.isPendingConfirmation.get()) {
-				this.reveal(e.element, 1);
+				const containsChipOSCard = e.element.response?.value.some(
+					part => part.kind === 'confirmation' && isChipOSPermissionCardData(part.data),
+				);
+				if (!containsChipOSCard) {
+					this.reveal(e.element, 1);
+				}
 			}
 
 			this._onDidChangeItemHeight.fire(e);
@@ -664,6 +689,14 @@ export class ChatListWidget extends Disposable {
 	 * Scroll to reveal an element.
 	 */
 	reveal(element: ChatTreeItem, relativeTop?: number): void {
+		// Phase B: same suppression as scrollToEnd — when a chipos card is
+		// in view, programmatic reveal calls (from `onDidChangeItemHeight`,
+		// `layout`, etc.) drag the user's scroll back. Allow only user-driven
+		// scroll via `delegateScrollFromMouseWheelEvent` and explicit
+		// scroll-to-current via `scrollToCurrentItem`.
+		if (this._hasChipOSPermissionCardInView()) {
+			return;
+		}
 		this._tree.reveal(element, relativeTop);
 	}
 
@@ -715,6 +748,16 @@ export class ChatListWidget extends Disposable {
 	 * Scroll the list to reveal the last item.
 	 */
 	scrollToEnd(): void {
+		// Phase B: when the chat carries a chipos worker-permission card,
+		// any automatic scroll-to-end (whether from refresh, layout, the
+		// scroll-down button, or any other call site) snaps the user back
+		// to the bottom and prevents reading earlier content. Stock chat
+		// tolerates this because confirmation buttons live in a fixed
+		// floating overlay; chipos cards render inline so the snap visibly
+		// yanks the response. Suppress here so every caller is covered.
+		if (this._hasChipOSPermissionCardInView()) {
+			return;
+		}
 		if (this._lastItem) {
 			const offset = Math.max(this._lastItem.currentRenderedHeight ?? 0, 1e6);
 			if (this._tree.hasElement(this._lastItem)) {
@@ -731,6 +774,44 @@ export class ChatListWidget extends Disposable {
 		this._suppressAutoScroll = value;
 	}
 
+	/**
+	 * Phase B: when the chat thread contains a chipos worker-permission
+	 * card, we want the user's scroll position respected. The stock
+	 * `wasScrolledToBottom` check uses a 2-pixel tolerance — even the very
+	 * first frame of a wheel-up gesture still satisfies it, so the chat
+	 * cheerfully calls `scrollToEnd()` and visibly snaps the user back to
+	 * the card. Stock confirmations don't notice because their action
+	 * buttons live in a fixed-position floating overlay; chipos cards are
+	 * inline, so the snap drags the entire response back into the viewport.
+	 *
+	 * Suppress the post-fn scrollToEnd whenever any visible item in the
+	 * thread carries a chipos card. The thread's natural follow-tail still
+	 * works for non-chipos parts (text streaming etc.) on a per-element
+	 * basis via the `onDidChangeItemHeight` reveal path; only the
+	 * "snap-to-bottom on every refresh" behaviour is what bothers users.
+	 */
+	private _hasChipOSPermissionCardInView(): boolean {
+		const items = this._viewModel?.getItems();
+		if (!items) {
+			return false;
+		}
+		for (const item of items) {
+			if (!isResponseVM(item)) {
+				continue;
+			}
+			const parts = item.response?.value;
+			if (!parts) {
+				continue;
+			}
+			for (const part of parts) {
+				if (part.kind === 'confirmation' && isChipOSPermissionCardData(part.data)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	private _withPersistedAutoScroll(fn: () => void): void {
 		if (this._suppressAutoScroll) {
 			fn();
@@ -738,7 +819,7 @@ export class ChatListWidget extends Disposable {
 		}
 		const wasScrolledToBottom = this.isScrolledToBottom;
 		fn();
-		if (wasScrolledToBottom) {
+		if (wasScrolledToBottom && !this._hasChipOSPermissionCardInView()) {
 			this.scrollToEnd();
 		}
 	}
@@ -835,20 +916,27 @@ export class ChatListWidget extends Disposable {
 		this._renderer.layout(width ?? this._container.clientWidth);
 
 		// When width or height changes, re-reveal any pending confirmation so
-		// the action buttons stay visible after resize.
+		// the action buttons stay visible after resize. Phase B: skip the
+		// reveal for chipos cards (same rationale as the onDidChangeItemHeight
+		// handler — inline buttons + a 2px isScrolledToBottom tolerance means
+		// even gated reveals snap the user back during an in-progress scroll).
 		if (previousWidth !== undefined && (previousWidth !== width || previousHeight !== height)) {
 			setTimeout(() => {
-				// If there's a pending confirmation, reveal it so buttons stay visible.
 				const pendingItem = this._viewModel?.getItems().find(
-					item => isResponseVM(item) && item.model?.isPendingConfirmation.get()
+					item => isResponseVM(item) && item.model?.isPendingConfirmation.get(),
 				);
-				if (pendingItem) {
-					// Use native scrollIntoView for the buttons element.
-					const buttonsEl = this._container.querySelector<HTMLElement>('.chat-confirmation-widget-buttons');
-					if (buttonsEl) {
-						buttonsEl.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-					} else {
-						this.reveal(pendingItem as ChatTreeItem, 1);
+				if (pendingItem && isResponseVM(pendingItem)) {
+					const isChipOSCard = pendingItem.response?.value.some(
+						part => part.kind === 'confirmation' && isChipOSPermissionCardData(part.data),
+					);
+					if (!isChipOSCard) {
+						// Stock confirmation: scroll into view via the buttons overlay element.
+						const buttonsEl = this._container.querySelector<HTMLElement>('.chat-confirmation-widget-buttons');
+						if (buttonsEl) {
+							buttonsEl.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+						} else {
+							this.reveal(pendingItem as ChatTreeItem, 1);
+						}
 					}
 				} else if (this.isScrolledToBottom) {
 					this.scrollToEnd();

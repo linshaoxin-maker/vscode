@@ -235,8 +235,28 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		this._closeEventSource();
 		this._reconnectAttempts = 0;
 		this._sessionDone = false;
-		this._lastSequenceId = 0;
-		this._seenEventIds.clear();
+		// When the chat thread reuses the same backend session across rounds
+		// (chipOSChatAgent does this so reasoner Memory persists), DO NOT
+		// reset _lastSequenceId. The reasoner's session retains an
+		// _event_buffer of every emitted event; if we reconnect SSE with
+		// last_sequence_id=0, the backend replays the previous round's
+		// 'done' event, which makes us flip _sessionDone=true and close
+		// the new round's stream before its real events arrive. The user
+		// then sees no response, retries, and hits HTTP 409
+		// SESSION_ALREADY_RUNNING because the backend task we never observed
+		// is still in flight. Keep the cursor so resume picks up after the
+		// last event we already processed. A fresh session id (new chat
+		// thread) does require a reset.
+		const sameSession = this._sessionId === sessionId;
+		if (!sameSession) {
+			this._lastSequenceId = 0;
+			this._seenEventIds.clear();
+		} else {
+			// Same-session reuse: dedup cache can still safely be cleared
+			// (event_ids are unique per emit, _lastSequenceId is the only
+			// state the backend resume contract cares about).
+			this._seenEventIds.clear();
+		}
 		this._sessionId = sessionId;
 
 		// Send POST first so the backend creates the session before the

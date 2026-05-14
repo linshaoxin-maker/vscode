@@ -1544,8 +1544,19 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 			return true;
 		}
 
-		// confirmation cards need to be pinned so the action buttons are always visible
+		// confirmation cards need to be pinned so the action buttons are always visible.
+		// Exception (Phase B): chipos worker-permission cards render their buttons
+		// inline in the card body (not as a floating overlay like stock chat
+		// confirmation), and the chat list already places a pending confirmation
+		// at the response tail (chatListRenderer renders no parts after a pending
+		// confirmation). Pinning an inline-button card forces the entire card to
+		// stay in viewport, which yanks the scroll back to the card whenever the
+		// user tries to scroll up to read history. Skip pinning for chipos cards;
+		// they remain at response tail naturally and the user can scroll freely.
 		if (part.kind === 'confirmation') {
+			if (isChipOSPermissionCardData(part.data)) {
+				return false;
+			}
 			return true;
 		}
 

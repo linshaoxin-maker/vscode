@@ -83,6 +83,7 @@ import { ChatViewWelcomePart, IChatViewWelcomeContent } from '../viewsWelcome/ch
 import { IChatTipService } from '../chatTipService.js';
 import { ChatTipContentPart } from './chatContentParts/chatTipContentPart.js';
 import { ChatContentMarkdownRenderer } from './chatContentMarkdownRenderer.js';
+import { isChipOSPermissionCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
 import { IAgentSessionsService } from '../agentSessions/agentSessionsService.js';
 import { IChatDebugService } from '../../common/chatDebugService.js';
 
@@ -2549,11 +2550,26 @@ export class ChatWidget extends Disposable implements IChatWidget {
 
 		const lastResponseIsRendering = isResponseVM(lastItem) && lastItem.renderData;
 
+		// Phase B: when a chipos worker-permission card is present in the
+		// chat (pending OR already answered), skip the layout-driven auto-scroll
+		// entirely. The check `lastElementVisible = isScrolledToBottom` has a
+		// 2px tolerance, which causes the chat to snap the user back to the
+		// bottom on the very first frame of a wheel-up gesture, both during
+		// streaming AND after the response has finished. Stock chat doesn't
+		// see this because the floating button overlay sits at the bottom of
+		// the widget regardless of scroll position; chipos cards render
+		// inline so the same snap visibly yanks the entire response.
+		const containsChipOSCard = lastItem && isResponseVM(lastItem) && lastItem.response?.value.some(
+			part => part.kind === 'confirmation' && isChipOSPermissionCardData(part.data),
+		);
+
 		// Auto-scroll: only scroll to end when the user was already at the bottom.
 		// Skip auto-scroll when the confirmation overlay is present — the overlay
 		// insertion already scrolls to end once, and subsequent layout calls should
 		// not fight with the user's manual scrolling.
-		const shouldScroll = lastElementVisible && (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll));
+		const shouldScroll = lastElementVisible
+			&& !containsChipOSCard
+			&& (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll));
 		if (shouldScroll && !overlayEl) {
 			this.listWidget.scrollToEnd();
 		}

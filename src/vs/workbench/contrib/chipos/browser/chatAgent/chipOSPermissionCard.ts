@@ -162,6 +162,21 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			}
 		};
 
+		// Replace the action-button row with a "Responded" pill once the user
+		// has resolved the card. This is the visual confirmation that the
+		// click landed; without it the card keeps rendering active buttons
+		// indefinitely (confirmation.isUsed is set on the model object but
+		// the existing DOM has no reactive binding to it, so it never knows
+		// to re-render).
+		const swapToRespondedPill = () => {
+			while (buttonsRow.firstChild) {
+				buttonsRow.removeChild(buttonsRow.firstChild);
+			}
+			const pill = dom.$('span.chipos-used-pill');
+			pill.textContent = localize('chipos.card.used', 'Responded');
+			buttonsRow.appendChild(pill);
+		};
+
 		const sendAction = async (opt: { label: string; action_id: string }) => {
 			// Double-click / re-entry protection — confirmation.isUsed is the
 			// authoritative "already responded" flag (set after a successful
@@ -184,10 +199,21 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 				...(widget?.getModeRequestOptions?.() ?? {}),
 			};
 			try {
-				const result = await this.chatService.sendRequest(element.sessionResource, prompt, opts);
+				let result = await this.chatService.sendRequest(element.sessionResource, prompt, opts);
+				// ChatSendResult has three kinds: 'sent' | 'rejected' | 'queued'.
+				// A queued result means chat is busy and the request will be
+				// processed shortly — we await its `deferred` to find out
+				// whether it eventually resolves to sent or rejected. Without
+				// this, the user's click looks like a no-op and the buttons
+				// re-enable, prompting a second click that hits the worker
+				// twice.
+				if (ChatSendResult.isQueued(result)) {
+					result = await result.deferred;
+				}
 				if (ChatSendResult.isSent(result)) {
 					this.confirmation.isUsed = true;
-					return; // keep buttons disabled — card is resolved
+					swapToRespondedPill();
+					return;
 				}
 			} catch {
 				// fall through to re-enable so the user can retry
