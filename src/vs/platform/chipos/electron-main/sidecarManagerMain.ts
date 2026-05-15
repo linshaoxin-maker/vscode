@@ -122,6 +122,24 @@ function instanceJsonPath(workspaceRoot: string): string {
 	return path.join(instanceDir(workspaceRoot), 'instance.json');
 }
 
+/**
+ * Path to the rolling stderr log for a spawned chipos process. The file lives
+ * under ~/.chipos/logs/<role>-stderr.log and is opened in append mode so each
+ * spawn writes a clearly-delimited block (banner + lines + exit footer) to the
+ * same file — making it trivial to grep across crashes ("why did the worker
+ * die last time?") instead of hunting in Electron's discarded console.log.
+ *
+ * Background: stderr from worker/reasoner used to be parsed only for
+ * [EdaPack]/[EdaEnv] markers and the rest went to `console.log` in the
+ * Electron main process — which is captured by neither renderer.log,
+ * main.log, nor macOS unified log. Combined with the worker's
+ * `finally: sys.exit(0)` swallowing the real exit code, this made every
+ * worker crash look like a clean exit with no traceback.
+ */
+function stderrLogPath(role: 'worker' | 'reasoner'): string {
+	return path.join(chiposHome(), 'logs', `${role}-stderr.log`);
+}
+
 function instanceLockPath(workspaceRoot: string): string {
 	return path.join(instanceDir(workspaceRoot), 'instance.lock');
 }
@@ -660,12 +678,38 @@ export function registerSidecarIpcHandlers(): void {
 		};
 		setProc(windowId, role, managed);
 
+		// Open a rolling stderr log so post-mortem of a dead worker is possible.
+		// See stderrLogPath(): we used to discard worker stderr into console.log.
+		let stderrLogStream: fs.WriteStream | undefined;
+		try {
+			const logPath = stderrLogPath(role);
+			fs.mkdirSync(path.dirname(logPath), { recursive: true });
+			stderrLogStream = fs.createWriteStream(logPath, { flags: 'a' });
+			const banner = `\n=== spawn pid=${child.pid} role=${role} at ${new Date().toISOString()} window=${windowId} ===\n` +
+				`args: ${binaryPath} ${spawnArgs.join(' ')}\n`;
+			stderrLogStream.write(banner);
+		} catch (e) {
+			console.warn(`[ChipOS ${role}] could not open stderr log: ${e}`);
+			stderrLogStream = undefined;
+		}
+
 		child.on('exit', (code, signal) => {
 			console.log(`[ChipOS ${role}] exited: code=${code} signal=${signal} (window ${windowId})`);
+			if (stderrLogStream) {
+				try {
+					stderrLogStream.write(`=== exit pid=${child.pid} role=${role} code=${code} signal=${signal} at ${new Date().toISOString()} ===\n`);
+					stderrLogStream.end();
+				} catch { /* best effort */ }
+			}
 			setProc(windowId, role, undefined);
 		});
 		child.on('error', err => {
 			console.error(`[ChipOS ${role}] spawn error: ${err.message} (window ${windowId})`);
+			if (stderrLogStream) {
+				try {
+					stderrLogStream.write(`=== spawn error pid=${child.pid} role=${role} err=${err.message} at ${new Date().toISOString()} ===\n`);
+				} catch { /* best effort */ }
+			}
 			setProc(windowId, role, undefined);
 		});
 		// EDA-PACK-IDE-WIRING gap-2 落地: parse worker stderr for [EdaPack]
@@ -688,6 +732,13 @@ export function registerSidecarIpcHandlers(): void {
 			for (const rawLine of lines) {
 				const line = rawLine.trim();
 				if (!line) { continue; }
+				// Persist every stderr line (including Python tracebacks and
+				// gRPC errors) to the rolling log so a dead worker is debuggable.
+				if (stderrLogStream) {
+					try {
+						stderrLogStream.write(`${new Date().toISOString()} ${line}\n`);
+					} catch { /* best effort */ }
+				}
 				console.log(`[ChipOS ${role} stderr] ${line}`);
 				if (event.sender.isDestroyed()) { continue; }
 				// Forward [EdaPack] lines to the renderer (status bar item).
