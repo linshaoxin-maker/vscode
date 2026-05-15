@@ -185,7 +185,15 @@
  *-----------------------------------------------------------------------------*/
 
 .interactive-session .chat-execute-toolbar .action-item.menu-entry .action-label.codicon-arrow-up,
-.interactive-session .chat-execute-toolbar .action-item .action-label.codicon-arrow-up {
+.interactive-session .chat-execute-toolbar .action-item .action-label.codicon-arrow-up,
+.inline-chat-session-overlay-widget .action-item .action-label.codicon-send,
+.inline-chat-session-overlay-widget .action-item .action-label.codicon-arrow-up,
+.inline-chat-gutter-menu .action-item .action-label.codicon-send,
+.inline-chat-widget .action-item .action-label.codicon-send,
+.inline-chat-gutter-menu .action-item .action-label.codicon-arrow-up,
+.inline-chat-widget .action-item .action-label.codicon-arrow-up,
+.monaco-workbench .zone-widget .action-item .action-label.codicon-send,
+.monaco-workbench .zone-widget .action-item .action-label.codicon-arrow-up {
 	background-color: var(--vscode-button-background, var(--vscode-textLink-foreground));
 	color: var(--vscode-button-foreground, var(--vscode-editor-background)) !important;
 	border-radius: 999px;
@@ -198,18 +206,34 @@
 	transition: background-color 0.1s, transform 0.08s;
 }
 
-.interactive-session .chat-execute-toolbar .action-item .action-label.codicon-arrow-up:hover {
+.interactive-session .chat-execute-toolbar .action-item .action-label.codicon-arrow-up:hover,
+.inline-chat-session-overlay-widget .action-item .action-label.codicon-send:hover,
+.inline-chat-session-overlay-widget .action-item .action-label.codicon-arrow-up:hover,
+.inline-chat-gutter-menu .action-item .action-label.codicon-send,
+.inline-chat-widget .action-item .action-label.codicon-send:hover,
+.inline-chat-gutter-menu .action-item .action-label.codicon-arrow-up,
+.inline-chat-widget .action-item .action-label.codicon-arrow-up:hover,
+.monaco-workbench .zone-widget .action-item .action-label.codicon-send:hover,
+.monaco-workbench .zone-widget .action-item .action-label.codicon-arrow-up:hover {
 	background-color: var(--vscode-button-hoverBackground, var(--vscode-button-background));
 	transform: scale(1.04);
 }
 
 /*
  * When the action is disabled (no input text yet), monaco adds the
- * `.disabled` class to its containing item. Use the descendant arrow-up
- * style to render a muted state so the button doesn't look broken — but
- * keep the shape so users still notice it.
+ * `.disabled` class to its containing item. Use the descendant
+ * arrow-up/send style to render a muted state so the button doesn't look
+ * broken — but keep the shape so users still notice it.
  */
-.interactive-session .chat-execute-toolbar .action-item.disabled .action-label.codicon-arrow-up {
+.interactive-session .chat-execute-toolbar .action-item.disabled .action-label.codicon-arrow-up,
+.inline-chat-session-overlay-widget .action-item.disabled .action-label.codicon-send,
+.inline-chat-session-overlay-widget .action-item.disabled .action-label.codicon-arrow-up,
+.inline-chat-gutter-menu .action-item.disabled .action-label.codicon-send,
+.inline-chat-widget .action-item.disabled .action-label.codicon-send,
+.inline-chat-gutter-menu .action-item.disabled .action-label.codicon-arrow-up,
+.inline-chat-widget .action-item.disabled .action-label.codicon-arrow-up,
+.monaco-workbench .zone-widget .action-item.disabled .action-label.codicon-send,
+.monaco-workbench .zone-widget .action-item.disabled .action-label.codicon-arrow-up {
 	background-color: var(--vscode-input-background, transparent);
 	color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)) !important;
 	opacity: 0.6;
