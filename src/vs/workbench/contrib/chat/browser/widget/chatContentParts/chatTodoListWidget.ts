@@ -283,11 +283,16 @@ export class ChatTodoListWidget extends Disposable {
 		if (!shouldShow) {
 			this.domNode.classList.remove('has-todos');
 			this.hideWidget();
-			this._isExpanded = false;
-			this.expandoButton.element.setAttribute('aria-expanded', 'false');
+			// 2026-05-15 (ChipOS UX): keep `_isExpanded = true` on hide too, so
+			// that the next time todos show up they render expanded by default.
+			// The previous `_isExpanded = false` here defeated the constructor
+			// default and left the widget collapsed under a "Todos (n/total) ▷"
+			// pill — exactly the UX the polish pass was meant to fix.
+			this._isExpanded = true;
+			this.expandoButton.element.setAttribute('aria-expanded', 'true');
 			this.todoListContainer.style.display = 'none';
-			this.expandIcon.classList.remove('codicon-chevron-down');
-			this.expandIcon.classList.add('codicon-chevron-right');
+			this.expandIcon.classList.remove('codicon-chevron-right');
+			this.expandIcon.classList.add('codicon-chevron-down');
 			this.titleElement.textContent = localize('chat.todoList.title', 'Todos');
 
 			if (this._todoList) {
@@ -299,6 +304,15 @@ export class ChatTodoListWidget extends Disposable {
 		}
 
 		this.domNode.classList.add('has-todos');
+		// Ensure the visible state reflects `_isExpanded = true` on show. Stock
+		// widget rendered the chevron-down + open container only when the user
+		// hadn't been collapsed; once collapsed nothing reset it on next show.
+		if (this._isExpanded) {
+			this.todoListContainer.style.display = 'block';
+			this.expandoButton.element.setAttribute('aria-expanded', 'true');
+			this.expandIcon.classList.remove('codicon-chevron-right');
+			this.expandIcon.classList.add('codicon-chevron-down');
+		}
 		this.renderTodoList(todoList);
 		this.domNode.style.display = 'block';
 	}
