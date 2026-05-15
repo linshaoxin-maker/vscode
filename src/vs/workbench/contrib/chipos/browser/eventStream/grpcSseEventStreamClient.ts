@@ -621,11 +621,23 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 				return rest;
 			})();
 
+		// ADR-009 §4.1 trace_id injection: reasoner emits trace_id at the top
+		// level of every ServerEvent JSON (stream_manager.build_event), and
+		// IAgentEventBase.trace_id is the contract for downstream consumers
+		// (chat bubble pill in chipOSChatAgent + FullTracer.begin). The
+		// WebSocket client (webSocketEventStreamClient._emit) already does
+		// this — the SSE client missed it, so SSE-routed chat rounds never
+		// saw event.trace_id and the pill never rendered. Pull it through
+		// here so SSE has parity.
+		const rawTraceId = raw['trace_id'];
+		const traceId = typeof rawTraceId === 'string' && rawTraceId ? rawTraceId : undefined;
+
 		this._onDidReceiveEvent.fire({
 			event_type: eventType,
 			event_id: eventId,
 			session_id: (raw['session_id'] as string) ?? this._sessionId,
 			timestamp: (raw['timestamp_ms'] as number) ?? Date.now(),
+			trace_id: traceId,
 			payload,
 		} as unknown as AgentEvent);
 
