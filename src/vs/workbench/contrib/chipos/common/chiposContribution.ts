@@ -1420,10 +1420,14 @@ registerAction2(class InstallWorkerToolAction extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor, arg: TreeViewItemHandleArg): Promise<void> {
+		// 预取所有 service — accessor 仅在 run() 同步范围有效, async 闭包里调
+		// accessor.get() 会抛 "Illegal state: service accessor is only valid".
 		const toolManager = accessor.get(IWorkerToolManagerService);
-		const toolName = arg.$treeItemHandle.replace('worker-tool:', '');
 		const notificationService = accessor.get(INotificationService);
 		const progressService = accessor.get(IProgressService);
+		const opener = accessor.get(IOpenerService);
+		const viewsService = accessor.get(IViewsService);
+		const toolName = arg.$treeItemHandle.replace('worker-tool:', '');
 		await progressService.withProgress(
 			{
 				location: ProgressLocation.Notification,
@@ -1434,7 +1438,42 @@ registerAction2(class InstallWorkerToolAction extends Action2 {
 				try {
 					const result = await toolManager.installTool(toolName);
 					if (result.success) {
-						notificationService.info(localize('chipos.workerTools.installSuccess', 'Tool "{0}" installed successfully.', toolName));
+						const installedHint = (result.installed && result.installed.length)
+							? ` (${result.installed.join(', ')})`
+							: '';
+						notificationService.info(localize('chipos.workerTools.installSuccess', 'Tool "{0}" installed successfully.{1}', toolName, installedHint));
+					} else if ((result.manual_required && result.vendor_url) || (result.failed && result.failed.some(f => f.manual_required && f.vendor_url))) {
+						// 商业 EDA (vivado/quartus 等): 不能自动装, 弹通知带 "去下载" 按钮.
+						// 顶层 manual_required = install_binary 直调; failed[i].manual_required = install_mcp_tool 聚合.
+						const manualBins = result.failed?.filter(f => f.manual_required && f.vendor_url) ?? [];
+						const primary = manualBins[0] ?? null;
+						const vendorUrl = result.vendor_url ?? primary?.vendor_url ?? '';
+						const instructions = result.instructions ?? primary?.instructions ?? result.error ?? '';
+						const allBins = manualBins.length
+							? manualBins.map(f => f.binary).join(' / ')
+							: toolName;
+						notificationService.notify({
+							severity: Severity.Warning,
+							message: localize(
+								'chipos.workerTools.installManualVendor',
+								'Tool "{0}" requires manual installation ({1}).\n{2}',
+								toolName, allBins, instructions
+							),
+							actions: {
+								primary: [{
+									id: 'chipos.workerTools.openVendorUrl',
+									label: localize('chipos.workerTools.openVendorUrl', 'Open vendor download page'),
+									tooltip: vendorUrl,
+									class: undefined,
+									enabled: !!vendorUrl,
+									run: () => vendorUrl ? opener.open(URI.parse(vendorUrl), { openExternal: true }) : undefined,
+								}],
+							},
+						});
+					} else if (result.failed && result.failed.length) {
+						// install_mcp_tool 聚合失败 (非 manual): 列每个 binary 的具体原因.
+						const summary = result.failed.map(f => `${f.binary}: ${f.error || f.method || '?'}`).join('; ');
+						notificationService.warn(localize('chipos.workerTools.installFailDetailed', 'Tool "{0}" failed (some deps): {1}', toolName, summary));
 					} else {
 						notificationService.warn(localize('chipos.workerTools.installFail', 'Tool "{0}" installation failed: {1}', toolName, result.error || 'unknown'));
 					}
@@ -1443,7 +1482,6 @@ registerAction2(class InstallWorkerToolAction extends Action2 {
 				}
 			},
 		);
-		const viewsService = accessor.get(IViewsService);
 		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
 		if (view) {
 			(view as any).treeView?.refresh();

@@ -47,9 +47,20 @@ export interface ToolStatus {
 
 export interface InstallResult {
 	success: boolean;
-	method?: string;
+	method?: 'eda_pack' | 'elan' | 'docker' | 'verible_brew' | 'manual_vendor' | 'pip' | 'apt' | 'conda' | string;
 	message?: string;
 	error?: string;
+	// 2026-05-15: backend install_binary 路由返的扩展字段, IDE 用来显示更精准引导.
+	/** install_mcp_tool 聚合: 成功安装的 binary 列表. */
+	installed?: string[];
+	/** install_mcp_tool 聚合: 失败的 binary 详情 (含 method / vendor_url). */
+	failed?: Array<{ binary: string; method?: string; error?: string; vendor_url?: string; instructions?: string; manual_required?: boolean }>;
+	/** install_binary manual_vendor 路由 (vivado/quartus) 标记 — IDE 应弹引导. */
+	manual_required?: boolean;
+	/** Vendor 厂商下载页面 URL (Xilinx / Intel). */
+	vendor_url?: string;
+	/** 多步操作指引 (manual_vendor / Linux elan 等). */
+	instructions?: string;
 }
 
 export interface McpServerConfig {
