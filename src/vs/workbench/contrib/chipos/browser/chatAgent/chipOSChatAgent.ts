@@ -1817,12 +1817,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// from the top-level reasoner ServerEvent (ADR-009 §4.1).
 				if (event.trace_id) {
 					const tid = event.trace_id;
-					const last12 = tid.length > 12 ? tid.slice(-12) : tid;
-					// Dogfood 2026-05-15: _markdown() builds MarkdownString with
-					// supportThemeIcons but NOT supportHtml — <sub>…</sub> renders
-					// literally instead of as small text. Switch to a pure-markdown
-					// decoration: italic body + inline-code for the trace tail.
-					ctx.progress([this._markdown(`\n\n*trace:* \`${last12}\` · *(full: ${tid})*`)]);
+					// Dogfood 2026-05-15 (round 3): inline render was noisy ("有点丑"),
+					// then HTML <span style/title> got stripped by the chat markdown
+					// sanitizer so neither dim styling nor hover tooltip worked.
+					// Switch to a markdown link with isTrusted=true → command URI:
+					// link `title=` attribute survives sanitization on <a>, giving
+					// us hover tooltip; clicking copies the id to clipboard via
+					// the chipos.trace.copyId command (registered in
+					// chiposContribution.ts).
+					const _arg = encodeURIComponent(JSON.stringify(tid));
+					const _pillMd = new MarkdownString(
+						`\n\n[trace](command:chipos.trace.copyId?${_arg} "Click to copy: ${tid}")`,
+						{ supportThemeIcons: true, isTrusted: true }
+					);
+					ctx.progress([{ kind: 'markdownContent', content: _pillMd }]);
 				}
 				if (p.status === 'error' && p.message) {
 					ctx.progress([this._warning(p.message)]);
@@ -1922,9 +1930,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// trace_id arrives — see model_output / round_start cases above).
 				const _pillTid = event.trace_id ?? this._fullTracer.activeTraceId;
 				if (_pillTid) {
-					const last12 = _pillTid.length > 12 ? _pillTid.slice(-12) : _pillTid;
-					// supportHtml is off on _markdown — pure-markdown decoration only.
-					ctx.progress([this._markdown(`\n\n*trace:* \`${last12}\` · *(full: ${_pillTid})*`)]);
+					// Markdown link via command URI (see TaskComplete site for rationale):
+					// hover shows full id, click copies to clipboard via chipos.trace.copyId.
+					const _arg = encodeURIComponent(JSON.stringify(_pillTid));
+					const _pillMd = new MarkdownString(
+						`\n\n[trace](command:chipos.trace.copyId?${_arg} "Click to copy: ${_pillTid}")`,
+						{ supportThemeIcons: true, isTrusted: true }
+					);
+					ctx.progress([{ kind: 'markdownContent', content: _pillMd }]);
 				}
 				ctx.finish({});
 				break;

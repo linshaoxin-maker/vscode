@@ -32,6 +32,7 @@ import { ISidecarManagerService, SidecarState, WorkerState } from '../../../../w
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { GettingStartedInput } from '../../../../workbench/contrib/welcomeGettingStarted/browser/gettingStartedInput.js';
 import { IChatAgentService } from '../../../../workbench/contrib/chat/common/participants/chatAgents.js';
 import { ChatAgentLocation, ChatModeKind } from '../../../../workbench/contrib/chat/common/constants.js';
@@ -1641,6 +1642,25 @@ registerAction2(class OpenWorkerToolsPanelAction extends Action2 {
 		const viewsService = accessor.get(IViewsService);
 		await viewsService.openView(WORKER_TOOLS_VIEW_ID, true);
 	}
+});
+
+/**
+ * Copy a trace_id to the clipboard + show a toast.
+ *
+ * Wired from the chat-bubble trace pill (chipOSChatAgent.ts) so the user can
+ * click the dim "trace" link at the end of any chat round to grab the id for
+ * a bug report. Hover on the same link shows the full id as a native tooltip
+ * (markdown link title attribute). Pure command — no side effects beyond
+ * clipboard + notification.
+ */
+CommandsRegistry.registerCommand('chipos.trace.copyId', async (accessor: ServicesAccessor, traceId?: string) => {
+	if (!traceId || typeof traceId !== 'string') {
+		return;
+	}
+	const clipboardService = accessor.get(IClipboardService);
+	const notificationService = accessor.get(INotificationService);
+	await clipboardService.writeText(traceId);
+	notificationService.info(localize('chipos.trace.copied', 'Trace ID copied: {0}', traceId));
 });
 
 registerWorkbenchContribution2(
