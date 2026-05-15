@@ -19,8 +19,6 @@
 
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IStatusbarEntry,
@@ -28,6 +26,7 @@ import {
 	IStatusbarService,
 	StatusbarAlignment,
 } from '../../../services/statusbar/browser/statusbar.js';
+import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { ISidecarManagerService, SidecarState } from '../common/sidecarService.js';
 import {
 	EdaStatusSummary,
@@ -38,16 +37,8 @@ const POLL_INTERVAL_MS = 60_000;          // 60s — EDA install state changes r
 const INITIAL_DELAY_MS = 2_000;           // wait 2s after worker connect before first poll
 const COMMAND_OPEN_PANEL = 'workbench.view.extension.chipos-worker-tools';
 
-export const IEdaStatusBarService = createDecorator<IEdaStatusBarService>('chiposEdaStatusBarService');
-
-export interface IEdaStatusBarService {
-	readonly _serviceBrand: undefined;
-	/** Force refresh (after install/uninstall). */
-	refresh(): Promise<void>;
-}
-
-export class EdaStatusBarContribution extends Disposable implements IEdaStatusBarService {
-	declare readonly _serviceBrand: undefined;
+export class EdaStatusBarContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'chipos.edaStatusBar';
 
 	private readonly _entry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private _timer: ReturnType<typeof setInterval> | undefined;
@@ -191,4 +182,4 @@ export class EdaStatusBarContribution extends Disposable implements IEdaStatusBa
 	}
 }
 
-registerSingleton(IEdaStatusBarService, EdaStatusBarContribution, InstantiationType.Eager);
+registerWorkbenchContribution2(EdaStatusBarContribution.ID, EdaStatusBarContribution, WorkbenchPhase.AfterRestored);
