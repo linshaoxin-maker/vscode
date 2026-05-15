@@ -434,17 +434,23 @@
 }
 
 /* Completed: dim + strikethrough so done steps recede visually. */
-.interactive-session .chat-todo-list-widget .todo-item:has(.codicon-pass) .todo-content {
+.interactive-session .chat-todo-list-widget .todo-item.todo-item-completed .todo-content {
 	opacity: 0.55;
 	text-decoration: line-through;
 }
 
 /* In-progress: subtle accent stripe + slight tint so the active step pops. */
-.interactive-session .chat-todo-list-widget .todo-item:has(.codicon-record) {
+.interactive-session .chat-todo-list-widget .todo-item.todo-item-in-progress {
 	border-left-color: var(--vscode-charts-blue, #3794ff);
 	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 8%, transparent);
 }
 
-.interactive-session .chat-todo-list-widget .todo-item:has(.codicon-record) .todo-content {
+.interactive-session .chat-todo-list-widget .todo-item.todo-item-in-progress .todo-content {
 	font-weight: 500;
 }
+
+/* 2026-05-15 (ChipOS UX): switched from `:has(.codicon-pass)` / `:has(.codicon-record)`
+ * to plain class selectors above to fix scrollbar lag in the chat list — the
+ * `:has()` evaluator forces re-matching the descendant tree on every paint
+ * pass, which compounds in long conversations. Status classes are applied by
+ * chatTodoListWidget.ts:TodoListRenderer.renderElement. */

@@ -61,6 +61,18 @@ class TodoListRenderer implements IListRenderer<IChatTodo, ITodoListTemplate> {
 		statusIcon.className = `todo-status-icon codicon ${this.getStatusIconClass(todo.status)}`;
 		statusIcon.style.color = this.getStatusIconColor(todo.status);
 
+		// 2026-05-15 (ChipOS UX): mirror the status on the row element via a
+		// class instead of relying on `:has(.codicon-pass)` from CSS. The
+		// `:has()` selector forces the browser to re-evaluate the parent
+		// match on every paint pass — measurable scroll jank in the chat
+		// list. A plain class lookup is O(1) at style resolution.
+		todoElement.classList.remove('todo-item-completed', 'todo-item-in-progress', 'todo-item-not-started');
+		todoElement.classList.add(
+			todo.status === 'completed' ? 'todo-item-completed'
+				: todo.status === 'in-progress' ? 'todo-item-in-progress'
+					: 'todo-item-not-started'
+		);
+
 		iconLabel.setLabel(todo.title);
 
 		// Update aria-label
