@@ -11,6 +11,7 @@ import { stripIcons } from '../../../../../base/common/iconLabels.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
 import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -148,6 +149,25 @@ interface IChatSessionRuntime {
 	 */
 	emittedFileRefs: Set<string>;
 	/**
+	 * Working-set fallback: the spec/subagent flow doesn't surface
+	 * `WorktreeFilesApplied` to the IDE, so files that get written via
+	 * subagent tool calls never make it into chatEditingSession's entries
+	 * observable — leaving the chat input's working-set widget empty even
+	 * after the agent wrote files to disk. We work around that by running
+	 * a workspace-root file watcher during each invoke, collecting URIs
+	 * that change between user-input start and TaskComplete, and feeding
+	 * them through `_startExternalEdit + _stopExternalEdit` at task end.
+	 *
+	 * `workspaceWatcher` — disposable for the recursive watcher (created
+	 *   on first invoke per session, disposed on _disposeRuntime).
+	 * `watchedFileChanges` — URIs reported by the watcher during the
+	 *   current invoke; flushed at TaskComplete; dedup'd against
+	 *   `externalEditOps` so files already tracked by direct ToolCall don't
+	 *   double-register.
+	 */
+	workspaceWatcher?: IDisposable;
+	watchedFileChanges: Set<string>;
+	/**
 	 * Worker permission ASK channel (WORKER-PERMISSION-ASK-TRANSPORT):
 	 * - `activeProgress`: when invoke() is mid-flight, points at the same
 	 *   progress callback so worker SSE asks can be surfaced as confirmations
@@ -234,6 +254,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
 		@ICommandService private readonly _commandService: ICommandService,
+		@IFileService private readonly _fileService: IFileService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -364,6 +385,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// ── FEAT-32: Connection status feedback ──
 		progress([this._progress('$(sync~spin) Connecting to backend...', true)]);
 		const runtime = this._getOrCreateRuntime(request.sessionResource);
+		// Working-set fallback (see IChatSessionRuntime.workspaceWatcher comment):
+		// ensure a workspace watcher is up for this session and reset the
+		// per-invoke change-set so this invoke's TaskComplete flush only
+		// covers files touched during this turn.
+		this._ensureWorkspaceWatcher(runtime);
+		runtime.watchedFileChanges.clear();
 
 		// v2 PERMISSION-APPROVAL-UX-V2 §1: snapshot the IDE chat permission
 		// level for this invoke. `_onWorkerPermissionAsk` consults this to
@@ -608,6 +635,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				progress([this._progress(`$(check) Selected: ${action}`)]);
 			}
 			return this._listenForContinuation(streamClient, progress, token, request);
+		}
+
+		// ── Block free-form text while a previous ConfirmRequest is still pending ──
+		// User typed into the input WITHOUT clicking the decision card buttons
+		// (Approve/Reject/A/B/Skip/Submit). Without this guard the message
+		// would be sent as a new task → backend 409 SESSION_ALREADY_RUNNING
+		// with a TASK_SUBMIT_FAILED card cluttering the chat. Surface a clear
+		// inline error instead, telling the user to either resolve the card
+		// or cancel the current request.
+		const pendingConfirmation = this._findPendingConfirmation(request.sessionResource);
+		if (pendingConfirmation) {
+			progress([this._progress('$(warning) 上方有未处理的决策卡片。请点击其中一个按钮（Approve / Reject 等），或先 Stop 当前任务再发送新消息。')]);
+			runtime.activeProgress = undefined;
+			runtime.activeFinish = undefined;
+			return {
+				errorDetails: {
+					message: localize(
+						'chipos.confirmPendingBlock',
+						'A decision card is awaiting your input above. Click one of its buttons before sending another message.'
+					),
+				},
+			};
 		}
 
 		// ── Memory fix (2026-05-09, restored 2026-05-14) ─────────────────────
@@ -1143,7 +1192,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// Fallback for tools not tracked via external edits
 					let filePath = ctx.runtime.toolFileArgs.get(key);
 					ctx.runtime.toolFileArgs.delete(key);
-					if (!filePath && typeof p.result === 'string') {
+					// Only attempt JSON.parse for tools that semantically return a
+					// file reference. write_todos / todo-tracking tools return a
+					// human-readable string ("Updated to …") on purpose — parsing
+					// them as JSON spams warnings every plan-tick (5+ per session
+					// observed on a single user-prompt smoke test). Allowlist the
+					// file-producing tools so the fallback file-ref logic still
+					// runs where it actually helps.
+					if (!filePath && typeof p.result === 'string' && ChipOSChatAgent._isFileWriteTool(p.tool_name)) {
 						try {
 							const resultObj = JSON.parse(p.result);
 							filePath = resultObj.path ?? resultObj.file_path ?? resultObj.file_name;
@@ -1729,6 +1785,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// ── Task complete → resolve ──
 			case AgentEventType.TaskComplete: {
 				const p = event.payload as ITaskCompletePayload;
+				// Flush working-set fallback: feed every file that changed
+				// during this task into chatEditingSession so the working-set
+				// widget can render them. The spec/subagent flow doesn't send
+				// WorktreeFilesApplied to the IDE, so without this fallback the
+				// widget stays empty even when the agent wrote files.
+				if (ctx.request) {
+					this._flushWatchedFileChanges(ctx.request.sessionResource, ctx.request.requestId, ctx.runtime, ctx.progress)
+						.catch(err => this._logService.warn('[ChipOS Agent] flushWatchedFileChanges failed', err));
+				}
 				// T6b: record terminal status + flush IDE-side batch to reasoner
 				// /v1/trace/upload. Fire-and-forget — flush failures degrade
 				// observability gracefully (logged in FullTracer.flush).
@@ -2342,6 +2407,126 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		if (!chatModel) { return undefined; }
 		const lastRequest = chatModel.getRequests().at(-1);
 		return lastRequest?.response ?? undefined;
+	}
+
+	/**
+	 * Working-set fallback: ensure a recursive watcher on the workspace root
+	 * is active for this chat session. The handler records every changed
+	 * file URI into `runtime.watchedFileChanges` — flushed at TaskComplete
+	 * by `_flushWatchedFileChanges`. No-op when no workspace folder is open
+	 * (e.g. user has the IDE in empty mode).
+	 */
+	private _ensureWorkspaceWatcher(runtime: IChatSessionRuntime): void {
+		if (runtime.workspaceWatcher) {
+			return;
+		}
+		const workspaceRoot = this._getWorkspaceRoot();
+		if (!workspaceRoot) {
+			return;
+		}
+		const workspaceUri = URI.file(workspaceRoot);
+		// Recursive + excludes for the noisy churn buckets — chipos metadata,
+		// git internals, node_modules. Without excludes a single `npm install`
+		// would flood watchedFileChanges with thousands of URIs.
+		const watcher = this._fileService.watch(workspaceUri, {
+			recursive: true,
+			excludes: ['**/.git/**', '**/node_modules/**', '**/.chipos/**', '**/.vscode/**', '**/__pycache__/**'],
+		});
+		const onChange = this._fileService.onDidFilesChange(e => {
+			// Only ADDED + UPDATED. DELETED files don't make sense to track in
+			// the working set (and the framework already filters them out
+			// downstream). The global event includes other watchers' changes
+			// too — manual workspace-root prefix check below is the filter.
+			const candidates: URI[] = [...e.rawAdded, ...e.rawUpdated];
+			for (const resource of candidates) {
+				if (!resource.path.startsWith(workspaceRoot)) {
+					continue;
+				}
+				// Skip hidden segments in path (mirrors the _startExternalEdit guard).
+				const rel = resource.path.slice(workspaceRoot.length + 1);
+				if (rel.split('/').some((seg: string) => seg.startsWith('.') && seg.length > 1)) {
+					continue;
+				}
+				runtime.watchedFileChanges.add(resource.toString());
+			}
+		});
+		runtime.workspaceWatcher = {
+			dispose: () => {
+				try { watcher.dispose(); } catch { /* best effort */ }
+				try { onChange.dispose(); } catch { /* best effort */ }
+			},
+		};
+	}
+
+	/**
+	 * Working-set fallback: at TaskComplete, walk `runtime.watchedFileChanges`
+	 * and feed any file that wasn't already tracked via a direct ToolCall
+	 * (i.e. not present in `externalEditOps` keyed by file path) through
+	 * `_startExternalEdit + _stopExternalEdit`. That registers the file in
+	 * chatEditingSession's `_entriesObs` → the working-set widget renders it.
+	 *
+	 * This is the safety net for the spec/subagent flow where the reasoner
+	 * doesn't send `WorktreeFilesApplied` to the IDE.
+	 */
+	private async _flushWatchedFileChanges(
+		sessionResource: URI,
+		requestId: string,
+		runtime: IChatSessionRuntime,
+		progress: (parts: IChatProgress[]) => void,
+	): Promise<void> {
+		if (runtime.watchedFileChanges.size === 0) {
+			return;
+		}
+		const trackedFiles = new Set<string>();
+		for (const fp of runtime.toolFileArgs.values()) {
+			trackedFiles.add(fp);
+		}
+		const workspaceRoot = this._getWorkspaceRoot();
+		const changes = [...runtime.watchedFileChanges];
+		runtime.watchedFileChanges.clear();
+		for (const uriString of changes) {
+			const fileUri = URI.parse(uriString);
+			const relPath = workspaceRoot && fileUri.path.startsWith(workspaceRoot)
+				? fileUri.path.slice(workspaceRoot.length + 1)
+				: fileUri.path;
+			if ([...trackedFiles].some(tp => tp === relPath || relPath.endsWith(tp))) {
+				continue;
+			}
+			const syntheticKey = `fswatch:${requestId}:${uriString}`;
+			this._startExternalEdit(syntheticKey, fileUri, sessionResource, requestId, runtime);
+			try {
+				const editProgress = await this._stopExternalEdit(syntheticKey, sessionResource, runtime);
+				if (editProgress.length > 0) {
+					progress(editProgress);
+				}
+			} catch (err) {
+				this._logService.warn('[ChipOS Agent] flushWatchedFileChanges: stop failed', fileUri.path, err);
+			}
+		}
+	}
+
+	/**
+	 * Returns the previous request whose response still has an unresolved
+	 * confirmation card (Approve/Reject/multi-option), if any. Used by
+	 * invoke() to short-circuit free-form input that would otherwise
+	 * dispatch a new task while the backend session is still waiting on the
+	 * card — yielding a 409 SESSION_ALREADY_RUNNING.
+	 *
+	 * Walks from the second-most-recent request backwards because the
+	 * very-last entry is typically the in-flight invoke we're inside.
+	 */
+	private _findPendingConfirmation(sessionResource: URI): IChatResponseModel | undefined {
+		const chatModel = this._chatService.getSession(sessionResource);
+		if (!chatModel) { return undefined; }
+		const requests = chatModel.getRequests();
+		// Last entry is the current request (just enqueued); inspect prior ones.
+		for (let i = requests.length - 2; i >= 0; i--) {
+			const response = requests[i]?.response;
+			if (response && response.isPendingConfirmation.get()) {
+				return response;
+			}
+		}
+		return undefined;
 	}
 
 	/**
@@ -3229,6 +3414,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				inInitPhase: true,
 				emittedFileRefs: new Set<string>(),
 				pendingWorkerAsks: new Map<string, IWorkerPermissionAsk>(),
+				watchedFileChanges: new Set<string>(),
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
 		}
@@ -3250,6 +3436,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		runtime.streamClient?.dispose();
 		runtime.clientListeners.dispose();
+		runtime.workspaceWatcher?.dispose();
+		runtime.workspaceWatcher = undefined;
+		runtime.watchedFileChanges.clear();
 		runtime.streamClient = undefined;
 		runtime.backendSessionId = undefined;
 		runtime.lastSubagentToolCallId = undefined;
