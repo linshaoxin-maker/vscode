@@ -109,6 +109,13 @@
 	 * to 13px so chips read as primary affordance. */
 	font-size: 13px;
 	line-height: 1.4;
+	/* Diagnosis #7: framework chatViewWelcome.css text-aligns the whole
+	 * disclaimer block center, which made wrapped chip text (line 2 of
+	 * "Generate an 8-bit counter with sync reset" etc.) center under the
+	 * first line — so the second line drifts away from the icon's column.
+	 * Force chip text to left-align so wrapped lines sit flush with the
+	 * first line, reading as one labeled paragraph. */
+	text-align: left;
 	text-decoration: none;
 	cursor: pointer;
 	transition: background-color 0.1s, border-color 0.1s;
@@ -301,9 +308,17 @@
 
 /* Diagnosis #6 cont.: pull the welcome icon closer to the title + tighten
  * subtitle (chat-welcome-view-message) leading so the upper block reads as
- * a single hero unit instead of 4 floating pieces. */
+ * a single hero unit instead of 4 floating pieces.
+ *
+ * Diagnosis #8: framework default at chatViewWelcome.css:59-63 sets
+ * `.chat-welcome-view-icon .codicon { margin-bottom: 24px; }` — that's
+ * the 24px gap pushing the title down. Override the inner-codicon margin
+ * to a tighter value so the icon visually attaches to the title. */
 .chat-welcome-view > .chat-welcome-view-icon {
 	margin-bottom: 6px;
+}
+.chat-welcome-view > .chat-welcome-view-icon .codicon {
+	margin-bottom: 8px;
 }
 .chat-welcome-view .chat-welcome-view-message {
 	line-height: 1.5;
