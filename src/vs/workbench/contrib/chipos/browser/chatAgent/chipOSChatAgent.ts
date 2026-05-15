@@ -221,6 +221,38 @@ interface IChatSessionRuntime {
  *   - sim_report/coverage/lint → markdownContent (rich formatted)
  *   - task_complete → resolves the invoke Promise
  */
+
+/**
+ * Build the dim "trace" pill rendered at the end of every chat round.
+ *
+ * Output: `[trace](command:chipos.trace.copyId?<encoded-id> "Click to copy: <safe-id>")`
+ * with `isTrusted: true` so the command URI is invoked when clicked.
+ * The chat markdown sanitizer strips raw `<span style/title>` (see Layer-4
+ * note in commit `16e901fd0d4`), so we use a real markdown link instead —
+ * `chatContentMarkdownRenderer.ts:114-117` reads the link's `title=` and
+ * hands it to IHoverService, giving us the same hover affordance.
+ *
+ * Exported (module-level) for unit testing — the two render sites in
+ * `ChipOSChatAgent` (TaskComplete + Done) both call this so the
+ * tooltip / command URI formulation stays in one place.
+ *
+ * Defensive escapes — trace_id is server-generated and constrained to
+ * alphanumeric + dash in practice (`reasoning-<hex>-<random>`), but if a
+ * future reasoner emits quotes or backslashes the markdown title
+ * `"Click to copy: ${tid}"` would parse incorrectly (or worse, leak the
+ * end of the link syntax). Escape `\` and `"` in the title text. The
+ * command argument goes through `encodeURIComponent(JSON.stringify(...))`
+ * separately so it's safe regardless.
+ */
+export function _buildTracePillMarkdown(traceId: string): MarkdownString {
+	const safeTitle = traceId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+	const encodedArg = encodeURIComponent(JSON.stringify(traceId));
+	return new MarkdownString(
+		`\n\n[trace](command:chipos.trace.copyId?${encodedArg} "Click to copy: ${safeTitle}")`,
+		{ supportThemeIcons: true, isTrusted: true },
+	);
+}
+
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
 	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
@@ -1825,12 +1857,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// us hover tooltip; clicking copies the id to clipboard via
 					// the chipos.trace.copyId command (registered in
 					// chiposContribution.ts).
-					const _arg = encodeURIComponent(JSON.stringify(tid));
-					const _pillMd = new MarkdownString(
-						`\n\n[trace](command:chipos.trace.copyId?${_arg} "Click to copy: ${tid}")`,
-						{ supportThemeIcons: true, isTrusted: true }
-					);
-					ctx.progress([{ kind: 'markdownContent', content: _pillMd }]);
+					ctx.progress([{ kind: 'markdownContent', content: _buildTracePillMarkdown(tid) }]);
 				}
 				if (p.status === 'error' && p.message) {
 					ctx.progress([this._warning(p.message)]);
@@ -1932,12 +1959,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (_pillTid) {
 					// Markdown link via command URI (see TaskComplete site for rationale):
 					// hover shows full id, click copies to clipboard via chipos.trace.copyId.
-					const _arg = encodeURIComponent(JSON.stringify(_pillTid));
-					const _pillMd = new MarkdownString(
-						`\n\n[trace](command:chipos.trace.copyId?${_arg} "Click to copy: ${_pillTid}")`,
-						{ supportThemeIcons: true, isTrusted: true }
-					);
-					ctx.progress([{ kind: 'markdownContent', content: _pillMd }]);
+					ctx.progress([{ kind: 'markdownContent', content: _buildTracePillMarkdown(_pillTid) }]);
 				}
 				ctx.finish({});
 				break;
