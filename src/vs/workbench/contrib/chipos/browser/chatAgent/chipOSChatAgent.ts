@@ -755,6 +755,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			const finish = (result: IChatAgentResult, thinkingTitle?: string) => {
 				if (!resolved) {
+					// Working-set fallback: also flush at invoke finish, not just
+					// task_complete. In the spec / subagent flow the backend
+					// closes the SSE stream without sending an explicit
+					// task_complete event, so the task_complete-only flush would
+					// miss every file written through that path. Hooking finish
+					// catches the SSE-close + cancellation + error paths too.
+					this._flushWatchedFileChanges(request.sessionResource, request.requestId, runtime, progress)
+						.catch(err => this._logService.warn('[ChipOS Agent] flushWatchedFileChanges@finish failed', err));
 					// InlineChat v2: if this invoke came from Cmd+I (EditorInline)
 					// and produced NO file edits but DID produce some answer text,
 					// surface the answer as a notification toast. The inline
@@ -1896,6 +1904,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					} satisfies IChatExternalToolInvocationUpdate]);
 				}
 				ctx.runtime.toolStartTimes.clear();
+				// Dogfood discovery 2026-05-15: chipos main-agent chats finish
+				// with Done, not TaskComplete (TaskComplete is for subagents).
+				// The trace_id pill render was only attached to TaskComplete,
+				// so a vanilla "say hi" round closed via Done without ever
+				// rendering the pill. Emit it here too. The trace_id was
+				// injected into AgentEventBase by grpcSseEventStreamClient
+				// from the top-level reasoner ServerEvent (ADR-009 §4.1).
+				if (event.trace_id) {
+					const tid = event.trace_id;
+					const last12 = tid.length > 12 ? tid.slice(-12) : tid;
+					ctx.progress([this._markdown(`\n\n*<sub>trace: \`${last12}\` (full: ${tid})</sub>*`)]);
+				}
 				ctx.finish({});
 				break;
 
@@ -2044,6 +2064,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 			const finish = (result: IChatAgentResult, thinkingTitle?: string) => {
 				if (!resolved) {
+					// Working-set fallback: also flush here for the
+					// continuation path (confirmation responses). Same
+					// rationale as invoke()'s finish — the spec/subagent flow
+					// often closes SSE without explicit task_complete.
+					// `request` is optional on this path (worker-permission
+					// continuations can lack it); only flush when present.
+					if (request) {
+						this._flushWatchedFileChanges(request.sessionResource, request.requestId, runtime, progress)
+							.catch(err => this._logService.warn('[ChipOS Agent] flushWatchedFileChanges@cont-finish failed', err));
+					}
 					if (thinkingTitle || contStepCount > 0) {
 						const title = thinkingTitle ?? `Completed ${contStepCount} step${contStepCount === 1 ? '' : 's'}`;
 						progress([{ kind: 'thinking', value: '', generatedTitle: title } satisfies IChatThinkingPart]);
