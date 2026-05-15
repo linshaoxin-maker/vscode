@@ -113,8 +113,14 @@ class TodoListRenderer implements IListRenderer<IChatTodo, ITodoListTemplate> {
 export class ChatTodoListWidget extends Disposable {
 	public readonly domNode: HTMLElement;
 
-	private _isExpanded: boolean = false;
-	private _userManuallyExpanded: boolean = false;
+	// 2026-05-15 (ChipOS UX): default expanded. The stock collapsed default
+	// hid the todo list under a tiny "Todos (3/3) ▷" pill that users could
+	// easily miss — todos are the agent's plan-of-record and deserve to be
+	// visible. Auto-collapse on completion is also relaxed so finished
+	// rounds keep showing the checklist instead of vanishing into the pill.
+	// The previous `_userManuallyExpanded` companion field was removed
+	// with the auto-collapse heuristic.
+	private _isExpanded: boolean = true;
 	private expandoButton!: Button;
 	private expandIcon!: HTMLElement;
 	private titleElement!: HTMLElement;
@@ -226,7 +232,6 @@ export class ChatTodoListWidget extends Disposable {
 		}
 
 		if (!isEqual(this._currentSessionResource, sessionResource)) {
-			this._userManuallyExpanded = false;
 			this._currentSessionResource = sessionResource;
 			this.hideWidget();
 		}
@@ -279,7 +284,6 @@ export class ChatTodoListWidget extends Disposable {
 			this.domNode.classList.remove('has-todos');
 			this.hideWidget();
 			this._isExpanded = false;
-			this._userManuallyExpanded = false;
 			this.expandoButton.element.setAttribute('aria-expanded', 'false');
 			this.todoListContainer.style.display = 'none';
 			this.expandIcon.classList.remove('codicon-chevron-down');
@@ -301,11 +305,6 @@ export class ChatTodoListWidget extends Disposable {
 
 	private renderTodoList(todoList: IChatTodo[]): void {
 		this.updateTitleElement(this.titleElement, todoList);
-
-		const allIncomplete = todoList.every(todo => todo.status === 'not-started');
-		if (allIncomplete) {
-			this._userManuallyExpanded = false;
-		}
 
 		// Create or update the WorkbenchList
 		if (!this._todoList) {
@@ -342,22 +341,16 @@ export class ChatTodoListWidget extends Disposable {
 		// Update clear button state based on request progress
 		this.updateClearButtonState();
 
-		// Only auto-collapse if there are in-progress or completed tasks AND user hasn't manually expanded
-		if ((hasInProgressTask || hasCompletedTask) && this._isExpanded && !this._userManuallyExpanded) {
-			this._isExpanded = false;
-			this.expandoButton.element.setAttribute('aria-expanded', 'false');
-			this.todoListContainer.style.display = 'none';
-
-			this.expandIcon.classList.remove('codicon-chevron-down');
-			this.expandIcon.classList.add('codicon-chevron-right');
-
-			this.updateTitleElement(this.titleElement, todoList);
-		}
+		// 2026-05-15 (ChipOS UX): stock build auto-collapsed the todo widget
+		// whenever progress changed (any in-progress / completed item). That
+		// made users miss the plan-update they just asked for. Keep the list
+		// visible — user can manually collapse if they want.
+		void hasInProgressTask;
+		void hasCompletedTask;
 	}
 
 	private toggleExpanded(): void {
 		this._isExpanded = !this._isExpanded;
-		this._userManuallyExpanded = true;
 
 		this.expandIcon.classList.toggle('codicon-chevron-down', this._isExpanded);
 		this.expandIcon.classList.toggle('codicon-chevron-right', !this._isExpanded);

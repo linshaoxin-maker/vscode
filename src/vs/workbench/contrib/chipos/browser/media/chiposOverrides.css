@@ -367,3 +367,77 @@
 	padding: 1px 6px;
 	opacity: 0.78;
 }
+
+/*-----------------------------------------------------------------------------
+ *  UX #12 — Todo widget polish (2026-05-15)
+ *  Stock framework renders the todo list as a tiny gray "Todos (3/3) ▷" bar
+ *  with sparse rows once expanded — easy to miss and visually ugly.
+ *
+ *  Goal: make the todo list feel like a proper card (the agent's plan-of-
+ *  record), matching the chip-and-card visual language used elsewhere
+ *  in the chat panel.
+ *
+ *  - Subtle background tint + rounded border around the whole widget
+ *  - Tighter title row with the chevron + "Todos (n/total)" label
+ *  - Rows: comfortable padding, status icon vertically centered with the
+ *    title, strikethrough + dimmer color for completed items
+ *  - In-progress row gets an accent left-stripe so the active step pops
+ *-----------------------------------------------------------------------------*/
+
+.interactive-session .chat-todo-list-widget {
+	background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.06));
+	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.18)));
+	border-radius: 6px;
+	padding: 4px 6px;
+	margin: 6px 0;
+}
+
+.interactive-session .chat-todo-list-widget .todo-list-expand {
+	padding: 2px 2px;
+}
+
+.interactive-session .chat-todo-list-widget .todo-list-title {
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.2px;
+	opacity: 0.85;
+}
+
+.interactive-session .chat-todo-list-widget .todo-list-container {
+	margin-top: 4px;
+}
+
+.interactive-session .chat-todo-list-widget .todo-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 6px;
+	border-radius: 4px;
+	border-left: 2px solid transparent;
+	transition: background-color 80ms ease;
+}
+
+.interactive-session .chat-todo-list-widget .todo-item:hover {
+	background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.08));
+}
+
+.interactive-session .chat-todo-list-widget .todo-item .todo-status-icon {
+	font-size: 14px;
+	min-width: 14px;
+}
+
+/* Completed: dim + strikethrough so done steps recede visually. */
+.interactive-session .chat-todo-list-widget .todo-item:has(.codicon-pass) .todo-content {
+	opacity: 0.55;
+	text-decoration: line-through;
+}
+
+/* In-progress: subtle accent stripe + slight tint so the active step pops. */
+.interactive-session .chat-todo-list-widget .todo-item:has(.codicon-record) {
+	border-left-color: var(--vscode-charts-blue, #3794ff);
+	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 8%, transparent);
+}
+
+.interactive-session .chat-todo-list-widget .todo-item:has(.codicon-record) .todo-content {
+	font-weight: 500;
+}
