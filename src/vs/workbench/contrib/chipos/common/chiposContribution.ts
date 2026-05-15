@@ -530,86 +530,105 @@ CommandsRegistry.registerCommand(ChipOSCommandId.MarkdownShowSource, accessor =>
 
 // ── Menu Contributions ─────────────────────────────────────────────────────────
 
+// Chipos AI submenu — collapses the 9 right-click items (Add to Chat / Ask AI
+// / Explain / Fix / Review / Refactor / Generate Docs / Generate Tests /
+// Insert EDA Snippet) under a single "ChipOS AI ▶" entry on the editor
+// context menu. Reduces visual clutter while keeping every action one click
+// away. Items inside the submenu render in the same order they had before
+// (chips for selection-only items keep their editorHasSelection gate).
+const ChipOSEditorContextMenu = MenuId.for('chiposEditorContext');
+
 MenuRegistry.appendMenuItems([
 	{
 		id: MenuId.EditorContext,
 		item: {
-			command: { id: ChipOSCommandId.AddToChat, title: localize('chipos.addToChat', 'ChipOS: Add to Chat'), icon: Codicon.commentDiscussion },
+			submenu: ChipOSEditorContextMenu,
+			title: localize('chipos.editorContextSubmenu', 'ChipOS AI'),
+			icon: Codicon.chatSparkle,
 			when: ContextKeyExpr.has('editorTextFocus'),
 			group: 'chipos',
 			order: 1,
 		},
 	},
 	{
-		id: MenuId.EditorContext,
+		id: ChipOSEditorContextMenu,
 		item: {
-			command: { id: ChipOSCommandId.AskAI, title: localize('chipos.askAI', 'ChipOS: Ask AI'), icon: Codicon.chatSparkle },
+			command: { id: ChipOSCommandId.AddToChat, title: localize('chipos.addToChat.short', 'Add to Chat'), icon: Codicon.commentDiscussion },
+			when: ContextKeyExpr.has('editorTextFocus'),
+			group: '1_attach',
+			order: 1,
+		},
+	},
+	{
+		id: ChipOSEditorContextMenu,
+		item: {
+			command: { id: ChipOSCommandId.AskAI, title: localize('chipos.askAI.short', 'Ask AI'), icon: Codicon.chatSparkle },
 			when: ContextKeyExpr.has('editorHasSelection'),
-			group: 'chipos',
+			group: '1_attach',
 			order: 2,
 		},
 	},
 	{
-		id: MenuId.EditorContext,
+		id: ChipOSEditorContextMenu,
 		item: {
-			command: { id: ChipOSCommandId.ExplainSelection, title: localize('chipos.explainSelection', 'ChipOS: Explain'), icon: Codicon.commentDiscussion },
+			command: { id: ChipOSCommandId.ExplainSelection, title: localize('chipos.explainSelection.short', 'Explain'), icon: Codicon.commentDiscussion },
 			when: ContextKeyExpr.has('editorHasSelection'),
-			group: 'chipos',
+			group: '2_analyze',
+			order: 1,
+		},
+	},
+	{
+		id: ChipOSEditorContextMenu,
+		item: {
+			command: { id: ChipOSCommandId.FixSelection, title: localize('chipos.fixSelection.short', 'Fix'), icon: Codicon.bug },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: '2_analyze',
+			order: 2,
+		},
+	},
+	{
+		id: ChipOSEditorContextMenu,
+		item: {
+			command: { id: ChipOSCommandId.ReviewSelection, title: localize('chipos.reviewSelection.short', 'Review'), icon: Codicon.checklist },
+			when: ContextKeyExpr.has('editorHasSelection'),
+			group: '2_analyze',
 			order: 3,
 		},
 	},
 	{
-		id: MenuId.EditorContext,
+		id: ChipOSEditorContextMenu,
 		item: {
-			command: { id: ChipOSCommandId.FixSelection, title: localize('chipos.fixSelection', 'ChipOS: Fix'), icon: Codicon.bug },
+			command: { id: ChipOSCommandId.RefactorSelection, title: localize('chipos.refactorSelection.short', 'Refactor'), icon: Codicon.wand },
 			when: ContextKeyExpr.has('editorHasSelection'),
-			group: 'chipos',
-			order: 4,
+			group: '3_modify',
+			order: 1,
 		},
 	},
 	{
-		id: MenuId.EditorContext,
+		id: ChipOSEditorContextMenu,
 		item: {
-			command: { id: ChipOSCommandId.ReviewSelection, title: localize('chipos.reviewSelection', 'ChipOS: Review'), icon: Codicon.checklist },
+			command: { id: ChipOSCommandId.GenerateDocsForSelection, title: localize('chipos.generateDocs.short', 'Generate Docs'), icon: Codicon.bookmark },
 			when: ContextKeyExpr.has('editorHasSelection'),
-			group: 'chipos',
-			order: 5,
+			group: '4_generate',
+			order: 1,
 		},
 	},
 	{
-		id: MenuId.EditorContext,
+		id: ChipOSEditorContextMenu,
 		item: {
-			command: { id: ChipOSCommandId.RefactorSelection, title: localize('chipos.refactorSelection', 'ChipOS: Refactor'), icon: Codicon.wand },
+			command: { id: ChipOSCommandId.GenerateTestsForSelection, title: localize('chipos.generateTests.short', 'Generate Tests'), icon: Codicon.beaker },
 			when: ContextKeyExpr.has('editorHasSelection'),
-			group: 'chipos',
-			order: 6,
+			group: '4_generate',
+			order: 2,
 		},
 	},
 	{
-		id: MenuId.EditorContext,
+		id: ChipOSEditorContextMenu,
 		item: {
-			command: { id: ChipOSCommandId.GenerateDocsForSelection, title: localize('chipos.generateDocs', 'ChipOS: Generate Docs'), icon: Codicon.bookmark },
-			when: ContextKeyExpr.has('editorHasSelection'),
-			group: 'chipos',
-			order: 7,
-		},
-	},
-	{
-		id: MenuId.EditorContext,
-		item: {
-			command: { id: ChipOSCommandId.GenerateTestsForSelection, title: localize('chipos.generateTests', 'ChipOS: Generate Tests'), icon: Codicon.beaker },
-			when: ContextKeyExpr.has('editorHasSelection'),
-			group: 'chipos',
-			order: 8,
-		},
-	},
-	{
-		id: MenuId.EditorContext,
-		item: {
-			command: { id: 'chipos.insertEdaSnippet', title: localize('chipos.insertEdaSnippet', 'ChipOS: Insert EDA Snippet…'), icon: Codicon.symbolSnippet },
+			command: { id: 'chipos.insertEdaSnippet', title: localize('chipos.insertEdaSnippet.short', 'Insert EDA Snippet…'), icon: Codicon.symbolSnippet },
 			when: ContextKeyExpr.has('editorTextFocus'),
-			group: 'chipos',
-			order: 9,
+			group: '4_generate',
+			order: 3,
 		},
 	},
 	// Surface the 4 new right-click commands in the Command Palette so users
