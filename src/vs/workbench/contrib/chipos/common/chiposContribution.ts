@@ -1199,6 +1199,7 @@ class ChipOSContribution extends Disposable {
 		// so over-firing is harmless. The burst self-cancels if the
 		// sidecar leaves Connected mid-flight.
 		let lastSidecarState = this._sidecarManager.state;
+		let lastWorkerState = this._sidecarManager.workerState;
 		const REFRESH_BACKOFF_MS = [200, 600, 1500, 3000, 6000] as const;
 		const refreshTimers: ReturnType<typeof setTimeout>[] = [];
 		const cancelRefreshBurst = () => {
@@ -1207,25 +1208,27 @@ class ChipOSContribution extends Disposable {
 			}
 			refreshTimers.length = 0;
 		};
+		const startRefreshBurst = (trigger: string) => {
+			this._logService.info(`[ChipOS] Worker Tools panel auto-refresh burst (${trigger})`);
+			cancelRefreshBurst(); // belt and suspenders for rapid state thrash
+			for (const delay of REFRESH_BACKOFF_MS) {
+				const timer = setTimeout(() => {
+					// Bail if we're no longer in a Connected-ish state. Avoids
+					// flooding refresh() during a flapping sidecar/worker.
+					if (this._sidecarManager.state !== SidecarState.Connected) {
+						return;
+					}
+					workerToolsTreeView.refresh();
+				}, delay);
+				refreshTimers.push(timer);
+			}
+		};
 		this._register({
 			dispose: () => cancelRefreshBurst(),
 		});
 		this._register(this._sidecarManager.onDidChangeState(state => {
 			if (state === SidecarState.Connected && lastSidecarState !== SidecarState.Connected) {
-				this._logService.info('[ChipOS] Worker Tools panel auto-refresh burst on sidecar Connected');
-				cancelRefreshBurst(); // belt and suspenders for rapid state thrash
-				for (const delay of REFRESH_BACKOFF_MS) {
-					const timer = setTimeout(() => {
-						// Bail if we're no longer in Connected (worker died /
-						// user signed out etc.). Avoids flooding refresh()
-						// during a flapping sidecar.
-						if (this._sidecarManager.state !== SidecarState.Connected) {
-							return;
-						}
-						workerToolsTreeView.refresh();
-					}, delay);
-					refreshTimers.push(timer);
-				}
+				startRefreshBurst('sidecar→Connected');
 			} else if (state !== SidecarState.Connected) {
 				// Cancel any in-flight retry burst when sidecar drops out
 				// of Connected — those retries would race with whatever
@@ -1233,6 +1236,21 @@ class ChipOSContribution extends Disposable {
 				cancelRefreshBurst();
 			}
 			lastSidecarState = state;
+		}));
+		// 2026-05-15 — also burst on Worker state transitions. The
+		// sidecar-only trigger above misses the common case where the
+		// Sidecar (reasoner) connection stays alive but the Worker process
+		// dies and respawns: SidecarState never changes, so the panel kept
+		// showing stale "Worker API unavailable" errors until the user hit
+		// the manual ↻ button. Fires on any → Connected and on
+		// Connected → notConnected→back: each new Worker.Connected resets
+		// the burst because the worker that comes up may have a different
+		// pid + freshly-bound HTTP port.
+		this._register(this._sidecarManager.onDidChangeWorkerState(workerState => {
+			if (workerState === WorkerState.Connected && lastWorkerState !== WorkerState.Connected) {
+				startRefreshBurst('worker→Connected');
+			}
+			lastWorkerState = workerState;
 		}));
 
 		this._logService.info('[ChipOS] Worker Tools view registered (R26)');

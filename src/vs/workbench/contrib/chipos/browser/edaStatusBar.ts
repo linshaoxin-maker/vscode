@@ -27,7 +27,7 @@ import {
 	StatusbarAlignment,
 } from '../../../services/statusbar/browser/statusbar.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
-import { ISidecarManagerService, SidecarState } from '../common/sidecarService.js';
+import { ISidecarManagerService, SidecarState, WorkerState } from '../common/sidecarService.js';
 import {
 	EdaStatusSummary,
 	IWorkerToolManagerService,
@@ -56,6 +56,20 @@ export class EdaStatusBarContribution extends Disposable implements IWorkbenchCo
 
 		// React to sidecar state changes
 		this._register(this._sidecar.onDidChangeState(state => this._onSidecarStateChange(state)));
+		// 2026-05-15 — also react to worker state. The sidecar-only listener
+		// misses the case where the reasoner connection (sidecar) stays
+		// alive but the worker process dies and respawns: Sidecar.state
+		// never changes, so the EDA pill kept showing the stale "⚠️" from
+		// the moment the worker first failed. Refresh on every Worker→
+		// Connected so the pill flips back to "EDA: 19/24" automatically.
+		this._register(this._sidecar.onDidChangeWorkerState(workerState => {
+			if (workerState === WorkerState.Connected) {
+				this._logService.debug('[EdaStatusBar] worker→Connected, refreshing');
+				// Small delay so the worker's HTTP server has time to bind
+				// after gRPC registration completes.
+				setTimeout(() => this._poll().catch(() => { /* swallow */ }), 500);
+			}
+		}));
 		// Initial state check
 		this._onSidecarStateChange(this._sidecar.state);
 	}

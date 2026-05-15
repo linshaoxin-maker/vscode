@@ -101,6 +101,15 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	 */
 	private readonly _localCallerId: string = `electron-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+	/**
+	 * Continuous health watcher (2026-05-15). Runs after the initial
+	 * registration succeeds; polls every 30s. After 3 consecutive failures
+	 * the worker is presumed dead and WorkerState flips to Disconnected so
+	 * the status-bar pill stops lying.
+	 */
+	private _healthWatchTimer: ReturnType<typeof setInterval> | undefined;
+	private _healthWatchFailureCount = 0;
+
 	get state(): SidecarState { return this._state; }
 	get workerState(): WorkerState { return this._workerState; }
 	get mode(): BackendMode { return this._mode; }
@@ -610,19 +619,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		this._setWorkerState(WorkerState.Starting);
 		while (Date.now() < deadline) {
 			if (this._store.isDisposed) { return; }
-			try {
-				const controller = new AbortController();
-				const timer = setTimeout(() => controller.abort(), 3000);
-				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
-				clearTimeout(timer);
-				if (resp.ok) {
-					const body = await resp.json() as { workers_connected?: number };
-					if (body.workers_connected && body.workers_connected > 0) {
-						this._setWorkerState(WorkerState.Connected);
-						return;
-					}
-				}
-			} catch { /* retry */ }
+			if (await this._probeWorkerHealth()) {
+				this._setWorkerState(WorkerState.Connected);
+				this._startHealthWatch();
+				return;
+			}
 			await new Promise<void>(r => setTimeout(r, 1500));
 		}
 		// Give up — leave WorkerState as Starting so the user sees something is in flight.
@@ -630,8 +631,122 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		this._setWorkerState(WorkerState.Disconnected);
 	}
 
+	/**
+	 * Start a continuous health watcher (idempotent). Runs until the
+	 * SidecarManager is disposed or stopBackend()/restartWorker() resets
+	 * it. Polls _probeWorkerHealth() every 30s; if 3 consecutive probes
+	 * fail the worker is presumed gone and WorkerState flips to
+	 * Disconnected — that's the signal the status-bar pill, the WORKER
+	 * TOOLS panel auto-refresh, and the EDA pill all key off.
+	 *
+	 * No auto-respawn here — letting the user see the orange pill + click
+	 * Reconnect is the explicit recovery path. Auto-respawn is risky
+	 * (masks real crashes, races with manual recovery, can loop forever
+	 * on a permanently-bad token).
+	 *
+	 * Why this exists (2026-05-15): the original code only checked health
+	 * during the registration window. Once Connected, no one watched. If
+	 * the worker died later, WorkerState stayed Connected forever — the
+	 * pill lied while the panel + EDA pill correctly showed errors.
+	 */
+	private _startHealthWatch(): void {
+		this._stopHealthWatch();
+		this._healthWatchFailureCount = 0;
+		this._healthWatchTimer = setInterval(() => {
+			void (async () => {
+				if (this._store.isDisposed) {
+					this._stopHealthWatch();
+					return;
+				}
+				if (this._workerState !== WorkerState.Connected) {
+					// Some other path already moved us off Connected (manual
+					// restart, dispose, etc.). Stop watching; the next
+					// successful registration will start a fresh watcher.
+					this._stopHealthWatch();
+					return;
+				}
+				const ok = await this._probeWorkerHealth();
+				if (ok) {
+					this._healthWatchFailureCount = 0;
+					return;
+				}
+				this._healthWatchFailureCount++;
+				this._logService.info(
+					`[ChipOS SidecarElectron] health watch probe failed `
+					+ `(${this._healthWatchFailureCount}/3)`,
+				);
+				if (this._healthWatchFailureCount >= 3) {
+					this._logService.warn(
+						'[ChipOS SidecarElectron] worker presumed dead after '
+						+ '3 consecutive health failures; flipping to Disconnected',
+					);
+					this._setWorkerState(WorkerState.Disconnected);
+					this._stopHealthWatch();
+				}
+			})().catch(err => this._logService.debug('[ChipOS SidecarElectron] health watch tick errored', err));
+		}, 30_000);
+	}
+
+	private _stopHealthWatch(): void {
+		if (this._healthWatchTimer !== undefined) {
+			clearInterval(this._healthWatchTimer);
+			this._healthWatchTimer = undefined;
+		}
+	}
+
+	/**
+	 * Truthful "worker is healthy" probe. Composed because the IDE's
+	 * `Worker: Connected` pill is a UX signal that chat will actually work,
+	 * which requires:
+	 *   (a) the worker process is up and its HTTP server is responsive
+	 *       (otherwise the WORKER TOOLS panel + EDA status bar will fail
+	 *       to fetch and show ⚠️ even though the pill claims green); AND
+	 *   (b) the reasoner has it in its `workers_connected` list (otherwise
+	 *       chat round-trips fail with WORKER_UNAVAILABLE).
+	 *
+	 * Bug observed 2026-05-15: the previous probe checked only (b). Reasoner
+	 * keeps a stale gRPC connection in its connected count for a few
+	 * seconds after the worker actually dies, so the pill flashed green
+	 * while the local panel was failing to fetch. Result: user sees
+	 * "✓ Worker: Connected" + ⚠️ "Worker API unavailable" simultaneously.
+	 *
+	 * In CloudReasoning / Manual modes there is no local worker to probe
+	 * (it lives on a remote host or wherever the user put it), so we skip
+	 * (a) and rely on the reasoner-side check alone.
+	 */
+	private async _probeWorkerHealth(): Promise<boolean> {
+		// (a) Local worker /health — only meaningful in Local mode.
+		if (this._mode === BackendMode.Local) {
+			const port = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+			try {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), 1500);
+				const resp = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+				clearTimeout(timer);
+				if (!resp.ok) { return false; }
+			} catch {
+				// Local worker not responding → chat won't work no matter
+				// what reasoner thinks. Bail before bothering the WAN probe.
+				return false;
+			}
+		}
+		// (b) Reasoner sees a worker.
+		try {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 3000);
+			const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
+			clearTimeout(timer);
+			if (!resp.ok) { return false; }
+			const body = await resp.json() as { workers_connected?: number };
+			return !!(body.workers_connected && body.workers_connected > 0);
+		} catch {
+			return false;
+		}
+	}
+
 	async stopBackend(): Promise<void> {
 		this._logService.info('[ChipOS SidecarElectron] stopBackend()');
+		this._stopHealthWatch();
 		// Local-mode: we DO own the worker process, so release ref + kill if
 		// we were the last consumer. Other modes (Manual / CloudReasoning):
 		// we never spawned anything, just clear local observation state.
@@ -669,6 +784,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		// they want a hard reset, not a quiet skip.
 		this._logService.info(`[ChipOS SidecarElectron] restartWorker() — mode=${this._mode}, isLoggedIn=${this._authService.isLoggedIn()}`);
 		this._clearWorkerTokenRefreshTimer();
+		this._stopHealthWatch(); // _observeWorkerRegistration will start a fresh one on success
 
 		if (this._mode === BackendMode.Local) {
 			this._setWorkerState(WorkerState.Starting);
@@ -768,6 +884,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 
 	override dispose(): void {
 		this._clearWorkerTokenRefreshTimer();
+		this._stopHealthWatch();
 
 		// Path-3 Stage-2/3: release ref_count on REH if we used the RPC path.
 		if (this._rpcSpawnedWorkspaceRoot) {
@@ -1192,20 +1309,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	private async _observeWorkerRegistrationAfterSpawn(): Promise<void> {
 		const phaseADeadline = Date.now() + 60_000;
 		const phaseBDeadline = Date.now() + 600_000; // 10 min total observation window
-
-		const probe = async (): Promise<boolean> => {
-			try {
-				const controller = new AbortController();
-				const timer = setTimeout(() => controller.abort(), 3000);
-				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
-				clearTimeout(timer);
-				if (!resp.ok) { return false; }
-				const body = await resp.json() as { workers_connected?: number };
-				return !!(body.workers_connected && body.workers_connected > 0);
-			} catch {
-				return false;
-			}
-		};
+		const probe = this._probeWorkerHealth.bind(this);
 
 		// Phase A — tight 1s poll, expect registration soon.
 		while (Date.now() < phaseADeadline) {
@@ -1213,6 +1317,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			if (await probe()) {
 				this._setWorkerState(WorkerState.Connected);
 				this._logService.info('[ChipOS SidecarElectron] Worker registered with reasoner');
+				this._startHealthWatch();
 				return;
 			}
 			await new Promise<void>(r => setTimeout(r, 1000));
@@ -1230,6 +1335,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			if (await probe()) {
 				this._setWorkerState(WorkerState.Connected);
 				this._logService.info('[ChipOS SidecarElectron] Worker registered with reasoner (slow-recovery)');
+				this._startHealthWatch();
 				return;
 			}
 		}
