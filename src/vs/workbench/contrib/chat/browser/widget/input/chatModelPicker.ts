@@ -711,14 +711,15 @@ export class ModelPickerWidget extends Disposable {
 	/**
 	 * ChipOS — when chipos.model is configured, the framework's model dropdown
 	 * is misleading (its entries don't drive the chipos chat agent). Route the
-	 * click to chipos's own quickPick (lists current provider's models from
-	 * IModelDiscoveryService and writes the pick back to `chipos.model`).
-	 * Falls back to the stock framework picker when no chipos model is set.
+	 * click to chipos's own picker (lists current provider's models from
+	 * IModelDiscoveryService and writes the pick back to `chipos.model`),
+	 * anchored to the chip itself so it opens in place. Falls back to the
+	 * stock framework picker when no chipos model is set.
 	 */
 	private _openPickerOrChipOSSettings(): void {
 		const chiposModel = this._configurationService.getValue<string>('chipos.model') || '';
 		if (chiposModel) {
-			this._commandService.executeCommand('chipos.pickChatModel');
+			this._commandService.executeCommand('chipos.pickChatModel', this._domNode);
 			return;
 		}
 		this.show();

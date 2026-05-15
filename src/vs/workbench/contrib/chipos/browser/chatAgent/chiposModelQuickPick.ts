@@ -3,38 +3,55 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
+import { Codicon } from '../../../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { localize } from '../../../../../nls.js';
-import { CommandsRegistry } from '../../../../../platform/commands/common/commands.js';
+import { ActionListItemKind, IActionListItem } from '../../../../../platform/actionWidget/browser/actionList.js';
+import { IActionWidgetService } from '../../../../../platform/actionWidget/browser/actionWidget.js';
+import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
-import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../../platform/quickinput/common/quickInput.js';
-import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IModelDiscoveryService, ModelInfo } from '../settings/modelDiscoveryService.js';
 
 /**
  * Command: `chipos.pickChatModel`
  *
- * The chat input toolbar's model chip (patched in chatModelPicker.ts) dispatches
- * this command when chipos.model is set. It shows a quickPick listing every
- * model exposed by the current provider's IModelDiscoveryService, with the
- * currently-active model pre-selected. Picking writes back to chipos.model so
- * the chat agent immediately starts routing through the new model — same
- * round-trip the Settings → Models tab provides, but reachable from the chat
- * input without leaving the conversation.
+ * Invoked from the chat input's model chip (patched in chatModelPicker.ts).
+ * The chip passes its DOM element as the anchor so the dropdown opens
+ * right next to it — matching the framework model picker's positioning
+ * rather than the Command-Palette-style centered quickPick.
  *
- * An "Open Model Settings…" escape hatch sits at the bottom for users who
- * need to change provider or API key (which the chip-level picker can't do).
+ * Behavior:
+ *   - Lists every model exposed by the current chipos provider's
+ *     IModelDiscoveryService.fetchModels with a checkmark on the active one.
+ *   - Picking writes back to chipos.model (ConfigurationTarget.USER) so the
+ *     chat agent immediately routes through the new choice.
+ *   - Bottom item "Open Model Settings…" is an escape hatch for users who
+ *     need to change provider / API key (which this chip can't do).
+ *   - Discovery failures fire a Warning notification but still surface the
+ *     settings escape hatch.
+ *   - When no anchor is provided (programmatic invoke), falls back to
+ *     opening settings directly.
  */
 export const CHIPOS_PICK_CHAT_MODEL_COMMAND_ID = 'chipos.pickChatModel';
 
-const OPEN_SETTINGS_ITEM_ID = '__open_settings__';
+type ChipOSModelPick =
+	| { readonly kind: 'model'; readonly id: string }
+	| { readonly kind: 'open-settings' };
 
-CommandsRegistry.registerCommand(CHIPOS_PICK_CHAT_MODEL_COMMAND_ID, async accessor => {
+CommandsRegistry.registerCommand(CHIPOS_PICK_CHAT_MODEL_COMMAND_ID, async (accessor, anchor?: HTMLElement) => {
 	const configurationService = accessor.get(IConfigurationService);
-	const quickInputService = accessor.get(IQuickInputService);
+	const actionWidgetService = accessor.get(IActionWidgetService);
 	const modelDiscoveryService = accessor.get(IModelDiscoveryService);
 	const commandService = accessor.get(ICommandService);
 	const notificationService = accessor.get(INotificationService);
+
+	if (!anchor) {
+		// No anchor — caller didn't go through the chip path. Route to the
+		// full settings page rather than rendering the dropdown at (0,0).
+		commandService.executeCommand('chipos.openSettings', 'models');
+		return;
+	}
 
 	const provider = configurationService.getValue<string>('chipos.provider') ?? '';
 	const apiKey = configurationService.getValue<string>('chipos.apiKey') ?? '';
@@ -42,8 +59,8 @@ CommandsRegistry.registerCommand(CHIPOS_PICK_CHAT_MODEL_COMMAND_ID, async access
 	const currentModel = configurationService.getValue<string>('chipos.model') ?? '';
 
 	if (!provider) {
-		// No provider configured — quickPick has nothing useful to show.
-		// Route to settings where the user can fill in provider + key first.
+		// Nothing useful to show in the dropdown — push the user to settings
+		// to configure provider + key first.
 		commandService.executeCommand('chipos.openSettings', 'models');
 		return;
 	}
@@ -51,9 +68,7 @@ CommandsRegistry.registerCommand(CHIPOS_PICK_CHAT_MODEL_COMMAND_ID, async access
 	let models: ModelInfo[] = [];
 	try {
 		models = await modelDiscoveryService.fetchModels(provider, apiKey, baseUrl);
-	} catch (err) {
-		// Discovery failures fall through with an empty list — the
-		// settings escape hatch is still useful to fix the credentials.
+	} catch {
 		notificationService.notify({
 			severity: Severity.Warning,
 			message: localize(
@@ -64,36 +79,48 @@ CommandsRegistry.registerCommand(CHIPOS_PICK_CHAT_MODEL_COMMAND_ID, async access
 		});
 	}
 
-	const modelItems: IQuickPickItem[] = models.map(m => ({
-		id: m.id,
-		label: m.displayName || m.id,
-		description: m.displayName && m.displayName !== m.id ? m.id : undefined,
-		picked: m.id === currentModel,
-	}));
+	const items: IActionListItem<ChipOSModelPick>[] = models.map(m => {
+		const checked = m.id === currentModel;
+		return {
+			item: { kind: 'model' as const, id: m.id },
+			kind: ActionListItemKind.Action,
+			label: m.displayName || m.id,
+			description: m.displayName && m.displayName !== m.id ? m.id : undefined,
+			group: { title: '', icon: ThemeIcon.fromId(checked ? Codicon.check.id : Codicon.blank.id) },
+		};
+	});
 
-	const separator: IQuickPickSeparator = { type: 'separator' };
-	const settingsItem: IQuickPickItem = {
-		id: OPEN_SETTINGS_ITEM_ID,
-		label: localize('chipos.pickChatModel.openSettings', '$(gear) Open Model Settings…'),
-	};
+	items.push({ kind: ActionListItemKind.Separator });
+	items.push({
+		item: { kind: 'open-settings' as const },
+		kind: ActionListItemKind.Action,
+		label: localize('chipos.pickChatModel.openSettings', 'Open Model Settings…'),
+		group: { title: '', icon: ThemeIcon.fromId(Codicon.gear.id) },
+	});
 
-	const placeHolder = currentModel
-		? localize('chipos.pickChatModel.placeholder', 'Pick a model for ChipOS chat — current: {0}', currentModel)
-		: localize('chipos.pickChatModel.placeholderEmpty', 'Pick a model for ChipOS chat');
-
-	const picked = await quickInputService.pick(
-		[...modelItems, separator, settingsItem],
-		{ placeHolder, canPickMany: false },
+	actionWidgetService.show(
+		'ChipOSModelPicker',
+		false,
+		items,
+		{
+			onSelect: picked => {
+				actionWidgetService.hide();
+				if (!picked) {
+					return;
+				}
+				if (picked.kind === 'open-settings') {
+					commandService.executeCommand('chipos.openSettings', 'models');
+					return;
+				}
+				if (picked.id !== currentModel) {
+					// Fire-and-forget — the picker's onSelect is sync.
+					configurationService.updateValue('chipos.model', picked.id, ConfigurationTarget.USER);
+				}
+			},
+			onHide: () => { },
+		},
+		anchor,
+		undefined,
+		[],
 	);
-
-	if (!picked) {
-		return;
-	}
-	if (picked.id === OPEN_SETTINGS_ITEM_ID) {
-		commandService.executeCommand('chipos.openSettings', 'models');
-		return;
-	}
-	if (picked.id && picked.id !== currentModel) {
-		await configurationService.updateValue('chipos.model', picked.id, ConfigurationTarget.USER);
-	}
 });
