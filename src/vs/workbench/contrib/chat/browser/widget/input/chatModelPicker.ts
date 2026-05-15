@@ -20,6 +20,7 @@ import { IHoverPositionOptions } from '../../../../../../base/browser/ui/hover/h
 import { IActionWidgetService } from '../../../../../../platform/actionWidget/browser/actionWidget.js';
 import { IActionWidgetDropdownAction } from '../../../../../../platform/actionWidget/browser/actionWidgetDropdown.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
+import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { IProductService } from '../../../../../../platform/product/common/productService.js';
 import { ITelemetryService } from '../../../../../../platform/telemetry/common/telemetry.js';
 import { TelemetryTrustedValue } from '../../../../../../platform/telemetry/common/telemetryUtils.js';
@@ -501,8 +502,19 @@ export class ModelPickerWidget extends Disposable {
 		@IProductService private readonly _productService: IProductService,
 		@IChatEntitlementService private readonly _entitlementService: IChatEntitlementService,
 		@IUpdateService private readonly _updateService: IUpdateService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super();
+
+		// ChipOS — when `chipos.model` is set, the chat actually routes through the
+		// chipos chat agent (not framework language models), so the picker chip
+		// must reflect chipos's active model rather than the framework's "Auto".
+		// Re-render the chip whenever the user switches model in chipos settings.
+		this._register(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('chipos.model')) {
+				this._renderLabel();
+			}
+		}));
 	}
 
 	setHideChevrons(hideChevrons: IObservable<boolean>): void {
@@ -549,7 +561,7 @@ export class ModelPickerWidget extends Disposable {
 				return; // only left click
 			}
 			dom.EventHelper.stop(e, true);
-			this.show();
+			this._openPickerOrChipOSSettings();
 		}));
 
 		// Open picker on Enter/Space
@@ -557,7 +569,7 @@ export class ModelPickerWidget extends Disposable {
 			const event = new StandardKeyboardEvent(e);
 			if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
 				dom.EventHelper.stop(e, true);
-				this.show();
+				this._openPickerOrChipOSSettings();
 			}
 		}));
 	}
@@ -667,6 +679,13 @@ export class ModelPickerWidget extends Disposable {
 		}
 
 		const { name, statusIcon } = this._selectedModel?.metadata || {};
+		// ChipOS — `chipos.model` is the source of truth for the model that
+		// actually serves chat requests in this fork. Prefer it over the
+		// framework's selected model name so users see what's running, not the
+		// stock "Auto" placeholder. Fall back to the framework name only when
+		// chipos hasn't been configured yet (fresh install).
+		const chiposModel = this._configurationService.getValue<string>('chipos.model') || '';
+		const displayName = chiposModel || name || localize('chat.modelPicker.auto', "Auto");
 		const domChildren: (HTMLElement | string)[] = [];
 
 		if (statusIcon) {
@@ -674,7 +693,7 @@ export class ModelPickerWidget extends Disposable {
 			domChildren.push(iconElement);
 		}
 
-		domChildren.push(dom.$('span.chat-input-picker-label', undefined, name ?? localize('chat.modelPicker.auto', "Auto")));
+		domChildren.push(dom.$('span.chat-input-picker-label', undefined, displayName));
 
 		// Badge icon between label and chevron
 		if (this._badgeIcon) {
@@ -686,8 +705,23 @@ export class ModelPickerWidget extends Disposable {
 		dom.reset(this._domNode, ...domChildren);
 
 		// Aria
-		const modelName = this._selectedModel?.metadata.name ?? localize('chat.modelPicker.auto', "Auto");
-		this._domNode.ariaLabel = localize('chat.modelPicker.ariaLabel', "Pick Model, {0}", modelName);
+		this._domNode.ariaLabel = localize('chat.modelPicker.ariaLabel', "Pick Model, {0}", displayName);
+	}
+
+	/**
+	 * ChipOS — when chipos.model is configured, the framework's model dropdown
+	 * is misleading (its entries don't drive the chipos chat agent). Route the
+	 * click to chipos settings Models tab instead, where users actually pick
+	 * their chipos model. Falls back to the stock framework picker when no
+	 * chipos model is set yet.
+	 */
+	private _openPickerOrChipOSSettings(): void {
+		const chiposModel = this._configurationService.getValue<string>('chipos.model') || '';
+		if (chiposModel) {
+			this._commandService.executeCommand('chipos.openSettings', 'models');
+			return;
+		}
+		this.show();
 	}
 }
 
