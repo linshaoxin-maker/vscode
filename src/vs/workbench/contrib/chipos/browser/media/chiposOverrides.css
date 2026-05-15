@@ -78,7 +78,7 @@
 	margin: 12px 0 6px 0;
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 8px;
 	align-items: stretch;
 }
 
@@ -90,16 +90,25 @@
 .chat-welcome-view .chat-welcome-view-message > ul > li > a,
 .chat-welcome-view .chat-welcome-view-disclaimer ul > li > a {
 	display: inline-flex;
-	align-items: center;
-	gap: 8px;
+	/* Diagnosis #1: align-items:center floats the icon in the vertical middle of
+	 * a 2-line wrapped text. flex-start lines the icon up with the first text
+	 * line — reads as "labeled item" instead of "floating button". */
+	align-items: flex-start;
+	gap: 10px;
 	width: 100%;
 	box-sizing: border-box;
-	padding: 8px 12px;
+	/* Diagnosis #2: 8/12 was too tight for 2-line chips. 10/14 gives breathing
+	 * room without taking more vertical space on the wrapped lines. */
+	padding: 10px 14px;
 	border-radius: 6px;
 	background-color: var(--vscode-editorWidget-background, transparent);
 	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.3)));
 	color: var(--vscode-foreground);
-	font-size: 12px;
+	/* Diagnosis #3: 12px was smaller than the input placeholder (14px), so the
+	 * starter chips visually rank below the placeholder — wrong hierarchy. Bump
+	 * to 13px so chips read as primary affordance. */
+	font-size: 13px;
+	line-height: 1.4;
 	text-decoration: none;
 	cursor: pointer;
 	transition: background-color 0.1s, border-color 0.1s;
@@ -121,11 +130,43 @@
 /*
  * Codicon rendered inside the chip link via $(name) — give it a fixed metric
  * width so chips align cleanly even when icon glyphs differ in stroke weight.
+ *
+ * Diagnosis #5: with align-items:flex-start, the icon would sit slightly above
+ * the first text line's optical baseline (Codicon glyph metrics aren't centered
+ * on x-height). margin-top:2px nudges it back to optical alignment.
  */
 .chat-welcome-view .chat-welcome-view-disclaimer ul > li > a .codicon {
 	flex: 0 0 auto;
 	font-size: 14px;
+	margin-top: 2px;
 	color: var(--vscode-symbolIcon-classForeground, var(--vscode-foreground));
+}
+
+/*
+ * Diagnosis #4: all four starter chips used one orange color — users couldn't
+ * tell at-a-glance which kind of action each is. Color-code by chip ordinal so
+ * the 4 task types (Generate / Testbench / Review / Explain) get distinct
+ * semantic hues. Order MUST match chiposContribution.ts:1046-1049.
+ *
+ *   1. circuit-board  → blue   (build / synthesize)
+ *   2. beaker         → green  (test / verify)
+ *   3. checklist      → yellow (review / lint)
+ *   4. book           → purple (learn / explain)
+ *
+ * Colors pulled from VS Code chart palette tokens so they honor light/dark
+ * theme switches without bespoke hardcoding.
+ */
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li:nth-child(1) > a .codicon {
+	color: var(--vscode-charts-blue, #4a90e2);
+}
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li:nth-child(2) > a .codicon {
+	color: var(--vscode-charts-green, #5cba50);
+}
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li:nth-child(3) > a .codicon {
+	color: var(--vscode-charts-yellow, #d9b95c);
+}
+.chat-welcome-view .chat-welcome-view-disclaimer ul > li:nth-child(4) > a .codicon {
+	color: var(--vscode-charts-purple, #b96fce);
 }
 
 /*
@@ -251,7 +292,22 @@
 .chat-welcome-view > .chat-welcome-view-title {
 	font-size: 17px;
 	line-height: 1.2;
-	margin-top: 8px;
+	/* Diagnosis #6: huge vertical gap between the chat-sparkle icon, the title,
+	 * the subtitle, and the starter chips made the upper half of the empty
+	 * state feel stretched. Tighten the spacing chain. */
+	margin-top: 4px;
+	margin-bottom: 4px;
+}
+
+/* Diagnosis #6 cont.: pull the welcome icon closer to the title + tighten
+ * subtitle (chat-welcome-view-message) leading so the upper block reads as
+ * a single hero unit instead of 4 floating pieces. */
+.chat-welcome-view > .chat-welcome-view-icon {
+	margin-bottom: 6px;
+}
+.chat-welcome-view .chat-welcome-view-message {
+	line-height: 1.5;
+	margin-top: 2px;
 }
 
 /*-------------------------------------------------------------------------------
