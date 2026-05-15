@@ -2537,10 +2537,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	/**
 	 * Returns the previous request whose response still has an unresolved
-	 * confirmation card (Approve/Reject/multi-option), if any. Used by
-	 * invoke() to short-circuit free-form input that would otherwise
-	 * dispatch a new task while the backend session is still waiting on the
-	 * card — yielding a 409 SESSION_ALREADY_RUNNING.
+	 * **Decision Required** confirmation card (chipos `ConfirmRequest` event
+	 * with Approve/Reject/multi-option buttons), if any. Used by invoke()
+	 * to short-circuit free-form input that would otherwise dispatch a new
+	 * task while the backend session is still waiting on the card —
+	 * yielding a 409 SESSION_ALREADY_RUNNING.
+	 *
+	 * Important: this looks ONLY at `kind === 'confirmation'` parts. It
+	 * deliberately ignores the framework's `WaitingForPostApproval` /
+	 * `WaitingForConfirmation` tool-invocation states (which back the
+	 * working-set "Keep / Undo" buttons under the chat input). Those are
+	 * post-edit review affordances, not gating Decision Required cards,
+	 * and gating new prompts on them would block every conversation that
+	 * left an unsettled edit in the working set — exactly the false
+	 * positive observed on 2026-05-15.
 	 *
 	 * Walks from the second-most-recent request backwards because the
 	 * very-last entry is typically the in-flight invoke we're inside.
@@ -2552,8 +2562,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Last entry is the current request (just enqueued); inspect prior ones.
 		for (let i = requests.length - 2; i >= 0; i--) {
 			const response = requests[i]?.response;
-			if (response && response.isPendingConfirmation.get()) {
-				return response;
+			if (!response) { continue; }
+			// Scan the response's content parts directly — we only care about
+			// `confirmation` parts (chipos ConfirmRequest → IChatConfirmation).
+			// `response.isPendingConfirmation` is too broad: it also flips true
+			// for tool-invocation post-approval states (Keep/Undo on the
+			// working-set widget), which we explicitly want to allow.
+			for (const part of response.response.value) {
+				if (part.kind === 'confirmation' && !part.isUsed) {
+					return response;
+				}
 			}
 		}
 		return undefined;
