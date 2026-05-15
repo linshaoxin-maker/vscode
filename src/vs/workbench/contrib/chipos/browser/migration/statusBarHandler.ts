@@ -249,29 +249,31 @@ export class StatusBarHandler extends Disposable {
 		// undefined === connected (旧 API 调用方传 undefined 表示"连上了, 不用显示"). 现在保留按钮但显示 connected 态.
 		const effective: ReconnectReason = reason ?? 'connected';
 
+		// Style 与 ChipOS: Connected pill 一致 — 都用 "<scope>: <state>" 格式.
+		// scope = Worker (这是 worker 状态, 不是 sidecar/reasoner — 那个是 ChipOS pill).
 		let text: string;
 		let tooltip: string;
 		let useWarningColor = true;
 		switch (effective) {
 			case 'sidecar-error':
-				text = '$(debug-restart) Reconnect';
+				text = '$(debug-restart) Worker: Reconnect';
 				tooltip = 'ChipOS backend connection failed.\nClick to restart the worker (often clears the issue).';
 				break;
 			case 'worker-error':
-				text = '$(debug-restart) Reconnect';
+				text = '$(debug-restart) Worker: Reconnect';
 				tooltip = 'ChipOS worker errored out.\nClick to restart it.';
 				break;
 			case 'worker-disconnected':
-				text = '$(debug-restart) Reconnect';
+				text = '$(debug-restart) Worker: Reconnect';
 				tooltip = 'ChipOS worker is disconnected.\nClick to reconnect.';
 				break;
 			case 'connecting':
-				text = '$(loading~spin) Connecting';
+				text = '$(loading~spin) Worker: Connecting';
 				tooltip = 'ChipOS worker is starting up...';
 				useWarningColor = false;
 				break;
 			case 'connected':
-				text = '$(check) Connected';
+				text = '$(check) Worker: Connected';
 				tooltip = 'ChipOS worker connected.\nClick to force restart (rarely needed).';
 				useWarningColor = false;
 				break;
