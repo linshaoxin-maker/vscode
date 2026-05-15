@@ -1906,15 +1906,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				ctx.runtime.toolStartTimes.clear();
 				// Dogfood discovery 2026-05-15: chipos main-agent chats finish
 				// with Done, not TaskComplete (TaskComplete is for subagents).
-				// The trace_id pill render was only attached to TaskComplete,
-				// so a vanilla "say hi" round closed via Done without ever
-				// rendering the pill. Emit it here too. The trace_id was
-				// injected into AgentEventBase by grpcSseEventStreamClient
-				// from the top-level reasoner ServerEvent (ADR-009 §4.1).
-				if (event.trace_id) {
-					const tid = event.trace_id;
-					const last12 = tid.length > 12 ? tid.slice(-12) : tid;
-					ctx.progress([this._markdown(`\n\n*<sub>trace: \`${last12}\` (full: ${tid})</sub>*`)]);
+				//
+				// Why event.trace_id is missing on Done specifically: Done is
+				// emitted by stream_manager.close() which runs *after*
+				// agent_core.handle_request's finally block has already called
+				// reset_trace_context(). At that point self.trace_id @property
+				// reads an empty contextvar, so the Done event JSON does NOT
+				// carry trace_id — every earlier event in the same round does.
+				//
+				// Workaround: prefer event.trace_id, but fall back to FullTracer's
+				// activeTraceId, which was set from the first earlier event with
+				// trace_id (begin() is called the first time any event with
+				// trace_id arrives — see model_output / round_start cases above).
+				const _pillTid = event.trace_id ?? this._fullTracer.activeTraceId;
+				if (_pillTid) {
+					const last12 = _pillTid.length > 12 ? _pillTid.slice(-12) : _pillTid;
+					ctx.progress([this._markdown(`\n\n*<sub>trace: \`${last12}\` (full: ${_pillTid})</sub>*`)]);
 				}
 				ctx.finish({});
 				break;
@@ -2523,7 +2530,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				continue;
 			}
 			const syntheticKey = `fswatch:${requestId}:${uriString}`;
-			this._startExternalEdit(syntheticKey, fileUri, sessionResource, requestId, runtime);
+			// Read whatever the file was at IDE startup (or empty for new
+			// files) and pass it as the beforeSnapshot. Without this, the
+			// framework's stopExternalEdits takes the "beforeSnapshot ===
+			// undefined" path → only records FileOperationType.Create and
+			// SKIPS computeEditsFromSnapshots → entry.linesAdded stays at 0
+			// → working-set widget displays "+0 -0" despite the file
+			// obviously containing content. Empty-string snapshot routes
+			// through the regular diff path so the widget shows the right
+			// numbers ("+N -0" for a new file with N lines).
+			//
+			// We don't have the actual prior file content for files that
+			// already existed (fswatch caught a modification, not creation),
+			// so '' is a lossy default — for net-new files it's accurate;
+			// for modifications the +/- count will reflect the new content
+			// minus the empty baseline (so +N total lines, -0). That's still
+			// far better than the +0/-0 sentinel.
+			const beforeSnapshot = '';
+			this._startExternalEdit(syntheticKey, fileUri, sessionResource, requestId, runtime, beforeSnapshot);
 			try {
 				const editProgress = await this._stopExternalEdit(syntheticKey, sessionResource, runtime);
 				if (editProgress.length > 0) {

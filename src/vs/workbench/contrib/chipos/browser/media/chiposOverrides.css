@@ -389,7 +389,14 @@
 	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.18)));
 	border-radius: 6px;
 	padding: 4px 6px;
-	margin: 6px 0;
+	/* 2026-05-15: NO outer margin. The widget's height is reported via
+	 * `domNode.offsetHeight` (chatTodoListWidget.ts:158-160), which excludes
+	 * CSS margins — adding `margin: 6px 0` here made the parent layout
+	 * miscalculate by 12px so the chat list's virtualizer cached stale row
+	 * heights, causing the "scroll up jumps from message 3 to message 2"
+	 * jitter reported on 2026-05-15. The padding + border already provide
+	 * enough visual separation from neighbouring content.
+	 */
 }
 
 .interactive-session .chat-todo-list-widget .todo-list-expand {
