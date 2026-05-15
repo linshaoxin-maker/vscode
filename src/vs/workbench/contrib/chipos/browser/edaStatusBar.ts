@@ -35,7 +35,7 @@ import {
 
 const POLL_INTERVAL_MS = 60_000;          // 60s — EDA install state changes rarely
 const INITIAL_DELAY_MS = 2_000;           // wait 2s after worker connect before first poll
-const COMMAND_OPEN_PANEL = 'workbench.view.extension.chipos-worker-tools';
+const COMMAND_OPEN_PANEL = 'chipos.workerTools.focus';
 
 export class EdaStatusBarContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'chipos.edaStatusBar';
