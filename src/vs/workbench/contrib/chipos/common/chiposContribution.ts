@@ -79,6 +79,7 @@ import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageServ
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposInlineCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposEdaSnippetPicker.js';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposModelQuickPick.js';
 import '../../../../workbench/contrib/chipos/browser/edaStatusBar.js';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSInputAccent.css';
