@@ -478,12 +478,18 @@ export function registerSidecarIpcHandlers(): void {
 	if (_registered) { return; }
 	_registered = true;
 
-	// Per-window cleanup.
+	// Per-window cleanup. webContents.id is captured at registration time
+	// because by the time `'closed'` fires the WebContents is already
+	// destroyed — touching `win.webContents.id` then throws "Object has
+	// been destroyed" and surfaces as an uncaught main-process exception
+	// at IDE shutdown.
 	BrowserWindow.getAllWindows().forEach(w => {
-		w.on('closed', () => cleanupWindow(w.webContents.id));
+		const wcId = w.webContents.id;
+		w.on('closed', () => cleanupWindow(wcId));
 	});
 	app.on('browser-window-created', (_e: unknown, win: BrowserWindow) => {
-		win.on('closed', () => cleanupWindow(win.webContents.id));
+		const wcId = win.webContents.id;
+		win.on('closed', () => cleanupWindow(wcId));
 	});
 
 	// chipos:findBinary ────────────────────────────────────────────────────

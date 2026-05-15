@@ -651,16 +651,58 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		// the worker lives elsewhere, but in Local mode it left dead workers
 		// adopted and a fresh `worker_token` un-applied. CloudReasoning/
 		// Manual modes keep the lightweight behavior.
-		this._logService.info(`[ChipOS SidecarElectron] restartWorker() — mode=${this._mode}`);
+		//
+		// 2026-05-15 — restartWorker() is **user-initiated** (status-bar
+		// Reconnect button + Command Palette). Previously it delegated to
+		// `_refreshWorkerTokenAndRespawn()`, which:
+		//   (a) returned silently when `isLoggedIn() === false` — auth state
+		//       briefly flips false after WORKER_AUTH_FAILED 5×, so the
+		//       button felt like a no-op until the user did Reload Window;
+		//   (b) was guarded by `_refreshingWorkerToken` dedupe meant for the
+		//       background auto-refresh timer — a stuck flag silently
+		//       swallowed every click;
+		//   (c) only its `_ensureLocalWorker()` branch did the actual kill+
+		//       spawn; the !Local branch recursed into restartWorker().
+		// Now restartWorker() does its own forceful kill+respawn in Local
+		// mode (and re-observe in remote modes), independent of the
+		// auto-refresh dedupe + auth gate. The user clicked "Reconnect" —
+		// they want a hard reset, not a quiet skip.
+		this._logService.info(`[ChipOS SidecarElectron] restartWorker() — mode=${this._mode}, isLoggedIn=${this._authService.isLoggedIn()}`);
 		this._clearWorkerTokenRefreshTimer();
 
 		if (this._mode === BackendMode.Local) {
+			this._setWorkerState(WorkerState.Starting);
 			try {
-				await this._refreshWorkerTokenAndRespawn();
+				// Release our ref first so the main-side ref_count is correct
+				// when killProcess fires. Non-fatal if no ref is held (e.g.
+				// dead worker was already cleared by its exit handler).
+				await this._releaseLocalWorkerRef();
+				// killProcess waits for SIGTERM→exit (or 5s SIGKILL fallback)
+				// inside killManagedProcess(), so by the time this resolves,
+				// the OS-level process is actually gone — no zombie left for
+				// _ensureLocalWorker's checkInstance to mistakenly adopt.
+				await this._invokeIpc('vscode:chipos:killProcess', 'worker').catch(err => {
+					this._logService.warn(`[ChipOS SidecarElectron] killProcess during restart failed (non-fatal): ${err}`);
+				});
+				// _ensureLocalWorker re-mints the worker_token if logged in,
+				// or falls through to apiKey path otherwise. Either way the
+				// new process gets a fresh env, which is what the user is
+				// asking for when they click Reconnect.
+				const spawned = await this._ensureLocalWorker();
+				if (spawned) {
+					this._logService.info('[ChipOS SidecarElectron] restartWorker: respawn complete, observing registration');
+					void this._observeWorkerRegistration().catch(() => { /* best effort */ });
+				} else {
+					this._logService.warn('[ChipOS SidecarElectron] restartWorker: _ensureLocalWorker returned false (no workspace folder?)');
+					this._setWorkerState(WorkerState.Disconnected);
+				}
 				return;
 			} catch (err) {
 				this._logService.warn(`[ChipOS SidecarElectron] Local restartWorker failed: ${err}`);
-				// fall through to legacy re-observe path below
+				this._setWorkerState(WorkerState.Disconnected);
+				// fall through to legacy re-observe path below — at least
+				// the WorkerState will recover if a worker happens to come
+				// back via some other code path.
 			}
 		}
 

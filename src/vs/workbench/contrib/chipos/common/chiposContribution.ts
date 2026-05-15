@@ -279,9 +279,27 @@ CommandsRegistry.registerCommand(ChipOSCommandId.RestartBackend, async accessor 
 CommandsRegistry.registerCommand(ChipOSCommandId.RestartWorker, async accessor => {
 	const backend = accessor.get(ISidecarManagerService);
 	const notifications = accessor.get(INotificationService);
+	// 2026-05-15 — keep this notification chain meaningful: "Restarting"
+	// fires before any IPC so the user sees the click registered, and the
+	// follow-up reports the *actual* worker state instead of always claiming
+	// success. Earlier version printed "restart initiated" unconditionally,
+	// which masked the real cause of the "Reconnect button does nothing"
+	// complaint (the previous restartWorker() silently returned when not
+	// logged in or when _refreshingWorkerToken was stuck).
 	notifications.info('ChipOS: Restarting worker…');
-	await backend.restartWorker();
-	notifications.info('ChipOS: Worker restart initiated.');
+	try {
+		await backend.restartWorker();
+	} catch (err) {
+		notifications.error(`ChipOS: Worker restart failed — ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+	if (backend.workerState === WorkerState.Connected) {
+		notifications.info('ChipOS: Worker reconnected.');
+	} else if (backend.workerState === WorkerState.Starting) {
+		notifications.info('ChipOS: Worker respawned, waiting for registration…');
+	} else {
+		notifications.warn('ChipOS: Worker restart finished but worker is not connected. Check logs.');
+	}
 });
 
 // ── Phase 1 Unified Auth: Login / Logout commands ──
