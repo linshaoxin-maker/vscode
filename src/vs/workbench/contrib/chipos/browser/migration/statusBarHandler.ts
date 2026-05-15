@@ -29,7 +29,9 @@ const STATUSBAR_RECONNECT_ID = 'chipos.statusbar.reconnect';
 export type ReconnectReason =
 	| 'sidecar-error'    // reasoner connection died
 	| 'worker-error'     // worker process errored
-	| 'worker-disconnected'; // worker fell off but didn't error
+	| 'worker-disconnected' // worker fell off but didn't error
+	| 'connected'        // worker is healthy — show "已连接" green pill, click = force restart
+	| 'connecting';      // worker mid-startup — show "连接中" neutral pill
 
 
 export interface IChipOSUsageDisplay {
@@ -236,47 +238,58 @@ export class StatusBarHandler extends Disposable {
 	// Surfaces a one-click recovery path when the sidecar / worker drops out.
 	// Stock VS Code only shows a generic "Disconnected" pill; users have had to
 	// open the command palette and type out "ChipOS: Restart Worker" to recover.
-	// This entry appears next to the connection pill specifically when something
-	// is wrong and disappears once the user fixes it (or the worker comes back
-	// on its own).
+	//
+	// 2026-05-15 改: 不再 dispose entry (dispose 在某些 transition 序列里残留 stale).
+	// 改成"始终在场"的状态指示器:
+	//   - worker error/disconnected → 橙色 "Reconnect" 可点重启
+	//   - worker connected           → 绿色 "$(check) Connected" 仍可点 = 主动 force restart
+	//   - worker connecting/starting → 灰色 "$(loading~spin) Connecting" 不可点
+	// 这样 update() 永远 work, 不依赖 dispose() 的 race-condition 状态.
 	updateReconnectButton(reason: ReconnectReason | undefined): void {
-		if (reason === undefined) {
-			if (this._reconnectEntry) {
-				this._reconnectEntry.dispose();
-				this._reconnectEntry = undefined;
-			}
-			return;
-		}
+		// undefined === connected (旧 API 调用方传 undefined 表示"连上了, 不用显示"). 现在保留按钮但显示 connected 态.
+		const effective: ReconnectReason = reason ?? 'connected';
 
-		const text = '$(debug-restart) Reconnect';
-		// Tooltip varies so users know what specifically failed. The command
-		// itself is always restartWorker — it's a no-op for sidecar errors but
-		// also serves as a "kick the system" recovery action that often clears
-		// transient reasoner issues too.
+		let text: string;
 		let tooltip: string;
-		switch (reason) {
+		let useWarningColor = true;
+		switch (effective) {
 			case 'sidecar-error':
+				text = '$(debug-restart) Reconnect';
 				tooltip = 'ChipOS backend connection failed.\nClick to restart the worker (often clears the issue).';
 				break;
 			case 'worker-error':
+				text = '$(debug-restart) Reconnect';
 				tooltip = 'ChipOS worker errored out.\nClick to restart it.';
 				break;
 			case 'worker-disconnected':
+				text = '$(debug-restart) Reconnect';
 				tooltip = 'ChipOS worker is disconnected.\nClick to reconnect.';
+				break;
+			case 'connecting':
+				text = '$(loading~spin) Connecting';
+				tooltip = 'ChipOS worker is starting up...';
+				useWarningColor = false;
+				break;
+			case 'connected':
+				text = '$(check) Connected';
+				tooltip = 'ChipOS worker connected.\nClick to force restart (rarely needed).';
+				useWarningColor = false;
 				break;
 		}
 
-		const entry = {
+		const entry: any = {
 			name: 'ChipOS Reconnect',
 			text,
-			ariaLabel: 'Reconnect ChipOS worker',
+			ariaLabel: useWarningColor ? 'Reconnect ChipOS worker' : 'ChipOS worker connected',
 			command: 'chipos.restartWorker',
 			tooltip,
-			// `warning` background draws the eye without screaming "error"; the
-			// underlying issue might be transient or recoverable.
-			backgroundColor: { id: 'statusBarItem.warningBackground' },
-			color: { id: 'statusBarItem.warningForeground' },
 		};
+		if (useWarningColor) {
+			// `warning` background draws the eye without screaming "error".
+			entry.backgroundColor = { id: 'statusBarItem.warningBackground' };
+			entry.color = { id: 'statusBarItem.warningForeground' };
+		}
+		// connected/connecting state: no warning bg → blends into status bar (绿色 codicon-check 自带)
 
 		if (this._reconnectEntry) {
 			this._reconnectEntry.update(entry);
