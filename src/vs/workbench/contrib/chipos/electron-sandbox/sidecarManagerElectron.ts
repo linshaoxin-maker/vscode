@@ -1173,31 +1173,68 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	}
 
 	/** Phase 2 — same loop as `_observeWorkerRegistration` but with shorter timeout
-	 * because we just spawned the worker, not adopting an existing one. */
+	 * because we just spawned the worker, not adopting an existing one.
+	 *
+	 * 2026-05-15 — phased observation to fix the false "Worker: Error" pill:
+	 *   Phase A (0–60s): tight 1s poll, normal flow.
+	 *   Phase B (60–600s): slow 5s poll in background; IDE shows Error so the
+	 *     user knows something's off, but if the worker eventually completes
+	 *     gRPC registration (slow network to remote Reasoner is the common
+	 *     case — Aliyun host can need 30–90s under load) we still flip back
+	 *     to Connected without requiring a manual Reconnect.
+	 *
+	 * The previous version gave up at 30s and left WorkerState.Error stuck.
+	 * Worker logs from the ChipOS IDE on a real session showed registration
+	 * landing at 33–35s — just past the deadline — leaving the user staring
+	 * at a "Worker: Reconnect" badge for a worker that was actually about to
+	 * come online on its own.
+	 */
 	private async _observeWorkerRegistrationAfterSpawn(): Promise<void> {
-		const deadline = Date.now() + 30_000;
-		while (Date.now() < deadline) {
-			if (this._store.isDisposed) { return; }
+		const phaseADeadline = Date.now() + 60_000;
+		const phaseBDeadline = Date.now() + 600_000; // 10 min total observation window
+
+		const probe = async (): Promise<boolean> => {
 			try {
 				const controller = new AbortController();
 				const timer = setTimeout(() => controller.abort(), 3000);
 				const resp = await fetch(`${this.reasoningUrl}/health`, { signal: controller.signal });
 				clearTimeout(timer);
-				if (resp.ok) {
-					const body = await resp.json() as { workers_connected?: number };
-					if (body.workers_connected && body.workers_connected > 0) {
-						this._setWorkerState(WorkerState.Connected);
-						this._logService.info('[ChipOS SidecarElectron] Worker registered with reasoner');
-						return;
-					}
-				}
-			} catch { /* retry */ }
+				if (!resp.ok) { return false; }
+				const body = await resp.json() as { workers_connected?: number };
+				return !!(body.workers_connected && body.workers_connected > 0);
+			} catch {
+				return false;
+			}
+		};
+
+		// Phase A — tight 1s poll, expect registration soon.
+		while (Date.now() < phaseADeadline) {
+			if (this._store.isDisposed) { return; }
+			if (await probe()) {
+				this._setWorkerState(WorkerState.Connected);
+				this._logService.info('[ChipOS SidecarElectron] Worker registered with reasoner');
+				return;
+			}
 			await new Promise<void>(r => setTimeout(r, 1000));
 		}
-		// Worker never showed up — keep SidecarState.Connected (Reasoner is fine)
-		// but flag Worker explicitly so the UI/Chat layer can warn the user.
-		this._logService.warn('[ChipOS SidecarElectron] Worker registration not observed within 30s after spawn');
+
+		// Phase B — slow background recovery. Mark Error so user sees the
+		// problem, but keep polling because slow gRPC handshakes (remote
+		// Reasoner over WAN) routinely complete just past the 60s mark.
+		this._logService.warn('[ChipOS SidecarElectron] Worker registration not observed within 60s; entering slow-recovery poll');
 		this._setWorkerState(WorkerState.Error);
+
+		while (Date.now() < phaseBDeadline) {
+			if (this._store.isDisposed) { return; }
+			await new Promise<void>(r => setTimeout(r, 5000));
+			if (await probe()) {
+				this._setWorkerState(WorkerState.Connected);
+				this._logService.info('[ChipOS SidecarElectron] Worker registered with reasoner (slow-recovery)');
+				return;
+			}
+		}
+
+		this._logService.warn('[ChipOS SidecarElectron] Worker still not registered after 10 min; giving up observation');
 	}
 
 	// ── State helpers ────────────────────────────────────────────────────
