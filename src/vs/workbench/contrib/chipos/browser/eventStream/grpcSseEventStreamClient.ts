@@ -157,8 +157,17 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		try {
 			const healthUrl = `${this._config.baseUrl}/health`;
 			this._logService?.debug('[SseClient] connect() health check: %s', healthUrl);
+			// 2026-05-16 fix: bumped 5s → 10s. The total budget covers BOTH
+			// _resolveToken() (which can do a network refresh round-trip on
+			// AUTH_TOKEN_EXPIRED, ~1-3s on WAN) AND the actual /health fetch.
+			// Real-world Aliyun WAN spikes were eating the full 5s on the
+			// token side and leaving the /health probe with 0 budget →
+			// AbortError "signal is aborted without reason" in the renderer
+			// log → user-visible "Backend not connected" red banner even
+			// though the reasoner itself was healthy. 10s gives both phases
+			// realistic headroom without making startup feel sluggish.
 			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 5000);
+			const timer = setTimeout(() => controller.abort(), 10000);
 			const token = await this._resolveToken();
 			const headers: Record<string, string> = {};
 			if (token) {
