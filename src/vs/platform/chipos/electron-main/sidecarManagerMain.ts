@@ -754,12 +754,21 @@ export function registerSidecarIpcHandlers(): void {
 					continue;
 				}
 				// ROADMAP §11 P2-d: forward [EdaEnv] lines on a separate IPC
-				// channel. Renderer extension consumes via
-				// `chipos:eda-env-status` to show install guidance / status
-				// pill ('all_ready' / 'core_ready' / 'missing <tool>').
+				// channel. Renderer (primary `vscode/` workbench) consumes via
+				// `vscode:chipos:eda-env-status` to show install guidance /
+				// status pill ('all_ready' / 'core_ready' / 'missing <tool>').
+				//
+				// 2026-05-16 fix: channel renamed from `chipos:eda-env-status`
+				// → `vscode:chipos:eda-env-status` because the sandbox preload
+				// validateIPC() rejects channels without the `vscode:` prefix.
+				// The earlier `chipos:eda-pack-progress` sister channel kept
+				// its original name because it's consumed by the secondary
+				// `vscode-extension/` (a separate extension with its own
+				// preload, no validateIPC restriction). Anything consumed by
+				// the primary workbench MUST start with `vscode:`.
 				if (line.startsWith('[EdaEnv]')) {
 					try {
-						event.sender.send('chipos:eda-env-status', { line, role });
+						event.sender.send('vscode:chipos:eda-env-status', { line, role });
 					} catch (e) {
 						console.warn(`[ChipOS ${role}] failed to forward EdaEnv line: ${e}`);
 					}

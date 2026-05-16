@@ -11,7 +11,13 @@
  *
  *   worker stderr [EdaEnv] line
  *        ↓ (parsed line-by-line in sidecarManagerMain.ts:760)
- *   IPC channel `chipos:eda-env-status` { line, role }
+ *   IPC channel `vscode:chipos:eda-env-status` { line, role }
+ *   (NOTE: the `vscode:` prefix is mandatory — the sandbox preload's
+ *    validateIPC rejects any channel without it. The earlier
+ *    `chipos:eda-pack-progress` channel was only ever consumed by the
+ *    secondary-surface vscode-extension which runs with a different
+ *    preload, so it doesn't hit this restriction. Anything consumed by
+ *    the primary `vscode/` workbench MUST use the `vscode:` prefix.)
  *        ↓ (this contribution subscribes via ipcRenderer.on)
  *   parsed → notification (with "Open install guide" button per missing tool)
  *
@@ -48,7 +54,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { localize } from '../../../../nls.js';
 
-const IPC_CHANNEL = 'chipos:eda-env-status';
+const IPC_CHANNEL = 'vscode:chipos:eda-env-status';
 
 /**
  * Parsed shape of one [EdaEnv] line. Exported for unit testing the

@@ -521,7 +521,8 @@
 	opacity: 0.72;
 }
 
-.chipos-chat-sessions-sidebar .chipos-sessions-new-btn {
+.chipos-chat-sessions-sidebar .chipos-sessions-new-btn,
+.chipos-chat-sessions-sidebar .chipos-sessions-collapse-btn {
 	font-size: 14px;
 	padding: 2px 4px;
 	border-radius: 3px;
@@ -529,9 +530,11 @@
 	opacity: 0.7;
 	cursor: pointer;
 	text-decoration: none;
+	flex-shrink: 0;
 }
 
-.chipos-chat-sessions-sidebar .chipos-sessions-new-btn:hover {
+.chipos-chat-sessions-sidebar .chipos-sessions-new-btn:hover,
+.chipos-chat-sessions-sidebar .chipos-sessions-collapse-btn:hover {
 	opacity: 1;
 	background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.1));
 }

@@ -12,8 +12,7 @@ import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '
 import { createDecorator, IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { registerSingleton, InstantiationType } from '../../../../../platform/instantiation/common/extensions.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
-import { IChatWidget, IChatWidgetService } from '../../../../../workbench/contrib/chat/browser/chat.js';
-import { ChatAgentLocation } from '../../../../../workbench/contrib/chat/common/constants.js';
+import { IChatWidgetService } from '../../../../../workbench/contrib/chat/browser/chat.js';
 import { ChipOSChatSessionsSidebar } from './chiposChatSessionsSidebar.js';
 
 const SIDEBAR_OPEN_STORAGE_KEY = 'chipos.chat.sessionsSidebar.open';

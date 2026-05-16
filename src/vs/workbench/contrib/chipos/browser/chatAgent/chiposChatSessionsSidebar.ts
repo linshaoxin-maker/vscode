@@ -52,8 +52,18 @@ export class ChipOSChatSessionsSidebar extends Disposable {
 		this._domNode = host;
 		this._domNode.classList.add('chipos-chat-sessions-sidebar');
 
-		// Header: title + new-chat button
+		// Header: collapse button + title + new-chat button. The collapse
+		// button just runs the toggle command so closing the sidebar from
+		// inside is a single click (matches Cursor's UX where the
+		// sidebar-toggle lives in the same spot the open button lives).
 		const header = dom.append(this._domNode, dom.$('.chipos-sessions-header'));
+		const collapseBtn = dom.append(header, dom.$('a.chipos-sessions-collapse-btn.codicon.codicon-layout-sidebar-right'));
+		collapseBtn.setAttribute('role', 'button');
+		collapseBtn.setAttribute('aria-label', localize('chipos.sessions.collapse', 'Hide chat sessions'));
+		collapseBtn.title = localize('chipos.sessions.collapse', 'Hide chat sessions');
+		this._register(dom.addDisposableListener(collapseBtn, dom.EventType.CLICK, () => {
+			this._commandService.executeCommand('chipos.toggleChatSessionsSidebar');
+		}));
 		const headerTitle = dom.append(header, dom.$('.chipos-sessions-title'));
 		headerTitle.textContent = localize('chipos.sessions.title', 'Chats');
 		const newBtn = dom.append(header, dom.$('a.chipos-sessions-new-btn.codicon.codicon-add'));
