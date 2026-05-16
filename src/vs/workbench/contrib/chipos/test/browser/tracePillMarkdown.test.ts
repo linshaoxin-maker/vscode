@@ -22,17 +22,18 @@ import { _buildTracePillMarkdown } from '../../../../../workbench/contrib/chipos
 
 suite('_buildTracePillMarkdown', () => {
 
-	test('renders a markdown command link with isTrusted', () => {
+	test('renders an icon-only markdown command link with isTrusted', () => {
 		const md = _buildTracePillMarkdown('reasoning-smoke-1778839365-a4cc331b');
 
 		assert.strictEqual(md.isTrusted, true,
 			'isTrusted must be true so the command URI is invoked on click');
 		assert.strictEqual(md.supportThemeIcons, true,
 			'supportThemeIcons preserved (the chat renderer key for $(icon) substitution)');
-		// Pin the markdown shape — if this breaks, the chat sanitizer or
-		// renderer probably changed contract.
+		// Pin the icon-only shape — visual round 4 swapped the "trace" text
+		// for `$(link-external)` after dogfood feedback ("太丑了" — the bright
+		// blue text link dominated the bubble).
 		assert.match(md.value,
-			/^\n\n\[trace\]\(command:chipos\.trace\.copyId\?[^ ]+ "Click to copy: .+"\)$/,
+			/\[\$\(link-external\)\]\(command:chipos\.trace\.copyId\?[^ ]+ "Trace ID: .+ — click to copy"\)$/,
 			`unexpected markdown shape: ${md.value}`,
 		);
 	});
@@ -51,20 +52,20 @@ suite('_buildTracePillMarkdown', () => {
 
 	test('tooltip contains the full trace_id verbatim for vanilla ids', () => {
 		const md = _buildTracePillMarkdown('reasoning-smoke-001');
-		assert.match(md.value, /"Click to copy: reasoning-smoke-001"/,
+		assert.match(md.value, /"Trace ID: reasoning-smoke-001 — click to copy"/,
 			'tooltip must include the trace_id so hover reveals the full string');
 	});
 
 	test('escapes backslash + double-quote in tooltip text', () => {
 		// Defensive: trace_id is alphanumeric + dash in practice, but if a
 		// future reasoner version emits `"`, raw interpolation into the
-		// markdown title `"Click to copy: ${tid}"` would close the title
+		// markdown title `"Trace ID: ${tid} — ..."` would close the title
 		// early and corrupt the link. Escape both chars.
 		const evil = 'trace-with-"quote"-and-\\backslash';
 		const md = _buildTracePillMarkdown(evil);
 		// Title field should escape both, leaving the link parseable.
 		assert.match(md.value,
-			/"Click to copy: trace-with-\\"quote\\"-and-\\\\backslash"$/,
+			/"Trace ID: trace-with-\\"quote\\"-and-\\\\backslash — click to copy"$/,
 			`escapes should land in the title: ${md.value}`,
 		);
 		// And: the command arg (URL-encoded JSON) must still round-trip
@@ -82,8 +83,24 @@ suite('_buildTracePillMarkdown', () => {
 		// If this is dropped, the pill would glue onto the last word
 		// of the response.
 		const md = _buildTracePillMarkdown('reasoning-x');
-		assert.ok(md.value.startsWith('\n\n[trace]'),
+		assert.ok(md.value.startsWith('\n\n'),
 			`pill must start with paragraph break: ${JSON.stringify(md.value.slice(0, 12))}`,
+		);
+	});
+
+	test('uses $(link-external) icon (visual round 4 — text "trace" was too prominent)', () => {
+		// Regression armor for the visual decision. Earlier rounds tried:
+		//  round 1: inline `*trace:* \`xxx\`` — "有点丑"
+		//  round 2: <span style/title> — sanitizer stripped attrs
+		//  round 3: [trace](command:...) — bright blue text dominated bubble
+		//  round 4 (this): [$(link-external)](command:...) — icon only
+		// If someone reverts the icon to plain text, this test catches it.
+		const md = _buildTracePillMarkdown('reasoning-x');
+		assert.ok(md.value.includes('$(link-external)'),
+			'pill must use the link-external codicon, not raw text "trace"',
+		);
+		assert.ok(!/\[trace\]/.test(md.value),
+			'pill must NOT render the text "trace" — too prominent in chat bubble',
 		);
 	});
 
@@ -93,7 +110,7 @@ suite('_buildTracePillMarkdown', () => {
 		// upstream bugs (silent crash > visible no-op render). Caller
 		// guards exist at the two render sites (TaskComplete + Done).
 		const md = _buildTracePillMarkdown('');
-		assert.ok(md.value.includes('[trace](command:chipos.trace.copyId?'),
+		assert.ok(md.value.includes('command:chipos.trace.copyId?'),
 			'still produces a link; caller guard prevents this from rendering',
 		);
 	});
