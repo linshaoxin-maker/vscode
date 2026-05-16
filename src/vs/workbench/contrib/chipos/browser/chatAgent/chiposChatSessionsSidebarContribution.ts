@@ -43,8 +43,11 @@ export interface IChipOSChatSessionsSidebarService {
 export class ChipOSChatSessionsSidebarService extends Disposable implements IChipOSChatSessionsSidebarService {
 	declare readonly _serviceBrand: undefined;
 
-	private readonly _sidebars = this._register(new DisposableMap<IChatWidget, ChipOSChatSessionsSidebar>());
-	private readonly _hostByWidget = new Map<IChatWidget, HTMLElement>();
+	// Keyed by host element (not chat widget) — toggle() finds all slots
+	// by DOM query so it doesn't depend on the widget→host map being
+	// populated in the right order. The earlier widget-keyed map missed
+	// hosts in races where the chat view re-rendered after toggle.
+	private readonly _sidebars = this._register(new DisposableMap<HTMLElement, ChipOSChatSessionsSidebar>());
 	private readonly _onDidChangeOpenState = this._register(new Emitter<boolean>());
 	readonly onDidChangeOpenState = this._onDidChangeOpenState.event;
 	private readonly _openContextKey: IContextKey<boolean>;
@@ -58,7 +61,11 @@ export class ChipOSChatSessionsSidebarService extends Disposable implements IChi
 		super();
 		this._openContextKey = CHAT_SESSIONS_SIDEBAR_OPEN.bindTo(contextKeyService);
 		this._openContextKey.set(this.isOpen);
-		this._register(this._chatWidgetService.onDidAddWidget(w => this._onWidgetAdded(w)));
+		// React to new widgets so we apply the initial visibility (default
+		// hidden) and attach a sidebar if the user already had it open.
+		this._register(this._chatWidgetService.onDidAddWidget(() => this._applyAll()));
+		// Also apply once at startup in case the view already rendered.
+		queueMicrotask(() => this._applyAll());
 	}
 
 	get isOpen(): boolean {
@@ -70,60 +77,27 @@ export class ChipOSChatSessionsSidebarService extends Disposable implements IChi
 		this._storageService.store(SIDEBAR_OPEN_STORAGE_KEY, next, StorageScope.PROFILE, StorageTarget.USER);
 		this._openContextKey.set(next);
 		this._onDidChangeOpenState.fire(next);
-		this._applyAllVisibilities();
+		this._applyAll();
 	}
 
-	private _onWidgetAdded(widget: IChatWidget): void {
-		if (widget.location !== ChatAgentLocation.Chat) {
-			return;
-		}
-		// Walk up from the chat widget's domNode to find the slot left as
-		// a sibling under `.chipos-chat-with-sidebar` by the chatViewPane
-		// patch. Capped depth to avoid scanning the whole DOM if the slot
-		// happens to be missing (e.g. non-viewpane chat host).
-		let cursor: HTMLElement | null = widget.domNode;
-		let host: HTMLElement | undefined;
-		for (let depth = 0; cursor && depth < 8; depth++) {
-			if (cursor.classList.contains('chipos-chat-with-sidebar')) {
-				host = cursor.querySelector<HTMLElement>(':scope > .chipos-sessions-sidebar') ?? undefined;
-				break;
-			}
-			cursor = cursor.parentElement;
-		}
-		if (!host) {
-			return;
-		}
-		this._hostByWidget.set(widget, host);
-		this._applyVisibility(host);
-	}
-
-	private _applyAllVisibilities(): void {
-		for (const widget of this._chatWidgetService.getAllWidgets()) {
-			const host = this._hostByWidget.get(widget);
-			if (host) {
-				this._applyVisibility(host);
-			}
-		}
+	/**
+	 * Discover every `.chipos-sessions-sidebar` slot currently in the DOM
+	 * (one per chat panel view, plus future Quick Chat etc.) and apply
+	 * the current visibility. Direct DOM query keeps us decoupled from
+	 * the chat widget service's add/remove timing.
+	 */
+	private _applyAll(): void {
+		const slots = document.querySelectorAll<HTMLElement>('.chipos-sessions-sidebar');
+		slots.forEach(slot => this._applyVisibility(slot));
 	}
 
 	private _applyVisibility(host: HTMLElement): void {
 		const open = this.isOpen;
 		host.style.display = open ? 'flex' : 'none';
-		if (open) {
-			this._ensureSidebarFor(host);
+		if (open && !this._sidebars.get(host)) {
+			const sidebar = this._instantiationService.createInstance(ChipOSChatSessionsSidebar, host);
+			this._sidebars.set(host, sidebar);
 		}
-	}
-
-	private _ensureSidebarFor(host: HTMLElement): void {
-		const widget = [...this._chatWidgetService.getAllWidgets()].find(w => this._hostByWidget.get(w) === host);
-		if (!widget) {
-			return;
-		}
-		if (this._sidebars.get(widget)) {
-			return;
-		}
-		const sidebar = this._instantiationService.createInstance(ChipOSChatSessionsSidebar, host);
-		this._sidebars.set(widget, sidebar);
 	}
 }
 
