@@ -546,6 +546,15 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	private createChatControl(parent: HTMLElement): ChatWidget {
 		const chatControlsContainer = append(parent, $('.chat-controls-container'));
 
+		// ChipOS — DOM slot for the horizontal session tabs strip, sits at
+		// the very top of the chat panel column (above the chat title, sticky
+		// header, and the chat widget itself). The chipos tabs service
+		// (`IChipOSChatSessionTabsService`) walks the chat widget's domNode
+		// up to find this slot and mounts a `ChipOSChatSessionTabs` widget
+		// inside. Empty when no chat sessions exist; CSS gives it 0 height
+		// so the chat content stays flush in that state.
+		append(chatControlsContainer, $('.chipos-session-tabs-slot'));
+
 		const locationBasedColors = this.getLocationBasedColors();
 
 		const editorOverflowWidgetsDomNode = this.layoutService.getContainer(getWindow(chatControlsContainer)).appendChild($('.chat-editor-overflow.monaco-editor'));

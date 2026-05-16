@@ -55,6 +55,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { localize } from '../../../../nls.js';
 
 const IPC_CHANNEL = 'vscode:chipos:eda-env-status';
+const RESCAN_INVOKE_CHANNEL = 'vscode:chipos:eda-rescan';
 
 /**
  * Parsed shape of one [EdaEnv] line. Exported for unit testing the
@@ -171,6 +172,51 @@ export class EdaEnvHandler extends Disposable implements IWorkbenchContribution 
 				this._logService.info(
 					`[ChipOS EdaEnv] ${role} check: ${total - missingCount}/${total} EDA tools ready`,
 				);
+				// If this is a rescan emit AND a previously-missing tool now
+				// reports `ok`, drop matching entries from `_seenMissing` so
+				// future emits will toast again (e.g. user uninstalls then
+				// reinstalls within one session). Also surface a one-shot
+				// success notification for tools that just transitioned
+				// missing → ok during this session, so the user gets
+				// positive feedback for clicking the rescan button.
+				if (role === 'rescan') {
+					const justFixed: string[] = [];
+					for (const [tool, state] of Object.entries(parsed.statuses)) {
+						if (state !== 'ok') { continue; }
+						// _seenMissing keys are `${tool}::${hint}` — drop ANY
+						// hint variant for this tool name.
+						for (const key of Array.from(this._seenMissing)) {
+							if (key.startsWith(`${tool}::`)) {
+								this._seenMissing.delete(key);
+								justFixed.push(tool);
+							}
+						}
+					}
+					if (justFixed.length > 0) {
+						this._notificationService.notify({
+							severity: Severity.Info,
+							message: localize(
+								'chipos.edaEnv.rescanFound',
+								'Detected newly-installed EDA tools: {0}',
+								justFixed.join(', '),
+							),
+						});
+					} else if (missingCount > 0) {
+						// Rescan ran but nothing new appeared — tell the user so
+						// they don't sit waiting wondering if the button did
+						// anything. (Without this, a click on the button looked
+						// silently broken when the tool wasn't actually on PATH
+						// yet.)
+						this._notificationService.notify({
+							severity: Severity.Warning,
+							message: localize(
+								'chipos.edaEnv.rescanNoChange',
+								'Rescan complete — no newly-installed tools detected. {0} tool(s) still missing.',
+								missingCount,
+							),
+						});
+					}
+				}
 				return;
 			}
 			case 'missing': {
@@ -195,21 +241,48 @@ export class EdaEnvHandler extends Disposable implements IWorkbenchContribution 
 						parsed.tool,
 					);
 
-				const actions = parsed.install_hint
-					? {
-						primary: [{
-							id: `chipos.edaEnv.openInstallGuide.${parsed.tool}`,
-							label: localize('chipos.edaEnv.openInstallGuide', 'Open install guide'),
-							tooltip: parsed.install_hint,
-							class: undefined,
-							enabled: true,
-							run: async () => {
-								await this._openerService.open(URI.parse(parsed.install_hint));
-							},
-							dispose: () => { /* no-op */ },
-						}],
-					}
-					: undefined;
+				// Two action buttons:
+				// 1. "View install guide" — opens our in-IDE markdown walkthrough
+				//    (per-vendor: account flow / license / PATH setup / verification
+				//    command). Falls back to the raw vendor URL for tools without
+				//    a bundled guide. See `_resolveInstallGuideUri` for the lookup
+				//    table — every entry there opens a Walkthrough/markdown URI,
+				//    NOT the bare vendor download page that left users stuck at
+				//    "needs a Xilinx account" with no recovery path.
+				// 2. "我已安装完成，重新检测" — invokes the main-process IPC
+				//    `vscode:chipos:eda-rescan` which spawns a one-shot
+				//    `chipos-worker scan-eda` subprocess in the same env/PATH as
+				//    the live worker. Stderr `[EdaEnv]` lines come back on the
+				//    SAME `vscode:chipos:eda-env-status` channel — so the
+				//    user's freshly-installed Vivado appears as `check ...
+				//    vivado=ok` and we drop the notification + status pill
+				//    updates without restarting the worker.
+				const primary: Array<{ id: string; label: string; tooltip: string; class: undefined; enabled: boolean; run: () => Promise<void>; dispose: () => void }> = [];
+				if (parsed.install_hint) {
+					primary.push({
+						id: `chipos.edaEnv.openInstallGuide.${parsed.tool}`,
+						label: localize('chipos.edaEnv.viewInstallGuide', 'View install guide'),
+						tooltip: parsed.install_hint,
+						class: undefined,
+						enabled: true,
+						run: async () => {
+							await this._openerService.open(this._resolveInstallGuideUri(parsed.tool, parsed.install_hint));
+						},
+						dispose: () => { /* no-op */ },
+					});
+				}
+				primary.push({
+					id: `chipos.edaEnv.rescan.${parsed.tool}`,
+					label: localize('chipos.edaEnv.rescan', "I've installed it, rescan"),
+					tooltip: localize('chipos.edaEnv.rescan.tooltip', 'Re-scan the worker PATH for newly-installed EDA tools without restarting the worker.'),
+					class: undefined,
+					enabled: true,
+					run: async () => {
+						await this._triggerRescan();
+					},
+					dispose: () => { /* no-op */ },
+				});
+				const actions = { primary };
 
 				this._notificationService.notify({
 					severity: Severity.Warning,
@@ -227,6 +300,63 @@ export class EdaEnvHandler extends Disposable implements IWorkbenchContribution 
 			case 'unknown':
 				this._logService.debug(`[ChipOS EdaEnv] unparsed line: ${parsed.raw}`);
 				return;
+		}
+	}
+
+	/**
+	 * Resolve a tool name to the URI we want to open when the user clicks
+	 * "View install guide". For tools we ship a bundled walkthrough for
+	 * (vivado / quartus / openroad / verilator), we return a `command:`
+	 * URI that invokes our markdown viewer command. For everything else
+	 * we fall back to the raw vendor URL the worker reported in
+	 * `install_hint`.
+	 *
+	 * NOTE: bundled-guide URI is a `command:chipos.eda.openInstallGuide`
+	 * — that command is contributed elsewhere (next step in the migration)
+	 * and reads from `vscode/src/vs/workbench/contrib/chipos/browser/media/installGuides/<tool>.md`.
+	 * The renderer's command service handles unknown commands gracefully
+	 * (logs + falls through to the URL), so this remains a safe no-op if
+	 * the bundled guide is not yet wired.
+	 */
+	private _resolveInstallGuideUri(tool: string, fallbackUrl: string): URI {
+		const BUNDLED_GUIDES = new Set(['vivado', 'quartus', 'quartus_sh', 'quartus_pgm', 'openroad', 'verilator', 'yosys', 'iverilog', 'sv2v']);
+		if (BUNDLED_GUIDES.has(tool)) {
+			const arg = encodeURIComponent(JSON.stringify(tool));
+			return URI.parse(`command:chipos.eda.openInstallGuide?${arg}`);
+		}
+		return URI.parse(fallbackUrl);
+	}
+
+	/**
+	 * Invoke the main-process rescan handler via the sandbox's ipcRenderer.
+	 * Errors are logged + surfaced to the user as a warning — silent failure
+	 * looks like a broken button. The actual scan results arrive separately
+	 * via the regular IPC_CHANNEL handler (see `_handle`).
+	 */
+	private async _triggerRescan(): Promise<void> {
+		this._logService.info('[ChipOS EdaEnv] user triggered rescan');
+		try {
+			const result = await ipcRenderer.invoke(RESCAN_INVOKE_CHANNEL) as { success?: boolean; error?: string; exitCode?: number };
+			if (!result || result.success !== true) {
+				this._notificationService.notify({
+					severity: Severity.Error,
+					message: localize(
+						'chipos.edaEnv.rescanFailed',
+						'EDA rescan failed: {0}',
+						result?.error ?? `exit code ${result?.exitCode ?? '?'}`,
+					),
+				});
+			}
+		} catch (err) {
+			this._logService.error(`[ChipOS EdaEnv] rescan invoke threw: ${err}`);
+			this._notificationService.notify({
+				severity: Severity.Error,
+				message: localize(
+					'chipos.edaEnv.rescanInvokeFailed',
+					'EDA rescan could not be triggered: {0}',
+					String(err),
+				),
+			});
 		}
 	}
 }

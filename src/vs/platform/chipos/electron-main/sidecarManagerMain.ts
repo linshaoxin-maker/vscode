@@ -50,6 +50,22 @@ interface ManagedProcess {
 	process: cp.ChildProcess;
 	pid: number | undefined;
 	role: 'reasoner' | 'worker';
+	/**
+	 * Binary path used for the original spawn. Retained so that the
+	 * `vscode:chipos:eda-rescan` handler can re-spawn this exact binary in
+	 * one-shot `scan-eda` mode without the renderer having to re-pass it
+	 * (the renderer already paid the cost of locating it once).
+	 */
+	binaryPath: string;
+	/**
+	 * Env vars merged onto process.env at original spawn time. The one-shot
+	 * `scan-eda` subprocess inherits the same PATH so a freshly-installed
+	 * EDA tool placed where the worker would have seen it is also visible
+	 * to the rescan probe.
+	 */
+	spawnEnv: Record<string, string>;
+	/** cwd from original spawn — same rationale as spawnEnv. */
+	spawnCwd: string;
 }
 
 /** windowId → role → process. */
@@ -675,6 +691,9 @@ export function registerSidecarIpcHandlers(): void {
 			process: child,
 			pid: child.pid,
 			role,
+			binaryPath,
+			spawnEnv: env,
+			spawnCwd: cwd,
 		};
 		setProc(windowId, role, managed);
 
@@ -792,6 +811,68 @@ export function registerSidecarIpcHandlers(): void {
 		const graceful = await killManagedProcess(managed);
 		setProc(windowId, role, undefined);
 		return { success: true, wasRunning: true, pid, role, graceful };
+	});
+
+	// chipos:eda-rescan ─────────────────────────────────────────────────────
+	// Triggered by the renderer's "我已安装完成，重新检测" action button on the
+	// EDA missing-tool notification (EdaEnvHandler). Re-runs the worker's
+	// [EdaEnv] scan as a SHORT-LIVED subprocess (`<worker-binary> scan-eda`)
+	// in the same env/cwd as the live worker. We deliberately do NOT
+	// restart the worker — that would tear down the gRPC stream, the
+	// HTTP /health port, and the permission_token, just to find out
+	// whether a binary appeared in PATH. The one-shot subprocess inherits
+	// the same PATH (via `spawnEnv` captured at original spawn time) so a
+	// freshly-installed Vivado / OpenROAD shows up.
+	//
+	// Output: stderr `[EdaEnv]` lines are forwarded to the renderer on the
+	// SAME `vscode:chipos:eda-env-status` channel that the live worker uses.
+	// The renderer's EdaEnvHandler treats every incoming line uniformly —
+	// no separate "rescan" plumbing is needed in the renderer beyond
+	// clearing its `_seenMissing` dedup set before the rescan starts.
+	validatedIpcMain.handle('vscode:chipos:eda-rescan', async (event) => {
+		const windowId = event.sender.id;
+		const managed = getProc(windowId, 'worker');
+		if (!managed) {
+			return { success: false, error: 'worker_not_running' };
+		}
+
+		const probe = cp.spawn(managed.binaryPath, ['scan-eda'], {
+			cwd: managed.spawnCwd,
+			env: { ...process.env, ...managed.spawnEnv },
+			stdio: ['ignore', 'pipe', 'pipe'],
+			detached: false,
+		});
+
+		let stderrLineBuffer = '';
+		probe.stderr?.on('data', (data: Buffer) => {
+			stderrLineBuffer += data.toString();
+			const lines = stderrLineBuffer.split('\n');
+			stderrLineBuffer = lines.pop() ?? '';
+			for (const rawLine of lines) {
+				const line = rawLine.trim();
+				if (!line) { continue; }
+				console.log(`[ChipOS rescan stderr] ${line}`);
+				if (event.sender.isDestroyed()) { continue; }
+				if (line.startsWith('[EdaEnv]')) {
+					try {
+						event.sender.send('vscode:chipos:eda-env-status', { line, role: 'rescan' });
+					} catch (e) {
+						console.warn(`[ChipOS rescan] failed to forward EdaEnv line: ${e}`);
+					}
+				}
+			}
+		});
+		probe.stdout?.on('data', () => { /* discard */ });
+
+		return await new Promise<{ success: boolean; exitCode?: number; error?: string }>((resolve) => {
+			probe.on('exit', (code) => {
+				resolve({ success: code === 0, exitCode: code ?? -1 });
+			});
+			probe.on('error', (err) => {
+				console.error(`[ChipOS rescan] spawn error: ${err.message}`);
+				resolve({ success: false, error: err.message });
+			});
+		});
 	});
 
 	// chipos:checkInstance ──────────────────────────────────────────────────
