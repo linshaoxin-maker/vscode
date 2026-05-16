@@ -543,8 +543,34 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 	private titleControl: ChatViewTitleControl | undefined;
 
+	private _chiposSessionsSidebarSlot: HTMLElement | undefined;
+	/**
+	 * ChipOS — exposed slot where the chipos chat sessions sidebar mounts.
+	 * Sits next to the `.chat-controls-container` inside a flex row whose
+	 * direction is set by `chipos-chat-with-sidebar-{left|right}`, so the
+	 * sidebar ends up on the *outer* edge of the chat panel (right when
+	 * docked to AuxiliaryBar, left when docked to Sidebar).
+	 */
+	get chiposSessionsSidebarSlot(): HTMLElement | undefined { return this._chiposSessionsSidebarSlot; }
+
 	private createChatControl(parent: HTMLElement): ChatWidget {
-		const chatControlsContainer = append(parent, $('.chat-controls-container'));
+		// ChipOS sessions sidebar — wrap chat-controls-container in a flex
+		// row so a chipos-owned sessions list can dock alongside (issue
+		// 2026-05-15: Cursor-style history sidebar inside the chat panel).
+		// The flex direction is decided by view location: AuxiliaryBar
+		// (default right-side chat panel) keeps chat on the inner edge
+		// (next to the editor) and pushes the sidebar to the outer right;
+		// Sidebar (chat panel on left) does the mirror.
+		const chiposLayoutWrap = append(parent, $('.chipos-chat-with-sidebar'));
+		const dockedLocation = this.viewDescriptorService.getViewLocationById(this.id);
+		chiposLayoutWrap.classList.add(
+			dockedLocation === ViewContainerLocation.Sidebar
+				? 'chipos-chat-with-sidebar-left'
+				: 'chipos-chat-with-sidebar-right'
+		);
+		const chatControlsContainer = append(chiposLayoutWrap, $('.chat-controls-container'));
+		this._chiposSessionsSidebarSlot = append(chiposLayoutWrap, $('.chipos-sessions-sidebar'));
+		this._chiposSessionsSidebarSlot.style.display = 'none';
 
 		const locationBasedColors = this.getLocationBasedColors();
 
