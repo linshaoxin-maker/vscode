@@ -627,3 +627,32 @@
 	opacity: 0.6;
 	text-align: center;
 }
+
+/*
+ * Trace pill — `— $(link-external) *[trace](command:chipos.trace.copyId?...)*`
+ * at the end of every chat round (ADR-009 §4.1, see chipOSChatAgent.ts:
+ * _buildTracePillMarkdown).
+ *
+ * 2026-05-16 dogfood round 6 — user request: "建议 trace 最好变成透明灰色,
+ * 不需要用户太关注这个". The default <a> color (link-blue) made even the
+ * italic round-5 version too eye-catching for what's effectively a
+ * debug-id click-to-copy affordance.
+ *
+ * Selector targets the href prefix — only OUR trace pill is affected,
+ * other markdown command links elsewhere in chat keep their normal
+ * link color. The leading "— $(link-external)" decoration (em-dash +
+ * codicon) is in the surrounding <p> and not selectable from here
+ * without adding a class, but those are already low-contrast at the
+ * default text color, so leaving them alone is fine — only the bright
+ * "trace" word needs dimming.
+ */
+a[href^="command:chipos.trace.copyId"] {
+	color: var(--vscode-descriptionForeground) !important;
+	opacity: 0.55;
+	text-decoration: none;
+}
+
+a[href^="command:chipos.trace.copyId"]:hover {
+	opacity: 0.9;
+	text-decoration: underline;
+}
