@@ -12,7 +12,7 @@ import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '
 import { createDecorator, IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { registerSingleton, InstantiationType } from '../../../../../platform/instantiation/common/extensions.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
-import { IChatWidgetService } from '../../../../../workbench/contrib/chat/browser/chat.js';
+import { ChatViewId, IChatWidgetService } from '../../../../../workbench/contrib/chat/browser/chat.js';
 import { ChipOSChatSessionsSidebar } from './chiposChatSessionsSidebar.js';
 
 const SIDEBAR_OPEN_STORAGE_KEY = 'chipos.chat.sessionsSidebar.open';
@@ -108,12 +108,29 @@ registerAction2(class extends Action2 {
 			id: 'chipos.toggleChatSessionsSidebar',
 			title: localize2('chipos.toggleChatSessionsSidebar', 'Toggle ChipOS Chat Sessions Sidebar'),
 			icon: Codicon.history,
-			menu: [{
-				id: MenuId.ChatViewSessionTitleToolbar,
-				group: 'navigation',
-				order: -100, // far left of the actions toolbar
-				when: ContextKeyExpr.true(),
-			}],
+			// Register on TWO menu IDs:
+			//   - ChatViewSessionTitleToolbar: appears in the per-session
+			//     header (right side, leftmost of actions) once a chat is
+			//     running. Convenient quick-access when a session is open.
+			//   - ViewTitle: the standard view pane title bar — always
+			//     visible whether or not a session is loaded, so the user
+			//     has a way to RE-OPEN the sidebar after collapsing it
+			//     from an empty welcome view. Filtered to ChatViewId so
+			//     other view panes don't get cluttered.
+			menu: [
+				{
+					id: MenuId.ChatViewSessionTitleToolbar,
+					group: 'navigation',
+					order: -100, // far left of the actions toolbar
+					when: ContextKeyExpr.true(),
+				},
+				{
+					id: MenuId.ViewTitle,
+					group: 'navigation',
+					order: -100,
+					when: ContextKeyExpr.equals('view', ChatViewId),
+				},
+			],
 			toggled: {
 				condition: CHAT_SESSIONS_SIDEBAR_OPEN,
 				icon: Codicon.history,

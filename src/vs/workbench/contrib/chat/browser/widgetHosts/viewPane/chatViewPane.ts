@@ -572,6 +572,25 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		this._chiposSessionsSidebarSlot = append(chiposLayoutWrap, $('.chipos-sessions-sidebar'));
 		this._chiposSessionsSidebarSlot.style.display = 'none';
 
+		// ChipOS toggle button — always-visible "open sessions sidebar"
+		// affordance inside the chat-controls-container's top edge. The
+		// existing menu-registered action (`chipos.toggleChatSessionsSidebar`
+		// on MenuId.ChatViewSessionTitleToolbar) only appears once a
+		// session loads + title bar renders, so users who collapse the
+		// sidebar from an empty Welcome state would have no UI affordance
+		// to re-open it (had to use the command palette). This adds a
+		// small chevron in the chat panel's outer-edge corner that
+		// dispatches the same toggle command.
+		const chiposToggleBtn = append(chatControlsContainer, $('a.chipos-sessions-toggle-overlay.codicon.codicon-layout-sidebar-right-off'));
+		chiposToggleBtn.setAttribute('role', 'button');
+		chiposToggleBtn.setAttribute('aria-label', 'Toggle ChipOS Chat Sessions Sidebar');
+		chiposToggleBtn.title = 'Toggle ChipOS Chat Sessions Sidebar';
+		const chiposSidebarSide = dockedLocation === ViewContainerLocation.Sidebar ? 'left' : 'right';
+		chiposToggleBtn.classList.add(`chipos-sessions-toggle-overlay-${chiposSidebarSide}`);
+		this._register(addDisposableListener(chiposToggleBtn, EventType.CLICK, () => {
+			this.commandService.executeCommand('chipos.toggleChatSessionsSidebar');
+		}));
+
 		const locationBasedColors = this.getLocationBasedColors();
 
 		const editorOverflowWidgetsDomNode = this.layoutService.getContainer(getWindow(chatControlsContainer)).appendChild($('.chat-editor-overflow.monaco-editor'));

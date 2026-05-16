@@ -481,6 +481,48 @@
 	min-height: 0;
 }
 
+/* Always-visible toggle overlay in the chat panel's outer corner.
+ * Lives inside `.chat-controls-container` so it stays in the chat
+ * column regardless of whether the sessions sidebar is open. Also
+ * unaffected by the lack of a view title bar when the chat panel has
+ * no active session — which is the gap the menu-registered action
+ * couldn't fill (title toolbar only renders once a chat starts). */
+.chipos-chat-with-sidebar .chat-controls-container {
+	position: relative; /* anchor for the overlay button */
+}
+
+.chipos-sessions-toggle-overlay {
+	position: absolute;
+	top: 6px;
+	font-size: 14px;
+	width: 22px;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 4px;
+	color: var(--vscode-foreground);
+	opacity: 0.55;
+	cursor: pointer;
+	z-index: 5;
+	text-decoration: none;
+}
+
+.chipos-sessions-toggle-overlay:hover {
+	opacity: 1;
+	background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.18));
+}
+
+/* Mirror: button on the OUTER edge of the chat panel — right when chat
+ * is in AuxiliaryBar (default), left when chat is in Sidebar. */
+.chipos-sessions-toggle-overlay-right {
+	right: 8px;
+}
+
+.chipos-sessions-toggle-overlay-left {
+	left: 8px;
+}
+
 .chipos-chat-with-sidebar > .chipos-sessions-sidebar {
 	display: none; /* default hidden; toggle action flips to flex */
 	flex: 0 0 220px;
