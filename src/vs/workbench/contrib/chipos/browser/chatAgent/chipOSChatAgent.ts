@@ -247,15 +247,23 @@ interface IChatSessionRuntime {
 export function _buildTracePillMarkdown(traceId: string): MarkdownString {
 	const safeTitle = traceId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 	const encodedArg = encodeURIComponent(JSON.stringify(traceId));
-	// 2026-05-16 — visual round 4 ("trace" 蓝色 link 太显眼，盖过正文):
-	// use a small `$(link-external)` codicon ALONE (no text) so the pill
-	// reads as a UI affordance rather than content. Hover tooltip carries
-	// the full trace_id; click still triggers chipos.trace.copyId. The
-	// `  ` (two non-breaking spaces) prefix nudges the icon
-	// rightward so it floats at the end of the bubble line rather than
-	// sitting flush-left like a new paragraph.
+	// 2026-05-16 — visual round 5: round 4 (icon-only `[$(link-external)]`)
+	// silently rendered NOTHING in the chat bubble — the markdown link
+	// renderer does NOT substitute `$(name)` codicons that sit INSIDE
+	// the link text position of `[text](url)`. The link disappeared.
+	//
+	// Round 5 strategy: keep "trace" as the link text (we know that
+	// renders, per round 3 dogfood), but **wrap it in italics + lead
+	// with em-dash + put the codicon OUTSIDE the link** where icon
+	// substitution works. Net visual:
+	//
+	//     — $(link-external) *trace*
+	//
+	// italic trace word reads as metadata not content; em-dash
+	// demotes it to footnote prominence; codicon decorates without
+	// overwhelming.
 	return new MarkdownString(
-		`\n\n  [$(link-external)](command:chipos.trace.copyId?${encodedArg} "Trace ID: ${safeTitle} — click to copy")`,
+		`\n\n— $(link-external) *[trace](command:chipos.trace.copyId?${encodedArg} "Trace ID: ${safeTitle} — click to copy")*`,
 		{ supportThemeIcons: true, isTrusted: true },
 	);
 }

@@ -32,8 +32,9 @@ suite('_buildTracePillMarkdown', () => {
 		// Pin the icon-only shape — visual round 4 swapped the "trace" text
 		// for `$(link-external)` after dogfood feedback ("太丑了" — the bright
 		// blue text link dominated the bubble).
+		// Round 5: `— $(link-external) *[trace](command:... "Trace ID: ... — click to copy")*`
 		assert.match(md.value,
-			/\[\$\(link-external\)\]\(command:chipos\.trace\.copyId\?[^ ]+ "Trace ID: .+ — click to copy"\)$/,
+			/^\n\n— \$\(link-external\) \*\[trace\]\(command:chipos\.trace\.copyId\?[^ ]+ "Trace ID: .+ — click to copy"\)\*$/,
 			`unexpected markdown shape: ${md.value}`,
 		);
 	});
@@ -88,19 +89,24 @@ suite('_buildTracePillMarkdown', () => {
 		);
 	});
 
-	test('uses $(link-external) icon (visual round 4 — text "trace" was too prominent)', () => {
-		// Regression armor for the visual decision. Earlier rounds tried:
+	test('uses $(link-external) icon outside the link + italic trace text (visual round 5)', () => {
+		// Visual rounds:
 		//  round 1: inline `*trace:* \`xxx\`` — "有点丑"
 		//  round 2: <span style/title> — sanitizer stripped attrs
 		//  round 3: [trace](command:...) — bright blue text dominated bubble
-		//  round 4 (this): [$(link-external)](command:...) — icon only
-		// If someone reverts the icon to plain text, this test catches it.
+		//  round 4: [$(link-external)](command:...) — icon ALONE rendered NOTHING
+		//           (chat markdown renderer doesn't substitute $(name) inside link text)
+		//  round 5 (current): `— $(link-external) *[trace](...)*` — em-dash demotes,
+		//           codicon outside link (where substitution works), italic dims text
 		const md = _buildTracePillMarkdown('reasoning-x');
 		assert.ok(md.value.includes('$(link-external)'),
-			'pill must use the link-external codicon, not raw text "trace"',
+			'pill must include the link-external codicon (visible decoration)',
 		);
-		assert.ok(!/\[trace\]/.test(md.value),
-			'pill must NOT render the text "trace" — too prominent in chat bubble',
+		assert.ok(/\*\[trace\]/.test(md.value),
+			'pill must wrap the [trace] link in italics (* on both sides) to dim the text',
+		);
+		assert.ok(md.value.includes('— $(link-external)'),
+			'pill must lead with em-dash + space + codicon — the footnote-level demotion',
 		);
 	});
 
