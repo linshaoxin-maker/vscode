@@ -205,8 +205,26 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 						this._renderAll();
 					},
 					onNewTab: () => {
-						this._commandService.executeCommand('workbench.action.chat.newChat')
-							.catch(err => this._logService.warn('[ChipOS Tabs] newChat command failed', err));
+						// Don't dispatch `workbench.action.chat.newChat` here —
+						// the framework's runNewChatAction can end up calling
+						// `viewsService.openView(ChatViewId)`, which reveals
+						// the chat view in EVERY location it's been registered
+						// in (including the bottom panel area), producing a
+						// "duplicate chat panel pops out below" bug.
+						//
+						// Instead, clear the currently-focused chat panel
+						// widget in place — same effect (new untitled chat
+						// session) without touching view-host placement.
+						const w = this._chatWidgetService.lastFocusedWidget
+							?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat)
+								.find(x => x.viewModel)
+							?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat)[0];
+						if (!w) {
+							this._logService.warn('[ChipOS Tabs] new-chat: no chat widget to reset');
+							return;
+						}
+						w.clear().catch(err => this._logService.warn('[ChipOS Tabs] new-chat clear failed', err));
+						w.focusInput();
 					},
 					onToggleSessions: () => {
 						this._commandService.executeCommand('chipos.toggleChatSessionsSidebar')
