@@ -509,6 +509,10 @@
 	border-radius: 2px;
 }
 
+/* [ChipOS] Cursor-style tab — active gets a bottom-aligned white
+ * indicator (overlaps the row's 1px gray border-bottom and visually
+ * "connects" the tab to the chat content below). Inactive tabs are
+ * dimmer so the active one pops out without needing a heavy background. */
 .chipos-session-tab {
 	display: flex;
 	align-items: center;
@@ -518,10 +522,10 @@
 	min-width: 80px;
 	font-size: 12px;
 	color: var(--vscode-foreground);
-	opacity: 0.72;
+	opacity: 0.55;
 	background: transparent;
-	border-top: 2px solid transparent;
-	border-radius: 3px 3px 0 0;
+	border-bottom: 2px solid transparent;
+	margin-bottom: -1px; /* overlap the row's 1px bottom border so the indicator sits flush */
 	cursor: pointer;
 	user-select: none;
 	white-space: nowrap;
@@ -529,14 +533,14 @@
 }
 
 .chipos-session-tab:hover {
-	opacity: 0.95;
+	opacity: 0.85;
 	background: var(--vscode-tab-hoverBackground, var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.08)));
 }
 
 .chipos-session-tab-active {
 	opacity: 1;
-	background: var(--vscode-tab-activeBackground, var(--vscode-editor-background, transparent));
-	border-top-color: var(--vscode-charts-blue, #3794ff);
+	background: transparent; /* no fill — Cursor relies on the underline alone */
+	border-bottom-color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
 	color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
 }
 
