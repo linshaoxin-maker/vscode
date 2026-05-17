@@ -6,46 +6,53 @@
 import { Disposable, DisposableMap } from '../../../../../base/common/lifecycle.js';
 import { isEqual } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { createDecorator, IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
-import { registerSingleton, InstantiationType } from '../../../../../platform/instantiation/common/extensions.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../../workbench/common/contributions.js';
 import { IChatWidgetService } from '../../../../../workbench/contrib/chat/browser/chat.js';
 import { ChatAgentLocation } from '../../../../../workbench/contrib/chat/common/constants.js';
 import { openSession } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsOpener.js';
 import { IAgentSessionsService } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsService.js';
+import { IChatService } from '../../../../../workbench/contrib/chat/common/chatService/chatService.js';
 import { ChipOSChatSessionTabs, createChipOSChatSessionTabs } from './chiposChatSessionTabs.js';
 
 const OPEN_TABS_STORAGE_KEY = 'chipos.chat.openSessionTabs';
 const MAX_TABS = 8;
 
 /**
- * ChipOS Chat Session Tabs service — owns persistence of the open-tabs
+ * ChipOS Chat Session Tabs contribution — owns persistence of the open-tabs
  * list and orchestrates rendering into every `.chipos-session-tabs-slot`
  * DOM element seeded by the chatViewPane patch.
  *
- * Why a service:
- *   - Multiple chat hosts (panel + future quick-chat / inline) can each
- *     have their own slot. A central service keeps state coherent.
- *   - Subscribes to `IChatWidgetService.onDidChangeFocusedSession` once
- *     and broadcasts re-render to every mounted tabs widget.
+ * Why a contribution (not a singleton):
+ *   - `registerWorkbenchContribution2(BlockRestore)` guarantees eager
+ *     instantiation tied to the workbench lifecycle. Pure singletons
+ *     marked Eager are sometimes lazy in practice and our DOM listeners
+ *     never wire up.
+ *
+ * Why it tracks slots in a `DisposableMap<HTMLElement, …>`:
+ *   - The chat view pane is disposable; closing/reopening the chat
+ *     panel disposes the old `.chipos-session-tabs-slot` and creates a
+ *     fresh one. The map's HTMLElement keys are stable per-mount, so
+ *     when we rescan we automatically mount on the new slot and drop
+ *     the (now-detached) previous mount.
+ *
+ * Why a MutationObserver as well as `onDidAddWidget`:
+ *   - The chat view pane is sometimes torn down/rebuilt at non-widget
+ *     events (layout orientation flip, panel close/reopen). Observing
+ *     document mutations for `.chipos-session-tabs-slot` add/remove
+ *     guarantees we react to lifecycle transitions the chat widget
+ *     service doesn't announce.
  *
  * Lifecycle:
- *   - Construct on app startup (`InstantiationType.Eager`).
- *   - On each `onDidAddWidget`, scan DOM for any slots not yet rendered
- *     and attach a tabs widget.
+ *   - Construct on app startup (`WorkbenchPhase.BlockRestore`).
  *   - State (open tabs list) persists in `IStorageService` PROFILE
- *     scope, capped at MAX_TABS via LRU (most-recent-activated wins).
+ *     scope, capped at `MAX_TABS` via LRU (most-recent-activated wins).
  */
-export const IChipOSChatSessionTabsService = createDecorator<IChipOSChatSessionTabsService>('chiposChatSessionTabsService');
-
-export interface IChipOSChatSessionTabsService {
-	readonly _serviceBrand: undefined;
-}
-
-export class ChipOSChatSessionTabsService extends Disposable implements IChipOSChatSessionTabsService {
-	declare readonly _serviceBrand: undefined;
+export class ChipOSChatSessionTabsContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'chipos.chatSessionTabs';
 
 	private readonly _tabs = this._register(new DisposableMap<HTMLElement, ChipOSChatSessionTabs>());
 	private _openTabs: URI[] = [];
@@ -56,6 +63,7 @@ export class ChipOSChatSessionTabsService extends Disposable implements IChipOSC
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@IAgentSessionsService private readonly _agentSessionsService: IAgentSessionsService,
+		@IChatService private readonly _chatService: IChatService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -75,6 +83,7 @@ export class ChipOSChatSessionTabsService extends Disposable implements IChipOSC
 		this._register(this._chatWidgetService.onDidChangeFocusedSession(() => {
 			const widget = this._chatWidgetService.lastFocusedWidget;
 			if (!widget || widget.location !== ChatAgentLocation.Chat) {
+				this._scanAndRender();
 				return;
 			}
 			const session = widget.viewModel?.sessionResource;
@@ -82,12 +91,48 @@ export class ChipOSChatSessionTabsService extends Disposable implements IChipOSC
 			if (session) {
 				this._addTab(session);
 			}
-			this._renderAll();
+			this._scanAndRender();
 		}));
 
 		// Also re-render when the agent sessions model itself changes
 		// (rename, delete, archive). Labels/icons might shift.
 		this._register(this._agentSessionsService.model.onDidChangeSessions(() => this._renderAll()));
+
+		// Chat session titles are generated from the first user message —
+		// re-render on submit so the tab label flips from "New Chat"
+		// to the actual title without the user having to switch tabs.
+		this._register(this._chatService.onDidSubmitRequest(() => this._renderAll()));
+		this._register(this._chatService.onDidCreateModel(() => this._renderAll()));
+
+		// MutationObserver: react to slot lifecycle transitions the
+		// widget service doesn't announce. Coalesced via `queueMicrotask`
+		// so a burst of unrelated DOM mutations only triggers one rescan.
+		let scanScheduled = false;
+		const observer = new MutationObserver(mutations => {
+			let touchesSlot = false;
+			outer: for (const m of mutations) {
+				for (const n of [...Array.from(m.addedNodes), ...Array.from(m.removedNodes)]) {
+					if (!(n instanceof HTMLElement)) {
+						continue;
+					}
+					if (n.classList?.contains('chipos-session-tabs-slot') ||
+						n.querySelector?.('.chipos-session-tabs-slot')) {
+						touchesSlot = true;
+						break outer;
+					}
+				}
+			}
+			if (!touchesSlot || scanScheduled) {
+				return;
+			}
+			scanScheduled = true;
+			queueMicrotask(() => {
+				scanScheduled = false;
+				this._scanAndRender();
+			});
+		});
+		observer.observe(document.body, { childList: true, subtree: true });
+		this._register({ dispose: () => observer.disconnect() });
 	}
 
 	private _loadOpenTabs(): URI[] {
@@ -141,6 +186,15 @@ export class ChipOSChatSessionTabsService extends Disposable implements IChipOSC
 	}
 
 	private _scanAndRender(): void {
+		// Prune slots no longer in document — happens when the chat panel
+		// is closed/reopened and a new chat-controls-container replaces
+		// the previous one.
+		for (const [slot] of this._tabs) {
+			if (!slot.isConnected) {
+				this._tabs.deleteAndDispose(slot);
+			}
+		}
+
 		const slots = document.querySelectorAll<HTMLElement>('.chipos-session-tabs-slot');
 		for (const slot of Array.from(slots)) {
 			if (!this._tabs.get(slot)) {
@@ -153,6 +207,10 @@ export class ChipOSChatSessionTabsService extends Disposable implements IChipOSC
 					onNewTab: () => {
 						this._commandService.executeCommand('workbench.action.chat.newChat')
 							.catch(err => this._logService.warn('[ChipOS Tabs] newChat command failed', err));
+					},
+					onToggleSessions: () => {
+						this._commandService.executeCommand('chipos.toggleChatSessionsSidebar')
+							.catch(err => this._logService.warn('[ChipOS Tabs] toggleSessions command failed', err));
 					},
 				});
 				this._tabs.set(slot, tabs);
@@ -169,15 +227,23 @@ export class ChipOSChatSessionTabsService extends Disposable implements IChipOSC
 
 	private _openSessionByUri(uri: URI): void {
 		const session = this._agentSessionsService.model.sessions.find(s => isEqual(s.resource, uri));
-		if (!session) {
-			// Session no longer exists in history (deleted) — drop the tab.
-			this._removeTab(uri);
-			this._renderAll();
+		if (session) {
+			this._instantiationService.invokeFunction(openSession, session, {})
+				.catch(err => this._logService.warn('[ChipOS Tabs] openSession failed', err));
 			return;
 		}
-		this._instantiationService.invokeFunction(openSession, session, {})
-			.catch(err => this._logService.warn('[ChipOS Tabs] openSession failed', err));
+		// Session not in IAgentSessionsService model — could be a fresh
+		// chipos local chat. Fall through to the framework's command to
+		// open by sessionResource directly. If that also fails, only then
+		// drop the tab.
+		this._commandService.executeCommand('workbench.action.chat.open', {
+			sessionResource: uri,
+		}).catch(err => {
+			this._logService.warn('[ChipOS Tabs] openSessionByUri fallback failed', err);
+			this._removeTab(uri);
+			this._renderAll();
+		});
 	}
 }
 
-registerSingleton(IChipOSChatSessionTabsService, ChipOSChatSessionTabsService, InstantiationType.Eager);
+registerWorkbenchContribution2(ChipOSChatSessionTabsContribution.ID, ChipOSChatSessionTabsContribution, WorkbenchPhase.BlockRestore);

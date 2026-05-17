@@ -128,30 +128,48 @@ export class ChatEditorInput extends EditorInput implements IEditorCloseHandler 
 	}
 
 	override getName(): string {
+		// [ChipOS] Reject candidate titles that are just the URI's last
+		// path segment — for chipos local chat sessions the URI looks
+		// like `vscode-chat-session://local/<base64-uuid>`, and any code
+		// path that defaults to that segment as the "title" makes tabs
+		// show garbage like `YmYzYmQ4MjQtMWM...`. Treat such values as
+		// empty so we fall through to the localized "Chat" fallback.
+		const isUriSegmentLike = (candidate: string | undefined): boolean => {
+			if (!candidate || !this._sessionResource) {
+				return false;
+			}
+			const segments = this._sessionResource.path.split('/').filter(Boolean);
+			const lastSeg = segments[segments.length - 1];
+			return !!lastSeg && (candidate === lastSeg || candidate.startsWith(lastSeg.slice(0, 20)));
+		};
+
 		// If we have a resolved model, use its title
-		if (this.model?.title) {
+		const modelTitle = this.model?.title;
+		if (modelTitle && !isUriSegmentLike(modelTitle)) {
 			// Only truncate if the default title is being used (don't truncate custom titles)
-			return this.model.hasCustomTitle ? this.model.title : truncate(this.model.title, ChatEditorTitleMaxLength);
+			return this.model!.hasCustomTitle ? modelTitle : truncate(modelTitle, ChatEditorTitleMaxLength);
 		}
 
 		// If we have a sessionId but no resolved model, try to get the title from persisted sessions
 		if (this._sessionResource) {
 			// First try the active session registry
-			const existingSession = this.chatService.getSession(this._sessionResource);
-			if (existingSession?.title) {
-				return existingSession.title;
+			const existingTitle = this.chatService.getSession(this._sessionResource)?.title;
+			if (existingTitle && !isUriSegmentLike(existingTitle)) {
+				return existingTitle;
 			}
 
 			// If not in active registry, try persisted session data
 			const persistedTitle = this.chatService.getSessionTitle(this._sessionResource);
-			if (persistedTitle && persistedTitle.trim()) { // Only use non-empty persisted titles
+			if (persistedTitle && persistedTitle.trim() && !isUriSegmentLike(persistedTitle)) { // Only use non-empty, non-URI-segment titles
 				return persistedTitle;
 			}
 		}
 
-		// If a preferred title was provided in options, use it
-		if (this.options.title?.preferred) {
-			return this.options.title.preferred;
+		// If a preferred title was provided in options, use it (unless it
+		// is the URI segment itself — see top-of-function rationale)
+		const preferred = this.options.title?.preferred;
+		if (preferred && !isUriSegmentLike(preferred)) {
+			return preferred;
 		}
 
 		// Fall back to default naming pattern

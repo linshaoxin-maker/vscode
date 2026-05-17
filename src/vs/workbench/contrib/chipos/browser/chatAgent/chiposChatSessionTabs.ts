@@ -14,39 +14,48 @@ import { IInstantiationService } from '../../../../../platform/instantiation/com
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IAgentSession } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsModel.js';
 import { IAgentSessionsService } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsService.js';
+import { IChatService } from '../../../../../workbench/contrib/chat/common/chatService/chatService.js';
 
 /**
  * ChipOS Chat Session Tabs — horizontal tab strip rendered at the top
  * of the chat panel (Cursor-style), one tab per recently-active chat
- * session plus a trailing "+" to start a new chat.
+ * session plus a trailing `+` to start a new chat and a sidebar-toggle
+ * button to open the framework's sessions sidebar.
  *
- * Owner: `ChipOSChatSessionTabsService` constructs one of these per
+ * Owner: `ChipOSChatSessionTabsContribution` creates one of these per
  * `.chipos-session-tabs-slot` DOM element and feeds it the current
- * openTabs URIs + activeUri. Calling `update()` re-renders.
+ * openTabs URIs + activeUri. Calling `render()` re-renders.
+ *
+ * Layout (always-visible, even when no tabs):
+ *   [tab1] [tab2] [tab3]   [+]  [|||]
+ *                            ^    ^
+ *                  new chat —     `--- sessions sidebar toggle
  *
  * Click semantics:
  *   - Tab body → openSession() → switch to that chat
  *   - Tab × → emit close intent; service trims from storage and
  *     advances active to neighbor
  *   - + → workbench.action.chat.newChat
+ *   - |||  → chipos.toggleChatSessionsSidebar
  */
 export interface IChipOSChatTabsCallbacks {
 	readonly onOpenTab: (sessionResource: URI) => void;
 	readonly onCloseTab: (sessionResource: URI) => void;
 	readonly onNewTab: () => void;
+	readonly onToggleSessions: () => void;
 }
 
 export class ChipOSChatSessionTabs extends Disposable {
 
 	private readonly _domNode: HTMLElement;
 	private readonly _tabsContainer: HTMLElement;
-	private readonly _newBtn: HTMLElement;
 	private readonly _rowListeners = this._register(new DisposableStore());
 
 	constructor(
 		host: HTMLElement,
 		private readonly _callbacks: IChipOSChatTabsCallbacks,
 		@IAgentSessionsService private readonly _agentSessionsService: IAgentSessionsService,
+		@IChatService private readonly _chatService: IChatService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
@@ -54,12 +63,26 @@ export class ChipOSChatSessionTabs extends Disposable {
 		this._domNode.classList.add('chipos-session-tabs');
 
 		this._tabsContainer = dom.append(this._domNode, dom.$('.chipos-session-tabs-row'));
-		this._newBtn = dom.append(this._domNode, dom.$('a.chipos-session-tabs-new.codicon.codicon-add'));
-		this._newBtn.setAttribute('role', 'button');
-		this._newBtn.setAttribute('aria-label', localize('chipos.sessionTabs.new', 'New chat'));
-		this._newBtn.title = localize('chipos.sessionTabs.new', 'New chat');
-		this._register(dom.addDisposableListener(this._newBtn, dom.EventType.CLICK, () => {
+
+		// Trailing actions cluster — sits to the right of the scrollable
+		// tabs row. Order matters: `+` first, sessions toggle last (mirrors
+		// Cursor and matches the user's "tabs then |||" request).
+		const actionsCluster = dom.append(this._domNode, dom.$('.chipos-session-tabs-actions'));
+
+		const newBtn = dom.append(actionsCluster, dom.$('a.chipos-session-tabs-action.chipos-session-tabs-new.codicon.codicon-add'));
+		newBtn.setAttribute('role', 'button');
+		newBtn.setAttribute('aria-label', localize('chipos.sessionTabs.new', 'New chat'));
+		newBtn.title = localize('chipos.sessionTabs.new', 'New chat');
+		this._register(dom.addDisposableListener(newBtn, dom.EventType.CLICK, () => {
 			this._callbacks.onNewTab();
+		}));
+
+		const toggleBtn = dom.append(actionsCluster, dom.$('a.chipos-session-tabs-action.chipos-session-tabs-toggle.codicon.codicon-layout-sidebar-right-off'));
+		toggleBtn.setAttribute('role', 'button');
+		toggleBtn.setAttribute('aria-label', localize('chipos.sessionTabs.toggleSidebar', "Toggle Chat Sessions Sidebar"));
+		toggleBtn.title = localize('chipos.sessionTabs.toggleSidebar', "Toggle Chat Sessions Sidebar");
+		this._register(dom.addDisposableListener(toggleBtn, dom.EventType.CLICK, () => {
+			this._callbacks.onToggleSessions();
 		}));
 	}
 
@@ -73,17 +96,20 @@ export class ChipOSChatSessionTabs extends Disposable {
 	 * Re-render the tab list. `openTabs` is the persisted list of session
 	 * URIs (in display order); `activeUri` is the currently focused chat
 	 * session (may be undefined if no session is loaded).
+	 *
+	 * Empty state keeps the row visible (so + / sessions-toggle stay
+	 * reachable). The `chipos-session-tabs-empty` class lets the CSS
+	 * trim padding / hide the tabs scrollbar when there's nothing to
+	 * scroll, but the action cluster stays put.
 	 */
 	render(openTabs: readonly URI[], activeUri: URI | undefined): void {
 		this._rowListeners.clear();
 		dom.clearNode(this._tabsContainer);
 
-		// 0-tab state — collapse the strip so it doesn't eat vertical space.
+		this._domNode.classList.toggle('chipos-session-tabs-empty', openTabs.length === 0);
 		if (openTabs.length === 0) {
-			this._domNode.classList.add('chipos-session-tabs-empty');
 			return;
 		}
-		this._domNode.classList.remove('chipos-session-tabs-empty');
 
 		// Snapshot sessions once so we can look up labels/icons in O(1) per
 		// tab without re-walking the framework's model array.
@@ -94,14 +120,74 @@ export class ChipOSChatSessionTabs extends Disposable {
 
 		for (const uri of openTabs) {
 			const session = sessionsByResource.get(uri.toString());
-			if (!session) {
-				// Session removed from history (deleted/archived) — skip and
-				// trust the service to garbage-collect from storage on its
-				// next sync.
-				continue;
+			const isActive = !!activeUri && isEqual(activeUri, uri);
+			if (session) {
+				this._renderTab(session, isActive);
+			} else {
+				// Session not yet (or no longer) in IAgentSessionsService.model
+				// — could be a fresh chipos local chat that hasn't propagated
+				// to the agent-sessions provider model yet. Render a fallback
+				// with the URI's basename so the tab still shows up.
+				this._renderFallbackTab(uri, isActive);
 			}
-			this._renderTab(session, !!activeUri && isEqual(activeUri, session.resource));
 		}
+	}
+
+	/**
+	 * Resolve a human-readable label for a session URI when it's not in
+	 * `IAgentSessionsService.model`. Order:
+	 *   1. `IChatService.getSessionTitle(uri)` — covers both active and
+	 *      persisted sessions, returns the model's customTitle or the
+	 *      first request message text.
+	 *   2. The localized "New Chat" string — never the raw URI segment,
+	 *      so a session that hasn't had a first message yet still gets a
+	 *      friendly label instead of a base64 UUID.
+	 */
+	private _labelForUri(uri: URI): string {
+		const title = this._chatService.getSessionTitle(uri);
+		if (title && title.trim()) {
+			// Sanity check: reject titles that are just the URI's last
+			// path segment — for chipos local sessions this is a base64
+			// UUID that bleeds through if some upstream code defaulted
+			// title to the URI segment.
+			const segments = uri.path.split('/').filter(Boolean);
+			const lastSeg = segments[segments.length - 1];
+			if (!lastSeg || !title.includes(lastSeg.slice(0, 16))) {
+				return title.trim();
+			}
+		}
+		return localize('chipos.sessionTabs.untitled', "New Chat");
+	}
+
+	private _renderFallbackTab(uri: URI, isActive: boolean): void {
+		const tab = dom.append(this._tabsContainer, dom.$('.chipos-session-tab'));
+		tab.classList.toggle('chipos-session-tab-active', isActive);
+		tab.setAttribute('role', 'tab');
+		tab.setAttribute('aria-selected', String(isActive));
+		tab.setAttribute('tabindex', '0');
+		const label = this._labelForUri(uri);
+		tab.title = label;
+
+		const iconEl = dom.append(tab, dom.$('span.chipos-session-tab-icon.codicon'));
+		iconEl.classList.add(...ThemeIcon.asClassNameArray(Codicon.commentDiscussion));
+
+		const labelEl = dom.append(tab, dom.$('span.chipos-session-tab-label'));
+		labelEl.textContent = label;
+
+		const closeBtn = dom.append(tab, dom.$('span.chipos-session-tab-close.codicon.codicon-close'));
+		closeBtn.setAttribute('role', 'button');
+		closeBtn.title = localize('chipos.sessionTabs.close', 'Close tab');
+
+		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.CLICK, (e: MouseEvent) => {
+			if (e.target === closeBtn || closeBtn.contains(e.target as Node)) {
+				return;
+			}
+			this._callbacks.onOpenTab(uri);
+		}));
+		this._rowListeners.add(dom.addDisposableListener(closeBtn, dom.EventType.CLICK, (e: MouseEvent) => {
+			e.stopPropagation();
+			this._callbacks.onCloseTab(uri);
+		}));
 	}
 
 	private _renderTab(session: IAgentSession, isActive: boolean): void {

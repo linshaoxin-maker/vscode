@@ -5,6 +5,7 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -1466,6 +1467,12 @@ registerAction2(class InstallWorkerToolAction extends Action2 {
 		const progressService = accessor.get(IProgressService);
 		const opener = accessor.get(IOpenerService);
 		const viewsService = accessor.get(IViewsService);
+		// commandService is fetched here (synchronously inside run()) so the
+		// notification actions below can invoke chipos.eda.openInstallGuide /
+		// chipos.eda.rescan from inside their async run() closures (where a
+		// fresh accessor.get() would throw "Illegal state: service accessor
+		// is only valid").
+		const commandService = accessor.get(ICommandService);
 		const toolName = arg.$treeItemHandle.replace('worker-tool:', '');
 		await progressService.withProgress(
 			{
@@ -1482,31 +1489,55 @@ registerAction2(class InstallWorkerToolAction extends Action2 {
 							: '';
 						notificationService.info(localize('chipos.workerTools.installSuccess', 'Tool "{0}" installed successfully.{1}', toolName, installedHint));
 					} else if ((result.manual_required && result.vendor_url) || (result.failed && result.failed.some(f => f.manual_required && f.vendor_url))) {
-						// 商业 EDA (vivado/quartus 等): 不能自动装, 弹通知带 "去下载" 按钮.
+						// 商业 EDA (vivado/quartus 等): 不能自动装, 弹通知带三个按钮:
+						//  1. View install guide — 打开我们 in-IDE 的 markdown 步骤
+						//     (账号 → 下载 → license → PATH → 校验), 比甩到厂商
+						//     站的 12 GB 下载页友好很多
+						//  2. Open vendor download page — 老链路保留
+						//  3. I've installed it, rescan — 用户装完直接点这个,
+						//     worker 原地重扫 PATH; 不需要重启 IDE
 						// 顶层 manual_required = install_binary 直调; failed[i].manual_required = install_mcp_tool 聚合.
 						const manualBins = result.failed?.filter(f => f.manual_required && f.vendor_url) ?? [];
 						const primary = manualBins[0] ?? null;
 						const vendorUrl = result.vendor_url ?? primary?.vendor_url ?? '';
-						const instructions = result.instructions ?? primary?.instructions ?? result.error ?? '';
+						const primaryBinary = primary?.binary ?? '';
 						const allBins = manualBins.length
 							? manualBins.map(f => f.binary).join(' / ')
 							: toolName;
 						notificationService.notify({
 							severity: Severity.Warning,
 							message: localize(
-								'chipos.workerTools.installManualVendor',
-								'Tool "{0}" requires manual installation ({1}).\n{2}',
-								toolName, allBins, instructions
+								'chipos.workerTools.installManualVendor.v2',
+								'"{0}" needs a commercial EDA tool ({1}) — ChipOS can\'t auto-install it. Click "View install guide" for step-by-step setup (account → download → license → PATH).',
+								toolName, allBins
 							),
 							actions: {
-								primary: [{
-									id: 'chipos.workerTools.openVendorUrl',
-									label: localize('chipos.workerTools.openVendorUrl', 'Open vendor download page'),
-									tooltip: vendorUrl,
-									class: undefined,
-									enabled: !!vendorUrl,
-									run: () => vendorUrl ? opener.open(URI.parse(vendorUrl), { openExternal: true }) : undefined,
-								}],
+								primary: [
+									{
+										id: 'chipos.workerTools.openInstallGuide',
+										label: localize('chipos.workerTools.openInstallGuide', 'View install guide'),
+										tooltip: localize('chipos.workerTools.openInstallGuide.tooltip', 'Open the in-IDE step-by-step install walkthrough for {0}.', primaryBinary || allBins),
+										class: undefined,
+										enabled: !!primaryBinary,
+										run: () => commandService.executeCommand('chipos.eda.openInstallGuide', primaryBinary),
+									},
+									{
+										id: 'chipos.workerTools.openVendorUrl',
+										label: localize('chipos.workerTools.openVendorUrl', 'Open vendor download page'),
+										tooltip: vendorUrl,
+										class: undefined,
+										enabled: !!vendorUrl,
+										run: () => vendorUrl ? opener.open(URI.parse(vendorUrl), { openExternal: true }) : undefined,
+									},
+									{
+										id: 'chipos.workerTools.rescan',
+										label: localize('chipos.workerTools.rescan', "I've installed it, rescan"),
+										tooltip: localize('chipos.workerTools.rescan.tooltip', 'Re-scan the worker PATH for newly-installed tools without restarting the worker.'),
+										class: undefined,
+										enabled: true,
+										run: () => commandService.executeCommand('chipos.eda.rescan'),
+									},
+								],
 							},
 						});
 					} else if (result.failed && result.failed.length) {
@@ -1561,9 +1592,41 @@ registerAction2(class AddMcpServerAction extends Action2 {
 		try {
 			const result = await toolManager.addMcpServer({ name, command, args, env: {} });
 			if (result.success) {
-				notificationService.info(localize('chipos.workerTools.addMcpSuccess', 'MCP server "{0}" added.', name));
+				// Re-fetch listMcpServers so we can include the auto-discovered
+				// provides count in the success toast — the original add only
+				// returned tools_count from runtime reload, which conflates
+				// "this server's tools" with "all tools registered". One extra
+				// HTTP roundtrip in exchange for "Connected: company-eda · 4
+				// tools (vivado, quartus, ...)" vs the old "MCP server added".
+				let provideMsg = '';
+				try {
+					const lst = await toolManager.listMcpServers();
+					const me = lst.servers.find(s => s.name === name);
+					const provides = me?.provides ?? [];
+					if (provides.length > 0) {
+						const sample = provides.slice(0, 3).join(', ');
+						const more = provides.length > 3 ? `, +${provides.length - 3} more` : '';
+						provideMsg = ` · provides ${provides.length}: ${sample}${more}`;
+					} else {
+						provideMsg = ' · no tools discovered yet';
+					}
+				} catch {
+					/* best-effort enrichment */
+				}
+				notificationService.info(localize(
+					'chipos.workerTools.addMcpSuccess.v2',
+					'✓ Connected: {0}{1}',
+					name, provideMsg,
+				));
 			} else {
-				notificationService.warn(localize('chipos.workerTools.addMcpFail', 'Failed to add MCP server: {0}', result.error || 'unknown'));
+				// Verbose fail message — actual stderr/connection error helps the
+				// CAD admin debug "why didn't my company-eda server work" without
+				// digging through worker logs.
+				notificationService.warn(localize(
+					'chipos.workerTools.addMcpFail.v2',
+					'✗ Failed to connect MCP server "{0}": {1}',
+					name, result.error || 'unknown error',
+				));
 			}
 		} catch (err) {
 			notificationService.error(localize('chipos.workerTools.addMcpError', 'Error adding MCP server: {0}', String(err)));
@@ -1663,6 +1726,86 @@ CommandsRegistry.registerCommand('chipos.trace.copyId', async (accessor: Service
 	const notificationService = accessor.get(INotificationService);
 	await clipboardService.writeText(traceId);
 	notificationService.info(localize('chipos.trace.copied', 'Trace ID copied: {0}', traceId));
+});
+
+/**
+ * Open the bundled in-IDE install guide markdown for an EDA tool. Wired from
+ * the "View install guide" action on EdaEnvHandler's missing-tool notification
+ * (see `edaEnvHandler.ts:_resolveInstallGuideUri`). For supported tools
+ * (vivado / quartus / openroad / yosys / iverilog / verilator / sv2v) we open
+ * a dedicated walkthrough markdown with account-creation links, license
+ * setup, PATH config commands, and verification steps — instead of dumping
+ * the user on a bare vendor download page.
+ *
+ * Tool name → markdown file lookup. `_aliases` collapses worker-side binary
+ * names (`quartus_sh`, `quartus_pgm`) onto the shared guide (`quartus.md`).
+ * The four oss-cad-suite tools all map to `oss-cad-suite.md` because
+ * ChipOS treats the suite as a single install unit.
+ *
+ * Fallback: if the tool isn't in the map, log + no-op. The caller's
+ * `_resolveInstallGuideUri` already routes unknown tools to the raw vendor
+ * URL via OpenerService, so this command should only ever fire for tools
+ * that have a guide.
+ */
+CommandsRegistry.registerCommand('chipos.eda.openInstallGuide', async (accessor: ServicesAccessor, tool?: string) => {
+	const logService = accessor.get(ILogService);
+	const editorService = accessor.get(IEditorService);
+	const notificationService = accessor.get(INotificationService);
+
+	if (!tool || typeof tool !== 'string') {
+		logService.warn('[ChipOS EDA install guide] called without tool name');
+		return;
+	}
+
+	const _aliases: Record<string, string> = {
+		'yosys': 'oss-cad-suite',
+		'iverilog': 'oss-cad-suite',
+		'verilator': 'oss-cad-suite',
+		'sv2v': 'oss-cad-suite',
+		'quartus_sh': 'quartus',
+		'quartus_pgm': 'quartus',
+	};
+	const guideName = _aliases[tool] ?? tool;
+
+	// Map of tools we ship a guide for. Keys MUST match the `BUNDLED_GUIDES`
+	// set in edaEnvHandler.ts (the renderer-side resolver). Adding a new
+	// guide requires updating both lists + the gulpfile resource include.
+	const BUNDLED = new Set(['vivado', 'quartus', 'openroad', 'oss-cad-suite', 'index']);
+	if (!BUNDLED.has(guideName)) {
+		logService.warn(`[ChipOS EDA install guide] no bundled guide for tool=${tool} (resolved=${guideName})`);
+		notificationService.notify({
+			severity: Severity.Warning,
+			message: localize('chipos.eda.installGuide.notFound', 'No install guide bundled for {0}.', tool),
+		});
+		return;
+	}
+
+	// FileAccess.asFileUri resolves to disk in dev (under src/) and to the
+	// bundled `out-build/.../media/installGuides/<name>.md` location in
+	// production (see gulpfile.vscode.ts:vscodeResourceIncludes).
+	const resource = FileAccess.asFileUri(`vs/workbench/contrib/chipos/browser/media/installGuides/${guideName}.md`);
+
+	try {
+		await editorService.openEditor({
+			resource,
+			options: {
+				pinned: true,
+				preserveFocus: false,
+			},
+		});
+		logService.info(`[ChipOS EDA install guide] opened ${guideName}.md for tool=${tool}`);
+	} catch (err) {
+		logService.error(`[ChipOS EDA install guide] failed to open ${resource.toString()}: ${err}`);
+		notificationService.notify({
+			severity: Severity.Error,
+			message: localize(
+				'chipos.eda.installGuide.openFailed',
+				'Could not open install guide for {0}: {1}',
+				tool,
+				String(err),
+			),
+		});
+	}
 });
 
 registerWorkbenchContribution2(

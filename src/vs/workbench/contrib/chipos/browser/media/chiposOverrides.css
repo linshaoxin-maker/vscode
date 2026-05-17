@@ -455,15 +455,18 @@
  * pass, which compounds in long conversations. Status classes are applied by
  * chatTodoListWidget.ts:TodoListRenderer.renderElement. */
 
+
 /*-----------------------------------------------------------------------------
- *  UX #14 — Horizontal session tabs above the chat content (2026-05-16)
+ *  UX #14 — Horizontal session tabs above the chat content (2026-05-17)
  *  ChatViewPane injects a `.chipos-session-tabs-slot` at the top of the
  *  chat-controls-container. The chipos tabs service mounts a
- *  `.chipos-session-tabs` widget inside that slot. Empty state collapses
- *  via `.chipos-session-tabs-empty` so the chat content stays flush when
- *  no sessions are open yet.
+ *  `.chipos-session-tabs` widget inside that slot. The row is ALWAYS
+ *  visible (tabs may be empty) because the trailing action cluster
+ *  (`+` new chat + `|||` sessions toggle) lives at its right end and is
+ *  the primary entry point for those actions across welcome/active
+ *  states — replacing the old corner-overlay button and the framework
+ *  title-bar toolbar buttons (which we hide further down).
  *-----------------------------------------------------------------------------*/
-
 .chipos-session-tabs-slot {
 	display: contents;
 }
@@ -472,7 +475,7 @@
 	display: flex;
 	flex-direction: row;
 	align-items: stretch;
-	height: 30px;
+	height: 32px;
 	padding: 2px 4px 0;
 	gap: 2px;
 	border-bottom: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.18)));
@@ -482,7 +485,7 @@
 }
 
 .chipos-session-tabs.chipos-session-tabs-empty {
-	display: none;
+	padding-right: 0;
 }
 
 .chipos-session-tabs-row {
@@ -510,7 +513,7 @@
 	align-items: center;
 	gap: 6px;
 	padding: 0 8px 0 10px;
-	max-width: 160px;
+	max-width: 180px;
 	min-width: 80px;
 	font-size: 12px;
 	color: var(--vscode-foreground);
@@ -571,22 +574,46 @@
 	background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.25));
 }
 
-.chipos-session-tabs-new {
+/* Trailing action cluster — `+` (new chat) and `|||` (sessions toggle).
+ * Stays anchored to the right of the scrollable tabs row, never scrolls
+ * away when tabs overflow. */
+.chipos-session-tabs-actions {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	padding-left: 4px;
+	gap: 2px;
+}
+
+.chipos-session-tabs-action {
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	width: 26px;
+	height: 26px;
 	font-size: 14px;
 	color: var(--vscode-foreground);
 	opacity: 0.65;
 	cursor: pointer;
 	text-decoration: none;
 	border-radius: 3px;
-	flex-shrink: 0;
-	margin-left: 4px;
 }
 
-.chipos-session-tabs-new:hover {
+.chipos-session-tabs-action:hover {
 	opacity: 1;
 	background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.18)));
+}
+
+/*-----------------------------------------------------------------------------
+ *  UX #14.5 — Hide the framework's chat title-bar action toolbar.
+ *  Our tabs row at the top provides `+` (new chat) and `|||` (sessions
+ *  toggle). The framework's `ChatViewTitleControl` renders an action
+ *  toolbar (`+` / sessions toggle / settings / more) at the same edge —
+ *  visually noisy and redundant. We keep the title bar's INFO segment
+ *  (back arrow, title label, model badge, connection dot) but hide the
+ *  actions toolbar. Users access framework actions via command palette
+ *  or the activity bar.
+ *-----------------------------------------------------------------------------*/
+.chat-view-title-container .chat-view-title-actions-toolbar {
+	display: none !important;
 }
