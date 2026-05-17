@@ -617,3 +617,19 @@
 .chat-view-title-container .chat-view-title-actions-toolbar {
 	display: none !important;
 }
+
+/*-----------------------------------------------------------------------------
+ *  UX #14.6 — Drop the sessions-sidebar's top toolbar entirely.
+ *  When the sidebar IS visible (the only state where this strip would
+ *  ever render), our chipos tabs row's trailing `[]` already provides
+ *  the open/close toggle from the chat-panel side. The framework's
+ *  `.agent-sessions-title-container > .agent-sessions-toolbar` renders
+ *  the same toggle a few pixels away — visually a "two redundant
+ *  toggles" mess. The "Sessions" title inside the container is already
+ *  hidden via chatViewPane.ts:366. Hide the whole container so the
+ *  sidebar's first interactive element is the search input, which
+ *  lines up with the chat panel's tab row at the same baseline.
+ *-----------------------------------------------------------------------------*/
+.agent-sessions-container > .agent-sessions-title-container {
+	display: none !important;
+}
