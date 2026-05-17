@@ -21,6 +21,7 @@ import { ConnectionTab } from './tabs/connectionTab.js';
 import { RulesTab } from './tabs/rulesTab.js';
 import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
+import { EdaToolsTab } from './tabs/edaToolsTab.js';
 import { GeneralTab } from './tabs/generalTab.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
@@ -51,6 +52,7 @@ const CATEGORY_GROUPS: ICategoryDef[][] = [
 	[
 		{ id: 'connection', label: localize('chipos.cat.connection', 'Connection'), icon: Codicon.plug, searchableTerms: ['backend', 'mode', 'reasoning', 'worker', 'grpc', 'tls', 'port', 'python', 'sidecar'] },
 		{ id: 'tools', label: localize('chipos.cat.tools', 'Tools'), icon: Codicon.tools, searchableTerms: ['mcp', 'server', 'configuration'] },
+		{ id: 'edaTools', label: localize('chipos.cat.edaTools', 'EDA Tools'), icon: Codicon.circuitBoard, searchableTerms: ['eda', 'vivado', 'quartus', 'yosys', 'openroad', 'verilator', 'managed', 'mcp', 'install', 'strategy'] },
 	],
 	[
 		{ id: 'beta', label: localize('chipos.cat.beta', 'Beta'), icon: Codicon.beaker, searchableTerms: ['inline chat', 'terminal agent', 'multi-agent', 'simulation', 'spec mode'] },
@@ -320,6 +322,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 					break;
 				case 'tools':
 					store.add(this._instantiationService.createInstance(ToolsTab, inner));
+					break;
+				case 'edaTools':
+					store.add(this._instantiationService.createInstance(EdaToolsTab, inner));
 					break;
 			}
 		} catch (err) {

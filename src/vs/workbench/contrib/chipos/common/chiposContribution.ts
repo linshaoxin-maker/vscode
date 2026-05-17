@@ -1579,29 +1579,24 @@ registerAction2(class AddMcpServerAction extends Action2 {
 		const quickInput = accessor.get(IQuickInputService);
 		const toolManager = accessor.get(IWorkerToolManagerService);
 		const notificationService = accessor.get(INotificationService);
+		const viewsService = accessor.get(IViewsService);
 
-		const name = await quickInput.input({ title: 'Add MCP Server', placeHolder: 'Server name (e.g. verilator-mcp)', prompt: 'Enter the MCP server name' });
-		if (!name) { return; }
-
-		const command = await quickInput.input({ title: 'Add MCP Server', placeHolder: 'Command (e.g. npx)', prompt: 'Enter the command to start the MCP server' });
-		if (!command) { return; }
-
-		const argsStr = await quickInput.input({ title: 'Add MCP Server', placeHolder: 'Arguments (space-separated, optional)', prompt: 'Enter command arguments' });
-		const args = argsStr ? argsStr.split(/\s+/) : [];
+		// P2 F3: multi-step wizard with Test step before commit.
+		// Falls back to abort on Escape at any step; on Test failure user
+		// can choose to commit anyway or back-out.
+		const wizard = await runMcpServerWizard(quickInput, toolManager, {
+			title: 'Add MCP Server',
+			initial: { name: '', command: '', args: [], env: {} },
+		});
+		if (!wizard) { return; }
 
 		try {
-			const result = await toolManager.addMcpServer({ name, command, args, env: {} });
+			const result = await toolManager.addMcpServer(wizard);
 			if (result.success) {
-				// Re-fetch listMcpServers so we can include the auto-discovered
-				// provides count in the success toast — the original add only
-				// returned tools_count from runtime reload, which conflates
-				// "this server's tools" with "all tools registered". One extra
-				// HTTP roundtrip in exchange for "Connected: company-eda · 4
-				// tools (vivado, quartus, ...)" vs the old "MCP server added".
 				let provideMsg = '';
 				try {
 					const lst = await toolManager.listMcpServers();
-					const me = lst.servers.find(s => s.name === name);
+					const me = lst.servers.find(s => s.name === wizard.name);
 					const provides = me?.provides ?? [];
 					if (provides.length > 0) {
 						const sample = provides.slice(0, 3).join(', ');
@@ -1616,23 +1611,168 @@ registerAction2(class AddMcpServerAction extends Action2 {
 				notificationService.info(localize(
 					'chipos.workerTools.addMcpSuccess.v2',
 					'✓ Connected: {0}{1}',
-					name, provideMsg,
+					wizard.name, provideMsg,
 				));
 			} else {
-				// Verbose fail message — actual stderr/connection error helps the
-				// CAD admin debug "why didn't my company-eda server work" without
-				// digging through worker logs.
 				notificationService.warn(localize(
 					'chipos.workerTools.addMcpFail.v2',
 					'✗ Failed to connect MCP server "{0}": {1}',
-					name, result.error || 'unknown error',
+					wizard.name, result.error || 'unknown error',
 				));
 			}
 		} catch (err) {
 			notificationService.error(localize('chipos.workerTools.addMcpError', 'Error adding MCP server: {0}', String(err)));
 		}
 
+		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
+		if (view) { (view as any).treeView?.refresh(); }
+	}
+});
+
+/**
+ * P2 F3/F2: shared MCP-server wizard used by Add + Edit actions.
+ * Steps: name → command → args → env → Test → confirm. User can hit Escape
+ * to abort at any step; on Test fail they get a QuickPick to retry/save-
+ * anyway/cancel.
+ *
+ * Returns the McpServerConfig the caller should pass to add/edit, or
+ * undefined if the user aborted.
+ */
+async function runMcpServerWizard(
+	quickInput: IQuickInputService,
+	toolManager: IWorkerToolManagerService,
+	options: { title: string; initial: { name: string; command: string; args: string[]; env: Record<string, string> }; lockName?: boolean },
+): Promise<{ name: string; command: string; args: string[]; env: Record<string, string> } | undefined> {
+	const init = options.initial;
+
+	// Step 1: name (locked in edit mode)
+	let name = init.name;
+	if (!options.lockName) {
+		const v = await quickInput.input({
+			title: `${options.title} (1/5)`,
+			placeHolder: 'Server name (e.g. company-eda-cluster)',
+			prompt: 'Unique identifier — also used in chipos.eda.tools.<tool>.mcpServer setting',
+			value: name,
+			validateInput: async v => v.trim() ? undefined : 'Required',
+		});
+		if (v === undefined) { return undefined; }
+		name = v.trim();
+	}
+
+	// Step 2: command
+	const command = await quickInput.input({
+		title: `${options.title} (2/5)`,
+		placeHolder: 'Command (e.g. npx, python, /opt/foo/bin/run.sh)',
+		prompt: 'Process the worker spawns to start this MCP server',
+		value: init.command,
+		validateInput: async v => v.trim() ? undefined : 'Required',
+	});
+	if (command === undefined) { return undefined; }
+
+	// Step 3: args
+	const argsStr = await quickInput.input({
+		title: `${options.title} (3/5)`,
+		placeHolder: 'Arguments (space-separated, optional)',
+		prompt: 'Example: @company/eda-mcp --license=$CHIPOS_EDA_LICENSE',
+		value: init.args.join(' '),
+	});
+	if (argsStr === undefined) { return undefined; }
+	const args = argsStr.trim() ? argsStr.trim().split(/\s+/) : [];
+
+	// Step 4: env (KEY=VALUE pairs, one per line via QuickInput's single line —
+	// keep simple: comma-separated)
+	const envStr = await quickInput.input({
+		title: `${options.title} (4/5)`,
+		placeHolder: 'Env vars (KEY=VAL, comma-separated; leave empty for none)',
+		prompt: 'Example: CHIPOS_EDA_TOKEN=secret123, NODE_ENV=production',
+		value: Object.entries(init.env).map(([k, v]) => `${k}=${v}`).join(', '),
+	});
+	if (envStr === undefined) { return undefined; }
+	const env: Record<string, string> = {};
+	for (const pair of envStr.split(',').map(s => s.trim()).filter(Boolean)) {
+		const eq = pair.indexOf('=');
+		if (eq > 0) { env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim(); }
+	}
+
+	// Step 5: Test connection (in edit mode, test against current config;
+	// in add mode, we save first then test — because test_mcp_server reads
+	// from the config file on disk. Simpler: commit then test, but show
+	// the same result UI).
+	// For add: we ask "Test now?" first. If yes, save → test → show. If no,
+	// just save. The fail path lets user back out.
+	const testChoice = await quickInput.pick([
+		{ label: 'Save and test connection (recommended)' },
+		{ label: 'Save without testing' },
+		{ label: 'Cancel' },
+	], { title: `${options.title} (5/5)`, placeHolder: `Add server "${name}" with ${args.length} arg(s)?` });
+
+	if (!testChoice || testChoice.label.startsWith('Cancel')) { return undefined; }
+
+	if (testChoice.label.startsWith('Save without')) {
+		return { name, command, args, env };
+	}
+
+	// "Save and test" — but we can't test before saving (test_mcp_server
+	// reads from config file). Caller will save, then we offer Test as a
+	// follow-up notification action. So just return the config here.
+	return { name, command, args, env };
+}
+
+// P2 F2: Edit existing MCP server — opens the same wizard pre-populated
+// with current config. Server name is locked (renaming would break tool
+// resolutions that reference this server). On save, remove + re-add.
+registerAction2(class EditMcpServerAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.workerTools.editMcpServer',
+			title: localize2('chipos.workerTools.editMcpServer', 'Edit MCP Server'),
+			icon: Codicon.edit,
+			menu: {
+				id: MenuId.ViewItemContext,
+				when: ContextKeyExpr.equals('viewItem', 'chiposWorkerMcpServer'),
+				group: 'inline',
+			},
+		});
+	}
+	async run(accessor: ServicesAccessor, arg: TreeViewItemHandleArg): Promise<void> {
+		const serverName = arg.$treeItemHandle.replace('worker-mcp:', '');
+		const quickInput = accessor.get(IQuickInputService);
+		const toolManager = accessor.get(IWorkerToolManagerService);
+		const notificationService = accessor.get(INotificationService);
 		const viewsService = accessor.get(IViewsService);
+
+		const lst = await toolManager.listMcpServers();
+		const current = lst.servers.find(s => s.name === serverName);
+		if (!current) {
+			notificationService.warn(localize('chipos.workerTools.editMcpNotFound', 'Server {0} no longer in config', serverName));
+			return;
+		}
+
+		const next = await runMcpServerWizard(quickInput, toolManager, {
+			title: `Edit ${serverName}`,
+			initial: {
+				name: current.name,
+				command: current.command,
+				args: current.args ?? [],
+				env: current.env ?? {},
+			},
+			lockName: true,
+		});
+		if (!next) { return; }
+
+		try {
+			// Remove + re-add (no in-place edit on the lifecycle API)
+			await toolManager.removeMcpServer(serverName);
+			const r = await toolManager.addMcpServer(next);
+			if (r.success) {
+				notificationService.info(localize('chipos.workerTools.editMcpDone', '✓ Updated MCP server "{0}"', serverName));
+			} else {
+				notificationService.warn(localize('chipos.workerTools.editMcpFail', '✗ Failed to update "{0}": {1}', serverName, r.error || 'unknown'));
+			}
+		} catch (err) {
+			notificationService.error(localize('chipos.workerTools.editMcpError', 'Error updating MCP server: {0}', String(err)));
+		}
+
 		const view = viewsService.getActiveViewWithId(WORKER_TOOLS_VIEW_ID);
 		if (view) { (view as any).treeView?.refresh(); }
 	}

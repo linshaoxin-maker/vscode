@@ -101,6 +101,14 @@ const vscodeResourceIncludes = [
 	'out-build/vs/sessions/contrib/chat/browser/media/*.svg',
 	'out-build/vs/sessions/prompts/*.prompt.md',
 
+	// ChipOS install guides — shown in the IDE when an EDA tool is missing.
+	// See `vs/workbench/contrib/chipos/electron-sandbox/edaEnvHandler.ts:_resolveInstallGuideUri`
+	// and the `chipos.eda.openInstallGuide` command in
+	// `vs/workbench/contrib/chipos/common/chiposContribution.ts`. Without
+	// this entry the .md files exist only in the source tree and the
+	// production build serves a 404 when the command tries to open them.
+	'out-build/vs/workbench/contrib/chipos/browser/media/installGuides/*.md',
+
 	// Extensions
 	'out-build/vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',
 	'out-build/vs/workbench/services/extensionManagement/common/media/*.{svg,png}',

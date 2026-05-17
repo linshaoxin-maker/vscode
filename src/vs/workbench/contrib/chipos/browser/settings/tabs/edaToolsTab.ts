@@ -1,0 +1,753 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+/**
+ * "EDA Tools" settings tab.
+ *
+ * Three sections:
+ *   1. Default strategy (chipos.eda.defaultStrategy) — single-radio
+ *   2. Tools table — per-tool source / status / detail with inline editing
+ *   3. MCP Servers table — name / transport / status / provides count
+ *
+ * This is the CAD-engineer-facing surface for what was previously hidden in
+ * settings.json. Each row in the tools table is a live read from
+ * /api/v1/eda/resolutions; each MCP row from /api/v1/mcp/servers (which now
+ * includes auto-discovered `provides`).
+ *
+ * Edit affordances are wired via existing actions (chipos.eda.tool.* +
+ * chipos.workerTools.*) so the right-click panel menu and this tab stay in
+ * sync — no parallel state machines. "Refresh all" re-runs the worker
+ * rescan command, which the panel's EdaEnvHandler subscriber also catches.
+ */
+
+import * as dom from '../../../../../../base/browser/dom.js';
+import { Action, IAction } from '../../../../../../base/common/actions.js';
+import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
+import { localize } from '../../../../../../nls.js';
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { IContextMenuService } from '../../../../../../platform/contextview/browser/contextView.js';
+import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
+import { IQuickInputService } from '../../../../../../platform/quickinput/common/quickInput.js';
+import {
+	EdaResolutionsResponse,
+	EdaToolResolution,
+	IWorkerToolManagerService,
+	McpServerConfig,
+	McpServerListResult,
+} from '../../../../../../workbench/contrib/chipos/browser/workerToolManager.js';
+
+const STRATEGY_OPTIONS: { value: string; label: string; desc: string }[] = [
+	{
+		value: 'auto',
+		label: localize('chipos.eda.strategy.auto.label', 'Auto'),
+		desc: localize('chipos.eda.strategy.auto.desc.short', 'managed → local → mcp (recommended)'),
+	},
+	{
+		value: 'managed-only',
+		label: localize('chipos.eda.strategy.managedOnly.label', 'Managed only'),
+		desc: localize('chipos.eda.strategy.managedOnly.desc.short', 'CI / deterministic versions'),
+	},
+	{
+		value: 'local-only',
+		label: localize('chipos.eda.strategy.localOnly.label', 'Local only'),
+		desc: localize('chipos.eda.strategy.localOnly.desc.short', 'B-2: EDA pre-installed, no auto-download'),
+	},
+	{
+		value: 'mcp-first',
+		label: localize('chipos.eda.strategy.mcpFirst.label', 'MCP first'),
+		desc: localize('chipos.eda.strategy.mcpFirst.desc.short', 'B-1: company MCP cluster as primary source'),
+	},
+];
+
+export class EdaToolsTab extends Disposable {
+
+	private readonly _disposables = this._register(new DisposableStore());
+	private _toolsTableBody: HTMLElement | undefined;
+	private _serversTableBody: HTMLElement | undefined;
+	// P2 UX: filter state for the tools table. `query` is a substring match
+	// on tool_name; `implFilter` narrows to a specific impl (or 'all').
+	// `sortBy` is the column key the user clicked. Re-render is cheap so we
+	// don't keep DOM references to specific rows.
+	private _filterQuery = '';
+	private _implFilter: 'all' | 'ready' | 'missing' | 'managed' | 'mcp' | 'local-binary' = 'all';
+	private _sortBy: 'name' | 'source' | 'status' = 'status';
+	private _lastResolutions: EdaResolutionsResponse | undefined;
+	// P1 F1: tools the user has multi-selected (checkboxes). Operations on
+	// this set run via Bulk Actions toolbar.
+	private _selectedTools = new Set<string>();
+
+	constructor(
+		private readonly _container: HTMLElement,
+		@IWorkerToolManagerService private readonly _toolManager: IWorkerToolManagerService,
+		@IConfigurationService private readonly _configService: IConfigurationService,
+		@INotificationService private readonly _notif: INotificationService,
+		@ICommandService private readonly _commandService: ICommandService,
+		@IQuickInputService private readonly _quickInput: IQuickInputService,
+		@IContextMenuService private readonly _contextMenu: IContextMenuService,
+		@ILogService private readonly _log: ILogService,
+	) {
+		super();
+		this._render();
+		// Re-render whenever the EDA settings change (so external settings.json
+		// edits, or actions firing updateValue from the panel, surface here).
+		this._disposables.add(this._configService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('chipos.eda')) {
+				this._refreshLiveData();
+			}
+		}));
+	}
+
+	private _render(): void {
+		// ── Header ──
+		const headerDesc = dom.append(this._container, dom.$('.chipos-setting-description'));
+		headerDesc.textContent = localize('chipos.edaTools.header',
+			'EDA toolchain resolution — pick a default strategy, override per-tool source, and manage MCP servers that provide remote EDA tools.');
+
+		// ── Section: Strategy ──
+		this._renderStrategySection();
+
+		// ── Section: Tools table ──
+		this._renderToolsSection();
+
+		// ── Section: MCP Servers table ──
+		this._renderServersSection();
+
+		// Initial fetch
+		this._refreshLiveData();
+	}
+
+	// ── strategy radios ────────────────────────────────────────────────────
+
+	private _renderStrategySection(): void {
+		const section = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(section, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.edaTools.strategyTitle', 'Default strategy')));
+
+		const desc = dom.append(section, dom.$('.chipos-setting-description'));
+		desc.textContent = localize('chipos.edaTools.strategyDesc',
+			'How ChipOS picks an implementation for each EDA tool when no per-tool override is set.');
+
+		const current = this._configService.getValue<string>('chipos.eda.defaultStrategy') ?? 'auto';
+		const radioGroup = dom.append(section, dom.$('.chipos-radio-group'));
+		for (const opt of STRATEGY_OPTIONS) {
+			const row = dom.append(radioGroup, dom.$('label.chipos-radio-row'));
+			const input = dom.append(row, dom.$('input')) as HTMLInputElement;
+			input.type = 'radio';
+			input.name = 'chipos-eda-strategy';
+			input.value = opt.value;
+			input.checked = current === opt.value;
+			const labelSpan = dom.append(row, dom.$('span.chipos-radio-label'));
+			labelSpan.textContent = opt.label;
+			const descSpan = dom.append(row, dom.$('span.chipos-radio-desc'));
+			descSpan.textContent = ` — ${opt.desc}`;
+			this._disposables.add(dom.addDisposableListener(input, 'change', async () => {
+				if (input.checked) {
+					const previous = current;
+					await this._switchStrategyWithPreviewAndUndo(opt.value, opt.label, previous);
+				}
+			}));
+		}
+	}
+
+	/**
+	 * F8 + UX #12: when user switches strategy:
+	 *   1. Run a dry-run with new strategy → diff against current
+	 *   2. Show preview "X tools change impl: ..." before committing if diff > 3
+	 *   3. After commit, surface an "Undo" notification so accidental switch
+	 *      is one click away.
+	 */
+	private async _switchStrategyWithPreviewAndUndo(nextStrategy: string, nextLabel: string, previousStrategy: string): Promise<void> {
+		// Dry-run: compare current cached vs hypothetical strategy
+		let changed: { tool: string; from: string; to: string }[] = [];
+		try {
+			const cur = this._lastResolutions ?? await this._toolManager.getEdaToolResolutions(previousStrategy);
+			const next = await this._toolManager.getEdaToolResolutions(nextStrategy);
+			for (const [name, nr] of Object.entries(next.by_tool)) {
+				const cr = cur.by_tool[name];
+				if (!cr) { continue; }
+				if (cr.impl !== nr.impl) {
+					changed.push({ tool: name, from: cr.impl, to: nr.impl });
+				}
+			}
+		} catch (err) {
+			this._log.warn('[EdaToolsTab] strategy preview failed:', String(err));
+		}
+
+		// If >3 tools change, ask for confirmation
+		if (changed.length > 3) {
+			const sample = changed.slice(0, 5)
+				.map(c => `${c.tool} (${c.from}→${c.to})`)
+				.join(', ');
+			const proceed = await this._quickInput.pick([
+				{ label: localize('chipos.edaTools.strategyPreview.confirm', 'Proceed') },
+				{ label: localize('chipos.edaTools.strategyPreview.cancel', 'Cancel') },
+			], {
+				title: localize('chipos.edaTools.strategyPreview.title',
+					'Switching to {0} will change {1} tool(s): {2}{3}',
+					nextLabel, changed.length, sample,
+					changed.length > 5 ? `, +${changed.length - 5} more` : '',
+				),
+			});
+			if (!proceed || proceed.label.includes('Cancel')) {
+				// Revert the radio to previous
+				const prevRadio = this._container.querySelector<HTMLInputElement>(`input[value="${previousStrategy}"]`);
+				if (prevRadio) { prevRadio.checked = true; }
+				return;
+			}
+		}
+
+		await this._configService.updateValue('chipos.eda.defaultStrategy', nextStrategy, ConfigurationTarget.USER);
+		// UX #12: notification with Undo action — user can revert with one click
+		// within the toast timeout (default ~6s).
+		const undo = {
+			id: 'chipos.edaTools.strategyUndo',
+			label: localize('chipos.edaTools.strategyUndo', 'Undo'),
+			tooltip: localize('chipos.edaTools.strategyUndo.tooltip', 'Revert to {0}', previousStrategy),
+			class: undefined,
+			enabled: true,
+			run: async () => {
+				await this._configService.updateValue('chipos.eda.defaultStrategy', previousStrategy, ConfigurationTarget.USER);
+				const prevRadio = this._container.querySelector<HTMLInputElement>(`input[value="${previousStrategy}"]`);
+				if (prevRadio) { prevRadio.checked = true; }
+				await this._commandService.executeCommand('chipos.eda.rescan');
+				await this._refreshLiveData();
+				this._notif.info(localize('chipos.edaTools.strategyReverted',
+					'Reverted EDA strategy to "{0}".', previousStrategy));
+			},
+			dispose: () => { /* no-op */ },
+		};
+		this._notif.notify({
+			severity: 1,  // Info
+			message: localize('chipos.edaTools.strategyChanged.v2',
+				'Default EDA strategy set to "{0}". Re-scanning…', nextLabel),
+			actions: { primary: [undo] },
+		});
+		await this._commandService.executeCommand('chipos.eda.rescan');
+		await this._refreshLiveData();
+	}
+
+	// ── tools table ────────────────────────────────────────────────────────
+
+	private _renderToolsSection(): void {
+		const section = dom.append(this._container, dom.$('.chipos-settings-section'));
+		const header = dom.append(section, dom.$('.chipos-settings-section-header'));
+		dom.append(header, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.edaTools.toolsTitle', 'Tools')));
+
+		const refreshBtn = dom.append(header, dom.$('button.chipos-btn-secondary'));
+		refreshBtn.textContent = localize('chipos.edaTools.refresh', '⟳ Refresh All');
+		refreshBtn.title = localize('chipos.edaTools.refresh.tooltip',
+			'Re-scan worker PATH + MCP server tools/list. Picks up newly-installed binaries without restarting the worker.');
+		this._disposables.add(dom.addDisposableListener(refreshBtn, 'click', async () => {
+			await this._commandService.executeCommand('chipos.eda.rescan');
+			await this._refreshLiveData();
+		}));
+
+		// P2 UX: filter + search toolbar (always visible, no toggle needed —
+		// 31 rows is enough to warrant always-on filtering).
+		const toolbar = dom.append(section, dom.$('.chipos-eda-toolbar'));
+		const searchInput = dom.append(toolbar, dom.$('input.chipos-eda-search')) as HTMLInputElement;
+		searchInput.type = 'text';
+		searchInput.placeholder = localize('chipos.edaTools.searchPlaceholder', 'Filter tools by name…');
+		this._disposables.add(dom.addDisposableListener(searchInput, 'input', () => {
+			this._filterQuery = searchInput.value.trim().toLowerCase();
+			this._renderToolsTableFiltered();
+		}));
+
+		const implSelect = dom.append(toolbar, dom.$('select.chipos-eda-impl-filter')) as HTMLSelectElement;
+		for (const opt of [
+			{ value: 'all',          label: localize('chipos.edaTools.implFilter.all', 'All impls') },
+			{ value: 'ready',        label: localize('chipos.edaTools.implFilter.ready', 'Ready only') },
+			{ value: 'missing',      label: localize('chipos.edaTools.implFilter.missing', 'Missing only') },
+			{ value: 'managed',      label: localize('chipos.edaTools.implFilter.managed', 'Managed') },
+			{ value: 'mcp',          label: localize('chipos.edaTools.implFilter.mcp', 'MCP') },
+			{ value: 'local-binary', label: localize('chipos.edaTools.implFilter.local', 'Local') },
+		]) {
+			const o = dom.append(implSelect, dom.$('option')) as HTMLOptionElement;
+			o.value = opt.value;
+			o.textContent = opt.label;
+		}
+		this._disposables.add(dom.addDisposableListener(implSelect, 'change', () => {
+			this._implFilter = implSelect.value as typeof this._implFilter;
+			this._renderToolsTableFiltered();
+		}));
+
+		// P1 F1: bulk actions toolbar (always rendered but disabled until ≥1 selected)
+		const bulkBtn = dom.append(toolbar, dom.$('button.chipos-btn-secondary')) as HTMLButtonElement;
+		bulkBtn.textContent = localize('chipos.edaTools.bulkDisable', 'Disable Selected');
+		bulkBtn.disabled = true;
+		bulkBtn.title = localize('chipos.edaTools.bulkDisable.tooltip',
+			'Set source=disabled for all checked tools. They\'ll be hidden from the agent tool registry.');
+		this._disposables.add(dom.addDisposableListener(bulkBtn, 'click', () => this._bulkDisableSelected()));
+		this._bulkBtn = bulkBtn;
+
+		const table = dom.append(section, dom.$('table.chipos-eda-tools-table'));
+		const thead = dom.append(table, dom.$('thead'));
+		const headRow = dom.append(thead, dom.$('tr'));
+		// First column = bulk-select checkbox header
+		const selectAllTh = dom.append(headRow, dom.$('th.chipos-eda-tool-select'));
+		const selectAllBox = dom.append(selectAllTh, dom.$('input')) as HTMLInputElement;
+		selectAllBox.type = 'checkbox';
+		selectAllBox.title = localize('chipos.edaTools.selectAll', 'Select all (filtered)');
+		this._disposables.add(dom.addDisposableListener(selectAllBox, 'change', () => {
+			this._toggleSelectAll(selectAllBox.checked);
+		}));
+		// Sortable column headers
+		for (const col of [
+			{ key: 'name', label: 'Tool' } as const,
+			{ key: 'source', label: 'Source' } as const,
+			{ key: 'status', label: 'Status' } as const,
+		]) {
+			const th = dom.append(headRow, dom.$('th.chipos-eda-tool-sortable')) as HTMLTableCellElement;
+			th.textContent = col.label;
+			th.style.cursor = 'pointer';
+			this._disposables.add(dom.addDisposableListener(th, 'click', () => {
+				this._sortBy = col.key;
+				this._renderToolsTableFiltered();
+			}));
+		}
+		dom.append(headRow, dom.$('th', undefined, 'Detail'));
+		dom.append(headRow, dom.$('th', undefined, ''));
+		this._toolsTableBody = dom.append(table, dom.$('tbody'));
+	}
+
+	private _bulkBtn: HTMLButtonElement | undefined;
+
+	private _renderToolsTableFiltered(): void {
+		if (!this._lastResolutions) { return; }
+		this._renderToolsTable(this._lastResolutions);
+		if (this._bulkBtn) {
+			this._bulkBtn.disabled = this._selectedTools.size === 0;
+			if (this._selectedTools.size > 0) {
+				this._bulkBtn.textContent = localize('chipos.edaTools.bulkDisable.count', 'Disable Selected ({0})', this._selectedTools.size);
+			} else {
+				this._bulkBtn.textContent = localize('chipos.edaTools.bulkDisable', 'Disable Selected');
+			}
+		}
+	}
+
+	private _toggleSelectAll(checked: boolean): void {
+		if (!this._lastResolutions) { return; }
+		const visible = this._applyFilterAndSort(Object.values(this._lastResolutions.by_tool));
+		if (checked) {
+			for (const r of visible) { this._selectedTools.add(r.tool_name); }
+		} else {
+			for (const r of visible) { this._selectedTools.delete(r.tool_name); }
+		}
+		this._renderToolsTableFiltered();
+	}
+
+	private async _bulkDisableSelected(): Promise<void> {
+		if (this._selectedTools.size === 0) { return; }
+		const names = Array.from(this._selectedTools).sort();
+		const current = this._configService.getValue<Record<string, any>>('chipos.eda.tools') ?? {};
+		const next = { ...current };
+		for (const n of names) {
+			next[n] = { ...current[n], source: 'disabled' };
+		}
+		await this._configService.updateValue('chipos.eda.tools', next, ConfigurationTarget.USER);
+		this._notif.info(localize(
+			'chipos.edaTools.bulkDisable.done',
+			'{0} tool(s) disabled: {1}{2}',
+			names.length,
+			names.slice(0, 5).join(', '),
+			names.length > 5 ? `, +${names.length - 5} more` : '',
+		));
+		this._selectedTools.clear();
+		await this._refreshLiveData();
+	}
+
+	private _applyFilterAndSort(rows: EdaToolResolution[]): EdaToolResolution[] {
+		let filtered = rows;
+		if (this._filterQuery) {
+			filtered = filtered.filter(r => r.tool_name.toLowerCase().includes(this._filterQuery));
+		}
+		if (this._implFilter !== 'all') {
+			if (this._implFilter === 'ready') {
+				filtered = filtered.filter(r => r.ready);
+			} else if (this._implFilter === 'missing') {
+				filtered = filtered.filter(r => !r.ready);
+			} else {
+				filtered = filtered.filter(r => r.impl === this._implFilter);
+			}
+		}
+		// Sort
+		if (this._sortBy === 'name') {
+			filtered.sort((a, b) => a.tool_name.localeCompare(b.tool_name));
+		} else if (this._sortBy === 'source') {
+			filtered.sort((a, b) => {
+				const sa = this._getToolOverride(a.tool_name)?.source ?? 'auto';
+				const sb = this._getToolOverride(b.tool_name)?.source ?? 'auto';
+				return sa.localeCompare(sb) || a.tool_name.localeCompare(b.tool_name);
+			});
+		} else {
+			// status: ready first, then missing, alphabetic within
+			filtered.sort((a, b) => {
+				if (a.ready !== b.ready) { return a.ready ? -1 : 1; }
+				return a.tool_name.localeCompare(b.tool_name);
+			});
+		}
+		return filtered;
+	}
+
+	private _renderToolsTable(payload: EdaResolutionsResponse): void {
+		if (!this._toolsTableBody) { return; }
+		this._lastResolutions = payload;
+		dom.clearNode(this._toolsTableBody);
+
+		// Apply current filter + sort (P2 UX). Default sort = status puts
+		// READY tools first (less anxiety-inducing than missing-first).
+		const rows = this._applyFilterAndSort(Object.values(payload.by_tool));
+
+		if (rows.length === 0) {
+			const empty = dom.append(this._toolsTableBody, dom.$('tr'));
+			const cell = dom.append(empty, dom.$('td.chipos-eda-empty')) as HTMLTableCellElement;
+			cell.colSpan = 6;
+			cell.textContent = this._filterQuery || this._implFilter !== 'all'
+				? localize('chipos.edaTools.noMatch', 'No tools match the current filter.')
+				: localize('chipos.edaTools.empty', 'No EDA tools registered.');
+			return;
+		}
+
+		for (const r of rows) {
+			this._renderToolRow(this._toolsTableBody, r);
+		}
+	}
+
+	private _renderToolRow(parent: HTMLElement, r: EdaToolResolution): void {
+		const tr = dom.append(parent, dom.$('tr.chipos-eda-tool-row'));
+		// P1 F1: per-row bulk-select checkbox
+		const selCell = dom.append(tr, dom.$('td.chipos-eda-tool-select'));
+		const cb = dom.append(selCell, dom.$('input')) as HTMLInputElement;
+		cb.type = 'checkbox';
+		cb.checked = this._selectedTools.has(r.tool_name);
+		this._disposables.add(dom.addDisposableListener(cb, 'change', () => {
+			if (cb.checked) { this._selectedTools.add(r.tool_name); }
+			else { this._selectedTools.delete(r.tool_name); }
+			this._renderToolsTableFiltered();
+		}));
+		dom.append(tr, dom.$('td.chipos-eda-tool-name', undefined, r.tool_name));
+
+		// Source cell — shows the USER-SETTING value (auto / managed / local /
+		// mcp / disabled), NOT the resolution impl. P1 Bug #2: previous
+		// behavior showed "missing" here for unconfigured tools, making it
+		// look like the user explicitly chose missing. Resolution impl is
+		// surfaced via the STATUS column + DETAIL column instead.
+		const sourceCell = dom.append(tr, dom.$('td.chipos-eda-tool-source'));
+		const userOverride = this._getToolOverride(r.tool_name);
+		const userSource = userOverride?.source ?? 'auto';
+		const sourceBtn = dom.append(sourceCell, dom.$('button.chipos-btn-link'));
+		sourceBtn.textContent = userSource;
+		sourceBtn.title = localize('chipos.edaTools.editSource', 'Change source for {0} (currently: {1})', r.tool_name, userSource);
+		this._disposables.add(dom.addDisposableListener(sourceBtn, 'click', () => {
+			this._openSourcePicker(r.tool_name);
+		}));
+
+		// Status cell — ✓ ready (impl) / ○ missing / — disabled.
+		// Showing the resolved `impl` here (not in SOURCE) cleanly separates
+		// "what user asked for" (SOURCE) from "what worker actually found"
+		// (STATUS). P1 Bug #2.
+		const statusCell = dom.append(tr, dom.$('td.chipos-eda-tool-status'));
+		const dot = dom.append(statusCell, dom.$('span'));
+		if (userOverride?.source === 'disabled') {
+			dot.textContent = '— disabled';
+			dot.classList.add('disabled');
+		} else if (r.ready) {
+			dot.textContent = `✓ ${r.impl}`;
+			dot.classList.add('ready');
+		} else {
+			dot.textContent = '○ missing';
+			dot.classList.add('missing');
+		}
+
+		// Detail cell — path / server / hint truncated
+		const detailCell = dom.append(tr, dom.$('td.chipos-eda-tool-detail'));
+		detailCell.textContent = this._formatDetail(r);
+		detailCell.title = JSON.stringify(r.detail);  // hover for full
+
+		// Action cell — kebab menu (Test / Configure / Disable)
+		const actionCell = dom.append(tr, dom.$('td.chipos-eda-tool-actions'));
+		const menuBtn = dom.append(actionCell, dom.$('button.chipos-btn-icon'));
+		menuBtn.textContent = '⋯';
+		menuBtn.title = localize('chipos.edaTools.toolActions', 'Tool actions');
+		this._disposables.add(dom.addDisposableListener(menuBtn, 'click', () => {
+			this._openToolActionsMenu(r, menuBtn);
+		}));
+	}
+
+	private _formatDetail(r: EdaToolResolution): string {
+		switch (r.impl) {
+			case 'managed':
+			case 'local-binary':
+				return r.detail.path ?? '';
+			case 'mcp':
+				return r.detail.server_name
+					? localize('chipos.edaTools.detail.mcp', 'via {0}', r.detail.server_name)
+					: '';
+			case 'missing':
+				return r.detail.hint ? r.detail.hint.slice(0, 80) + (r.detail.hint.length > 80 ? '…' : '') : '';
+			default:
+				return '';
+		}
+	}
+
+	// ── action pickers ─────────────────────────────────────────────────────
+
+	private async _openSourcePicker(toolName: string): Promise<void> {
+		const picked = await this._quickInput.pick([
+			{ label: 'auto',     description: localize('chipos.edaTools.src.auto', 'Use default strategy') },
+			{ label: 'managed',  description: localize('chipos.edaTools.src.managed', 'ChipOS-managed (oss-cad-suite)') },
+			{ label: 'local',    description: localize('chipos.edaTools.src.local', 'System PATH or explicit path') },
+			{ label: 'mcp',      description: localize('chipos.edaTools.src.mcp', 'Remote MCP server') },
+			{ label: 'disabled', description: localize('chipos.edaTools.src.disabled', 'Hide from agent') },
+		], {
+			title: localize('chipos.edaTools.src.title', 'Set source for {0}', toolName),
+		});
+		if (!picked) { return; }
+		const current = this._configService.getValue<Record<string, any>>('chipos.eda.tools') ?? {};
+		const next = { ...current, [toolName]: { ...current[toolName], source: picked.label } };
+		await this._configService.updateValue('chipos.eda.tools', next, ConfigurationTarget.USER);
+		await this._commandService.executeCommand('chipos.eda.rescan');
+		await this._refreshLiveData();
+	}
+
+	/**
+	 * P1 UX #10: native context menu anchored at the kebab button.
+	 * Replaces the prior QuickPick modal which felt heavy for 5 simple
+	 * actions. ContextMenu pops below the button (anchor=HTMLElement),
+	 * dismisses on outside-click, and supports keyboard nav out of the box.
+	 */
+	private _openToolActionsMenu(r: EdaToolResolution, anchor: HTMLElement): void {
+		const handle = { $treeItemHandle: `impl-tool:${r.tool_name}` };
+		const exec = async (cmdId: string, ...args: unknown[]) => {
+			await this._commandService.executeCommand(cmdId, ...args);
+			await this._refreshLiveData();
+		};
+		const actions: IAction[] = [];
+		if (r.ready) {
+			actions.push(new Action(
+				'chipos.edaTab.test',
+				localize('chipos.edaTools.action.test', 'Test'),
+				undefined, true,
+				() => exec('chipos.eda.tool.test', handle),
+			));
+			if (r.detail.path) {
+				actions.push(new Action(
+					'chipos.edaTab.copyPath',
+					localize('chipos.edaTools.action.copyPath', 'Copy Path'),
+					undefined, true,
+					() => exec('chipos.eda.tool.copyPath', handle),
+				));
+				actions.push(new Action(
+					'chipos.edaTab.showFinder',
+					localize('chipos.edaTools.action.showFinder', 'Show in Finder'),
+					undefined, true,
+					() => exec('chipos.eda.tool.showInFinder', handle),
+				));
+			}
+		} else {
+			actions.push(new Action(
+				'chipos.edaTab.viewGuide',
+				localize('chipos.edaTools.action.viewGuide', 'View install guide'),
+				undefined, true,
+				() => exec('chipos.eda.openInstallGuide', r.tool_name),
+			));
+			actions.push(new Action(
+				'chipos.edaTab.configurePath',
+				localize('chipos.edaTools.action.configurePath', 'Configure local path…'),
+				undefined, true,
+				() => exec('chipos.eda.tool.configureLocalPath', handle),
+			));
+			actions.push(new Action(
+				'chipos.edaTab.connectMcp',
+				localize('chipos.edaTools.action.connectMcp', 'Connect via MCP…'),
+				undefined, true,
+				() => exec('chipos.eda.tool.connectViaMcp'),
+			));
+		}
+		// F5: install guide is always useful for missing/ready tools
+		// (managed tools also have docs for upgrade/troubleshoot).
+		if (r.ready && r.detail.path) {
+			actions.push(new Action(
+				'chipos.edaTab.viewGuideReady',
+				localize('chipos.edaTools.action.viewGuideReady', 'View install guide'),
+				undefined, true,
+				() => exec('chipos.eda.openInstallGuide', r.tool_name),
+			));
+		}
+		actions.push(new Action(
+			'chipos.edaTab.switchSource',
+			localize('chipos.edaTools.action.switchSource', 'Switch source…'),
+			undefined, true,
+			() => exec('chipos.eda.tool.switchSource', handle),
+		));
+		actions.push(new Action(
+			'chipos.edaTab.disable',
+			localize('chipos.edaTools.action.disable', 'Disable'),
+			undefined, true,
+			() => exec('chipos.eda.tool.disable', handle),
+		));
+
+		this._contextMenu.showContextMenu({
+			getAnchor: () => anchor,
+			getActions: () => actions,
+		});
+	}
+
+	// ── mcp servers section ───────────────────────────────────────────────
+
+	private _renderServersSection(): void {
+		const section = dom.append(this._container, dom.$('.chipos-settings-section'));
+		const header = dom.append(section, dom.$('.chipos-settings-section-header'));
+		dom.append(header, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.edaTools.serversTitle', 'MCP Servers (worker-side)')));
+
+		const addBtn = dom.append(header, dom.$('button.chipos-btn-secondary'));
+		addBtn.textContent = localize('chipos.edaTools.addServer', '+ Add MCP Server');
+		this._disposables.add(dom.addDisposableListener(addBtn, 'click', async () => {
+			await this._commandService.executeCommand('chipos.workerTools.addMcpServer');
+			await this._refreshLiveData();
+		}));
+
+		const desc = dom.append(section, dom.$('.chipos-setting-description'));
+		desc.textContent = localize('chipos.edaTools.serversDesc',
+			'MCP servers launched by the Worker process. Each server\'s advertised tools auto-populate the table above (impl=mcp).');
+
+		const table = dom.append(section, dom.$('table.chipos-eda-tools-table'));
+		const thead = dom.append(table, dom.$('thead'));
+		const headRow = dom.append(thead, dom.$('tr'));
+		for (const col of ['Name', 'Transport', 'Status', 'Provides', '']) {
+			dom.append(headRow, dom.$('th', undefined, col));
+		}
+		this._serversTableBody = dom.append(table, dom.$('tbody'));
+	}
+
+	private _renderServersTable(payload: McpServerListResult): void {
+		if (!this._serversTableBody) { return; }
+		dom.clearNode(this._serversTableBody);
+		if (payload.servers.length === 0) {
+			const empty = dom.append(this._serversTableBody, dom.$('tr'));
+			const cell = dom.append(empty, dom.$('td.chipos-eda-empty')) as HTMLTableCellElement;
+			cell.colSpan = 5;
+			cell.textContent = localize('chipos.edaTools.noServers',
+				'No MCP servers configured. Click "+ Add MCP Server" to connect a remote tool source.');
+			return;
+		}
+		for (const srv of payload.servers) {
+			this._renderServerRow(this._serversTableBody, srv);
+		}
+	}
+
+	private _renderServerRow(parent: HTMLElement, srv: McpServerConfig): void {
+		const tr = dom.append(parent, dom.$('tr'));
+		dom.append(tr, dom.$('td', undefined, srv.name));
+		dom.append(tr, dom.$('td', undefined, srv.transport ?? 'stdio'));
+		// P0 UX #11: 4-way status from background health probe.
+		const statusCell = dom.append(tr, dom.$('td'));
+		const health = srv.health?.status ?? 'unknown';
+		const provides = srv.provides ?? [];
+		const span = dom.append(statusCell, dom.$('span'));
+		switch (health) {
+			case 'connected':
+				span.classList.add('chipos-status-ok');
+				span.textContent = localize('chipos.edaTools.serverStatus.connected', '✓ connected');
+				if (srv.health?.latency_ms != null) {
+					span.textContent += ` (${srv.health.latency_ms}ms)`;
+				}
+				break;
+			case 'no_tools':
+				span.classList.add('chipos-status-warn');
+				span.textContent = localize('chipos.edaTools.serverStatus.noTools', '⚠ no tools discovered');
+				break;
+			case 'handshake_failed':
+				span.classList.add('chipos-status-err');
+				span.textContent = localize('chipos.edaTools.serverStatus.handshake', '✗ handshake failed');
+				if (srv.health?.error) {
+					span.title = srv.health.error;
+				}
+				break;
+			case 'unreachable':
+				span.classList.add('chipos-status-err');
+				span.textContent = localize('chipos.edaTools.serverStatus.unreachable', '✗ unreachable');
+				if (srv.health?.error) {
+					span.title = srv.health.error;
+				}
+				break;
+			default:
+				span.classList.add('chipos-status-unknown');
+				span.textContent = localize('chipos.edaTools.serverStatus.unknown', '? probing…');
+		}
+		dom.append(tr, dom.$('td', undefined,
+			provides.length > 0
+				? `${provides.length}: ${provides.slice(0, 3).join(', ')}${provides.length > 3 ? '…' : ''}`
+				: '—'));
+
+		// Action: ⋯ → Test / Copy info / Remove
+		const actionCell = dom.append(tr, dom.$('td'));
+		const menuBtn = dom.append(actionCell, dom.$('button.chipos-btn-icon'));
+		menuBtn.textContent = '⋯';
+		this._disposables.add(dom.addDisposableListener(menuBtn, 'click', async () => {
+			const picked = await this._quickInput.pick([
+				{ label: localize('chipos.edaTools.server.test', 'Test connection') },
+				{ label: localize('chipos.edaTools.server.copyInfo', 'Copy server info') },
+				{ label: localize('chipos.edaTools.server.remove', 'Remove') },
+			], { title: localize('chipos.edaTools.server.menuTitle', '{0} — actions', srv.name) });
+			if (!picked) { return; }
+			const args = { $treeItemHandle: `worker-mcp:${srv.name}` };
+			if (picked.label.startsWith('Test') || picked.label.includes('Test')) {
+				await this._commandService.executeCommand('chipos.eda.server.test', args);
+			} else if (picked.label.includes('Copy')) {
+				await this._commandService.executeCommand('chipos.eda.server.copyInfo', args);
+			} else {
+				await this._commandService.executeCommand('chipos.workerTools.removeMcpServer', args);
+				await this._refreshLiveData();
+			}
+		}));
+	}
+
+	// ── data fetch ────────────────────────────────────────────────────────
+
+	private async _refreshLiveData(): Promise<void> {
+		const strategy = this._configService.getValue<string>('chipos.eda.defaultStrategy') ?? 'auto';
+		// Read per-tool path overrides from settings so worker resolver
+		// honors `chipos.eda.tools.vivado.path = "/opt/Xilinx/..."` etc.
+		// Without this transport, the tab would show "configured" rows that
+		// worker silently ignored — the UX bug the user explicitly flagged.
+		const toolsSetting = this._configService.getValue<Record<string, { path?: string; source?: string }>>('chipos.eda.tools') ?? {};
+		const overrides: Record<string, string> = {};
+		for (const [name, entry] of Object.entries(toolsSetting)) {
+			// Only forward path when source explicitly opts into local
+			// (source=local or source=manual with a path). source=auto means
+			// "let strategy decide" — passing a path there would unexpectedly
+			// override the auto-resolved managed/mcp impl.
+			if (entry && entry.path && (entry.source === 'local' || entry.source === 'manual')) {
+				overrides[name] = entry.path;
+			}
+		}
+		const [resOk, srvOk] = await Promise.allSettled([
+			this._toolManager.getEdaToolResolutions(strategy, overrides),
+			this._toolManager.listMcpServers(),
+		]);
+		if (resOk.status === 'fulfilled') {
+			this._renderToolsTable(resOk.value);
+		} else {
+			this._log.warn('[EdaToolsTab] getEdaToolResolutions failed:', String(resOk.reason));
+		}
+		if (srvOk.status === 'fulfilled') {
+			this._renderServersTable(srvOk.value);
+		} else {
+			this._log.warn('[EdaToolsTab] listMcpServers failed:', String(srvOk.reason));
+		}
+	}
+
+	// ── helpers ───────────────────────────────────────────────────────────
+
+	private _getToolOverride(toolName: string): { source?: string; path?: string; mcpServer?: string } | undefined {
+		const all = this._configService.getValue<Record<string, any>>('chipos.eda.tools') ?? {};
+		return all[toolName];
+	}
+}

@@ -318,6 +318,60 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.logLevel.desc', 'IDE-side ChipOS log verbosity (renderer + sidecar manager).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+
+		// ── EDA Tool Strategy + Per-Tool Source Overrides ────────────────────
+		// Read by worker via /api/v1/eda/resolutions?strategy=... and by IDE
+		// "EDA Tools" settings tab. See tool_resolver.py for resolution
+		// semantics — 4 strategies × {managed, local-binary, mcp, missing}
+		// implementations × user-path overrides per tool.
+
+		'chipos.eda.defaultStrategy': {
+			type: 'string',
+			enum: ['auto', 'managed-only', 'local-only', 'mcp-first'],
+			enumDescriptions: [
+				localize('chipos.eda.strategy.auto.desc', 'managed → local-binary → mcp → missing (recommended for ToC personal developers)'),
+				localize('chipos.eda.strategy.managedOnly.desc', 'Only ChipOS-managed installs; refuse local + mcp (CI / test environments where deterministic versions matter)'),
+				localize('chipos.eda.strategy.localOnly.desc', 'Only system-installed binaries on PATH; ignore managed + mcp (B-2: EDA pre-installed, no auto-download)'),
+				localize('chipos.eda.strategy.mcpFirst.desc', 'mcp → managed → local-binary → missing (B-1 company deployment with MCP cluster as primary source)'),
+			],
+			default: 'auto',
+			description: localize('chipos.eda.defaultStrategy.desc', 'Default resolution strategy for EDA tools. Per-tool overrides in chipos.eda.tools.<name>.source take precedence.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.eda.requiredTools': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.eda.requiredTools.desc',
+				'Tools that MUST be resolvable for the worker to start. Used in B2B private deployments — if any listed tool resolves to missing, worker exits with non-zero code instead of starting a half-broken session. Empty array (default) = no requirement.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
+		'chipos.eda.tools': {
+			type: 'object',
+			default: {},
+			description: localize('chipos.eda.tools.desc', 'Per-tool implementation source overrides. Each entry is `<tool-name>: { source, path?, mcpServer? }`. source ∈ auto | managed | local | mcp | manual | disabled.'),
+			scope: ConfigurationScope.APPLICATION,
+			additionalProperties: {
+				type: 'object',
+				properties: {
+					source: {
+						type: 'string',
+						enum: ['auto', 'managed', 'local', 'mcp', 'manual', 'disabled'],
+						description: localize('chipos.eda.tools.source.desc', 'How to obtain this tool. `disabled` = exclude from agent tool registry.'),
+					},
+					path: {
+						type: 'string',
+						description: localize('chipos.eda.tools.path.desc', 'Absolute path to the binary (only used when source=local).'),
+					},
+					mcpServer: {
+						type: 'string',
+						description: localize('chipos.eda.tools.mcpServer.desc', 'Pin to a specific MCP server name (only used when source=mcp and multiple servers advertise this tool).'),
+					},
+				},
+			},
+		},
 	},
 });
 

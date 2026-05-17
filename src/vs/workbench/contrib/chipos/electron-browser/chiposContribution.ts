@@ -37,4 +37,11 @@ import '../../../../workbench/contrib/chipos/browser/permission/workerPermission
 // worker reports during its environment scan.
 import '../../../../workbench/contrib/chipos/electron-sandbox/edaEnvHandler.js';
 
+// Tool resolver UX (Phase A): right-click actions on WORKER TOOLS panel rows.
+// Action2 ctors register on import; menu contributions appear keyed by
+// `viewItem == chiposImplTool:<impl>:<state>` set in workerToolManager's
+// `_toImplToolItem`. Without this import the panel shows tool rows but the
+// context menu is empty.
+import '../../../../workbench/contrib/chipos/browser/edaToolActions.js';
+
 import '../../../../workbench/contrib/chipos/common/chiposContribution.js';

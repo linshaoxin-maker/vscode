@@ -53,6 +53,7 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { localize } from '../../../../nls.js';
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 
 const IPC_CHANNEL = 'vscode:chipos:eda-env-status';
 const RESCAN_INVOKE_CHANNEL = 'vscode:chipos:eda-rescan';
@@ -65,6 +66,8 @@ export type EdaEnvParsed =
 	| { kind: 'check'; statuses: Record<string, 'ok' | 'missing'> }
 	| { kind: 'missing'; tool: string; install_hint: string }
 	| { kind: 'ready'; level: 'all' | 'core' }
+	| { kind: 'found'; tool: string; path: string; version: string }
+	| { kind: 'poll_stopped'; reason: 'all_found' | 'timeout'; remaining: string[] }
 	| { kind: 'unknown'; raw: string };
 
 /**
@@ -121,6 +124,48 @@ export function parseEdaEnvLine(rawLine: string): EdaEnvParsed {
 		return { kind: 'missing', tool, install_hint };
 	}
 
+	// `found <tool> path=<path> version=<version>` — emitted by worker
+	// background path-poll when a previously-missing tool appears in PATH.
+	// Used to auto-clear missing-tool notifications without the user
+	// having to click "I've installed it, rescan".
+	if (line.startsWith('found ')) {
+		const body = line.slice('found '.length).trim();
+		const parts = body.split(/\s+/);
+		const tool = parts[0] ?? '';
+		let path = '';
+		let version = '';
+		for (const tok of parts.slice(1)) {
+			const eq = tok.indexOf('=');
+			if (eq < 0) { continue; }
+			const k = tok.slice(0, eq);
+			const v = tok.slice(eq + 1);
+			if (k === 'path') { path = v; }
+			else if (k === 'version') { version = v; }
+		}
+		return { kind: 'found', tool, path, version };
+	}
+
+	// `poll_stopped reason=<all_found|timeout> remaining=<csv|none>` — emitted
+	// when the worker's background path-poll daemon exits. Informational only.
+	if (line.startsWith('poll_stopped')) {
+		const body = line.slice('poll_stopped'.length).trim();
+		let reason: 'all_found' | 'timeout' = 'timeout';
+		let remaining: string[] = [];
+		for (const tok of body.split(/\s+/)) {
+			if (!tok) { continue; }
+			const eq = tok.indexOf('=');
+			if (eq < 0) { continue; }
+			const k = tok.slice(0, eq);
+			const v = tok.slice(eq + 1);
+			if (k === 'reason' && (v === 'all_found' || v === 'timeout')) {
+				reason = v;
+			} else if (k === 'remaining' && v && v !== 'none') {
+				remaining = v.split(',').filter(x => x);
+			}
+		}
+		return { kind: 'poll_stopped', reason, remaining };
+	}
+
 	return { kind: 'unknown', raw: rawLine };
 }
 
@@ -129,6 +174,11 @@ export class EdaEnvHandler extends Disposable implements IWorkbenchContribution 
 
 	/** Tools we already toasted about this session — key is `${tool}::${hint}`. */
 	private readonly _seenMissing = new Set<string>();
+
+	/** Once-per-session guard for the "EDA toolchain ready" toast — we don't
+	 * want to repeatedly congratulate the user every time a rescan runs.
+	 * Reset by IDE restart. */
+	private _announcedReady = false;
 
 	constructor(
 		@INotificationService private readonly _notificationService: INotificationService,
@@ -295,6 +345,54 @@ export class EdaEnvHandler extends Disposable implements IWorkbenchContribution 
 				this._logService.info(
 					`[ChipOS EdaEnv] ${role} ${parsed.level === 'all' ? 'all_ready' : 'core_ready'}`,
 				);
+				// rescan-triggered ready transitions deserve a toast — user just
+				// clicked "I've installed it" or auto-poll found everything they
+				// were waiting on. Startup ready signal stays silent (would
+				// pop on every IDE launch which is noise).
+				if (role === 'rescan' && !this._announcedReady) {
+					this._announcedReady = true;
+					this._notificationService.notify({
+						severity: Severity.Info,
+						message: parsed.level === 'all'
+							? localize('chipos.edaEnv.allReady', 'EDA toolchain ready — all tools available.')
+							: localize('chipos.edaEnv.coreReady', 'EDA toolchain ready — core tools available (some optional tools missing).'),
+					});
+				}
+				return;
+			}
+			case 'found': {
+				// Worker's background path-poll detected a tool the user just
+				// finished installing. Drop the dedup entry so a fresh
+				// missing-line would toast again later if needed, and surface
+				// a positive notification so the user gets feedback for their
+				// install effort.
+				for (const key of Array.from(this._seenMissing)) {
+					if (key.startsWith(`${parsed.tool}::`)) {
+						this._seenMissing.delete(key);
+					}
+				}
+				this._logService.info(
+					`[ChipOS EdaEnv] background poll found ${parsed.tool} at ${parsed.path} (${parsed.version})`,
+				);
+				this._notificationService.notify({
+					severity: Severity.Info,
+					message: localize(
+						'chipos.edaEnv.autoFound',
+						'EDA tool detected: {0} ({1}). It’s now usable without restarting ChipOS.',
+						parsed.tool,
+						parsed.version || 'version unknown',
+					),
+				});
+				return;
+			}
+			case 'poll_stopped': {
+				// Informational. Logged so users debugging "why didn't ChipOS
+				// auto-detect my install" have something to look at; not
+				// surfaced as a notification because most users will never
+				// notice this happened.
+				this._logService.info(
+					`[ChipOS EdaEnv] background poll stopped: reason=${parsed.reason} remaining=${parsed.remaining.join(',') || '<none>'}`,
+				);
 				return;
 			}
 			case 'unknown':
@@ -362,3 +460,25 @@ export class EdaEnvHandler extends Disposable implements IWorkbenchContribution 
 }
 
 registerWorkbenchContribution2(EdaEnvHandler.ID, EdaEnvHandler, WorkbenchPhase.AfterRestored);
+
+/**
+ * `chipos.eda.rescan` — invokable from any notification button (e.g. the
+ * "manual installation required" toast in chiposContribution.ts) or from the
+ * command palette. Delegates to the main-process IPC handler that re-runs
+ * `<worker-binary> scan-eda` in a one-shot subprocess. Result lines come back
+ * on the regular `vscode:chipos:eda-env-status` channel and are handled by
+ * the EdaEnvHandler instance above. Returns `true` on success so callers can
+ * branch on the outcome (e.g. close a different notification).
+ *
+ * Registered at module-load (alongside `EdaEnvHandler`) so it's available
+ * even before the workbench phase fires that constructs the contribution.
+ */
+CommandsRegistry.registerCommand('chipos.eda.rescan', async () => {
+	try {
+		const result = await ipcRenderer.invoke('vscode:chipos:eda-rescan') as { success?: boolean; error?: string; exitCode?: number };
+		return result?.success === true;
+	} catch (err) {
+		console.error(`[ChipOS EdaEnv] rescan command threw: ${err}`);
+		return false;
+	}
+});

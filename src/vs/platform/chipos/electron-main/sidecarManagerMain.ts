@@ -126,6 +126,51 @@ function chiposHome(): string {
 	return process.env['CHIPOS_HOME'] ?? path.join(os.homedir(), '.chipos');
 }
 
+/**
+ * F17: read PATH from the user's login shell — picks up entries the user
+ * just added to ~/.bashrc / ~/.zshrc / ~/.profile without requiring a full
+ * IDE restart. Used by the rescan handler.
+ *
+ * On macOS GUI launches, IDE inherits PATH from launchd (which doesn't read
+ * shell rc files), so freshly-installed Vivado/OpenROAD in ~/.bashrc is
+ * invisible. Running `<login-shell> -lc 'echo $PATH'` sources rc files in
+ * exactly the same way a fresh terminal would.
+ *
+ * On Windows: skipped (no shell concept), returns undefined.
+ * On unknown shell or non-zero exit: returns undefined and caller falls
+ * back to cached env — safe degradation.
+ *
+ * Timeout: 2s (rc files shouldn't be that slow; if they are, the user has
+ * worse problems than rescan latency).
+ */
+async function readLoginShellPath(): Promise<string | undefined> {
+	if (process.platform === 'win32') { return undefined; }
+	const shell = process.env['SHELL'] || '/bin/bash';
+	return new Promise<string | undefined>((resolve) => {
+		const child = cp.spawn(shell, ['-lc', 'printf %s "$PATH"'], {
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let stdout = '';
+		const timer = setTimeout(() => {
+			try { child.kill(); } catch { /* ignore */ }
+			resolve(undefined);
+		}, 2000);
+		child.stdout?.on('data', (b: Buffer) => { stdout += b.toString(); });
+		child.on('exit', (code) => {
+			clearTimeout(timer);
+			if (code === 0 && stdout.trim()) {
+				resolve(stdout.trim());
+			} else {
+				resolve(undefined);
+			}
+		});
+		child.on('error', () => {
+			clearTimeout(timer);
+			resolve(undefined);
+		});
+	});
+}
+
 function workspaceHash(workspaceRoot: string): string {
 	return crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
 }
@@ -836,9 +881,24 @@ export function registerSidecarIpcHandlers(): void {
 			return { success: false, error: 'worker_not_running' };
 		}
 
+		// F17: read login-shell PATH so PATH changes the user just made in
+		// ~/.bashrc / ~/.zshrc / ~/.profile (e.g. after Vivado install) are
+		// visible to the rescan probe — without this, worker's cached
+		// spawnEnv stays stuck on whatever the IDE inherited at launch,
+		// which defeats the whole point of rescan when user edits PATH.
+		const refreshedPath = await readLoginShellPath().catch((err: unknown) => {
+			console.warn(`[ChipOS rescan] login-shell PATH read failed: ${err}`);
+			return undefined;
+		});
+		const effectiveEnv: Record<string, string> = {
+			...(process.env as Record<string, string>),
+			...managed.spawnEnv,
+			...(refreshedPath ? { PATH: refreshedPath } : {}),
+		};
+
 		const probe = cp.spawn(managed.binaryPath, ['scan-eda'], {
 			cwd: managed.spawnCwd,
-			env: { ...process.env, ...managed.spawnEnv },
+			env: effectiveEnv,
 			stdio: ['ignore', 'pipe', 'pipe'],
 			detached: false,
 		});
