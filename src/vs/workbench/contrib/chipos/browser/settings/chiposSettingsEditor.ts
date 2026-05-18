@@ -165,14 +165,20 @@ export class ChipOSSettingsEditor extends EditorPane {
 		this._pendingTab = undefined;
 		this._switchTab(initialTab);
 
-		// Safety net for the "blank Settings pane on open" bug we shipped
-		// twice (caused by V8 code cache serving an older JS payload after
-		// in-place .app overwrite). If anything between createEditor and
-		// the post-layout paint left _activeTab undefined or the content
-		// area without a child, force General on the next frame so the
-		// user never sees an empty editor.
+		// Safety net for the "blank Settings pane on open" bug. We've shipped
+		// it twice now — first time from V8 code-cache staleness, second time
+		// from setOptions firing with an invalid initialTab string that
+		// _switchTab faithfully assigned to _activeTab (so `!this._activeTab`
+		// was false) but couldn't match in its switch (so `inner` stayed
+		// empty). Three conditions trigger the rescue:
+		//   1. _activeTab is falsy (nothing rendered)
+		//   2. _contentArea has no firstChild (no `inner` div even)
+		//   3. `inner` exists but has zero children (tab string didn't match
+		//      any switch case, no content got built)
 		requestAnimationFrame(() => {
-			if (!this._activeTab || !this._contentArea?.firstChild) {
+			const inner = this._contentArea?.firstElementChild;
+			const innerEmpty = !inner || inner.children.length === 0;
+			if (!this._activeTab || !this._contentArea?.firstChild || innerEmpty) {
 				this._switchTab('general');
 			}
 		});
@@ -277,6 +283,16 @@ export class ChipOSSettingsEditor extends EditorPane {
 	}
 
 	private _switchTab(tab: ChipOSSettingsTab): void {
+		// Validate tab is real. setOptions / external callers can occasionally
+		// pass through arbitrary strings ('models' from an outdated quickpick,
+		// 'auth' from a stale link, etc.); if we trusted those blindly we'd
+		// set _activeTab to a bogus value, miss every switch case, and leave
+		// the user with a blank pane that even the safety net can't detect
+		// (because _activeTab is "truthy"). Fall through to 'general' instead
+		// — at least *something* always renders.
+		if (!this._isValidTab(tab)) {
+			tab = 'general';
+		}
 		// DOM not ready yet — createEditor hasn't run. Stash the request and
 		// bail; createEditor will pick it up via _pendingTab once the DOM is
 		// laid out. Without this, the editor would sit blank forever.
@@ -350,6 +366,15 @@ export class ChipOSSettingsEditor extends EditorPane {
 		}
 
 		this._filterCurrentTab();
+	}
+
+	/**
+	 * Source-of-truth check for whether a tab ID is one we actually render.
+	 * Reused by `_switchTab` so a stale `initialTab` from an external caller
+	 * (e.g. an outdated extension command) can't strand us on a blank pane.
+	 */
+	private _isValidTab(tab: string | undefined): tab is ChipOSSettingsTab {
+		return tab !== undefined && CATEGORIES.some(c => c.id === tab);
 	}
 
 	private _updateSearchBadges(): void {
