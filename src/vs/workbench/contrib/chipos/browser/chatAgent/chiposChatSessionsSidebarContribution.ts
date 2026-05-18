@@ -7,29 +7,64 @@ import { CommandsRegistry } from '../../../../../platform/commands/common/comman
 import { ChatViewId } from '../../../../../workbench/contrib/chat/browser/chat.js';
 import { ChatViewPane } from '../../../../../workbench/contrib/chat/browser/widgetHosts/viewPane/chatViewPane.js';
 import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../../workbench/services/layout/browser/layoutService.js';
 
 /**
- * Toggle the ChipOS sessions sidebar from the chat tabs row's `[]` button.
+ * Sessions sidebar default width — kept in sync with
+ * `ChatViewPane.SESSIONS_SIDEBAR_DEFAULT_WIDTH` so growing/shrinking
+ * the auxiliary bar matches how much horizontal space the embedded
+ * sessions sidebar reserves inside the chat panel.
+ */
+const SESSIONS_SIDEBAR_GROW_WIDTH = 300;
+
+/**
+ * Toggle the chipos sessions sidebar from the chat tabs row's `[]` button.
  *
- * Implementation note: the framework also ships
- * `agentSessions.toggleAgentSessionsSidebar`, but that command cycles
- * the sessions-viewer **orientation enum** (`Stacked` ↔ `SideBySide`).
- * Our chipos chatViewPane patch force-pins orientation to `SideBySide`
- * to avoid the auto-stacking "chat falls to the bottom" UX trap, which
- * makes the framework toggle a no-op. Reach into `ChatViewPane`'s
- * `chiposToggleSessionsSidebar()` instead — it flips the visibility
- * override flag and re-layouts.
+ * Two-step coordinated behavior:
+ *   1) Flip the embedded sessions sidebar visibility inside `ChatViewPane`
+ *      via `chiposToggleSessionsSidebar()` (controls the per-pane override
+ *      flag).
+ *   2) Grow / shrink the auxiliary bar's width by ~300px in step with the
+ *      toggle. This way the sessions sidebar appears as an ADDITIONAL
+ *      column rather than stealing horizontal space from the chat widget
+ *      — the chat panel's own content stays at the width the user had
+ *      before.
+ *
+ * If the chat view isn't currently realized (no `getActiveViewWithId`
+ * result), reveal it first via `openView`, then perform the same toggle
+ * once the pane has mounted.
  */
 CommandsRegistry.registerCommand('chipos.toggleChatSessionsSidebar', accessor => {
 	const viewsService = accessor.get(IViewsService);
+	const layoutService = accessor.get(IWorkbenchLayoutService);
+
+	const applyToggle = (view: ChatViewPane) => {
+		// Snapshot intended new visibility BEFORE flipping (the method has
+		// no return value, so derive from current state).
+		const willShow = !view.chiposIsSessionsSidebarVisible();
+
+		// Grow / shrink the auxiliary bar so the sessions sidebar lands
+		// as an additional column instead of compressing chat content.
+		// `getSize` returns { width, height } at the part level.
+		const currentSize = layoutService.getSize(Parts.AUXILIARYBAR_PART);
+		const targetWidth = Math.max(
+			0,
+			willShow ? currentSize.width + SESSIONS_SIDEBAR_GROW_WIDTH : currentSize.width - SESSIONS_SIDEBAR_GROW_WIDTH
+		);
+		layoutService.setSize(Parts.AUXILIARYBAR_PART, { width: targetWidth, height: currentSize.height });
+
+		view.chiposToggleSessionsSidebar();
+	};
+
 	const view = viewsService.getActiveViewWithId<ChatViewPane>(ChatViewId);
-	if (!view) {
-		// View not focused / not realized. Best-effort: ask viewsService to open it,
-		// then toggle on the next macrotask after the view-pane has mounted.
-		viewsService.openView<ChatViewPane>(ChatViewId)?.then(opened => {
-			opened?.chiposToggleSessionsSidebar();
-		});
+	if (view) {
+		applyToggle(view);
 		return;
 	}
-	view.chiposToggleSessionsSidebar();
+	// Chat view not active — reveal it first, then toggle once it's mounted.
+	viewsService.openView<ChatViewPane>(ChatViewId)?.then(opened => {
+		if (opened) {
+			applyToggle(opened);
+		}
+	});
 });
