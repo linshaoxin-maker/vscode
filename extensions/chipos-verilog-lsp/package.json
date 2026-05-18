@@ -1,0 +1,65 @@
+{
+	"name": "chipos-verilog-lsp",
+	"publisher": "chipos",
+	"description": "Verilog/SystemVerilog LSP client for ChipOS IDE — spawns Verible (formatting / lint / hover) and svlangserver (completion / goto-def). Both are off-by-default opt-ins via chipos.verilog.lsp.* settings.",
+	"displayName": "ChipOS Verilog/SV Language Server",
+	"version": "0.1.0",
+	"private": true,
+	"license": "MIT",
+	"engines": {
+		"vscode": "*"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"scripts": {
+		"compile": "gulp compile-extension:chipos-verilog-lsp",
+		"watch": "gulp watch-extension:chipos-verilog-lsp"
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "22.x"
+	},
+	"main": "./dist/main",
+	"activationEvents": [
+		"onLanguage:verilog",
+		"onLanguage:systemverilog"
+	],
+	"capabilities": {
+		"virtualWorkspaces": false,
+		"untrustedWorkspaces": {
+			"supported": false,
+			"description": "LSPs run external binaries that may execute arbitrary commands (svlangserver, verible-verilog-ls); both are disabled in untrusted workspaces."
+		}
+	},
+	"contributes": {
+		"configuration": {
+			"id": "chiposVerilogLsp",
+			"type": "object",
+			"title": "ChipOS Verilog/SV LSP",
+			"properties": {
+				"chipos.verilog.lsp.verible.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Enable Verible LSP (verible-verilog-ls) — provides format-on-save, lint diagnostics, hover info. Requires verible-verilog-ls on PATH (install: `brew install verible` on macOS, apt on Linux). Falls back gracefully to syntax-only if binary not found."
+				},
+				"chipos.verilog.lsp.verible.path": {
+					"type": "string",
+					"default": "",
+					"description": "Absolute path to verible-verilog-ls binary. Empty = auto-discover on PATH. Override when you have a non-default install."
+				},
+				"chipos.verilog.lsp.svlangserver.enabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "(Phase 2 — not yet shipped) Enable svlangserver for completion / goto-def / rename. See chipos-product-roadmap.md 2.5 Phase 2 — currently no-op because the npm package is not bundled in the .app."
+				}
+			}
+		}
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/microsoft/vscode.git"
+	}
+}
