@@ -888,7 +888,7 @@ class ChipOSContribution extends Disposable {
 		@IChatAgentService private readonly _chatAgentService: IChatAgentService,
 		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@IStatusbarService _statusbarService: IStatusbarService,
-		@IViewsService _viewsService: IViewsService,
+		@IViewsService private readonly _viewsService: IViewsService,
 		@IContextKeyService private readonly _contextKeyService: IContextKeyService,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
@@ -924,6 +924,14 @@ class ChipOSContribution extends Disposable {
 		this._contextKeyService.createKey('chatSetupHidden', true);
 		this._contextKeyService.createKey('chatEntitlementSignedOut', false);
 		this._logService.info('[ChipOS] Entitlement context keys set (Pro bypass)');
+
+		// ── Auto-reveal chat panel on startup ────────────────────────────────
+		// ChipOS is a chat-first product — every cold start should land the
+		// user with the chat panel already open, no activity-bar hunting.
+		// Reveal without stealing focus so the user's last cursor position
+		// (editor area, file explorer, etc.) is preserved.
+		this._viewsService.openView(ChatViewId, /* focus */ false)
+			.catch(err => this._logService.warn('[ChipOS] Failed to auto-reveal chat view on startup:', String(err)));
 
 		// ── Register ChipOS Welcome View ──
 		this._registerWelcomeView();
