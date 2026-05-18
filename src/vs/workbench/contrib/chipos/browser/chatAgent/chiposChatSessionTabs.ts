@@ -264,6 +264,18 @@ export class ChipOSChatSessionTabs extends Disposable {
 			}
 			e.dataTransfer.effectAllowed = 'move';
 			e.dataTransfer.setData(DRAG_MIME, tabUri.toString());
+			// Suppress the browser's default ghost snapshot (the floating
+			// translucent clone that follows the cursor). Without this you
+			// see "two of the same tab" during a drag — the real one
+			// dimming in place AND the ghost beside the cursor. Replace it
+			// with a 1×1 transparent image so the only visible cue is the
+			// in-place dimming (.chipos-session-tab-dragging) plus the drop
+			// target's blue left-edge highlight.
+			const emptyImg = new Image();
+			emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+			try {
+				e.dataTransfer.setDragImage(emptyImg, 0, 0);
+			} catch { /* setDragImage unsupported — fall through to default ghost */ }
 			tab.classList.add('chipos-session-tab-dragging');
 		}));
 		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_END, () => {
