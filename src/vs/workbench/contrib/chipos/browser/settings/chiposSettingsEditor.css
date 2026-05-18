@@ -1405,161 +1405,283 @@
 /* When even the collapsed nav + content feels cramped, the cell layout
  * already collapses to single column via the 640px container query above. */
 
-/* ── EDA Tools tab — strategy radio group + tools/servers tables ──────── */
+/* ── EDA Tools tab — visual language aligned with ChipOS Settings ─────────
+ * Uses --chipos-{radius,text,border,surface}-* design tokens defined at the
+ * top of this file so the EDA tab feels native to Settings (not a bolted-on
+ * raw HTML table). Buttons use .chipos-btn-secondary, inputs match the
+ * Cursor-style settings inputs, table rows have the card-soft padding +
+ * hover background other lists use.
+ */
 
+/* Strategy radio group — pill-style rows, generous padding */
 .chipos-radio-group {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
-	margin: 8px 0 12px;
+	gap: 2px;
+	margin: 8px 0 16px;
 }
 
 .chipos-radio-row {
 	display: flex;
-	align-items: baseline;
-	gap: 6px;
-	padding: 4px 0;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
 	cursor: pointer;
 	font-size: 13px;
+	border-radius: var(--chipos-radius-md);
+	border: 1px solid transparent;
+	transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.chipos-radio-row:hover {
+	background: var(--chipos-surface-2);
+	border-color: var(--chipos-border-soft);
 }
 
 .chipos-radio-row input[type="radio"] {
 	margin: 0;
+	accent-color: var(--vscode-focusBorder);
 }
 
 .chipos-radio-label {
 	font-weight: 600;
+	color: var(--chipos-text-primary);
 }
 
 .chipos-radio-desc {
-	color: var(--vscode-descriptionForeground);
+	color: var(--chipos-text-tertiary);
 	font-size: 12px;
 }
 
-table.chipos-eda-tools-table {
-	width: 100%;
-	border-collapse: collapse;
-	margin-top: 8px;
-	font-size: 13px;
-}
-
-table.chipos-eda-tools-table th,
-table.chipos-eda-tools-table td {
-	text-align: left;
-	padding: 6px 8px;
-	border-bottom: 1px solid var(--vscode-panel-border);
-	vertical-align: middle;
-}
-
-table.chipos-eda-tools-table th {
-	font-weight: 600;
-	color: var(--vscode-descriptionForeground);
-	font-size: 11px;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-}
-
-table.chipos-eda-tools-table tr.chipos-eda-tool-row:hover {
-	background: var(--vscode-list-hoverBackground);
-}
-
-.chipos-eda-tool-name {
-	font-family: var(--vscode-editor-font-family);
-}
-
-.chipos-eda-tool-source button.chipos-btn-link {
-	background: none;
-	border: none;
-	color: var(--vscode-textLink-foreground);
-	cursor: pointer;
-	padding: 0;
-	font-size: inherit;
-	font-family: inherit;
-}
-
-.chipos-eda-tool-source button.chipos-btn-link:hover {
-	text-decoration: underline;
-}
-
-.chipos-eda-tool-status span.ready { color: var(--vscode-charts-green); }
-.chipos-eda-tool-status span.missing { color: var(--vscode-errorForeground); }
-.chipos-eda-tool-status span.disabled { color: var(--vscode-descriptionForeground); }
-
-.chipos-eda-tool-detail {
-	color: var(--vscode-descriptionForeground);
-	font-family: var(--vscode-editor-font-family);
-	max-width: 380px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-button.chipos-btn-icon {
-	background: transparent;
-	border: none;
-	color: var(--vscode-foreground);
-	cursor: pointer;
-	padding: 2px 6px;
-	border-radius: 3px;
-}
-
-button.chipos-btn-icon:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.chipos-status-ok { color: var(--vscode-charts-green); }
-.chipos-status-warn { color: var(--vscode-charts-yellow); }
-
-td.chipos-eda-empty {
-	text-align: center;
-	color: var(--vscode-descriptionForeground);
-	padding: 12px;
-	font-style: italic;
-}
-
-.chipos-status-err { color: var(--vscode-errorForeground); }
-.chipos-status-unknown { color: var(--vscode-descriptionForeground); }
-
-/* EDA Tools tab — P1/P2 toolbar (filter + bulk) */
-
+/* Toolbar (search + filter + bulk button) — same height + spacing as
+ * existing ChipOS section headers */
 .chipos-eda-toolbar {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	margin: 8px 0 4px;
+	margin: 12px 0 8px;
 	flex-wrap: wrap;
 }
 
 .chipos-eda-search {
 	flex: 1 1 200px;
 	min-width: 160px;
-	padding: 4px 8px;
-	border: 1px solid var(--vscode-input-border);
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border-radius: 3px;
+	padding: 6px 10px;
+	border: 1px solid var(--chipos-border-soft);
+	background: var(--chipos-surface-2);
+	color: var(--chipos-text-primary);
+	border-radius: var(--chipos-radius-sm);
 	font: inherit;
+	font-size: 12px;
+	transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.chipos-eda-search:hover {
+	border-color: var(--chipos-border-medium);
 }
 
 .chipos-eda-search:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+	background: var(--chipos-surface-3);
+}
+
+.chipos-eda-search::placeholder {
+	color: var(--chipos-text-tertiary);
 }
 
 .chipos-eda-impl-filter {
-	padding: 4px 8px;
-	border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border));
-	background: var(--vscode-dropdown-background, var(--vscode-input-background));
-	color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
-	border-radius: 3px;
+	padding: 6px 10px;
+	border: 1px solid var(--chipos-border-soft);
+	background: var(--chipos-surface-2);
+	color: var(--chipos-text-primary);
+	border-radius: var(--chipos-radius-sm);
 	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+	transition: border-color 0.12s ease;
 }
 
+.chipos-eda-impl-filter:hover {
+	border-color: var(--chipos-border-medium);
+}
+
+/* Tools table — card-style row look, no raw <table> borders */
+table.chipos-eda-tools-table {
+	width: 100%;
+	border-collapse: separate;
+	border-spacing: 0;
+	margin-top: 4px;
+	font-size: 12px;
+}
+
+table.chipos-eda-tools-table th {
+	text-align: left;
+	padding: 8px 10px 6px;
+	font-weight: 600;
+	color: var(--chipos-text-tertiary);
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	border-bottom: 1px solid var(--chipos-border-soft);
+	background: transparent;
+}
+
+table.chipos-eda-tools-table td {
+	text-align: left;
+	padding: 8px 10px;
+	vertical-align: middle;
+	color: var(--chipos-text-primary);
+	border-bottom: 1px solid var(--chipos-border-soft);
+}
+
+table.chipos-eda-tools-table tr.chipos-eda-tool-row {
+	transition: background-color 0.08s ease;
+}
+
+table.chipos-eda-tools-table tr.chipos-eda-tool-row:hover {
+	background: var(--chipos-surface-2);
+}
+
+.chipos-eda-tool-name {
+	font-family: var(--vscode-editor-font-family);
+	color: var(--chipos-text-primary);
+	font-weight: 500;
+}
+
+/* Checkbox column — keep narrow but use ChipOS-themed checkbox accent */
 .chipos-eda-tool-select {
-	width: 28px;
+	width: 24px;
 	text-align: center;
 }
 
-th.chipos-eda-tool-sortable:hover {
+.chipos-eda-tool-select input[type="checkbox"] {
+	margin: 0;
+	accent-color: var(--vscode-focusBorder);
+	cursor: pointer;
+}
+
+/* Source column "auto / managed / local / mcp" — text link style with subtle hover */
+.chipos-eda-tool-source button.chipos-btn-link {
+	background: none;
+	border: none;
 	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+	padding: 2px 6px;
+	font-size: inherit;
+	font-family: inherit;
+	border-radius: var(--chipos-radius-sm);
+	transition: background-color 0.08s ease;
+}
+
+.chipos-eda-tool-source button.chipos-btn-link:hover {
+	background: var(--chipos-surface-3);
+	text-decoration: none;
+}
+
+/* Status indicators — color + icon, no italics */
+.chipos-eda-tool-status span {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+}
+
+.chipos-eda-tool-status span.ready { color: var(--vscode-charts-green); }
+.chipos-eda-tool-status span.missing { color: var(--chipos-text-tertiary); }
+.chipos-eda-tool-status span.disabled { color: var(--chipos-text-tertiary); font-style: italic; }
+
+.chipos-eda-tool-detail {
+	color: var(--chipos-text-tertiary);
+	font-family: var(--vscode-editor-font-family);
+	font-size: 11.5px;
+	max-width: 380px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Kebab (⋯) menu trigger — matches other ChipOS row action buttons */
+button.chipos-btn-icon {
+	background: transparent;
+	border: 1px solid transparent;
+	color: var(--chipos-text-secondary);
+	cursor: pointer;
+	padding: 2px 8px;
+	border-radius: var(--chipos-radius-sm);
+	font-size: 16px;
+	line-height: 1;
+	transition: background-color 0.08s ease, border-color 0.08s ease;
+}
+
+button.chipos-btn-icon:hover {
+	background: var(--chipos-surface-3);
+	border-color: var(--chipos-border-soft);
+	color: var(--chipos-text-primary);
+}
+
+/* Sortable column header — subtle hover hint */
+th.chipos-eda-tool-sortable {
+	cursor: pointer;
+	user-select: none;
+	transition: color 0.08s ease;
+}
+
+th.chipos-eda-tool-sortable:hover {
+	color: var(--chipos-text-primary);
+}
+
+/* MCP servers status badges (4 states) */
+.chipos-status-ok { color: var(--vscode-charts-green); font-size: 12px; }
+.chipos-status-warn { color: var(--vscode-charts-yellow); font-size: 12px; }
+.chipos-status-err { color: var(--vscode-errorForeground); font-size: 12px; }
+.chipos-status-unknown { color: var(--chipos-text-tertiary); font-size: 12px; }
+
+td.chipos-eda-empty {
+	text-align: center;
+	color: var(--chipos-text-tertiary);
+	padding: 18px 12px;
+	font-style: italic;
+	font-size: 12px;
+}
+
+/* UX #C: ChipOS-themed kebab menu popover.
+ * Uses --vscode-foreground (always tracks theme) and --vscode-editorWidget-*
+ * (always defined) instead of --vscode-menu-* (which can resolve to black
+ * on some themes, making text invisible). */
+.chipos-eda-popover {
+	background: var(--vscode-editorWidget-background, #252526);
+	border: 1px solid var(--vscode-editorWidget-border, var(--chipos-border-strong));
+	border-radius: var(--chipos-radius-md);
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+	padding: 4px;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	overflow: hidden;
+	min-width: 180px;
+}
+
+.chipos-eda-popover-item {
+	padding: 6px 12px;
+	border-radius: var(--chipos-radius-sm);
+	cursor: pointer;
+	white-space: nowrap;
+	color: var(--vscode-foreground);
+	transition: background-color 0.06s ease, color 0.06s ease;
+	line-height: 1.4;
+}
+
+.chipos-eda-popover-item:hover {
+	background: var(--vscode-list-activeSelectionBackground, var(--vscode-focusBorder));
+	color: var(--vscode-list-activeSelectionForeground, #ffffff);
+}
+
+.chipos-eda-popover-item.danger {
+	color: var(--vscode-errorForeground);
+}
+
+.chipos-eda-popover-item.danger:hover {
+	background: color-mix(in srgb, var(--vscode-errorForeground) 18%, var(--vscode-editorWidget-background, #252526));
+	color: var(--vscode-errorForeground);
 }

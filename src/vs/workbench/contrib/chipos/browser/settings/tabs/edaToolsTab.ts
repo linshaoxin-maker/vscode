@@ -23,12 +23,10 @@
  */
 
 import * as dom from '../../../../../../base/browser/dom.js';
-import { Action, IAction } from '../../../../../../base/common/actions.js';
 import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../../nls.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
-import { IContextMenuService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../../../platform/quickinput/common/quickInput.js';
@@ -87,7 +85,6 @@ export class EdaToolsTab extends Disposable {
 		@INotificationService private readonly _notif: INotificationService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IQuickInputService private readonly _quickInput: IQuickInputService,
-		@IContextMenuService private readonly _contextMenu: IContextMenuService,
 		@ILogService private readonly _log: ILogService,
 	) {
 		super();
@@ -320,25 +317,40 @@ export class EdaToolsTab extends Disposable {
 	private _renderToolsTableFiltered(): void {
 		if (!this._lastResolutions) { return; }
 		this._renderToolsTable(this._lastResolutions);
-		if (this._bulkBtn) {
-			this._bulkBtn.disabled = this._selectedTools.size === 0;
-			if (this._selectedTools.size > 0) {
-				this._bulkBtn.textContent = localize('chipos.edaTools.bulkDisable.count', 'Disable Selected ({0})', this._selectedTools.size);
-			} else {
-				this._bulkBtn.textContent = localize('chipos.edaTools.bulkDisable', 'Disable Selected');
-			}
+		this._updateBulkButtonOnly();
+	}
+
+	/**
+	 * UX #B: refresh just the "Disable Selected (N)" button label, without
+	 * tearing down + rebuilding the table rows. Called from per-row
+	 * checkbox listeners so the user's scroll position survives toggling.
+	 */
+	private _updateBulkButtonOnly(): void {
+		if (!this._bulkBtn) { return; }
+		this._bulkBtn.disabled = this._selectedTools.size === 0;
+		if (this._selectedTools.size > 0) {
+			this._bulkBtn.textContent = localize('chipos.edaTools.bulkDisable.count', 'Disable Selected ({0})', this._selectedTools.size);
+		} else {
+			this._bulkBtn.textContent = localize('chipos.edaTools.bulkDisable', 'Disable Selected');
 		}
 	}
 
 	private _toggleSelectAll(checked: boolean): void {
-		if (!this._lastResolutions) { return; }
+		if (!this._lastResolutions || !this._toolsTableBody) { return; }
 		const visible = this._applyFilterAndSort(Object.values(this._lastResolutions.by_tool));
 		if (checked) {
 			for (const r of visible) { this._selectedTools.add(r.tool_name); }
 		} else {
 			for (const r of visible) { this._selectedTools.delete(r.tool_name); }
 		}
-		this._renderToolsTableFiltered();
+		// UX #B: only mutate per-row checkbox state in DOM (no re-render).
+		// Each tr's first <td> has the checkbox; toggle in place.
+		const rows = this._toolsTableBody.querySelectorAll<HTMLTableRowElement>('tr.chipos-eda-tool-row');
+		rows.forEach(tr => {
+			const cb = tr.querySelector<HTMLInputElement>('td.chipos-eda-tool-select input[type="checkbox"]');
+			if (cb) { cb.checked = checked; }
+		});
+		this._updateBulkButtonOnly();
 	}
 
 	private async _bulkDisableSelected(): Promise<void> {
@@ -397,6 +409,15 @@ export class EdaToolsTab extends Disposable {
 	private _renderToolsTable(payload: EdaResolutionsResponse): void {
 		if (!this._toolsTableBody) { return; }
 		this._lastResolutions = payload;
+
+		// UX #B fix: preserve scrollTop across re-render. Without this, ticking
+		// any checkbox triggers _renderToolsTableFiltered → clearNode →
+		// rebuild, and the browser resets scroll to 0 because the row
+		// elements identity changes. Capture before clear, restore after
+		// next layout pass.
+		const scrollEl = this._container.closest('.chipos-settings-content') as HTMLElement | null;
+		const prevScrollTop = scrollEl?.scrollTop ?? 0;
+
 		dom.clearNode(this._toolsTableBody);
 
 		// Apply current filter + sort (P2 UX). Default sort = status puts
@@ -416,11 +437,20 @@ export class EdaToolsTab extends Disposable {
 		for (const r of rows) {
 			this._renderToolRow(this._toolsTableBody, r);
 		}
+
+		// Restore scroll on next animation frame (after layout settles)
+		if (scrollEl && prevScrollTop > 0) {
+			requestAnimationFrame(() => {
+				scrollEl.scrollTop = prevScrollTop;
+			});
+		}
 	}
 
 	private _renderToolRow(parent: HTMLElement, r: EdaToolResolution): void {
 		const tr = dom.append(parent, dom.$('tr.chipos-eda-tool-row'));
-		// P1 F1: per-row bulk-select checkbox
+		// P1 F1: per-row bulk-select checkbox. UX #B fix: DON'T re-render
+		// table on checkbox toggle — just update selection set + refresh
+		// the bulk button count. Scroll position stays intact.
 		const selCell = dom.append(tr, dom.$('td.chipos-eda-tool-select'));
 		const cb = dom.append(selCell, dom.$('input')) as HTMLInputElement;
 		cb.type = 'checkbox';
@@ -428,7 +458,7 @@ export class EdaToolsTab extends Disposable {
 		this._disposables.add(dom.addDisposableListener(cb, 'change', () => {
 			if (cb.checked) { this._selectedTools.add(r.tool_name); }
 			else { this._selectedTools.delete(r.tool_name); }
-			this._renderToolsTableFiltered();
+			this._updateBulkButtonOnly();
 		}));
 		dom.append(tr, dom.$('td.chipos-eda-tool-name', undefined, r.tool_name));
 
@@ -516,86 +546,98 @@ export class EdaToolsTab extends Disposable {
 	}
 
 	/**
-	 * P1 UX #10: native context menu anchored at the kebab button.
-	 * Replaces the prior QuickPick modal which felt heavy for 5 simple
-	 * actions. ContextMenu pops below the button (anchor=HTMLElement),
-	 * dismisses on outside-click, and supports keyboard nav out of the box.
+	 * UX #C: custom in-app popover for the kebab menu.
+	 *
+	 * Replaces `IContextMenuService.showContextMenu()` (which on macOS
+	 * rendered with a system-NSMenu-like look that clashed with the rest
+	 * of ChipOS Settings). This popover uses the same ChipOS design tokens
+	 * as the surrounding tab (--chipos-surface-2, --chipos-border-soft,
+	 * --chipos-radius-md) so it visually anchors as part of the page,
+	 * not as a system menu.
 	 */
 	private _openToolActionsMenu(r: EdaToolResolution, anchor: HTMLElement): void {
 		const handle = { $treeItemHandle: `impl-tool:${r.tool_name}` };
+		const items: { label: string; danger?: boolean; run: () => Promise<void> }[] = [];
 		const exec = async (cmdId: string, ...args: unknown[]) => {
 			await this._commandService.executeCommand(cmdId, ...args);
 			await this._refreshLiveData();
 		};
-		const actions: IAction[] = [];
+
 		if (r.ready) {
-			actions.push(new Action(
-				'chipos.edaTab.test',
-				localize('chipos.edaTools.action.test', 'Test'),
-				undefined, true,
-				() => exec('chipos.eda.tool.test', handle),
-			));
+			items.push({ label: localize('chipos.edaTools.action.test', 'Test'), run: () => exec('chipos.eda.tool.test', handle) });
 			if (r.detail.path) {
-				actions.push(new Action(
-					'chipos.edaTab.copyPath',
-					localize('chipos.edaTools.action.copyPath', 'Copy Path'),
-					undefined, true,
-					() => exec('chipos.eda.tool.copyPath', handle),
-				));
-				actions.push(new Action(
-					'chipos.edaTab.showFinder',
-					localize('chipos.edaTools.action.showFinder', 'Show in Finder'),
-					undefined, true,
-					() => exec('chipos.eda.tool.showInFinder', handle),
-				));
+				items.push({ label: localize('chipos.edaTools.action.copyPath', 'Copy Path'), run: () => exec('chipos.eda.tool.copyPath', handle) });
+				items.push({ label: localize('chipos.edaTools.action.showFinder', 'Show in Finder'), run: () => exec('chipos.eda.tool.showInFinder', handle) });
+				items.push({ label: localize('chipos.edaTools.action.viewGuideReady', 'View install guide'), run: () => exec('chipos.eda.openInstallGuide', r.tool_name) });
 			}
 		} else {
-			actions.push(new Action(
-				'chipos.edaTab.viewGuide',
-				localize('chipos.edaTools.action.viewGuide', 'View install guide'),
-				undefined, true,
-				() => exec('chipos.eda.openInstallGuide', r.tool_name),
-			));
-			actions.push(new Action(
-				'chipos.edaTab.configurePath',
-				localize('chipos.edaTools.action.configurePath', 'Configure local path…'),
-				undefined, true,
-				() => exec('chipos.eda.tool.configureLocalPath', handle),
-			));
-			actions.push(new Action(
-				'chipos.edaTab.connectMcp',
-				localize('chipos.edaTools.action.connectMcp', 'Connect via MCP…'),
-				undefined, true,
-				() => exec('chipos.eda.tool.connectViaMcp'),
-			));
+			items.push({ label: localize('chipos.edaTools.action.viewGuide', 'View install guide'), run: () => exec('chipos.eda.openInstallGuide', r.tool_name) });
+			items.push({ label: localize('chipos.edaTools.action.configurePath', 'Configure local path…'), run: () => exec('chipos.eda.tool.configureLocalPath', handle) });
+			items.push({ label: localize('chipos.edaTools.action.connectMcp', 'Connect via MCP…'), run: () => exec('chipos.eda.tool.connectViaMcp') });
 		}
-		// F5: install guide is always useful for missing/ready tools
-		// (managed tools also have docs for upgrade/troubleshoot).
-		if (r.ready && r.detail.path) {
-			actions.push(new Action(
-				'chipos.edaTab.viewGuideReady',
-				localize('chipos.edaTools.action.viewGuideReady', 'View install guide'),
-				undefined, true,
-				() => exec('chipos.eda.openInstallGuide', r.tool_name),
-			));
-		}
-		actions.push(new Action(
-			'chipos.edaTab.switchSource',
-			localize('chipos.edaTools.action.switchSource', 'Switch source…'),
-			undefined, true,
-			() => exec('chipos.eda.tool.switchSource', handle),
-		));
-		actions.push(new Action(
-			'chipos.edaTab.disable',
-			localize('chipos.edaTools.action.disable', 'Disable'),
-			undefined, true,
-			() => exec('chipos.eda.tool.disable', handle),
-		));
+		items.push({ label: localize('chipos.edaTools.action.switchSource', 'Switch source…'), run: () => exec('chipos.eda.tool.switchSource', handle) });
+		items.push({ label: localize('chipos.edaTools.action.disable', 'Disable'), danger: true, run: () => exec('chipos.eda.tool.disable', handle) });
 
-		this._contextMenu.showContextMenu({
-			getAnchor: () => anchor,
-			getActions: () => actions,
-		});
+		this._showInAppPopover(anchor, items);
+	}
+
+	/** UX #C: ChipOS-themed popover. Positioned below+right of anchor.
+	 * Mounted inside `.monaco-workbench` (not body) because the VS Code
+	 * theme tokens (--vscode-foreground / --vscode-editorWidget-background
+	 * / etc) are scoped under .monaco-workbench. Mounting on body would
+	 * inherit `color: black` and make text invisible on dark themes.
+	 */
+	private _showInAppPopover(anchor: HTMLElement, items: { label: string; danger?: boolean; run: () => Promise<void> }[]): void {
+		// Remove any prior popover (only one open at a time)
+		document.querySelectorAll('.chipos-eda-popover').forEach(el => el.remove());
+
+		const host = document.querySelector('.monaco-workbench') || document.body;
+		const rect = anchor.getBoundingClientRect();
+		const pop = dom.append(host as HTMLElement, dom.$('.chipos-eda-popover'));
+		// Position below the anchor button, right-aligned so it doesn't
+		// run off the right edge.
+		const POPOVER_WIDTH = 200;
+		pop.style.position = 'fixed';
+		pop.style.top = `${rect.bottom + 4}px`;
+		pop.style.left = `${Math.min(rect.right - POPOVER_WIDTH, window.innerWidth - POPOVER_WIDTH - 8)}px`;
+		pop.style.minWidth = `${POPOVER_WIDTH}px`;
+		pop.style.zIndex = '10000';
+
+		for (const item of items) {
+			const row = dom.append(pop, dom.$('.chipos-eda-popover-item'));
+			if (item.danger) { row.classList.add('danger'); }
+			row.textContent = item.label;
+			const close = () => {
+				pop.remove();
+				document.removeEventListener('mousedown', outsideClickHandler, true);
+				document.removeEventListener('keydown', keyHandler, true);
+			};
+			this._disposables.add(dom.addDisposableListener(row, 'click', async () => {
+				close();
+				try { await item.run(); } catch (e) { this._log.warn('[EdaToolsTab] menu action threw:', String(e)); }
+			}));
+		}
+
+		// Dismiss handlers — outside click + Escape
+		const outsideClickHandler = (e: MouseEvent) => {
+			if (!pop.contains(e.target as Node) && e.target !== anchor) {
+				pop.remove();
+				document.removeEventListener('mousedown', outsideClickHandler, true);
+				document.removeEventListener('keydown', keyHandler, true);
+			}
+		};
+		const keyHandler = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') {
+				pop.remove();
+				document.removeEventListener('mousedown', outsideClickHandler, true);
+				document.removeEventListener('keydown', keyHandler, true);
+			}
+		};
+		// Defer attach so the click that opened the menu doesn't immediately close it
+		setTimeout(() => {
+			document.addEventListener('mousedown', outsideClickHandler, true);
+			document.addEventListener('keydown', keyHandler, true);
+		}, 0);
 	}
 
 	// ── mcp servers section ───────────────────────────────────────────────
