@@ -338,7 +338,6 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	private static readonly SESSIONS_SIDEBAR_SNAP_THRESHOLD = this.SESSIONS_SIDEBAR_MIN_WIDTH / 2; // snap to hide when dragged below half of minimum width
 	private static readonly SESSIONS_SIDEBAR_DEFAULT_WIDTH = 300;
 	private static readonly CHAT_WIDGET_DEFAULT_WIDTH = 300;
-	private static readonly SESSIONS_SIDEBAR_VIEW_MIN_WIDTH = this.CHAT_WIDGET_DEFAULT_WIDTH + this.SESSIONS_SIDEBAR_DEFAULT_WIDTH;
 
 	private sessionsContainer: HTMLElement | undefined;
 	private sessionsTitleContainer: HTMLElement | undefined;
@@ -600,8 +599,6 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	//#endregion
 
 	//#region Chat Control
-
-	private static readonly MIN_CHAT_WIDGET_HEIGHT = 116;
 
 	private _widget!: ChatWidget;
 	get widget(): ChatWidget { return this._widget; }
@@ -1125,26 +1122,23 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		// Ensure visibility is in sync before we layout
 		const { visible: sessionsContainerVisible } = this.updateSessionsControlVisibility();
 
-		// Handle Sash (only visible in side-by-side)
-		if (!sessionsContainerVisible || this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
+		// Handle Sash (only visible in side-by-side — orientation is hard-forced
+		// to SideBySide above, so the Stacked clear-sash branch only fires when
+		// the whole sessions container is hidden).
+		if (!sessionsContainerVisible) {
 			this.sessionsViewerSashDisposables.clear();
 			this.sessionsViewerSash = undefined;
-		} else if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.SideBySide) {
-			if (!this.sessionsViewerSashDisposables.value && this.viewPaneContainer) {
-				this.createSessionsViewerSash(this.viewPaneContainer, height, width);
-			}
+		} else if (!this.sessionsViewerSashDisposables.value && this.viewPaneContainer) {
+			this.createSessionsViewerSash(this.viewPaneContainer, height, width);
 		}
 
 		if (!sessionsContainerVisible) {
 			return { heightReduction: 0, widthReduction: 0 };
 		}
 
+		// Only SideBySide is reachable here (orientation hard-forced above).
 		let availableSessionsHeight = height - this.sessionsTitleContainer.offsetHeight;
-		if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
-			availableSessionsHeight -= Math.max(ChatViewPane.MIN_CHAT_WIDGET_HEIGHT, this._widget?.input?.height.get() ?? 0);
-		} else {
-			availableSessionsHeight -= this.sessionsNewButtonContainer?.offsetHeight ?? 0;
-		}
+		availableSessionsHeight -= this.sessionsNewButtonContainer?.offsetHeight ?? 0;
 
 		// Show as sidebar
 		if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.SideBySide) {

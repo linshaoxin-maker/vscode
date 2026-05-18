@@ -4,21 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { $, addDisposableListener, append, clearNode, EventType, h } from '../../../../base/browser/dom.js';
-import { KeybindingLabel } from '../../../../base/browser/ui/keybindingLabel/keybindingLabel.js';
-import { coalesce, shuffle } from '../../../../base/common/arrays.js';
+import { coalesce } from '../../../../base/common/arrays.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
-import { isMacintosh, isWeb, OS } from '../../../../base/common/platform.js';
+import { isMacintosh, isWeb } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, ContextKeyExpression, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
-import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { IStorageService, StorageScope, StorageTarget, WillSaveStateReason } from '../../../../platform/storage/common/storage.js';
-import { defaultKeybindingLabelStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IRecentFolder, IRecentWorkspace, IWorkspacesService, isRecentFolder, isRecentWorkspace } from '../../../../platform/workspaces/common/workspaces.js';
 
@@ -74,20 +71,17 @@ export class EditorGroupWatermark extends Disposable {
 
 	private static readonly CACHED_WHEN = 'editorGroupWatermark.whenConditions';
 	private static readonly SETTINGS_KEY = 'workbench.tips.enabled';
-	private static readonly MINIMUM_ENTRIES = 3;
 
 	private readonly cachedWhen: { [when: string]: boolean };
 
 	private readonly shortcuts: HTMLElement;
 	private readonly transientDisposables = this._register(new DisposableStore());
-	private readonly keybindingLabels = this._register(new DisposableStore());
 
 	private enabled = false;
 	private workbenchState: WorkbenchState;
 
 	constructor(
 		container: HTMLElement,
-		@IKeybindingService private readonly keybindingService: IKeybindingService,
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -271,21 +265,5 @@ export class EditorGroupWatermark extends Disposable {
 				}));
 			}
 		}).catch(() => { /* noop */ });
-	}
-
-	private filterEntries(entries: WatermarkEntry[]): WatermarkEntry[] {
-		const filteredEntries = entries
-			.filter(entry => {
-				if (this.cachedWhen[entry.id]) {
-					return true; // cached from previous session
-				}
-
-				const contextKey = isWeb ? entry.when?.web : entry.when?.native;
-				return !contextKey /* works without context */ || this.contextKeyService.contextMatchesRules(contextKey);
-			})
-			.filter(entry => !!CommandsRegistry.getCommand(entry.id))
-			.filter(entry => !!this.keybindingService.lookupKeybinding(entry.id));
-
-		return filteredEntries;
 	}
 }

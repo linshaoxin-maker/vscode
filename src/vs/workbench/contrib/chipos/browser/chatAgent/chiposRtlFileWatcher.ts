@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
-import { FileChangeType, IFileService } from '../../../../../platform/files/common/files.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../../workbench/common/contributions.js';
@@ -96,10 +96,9 @@ export class ChipOSRtlFileWatcher extends Disposable implements IWorkbenchContri
 			this._watching.add(this._fileService.watch(folder.uri, { recursive: true, excludes: ['**/node_modules/**', '**/.git/**'] }));
 		}
 		this._watching.add(Event.filter(this._fileService.onDidFilesChange, e => e.gotAdded())(e => {
-			for (const change of e.rawChanges) {
-				if (change.type !== FileChangeType.ADDED) { continue; }
-				if (!this._isRtlFile(change.resource)) { continue; }
-				this._openFile(change.resource);
+			for (const resource of e.rawAdded) {
+				if (!this._isRtlFile(resource)) { continue; }
+				this._openFile(resource);
 			}
 		}));
 		this._enabled = true;
@@ -122,7 +121,7 @@ export class ChipOSRtlFileWatcher extends Disposable implements IWorkbenchContri
 	private _openFile(resource: URI): void {
 		this._editorService.openEditor({
 			resource,
-			options: { pinned: false, preserveFocus: true, preview: true },
+			options: { pinned: false, preserveFocus: true },
 		}).catch(err => {
 			// File may have been deleted between watcher firing and our
 			// open — silently swallow, not a user-visible failure.
