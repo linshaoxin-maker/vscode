@@ -85,6 +85,7 @@ import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposModelQuickP
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatSessionsSidebarContribution.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatSessionTabsService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposStartupFocus.js';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatInputHistory.js';
 import '../../../../workbench/contrib/chipos/browser/edaStatusBar.js';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSInputAccent.css';
