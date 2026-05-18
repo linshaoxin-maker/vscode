@@ -596,7 +596,12 @@
 	justify-content: center;
 	width: 26px;
 	height: 26px;
-	line-height: 1; /* normalize codicon glyph baseline so it sits dead-center inside the 26px box */
+	/* Codicon glyphs ride ~1px above the geometric center because the
+	 * font's ascender:descender ratio isn't symmetric. Compensate by
+	 * shifting the box down 1px so the icon visually aligns with the
+	 * tab labels' baseline. */
+	padding-top: 1px;
+	box-sizing: border-box;
 	font-size: 14px;
 	color: var(--vscode-foreground);
 	opacity: 0.65;
@@ -641,98 +646,184 @@
 }
 
 /*-----------------------------------------------------------------------------
- *  UX #15 — Empty editor watermark, Cursor-style (2026-05-18)
- *  Framework default shows a small letterpress logo + a stack of tiny
- *  keyboard hints. Cursor's empty-editor surface is a giant centered
- *  brand logo + 3 obvious entry buttons. We can't drop in arbitrary
- *  new buttons via CSS, but we CAN restyle the existing watermark
- *  shortcut DL entries into card-style "buttons" + replace the
- *  letterpress with a ChipOS wordmark + codicon.
- *
- *  Affected DOM (rendered by editorGroupWatermark.ts):
- *    .editor-group-watermark
- *      .watermark-container
- *        .letterpress
- *        .shortcuts
- *          .watermark-box
- *            dl > dt + dd  (one per entry — Open Chat, Show Commands, …)
+
+/*-----------------------------------------------------------------------------
+ *  UX #15 — Onboarding watermark (2026-05-18)
+ *  EditorGroupWatermark.render() now emits chipos onboarding DOM
+ *  (logo letterpress kept + 4 icon buttons + Recent Projects list)
+ *  instead of the framework's keybinding-list tooltip.
  *-----------------------------------------------------------------------------*/
 
-/* Replace the gray VS Code letterpress SVG with a centered ChipOS
- * wordmark + codicon logo. We hide the framework background image
- * and use ::before/::after to inject our own content. */
+/* Container — give the surface more vertical room and wider max-width
+ * (default watermark is capped narrow because it was sized for a tiny
+ * keybinding list). */
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .watermark-container {
+	max-width: 480px;
+	width: 100%;
+	padding: 0 24px;
+}
+
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-watermark,
+.monaco-workbench .part.editor > .content.auxiliary .editor-group-container.empty > .editor-group-watermark {
+	max-width: 480px;
+}
+
+/* Replace the framework letterpress SVG with a centered ChipOS wordmark
+ * + codicon. The framework's .letterpress holds a 1:1 background-image
+ * by default; we hide it and inject our own content via pseudo-elements. */
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .letterpress {
 	background-image: none !important;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	gap: 8px;
-	min-height: 140px;
+	gap: 10px;
+	min-height: 120px;
+	max-height: 160px;
 	color: var(--vscode-foreground);
-	opacity: 0.55;
+	opacity: 0.6;
+	margin-bottom: 24px;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .letterpress::before {
 	content: "\ebf2"; /* codicon-chip */
 	font-family: "codicon";
-	font-size: 56px;
+	font-size: 52px;
 	line-height: 1;
-	color: var(--vscode-foreground);
 	opacity: 0.85;
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .letterpress::after {
 	content: "ChipOS";
-	font-size: 28px;
+	font-size: 26px;
 	font-weight: 300;
-	letter-spacing: 0.15em;
+	letter-spacing: 0.18em;
 	text-transform: uppercase;
-	color: var(--vscode-foreground);
 	opacity: 0.9;
 }
 
-/* Shortcut entries: turn the inline dl-style rows into wider, card-styled
- * "buttons" — give them a subtle background, padding, rounded corners,
- * and a clear hover so they read as primary calls-to-action. */
+/* Shortcuts host: now contains the chipos-onboarding box. The framework
+ * also hides .shortcuts on auxiliary or content.empty groups via its own
+ * CSS; our box lives inside .shortcuts so it inherits that visibility. */
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts {
-	margin-top: 16px;
-	max-width: 320px;
+	width: 100%;
+	max-width: 480px;
 }
 
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts > .watermark-box {
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts > .watermark-box.chipos-onboarding {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 16px;
+	width: 100%;
 }
 
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dl {
+/*-- Action buttons row ------------------------------------------------------*/
+.chipos-onboarding-actions {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 10px;
+}
+
+a.chipos-onboarding-action {
 	display: flex;
-	justify-content: space-between;
 	align-items: center;
-	margin: 0;
-	padding: 8px 14px;
+	gap: 12px;
+	padding: 12px 14px;
 	background: var(--vscode-button-secondaryBackground, rgba(127, 127, 127, 0.1));
-	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.15));
-	border-radius: 6px;
-	cursor: default;
+	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.18));
+	border-radius: 8px;
+	color: var(--vscode-foreground);
+	text-decoration: none;
+	cursor: pointer;
+	transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+	user-select: none;
+}
+
+a.chipos-onboarding-action:hover {
+	background: var(--vscode-button-secondaryHoverBackground, rgba(127, 127, 127, 0.18));
+	border-color: var(--vscode-focusBorder, #007fd4);
+	text-decoration: none;
+}
+
+a.chipos-onboarding-action:active {
+	transform: translateY(1px);
+}
+
+a.chipos-onboarding-action .chipos-onboarding-action-icon {
+	font-size: 20px;
+	flex: 0 0 auto;
 	color: var(--vscode-foreground);
 	opacity: 0.85;
-	transition: opacity 120ms ease, background 120ms ease;
 }
 
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dl:hover {
-	opacity: 1;
-	background: var(--vscode-button-secondaryHoverBackground, rgba(127, 127, 127, 0.18));
+a.chipos-onboarding-action .chipos-onboarding-action-text {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
 }
 
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dt {
-	letter-spacing: 0;
+a.chipos-onboarding-action .chipos-onboarding-action-label {
 	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
 }
 
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark .shortcuts dd {
-	margin-inline-start: 24px;
-	opacity: 0.7;
+a.chipos-onboarding-action .chipos-onboarding-action-desc {
 	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/*-- Recent projects list ----------------------------------------------------*/
+.chipos-onboarding-recent-header {
+	margin-top: 8px;
+	font-size: 12px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.85;
+}
+
+.chipos-onboarding-recent {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+a.chipos-onboarding-recent-item {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	padding: 6px 8px;
+	border-radius: 4px;
+	color: var(--vscode-foreground);
+	text-decoration: none;
+	cursor: pointer;
+	transition: background 80ms ease;
+}
+
+a.chipos-onboarding-recent-item:hover {
+	background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.1));
+	text-decoration: none;
+}
+
+a.chipos-onboarding-recent-item .chipos-onboarding-recent-name {
+	font-size: 13px;
+	color: var(--vscode-foreground);
+	flex: 0 0 auto;
+}
+
+a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	flex: 1 1 auto;
+	min-width: 0;
+	opacity: 0.7;
 }

@@ -3,19 +3,24 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { $, append, clearNode, h } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventType, h } from '../../../../base/browser/dom.js';
 import { KeybindingLabel } from '../../../../base/browser/ui/keybindingLabel/keybindingLabel.js';
 import { coalesce, shuffle } from '../../../../base/common/arrays.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { isMacintosh, isWeb, OS } from '../../../../base/common/platform.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, ContextKeyExpression, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { ILabelService } from '../../../../platform/label/common/label.js';
 import { IStorageService, StorageScope, StorageTarget, WillSaveStateReason } from '../../../../platform/storage/common/storage.js';
 import { defaultKeybindingLabelStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { IRecentFolder, IRecentWorkspace, IWorkspacesService, isRecentFolder, isRecentWorkspace } from '../../../../platform/workspaces/common/workspaces.js';
 
 interface WatermarkEntry {
 	readonly id: string;
@@ -86,7 +91,11 @@ export class EditorGroupWatermark extends Disposable {
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IStorageService private readonly storageService: IStorageService
+		@IStorageService private readonly storageService: IStorageService,
+		// [ChipOS] Onboarding render path additions
+		@ICommandService private readonly commandService: ICommandService,
+		@IWorkspacesService private readonly workspacesService: IWorkspacesService,
+		@ILabelService private readonly labelService: ILabelService,
 	) {
 		super();
 
@@ -150,38 +159,118 @@ export class EditorGroupWatermark extends Disposable {
 			return;
 		}
 
-		const entries = this.filterEntries(this.workbenchState !== WorkbenchState.EMPTY ? workspaceEntries : emptyWindowEntries);
-		if (entries.length < EditorGroupWatermark.MINIMUM_ENTRIES) {
-			const additionalEntries = this.filterEntries(otherEntries);
-			shuffle(additionalEntries);
-			entries.push(...additionalEntries.slice(0, EditorGroupWatermark.MINIMUM_ENTRIES - entries.length));
+		// [ChipOS] Replace the framework's keybinding-list watermark with an
+		// onboarding surface: 4 large icon-buttons (Open Folder / Open File /
+		// Clone Repository / Open Chat) followed by a Recent Projects list.
+		// Matches Cursor's empty-editor/no-workspace UX. The original
+		// keybinding entries (workspaceEntries / emptyWindowEntries / etc.)
+		// declared at the top of this file are deliberately unused now —
+		// kept for upstream merge clarity. The keybinding for each action
+		// is still respected via the global command, the user just doesn't
+		// see it in this surface.
+		this._renderChipOSOnboarding(this.shortcuts);
+	}
+
+	private _renderChipOSOnboarding(host: HTMLElement): void {
+		const box = append(host, $('.watermark-box.chipos-onboarding'));
+
+		// 4 primary action buttons — icon + label, full-width cards.
+		const actions = append(box, $('.chipos-onboarding-actions'));
+		const actionDefs: { id: string; label: string; icon: ThemeIcon; description?: string; args?: unknown[] }[] = [
+			{
+				id: isMacintosh && !isWeb ? 'workbench.action.files.openFileFolder' : 'workbench.action.files.openFolder',
+				label: localize('chiposOnboarding.openFolder', "Open Folder"),
+				icon: Codicon.folderOpened,
+				description: localize('chiposOnboarding.openFolder.desc', "Open a local project folder"),
+			},
+			{
+				id: 'workbench.action.files.openFile',
+				label: localize('chiposOnboarding.openFile', "Open File"),
+				icon: Codicon.fileSymlinkFile,
+				description: localize('chiposOnboarding.openFile.desc', "Open a single file"),
+			},
+			{
+				id: 'git.clone',
+				label: localize('chiposOnboarding.cloneRepo', "Clone Repository"),
+				icon: Codicon.repoClone,
+				description: localize('chiposOnboarding.cloneRepo.desc', "Clone a remote git repository"),
+			},
+			{
+				id: 'workbench.action.chat.open',
+				label: localize('chiposOnboarding.openChat', "Open Chat"),
+				icon: Codicon.chatSparkle,
+				description: localize('chiposOnboarding.openChat.desc', "Talk to the ChipOS AI assistant"),
+			},
+		];
+		for (const def of actionDefs) {
+			const btn = append(actions, $('a.chipos-onboarding-action'));
+			btn.setAttribute('role', 'button');
+			btn.setAttribute('aria-label', def.label);
+			btn.title = def.description ?? def.label;
+
+			const iconEl = append(btn, $('span.chipos-onboarding-action-icon.codicon'));
+			iconEl.classList.add(...ThemeIcon.asClassNameArray(def.icon));
+
+			const text = append(btn, $('span.chipos-onboarding-action-text'));
+			const label = append(text, $('span.chipos-onboarding-action-label'));
+			label.textContent = def.label;
+			if (def.description) {
+				const desc = append(text, $('span.chipos-onboarding-action-desc'));
+				desc.textContent = def.description;
+			}
+
+			this.transientDisposables.add(addDisposableListener(btn, EventType.CLICK, () => {
+				this.commandService.executeCommand(def.id, ...(def.args ?? []))
+					.catch(() => { /* noop — command may not exist (e.g. git extension not loaded) */ });
+			}));
 		}
 
-		const box = append(this.shortcuts, $('.watermark-box'));
+		// Recent Projects — async fetch, render once resolved. Skipped on
+		// failure so a broken IWorkspacesService doesn't blank the surface.
+		this.workspacesService.getRecentlyOpened().then(recents => {
+			const allRecents = [...recents.workspaces];
+			if (allRecents.length === 0) {
+				return;
+			}
 
-		const update = () => {
-			clearNode(box);
-			this.keybindingLabels.clear();
+			const header = append(box, $('.chipos-onboarding-recent-header'));
+			header.textContent = localize('chiposOnboarding.recentProjects', "Recent Projects");
 
-			for (const entry of entries) {
-				const keys = this.keybindingService.lookupKeybinding(entry.id);
-				if (!keys) {
+			const list = append(box, $('.chipos-onboarding-recent'));
+			for (const r of allRecents.slice(0, 6)) {
+				let uri: URI;
+				let name: string;
+				if (isRecentFolder(r)) {
+					uri = (r as IRecentFolder).folderUri;
+					name = (r as IRecentFolder).label ?? this.labelService.getWorkspaceLabel(uri, { verbose: 0 });
+				} else if (isRecentWorkspace(r)) {
+					uri = (r as IRecentWorkspace).workspace.configPath;
+					name = (r as IRecentWorkspace).label ?? this.labelService.getWorkspaceLabel((r as IRecentWorkspace).workspace, { verbose: 0 });
+				} else {
 					continue;
 				}
+				const pathLabel = this.labelService.getUriLabel(uri, { relative: false });
 
-				const dl = append(box, $('dl'));
-				const dt = append(dl, $('dt'));
-				dt.textContent = entry.text;
+				const item = append(list, $('a.chipos-onboarding-recent-item'));
+				item.setAttribute('role', 'button');
+				item.title = pathLabel;
 
-				const dd = append(dl, $('dd'));
+				const nameEl = append(item, $('span.chipos-onboarding-recent-name'));
+				nameEl.textContent = name;
 
-				const label = this.keybindingLabels.add(new KeybindingLabel(dd, OS, { renderUnboundKeybindings: true, ...defaultKeybindingLabelStyles }));
-				label.set(keys);
+				const pathEl = append(item, $('span.chipos-onboarding-recent-path'));
+				pathEl.textContent = pathLabel;
+
+				this.transientDisposables.add(addDisposableListener(item, EventType.CLICK, () => {
+					const folderUri = isRecentFolder(r) ? (r as IRecentFolder).folderUri : undefined;
+					if (folderUri) {
+						this.commandService.executeCommand('vscode.openFolder', folderUri).catch(() => { /* noop */ });
+					} else if (isRecentWorkspace(r)) {
+						this.commandService.executeCommand('vscode.openFolder', (r as IRecentWorkspace).workspace.configPath).catch(() => { /* noop */ });
+					}
+				}));
 			}
-		};
-
-		update();
-		this.transientDisposables.add(this.keybindingService.onDidUpdateKeybindings(update));
+		}).catch(() => { /* noop */ });
 	}
 
 	private filterEntries(entries: WatermarkEntry[]): WatermarkEntry[] {
