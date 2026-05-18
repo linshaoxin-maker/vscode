@@ -244,6 +244,44 @@ interface IChatSessionRuntime {
  * command argument goes through `encodeURIComponent(JSON.stringify(...))`
  * separately so it's safe regardless.
  */
+/**
+ * FEAT-X.1.2 — render a frozen-in-time snapshot of the todo list when a
+ * task finishes (matches vscode-extension a65e1d2a behavior, ported to
+ * chipos-ide). We use GFM task list syntax (`- [x]` / `- [ ]`) so the
+ * native chat markdown renderer gives us proper checkboxes without
+ * needing a dedicated ChatContentPart subclass.
+ *
+ *   ✗ Run stopped — 2/5 todos done            (cancelled / error)
+ *   — 7/10 todos done at end of run            (partial completion)
+ *
+ *   - [x] Generate testbench scaffold
+ *   - [x] Wire reset signal
+ *   - [-] Validate counter increment        ← in-progress marker
+ *   - [ ] Connect override path
+ *   - [ ] Compile + simulate
+ *
+ * Caller (TaskComplete handler) decides when to emit — typically only
+ * when wasCancelled OR completed < todos.length. We accept any todos
+ * defensively (status defaults to "not-started").
+ */
+function _buildTodoSnapshotMarkdown(todos: ReadonlyArray<IChatTodo>, wasCancelled: boolean, completed: number): MarkdownString {
+	const total = todos.length;
+	const header = wasCancelled
+		? `\n\n✗ **Run stopped** — ${completed}/${total} todos done`
+		: `\n\n— **${completed}/${total}** todos done at end of run`;
+	const lines = todos.map(t => {
+		// IChatTodo.status is 'not-started' | 'in-progress' | 'completed'
+		// GFM task lists only have [ ] / [x]; use [-] for in-progress as
+		// a visual middle-state (renders as a dash inside the box on
+		// the markdown renderers that handle it, plain "[-]" otherwise).
+		const box = t.status === 'completed' ? '[x]' : t.status === 'in-progress' ? '[-]' : '[ ]';
+		// Escape pipes + leading dashes that could confuse the markdown parser.
+		const title = String(t.title ?? '').replace(/\n/g, ' ').slice(0, 200);
+		return `- ${box} ${title}`;
+	});
+	return new MarkdownString(`${header}\n\n${lines.join('\n')}\n`, { supportThemeIcons: false, isTrusted: false });
+}
+
 export function _buildTracePillMarkdown(traceId: string): MarkdownString {
 	const safeTitle = traceId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 	const encodedArg = encodeURIComponent(JSON.stringify(traceId));
@@ -1848,6 +1886,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (ctx.request) {
 					this._flushWatchedFileChanges(ctx.request.sessionResource, ctx.request.requestId, ctx.runtime, ctx.progress)
 						.catch(err => this._logService.warn('[ChipOS Agent] flushWatchedFileChanges failed', err));
+
+					// FEAT-X.1.2 — Todo snapshot at task completion. When the
+					// run finishes (or was cancelled) with leftover todos,
+					// leave a permanent read-only marker in the chat history
+					// so the user can scroll back and see "this is where we
+					// stopped" without the live todo widget overwriting it on
+					// the next run. Skip when all todos completed normally —
+					// the user just watched them tick to done, no extra card
+					// needed (matches vscode-extension a65e1d2a behavior).
+					try {
+						const todos = this._todoListService.getTodos(ctx.request.sessionResource);
+						if (todos.length > 0) {
+							const completed = todos.filter(t => t.status === 'completed').length;
+							const wasCancelled = p.status === 'cancelled' || p.status === 'error';
+							// Only render when something's incomplete OR the run was aborted
+							// — otherwise the live tick-to-done IS the user feedback.
+							if (wasCancelled || completed < todos.length) {
+								ctx.progress([{ kind: 'markdownContent', content: _buildTodoSnapshotMarkdown(todos, wasCancelled, completed) }]);
+							}
+						}
+					} catch (err) {
+						this._logService.warn('[ChipOS Agent] Todo snapshot render failed:', err);
+					}
 				}
 				// T6b: record terminal status + flush IDE-side batch to reasoner
 				// /v1/trace/upload. Fire-and-forget — flush failures degrade
