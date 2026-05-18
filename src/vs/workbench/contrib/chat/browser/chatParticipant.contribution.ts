@@ -32,7 +32,6 @@ import { IRawChatParticipantContribution } from '../common/participants/chatPart
 import { ChatAgentLocation, ChatModeKind } from '../common/constants.js';
 import { ChatViewId, ChatViewContainerId } from './chat.js';
 import { ChatViewPane } from './widgetHosts/viewPane/chatViewPane.js';
-import { ChatSessionsViewPane } from './widgetHosts/viewPane/chatSessionsViewPane.js';
 
 // --- Chat Container &  View Registration
 
@@ -79,39 +78,6 @@ const chatViewDescriptor: IViewDescriptor = {
 	)
 };
 Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([chatViewDescriptor], chatViewContainer);
-
-// [ChipOS] Sessions list as a STANDALONE view container next to the chat
-// container. Putting it in the same ViewContainer as the chat would stack
-// them vertically inside one panel (which is what was happening — sessions
-// list squeezed the chat content down to a tiny strip). A separate container
-// makes the sessions list a peer sidebar that VS Code lays out as its own
-// column in the auxiliary bar; the chat panel's width stays intact.
-const chatSessionsViewIcon = registerIcon('chat-sessions-view-icon', Codicon.listOrdered, localize('chatSessionsViewIcon', 'View icon of the chat sessions view.'));
-const chatSessionsViewContainerId = 'workbench.view.chipos.chatSessions';
-const chatSessionsViewContainer: ViewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
-	id: chatSessionsViewContainerId,
-	title: localize2('chatSessions.viewContainer.label', "Chat Sessions"),
-	icon: chatSessionsViewIcon,
-	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [chatSessionsViewContainerId, { mergeViewWithContainerWhenSingleView: true }]),
-	storageId: chatSessionsViewContainerId,
-	hideIfEmpty: true,
-	order: 2,
-}, ViewContainerLocation.AuxiliaryBar, { doNotRegisterOpenCommand: true });
-
-const chatSessionsViewDescriptor: IViewDescriptor = {
-	id: ChatSessionsViewPane.ID,
-	containerIcon: chatSessionsViewContainer.icon,
-	containerTitle: chatSessionsViewContainer.title.value,
-	singleViewPaneContainerTitle: chatSessionsViewContainer.title.value,
-	name: localize2('chat.sessionsView.label', "Chat Sessions"),
-	canToggleVisibility: true,
-	canMoveView: true,
-	hideByDefault: true, // chipos `[]` button toggles visibility
-	order: 1,
-	ctorDescriptor: new SyncDescriptor(ChatSessionsViewPane),
-	when: chatViewDescriptor.when,
-};
-Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([chatSessionsViewDescriptor], chatSessionsViewContainer);
 
 const chatParticipantExtensionPoint = extensionsRegistry.ExtensionsRegistry.registerExtensionPoint<IRawChatParticipantContribution[]>({
 	extensionPoint: 'chatParticipants',

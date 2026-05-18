@@ -164,6 +164,18 @@ export class ChipOSSettingsEditor extends EditorPane {
 		const initialTab = this._pendingTab ?? 'general';
 		this._pendingTab = undefined;
 		this._switchTab(initialTab);
+
+		// Safety net for the "blank Settings pane on open" bug we shipped
+		// twice (caused by V8 code cache serving an older JS payload after
+		// in-place .app overwrite). If anything between createEditor and
+		// the post-layout paint left _activeTab undefined or the content
+		// area without a child, force General on the next frame so the
+		// user never sees an empty editor.
+		requestAnimationFrame(() => {
+			if (!this._activeTab || !this._contentArea?.firstChild) {
+				this._switchTab('general');
+			}
+		});
 	}
 
 	// ── Account card (top of nav) ──────────────────────────────────
