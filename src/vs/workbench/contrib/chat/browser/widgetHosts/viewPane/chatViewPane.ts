@@ -1173,12 +1173,22 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	}
 
 	private computeEffectiveSideBySideSessionsSidebarWidth(width: number, sessionsViewerSidebarWidth = this.sessionsViewerSidebarWidth): number {
+		// [ChipOS] Reorder: chat widget's minimum width WINS over sessions
+		// sidebar's minimum. Upstream `Math.max(SIDEBAR_MIN, …)` could yank
+		// sessions back to 200px even when that left the chat widget with
+		// only ~100-150px (chat tabs vertical-stacked, prompt cards
+		// crushed). Now: sessions takes whatever room is left after the
+		// chat widget reserves its 300px default; if there's not enough
+		// for sessions' own 200px minimum, return 0 so the sidebar
+		// effectively collapses (the user can drag the aux bar wider to
+		// bring it back).
+		const availableForSessions = width - ChatViewPane.CHAT_WIDGET_DEFAULT_WIDTH;
+		if (availableForSessions < ChatViewPane.SESSIONS_SIDEBAR_MIN_WIDTH) {
+			return 0;
+		}
 		return Math.max(
-			ChatViewPane.SESSIONS_SIDEBAR_MIN_WIDTH,			// never smaller than min width for side by side sessions
-			Math.min(
-				sessionsViewerSidebarWidth,
-				width - ChatViewPane.CHAT_WIDGET_DEFAULT_WIDTH	// never so wide that chat widget is smaller than default width
-			)
+			ChatViewPane.SESSIONS_SIDEBAR_MIN_WIDTH,
+			Math.min(sessionsViewerSidebarWidth, availableForSessions)
 		);
 	}
 
