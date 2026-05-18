@@ -1066,27 +1066,15 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		}
 
 		const oldSessionsViewerOrientation = this.sessionsViewerOrientation;
-		let newSessionsViewerOrientation: AgentSessionsViewerOrientation;
-		switch (this.sessionsViewerOrientationConfiguration) {
-			// Stacked
-			case 'stacked':
-				newSessionsViewerOrientation = AgentSessionsViewerOrientation.Stacked;
-				break;
-			// [ChipOS] In the 'sideBySide' (default) configuration the
-			// framework would auto-fallback to Stacked when the panel was
-			// narrower than SESSIONS_SIDEBAR_VIEW_MIN_WIDTH (600px). At a
-			// chat-panel width below ~600px that produced a layout where
-			// the sessions list sat on TOP and the chat widget (with our
-			// chipos tabs row + input) got pushed to the bottom of the
-			// view — visually identical to "the + button spawned a
-			// duplicate chat panel below the sessions list", which is the
-			// bug users were hitting (see fix `0fe30d5d7fa`). Keep
-			// SideBySide regardless of width; when the panel is too
-			// narrow the user can simply toggle the sidebar off via our
-			// chipos `[]` button.
-			default:
-				newSessionsViewerOrientation = AgentSessionsViewerOrientation.SideBySide;
-		}
+		// [ChipOS] Hard-force SideBySide. Originally this switched on
+		// `sessionsViewerOrientationConfiguration`, which the framework's
+		// hide/show sidebar actions silently persist — meaning a previous
+		// "Hide Agent Sessions Sidebar" click could lock the user into a
+		// Stacked layout that survives restarts even after we revert the
+		// preference UI. Ignore the stored configuration entirely; users
+		// hide the sidebar via our chipos `[]` button (which flips
+		// `_chiposForceSessionsVisible`), not by swapping orientations.
+		const newSessionsViewerOrientation: AgentSessionsViewerOrientation = AgentSessionsViewerOrientation.SideBySide;
 
 		this.sessionsViewerOrientation = newSessionsViewerOrientation;
 

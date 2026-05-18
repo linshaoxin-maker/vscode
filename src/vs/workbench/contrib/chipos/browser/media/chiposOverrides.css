@@ -596,18 +596,20 @@
 	justify-content: center;
 	width: 26px;
 	height: 26px;
-	/* Codicon glyphs ride ~1px above the geometric center because the
-	 * font's ascender:descender ratio isn't symmetric. Compensate by
-	 * shifting the box down 1px so the icon visually aligns with the
-	 * tab labels' baseline. */
-	padding-top: 1px;
-	box-sizing: border-box;
 	font-size: 14px;
 	color: var(--vscode-foreground);
 	opacity: 0.65;
 	cursor: pointer;
 	text-decoration: none;
 	border-radius: 3px;
+	/* Tab content sits 1px ABOVE row geometric center because each tab
+	 * carries a 2px transparent border-bottom (for the active-underline
+	 * slot) which pushes tab content up. Action buttons have no such
+	 * border, so without compensation they end up 1-2px lower than the
+	 * tab labels they sit next to. transform doesn't affect flex layout,
+	 * so we shift the whole action box up by the same offset to make the
+	 * glyph optically share the tab labels' baseline. */
+	transform: translateY(-1px);
 }
 
 .chipos-session-tabs-action:hover {
