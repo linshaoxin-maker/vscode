@@ -442,6 +442,35 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		return this.sessionsViewerOrientation;
 	}
 
+	/**
+	 * [ChipOS] Force-override of `sessionsViewerVisible` for use from the
+	 * chipos chat tabs row's `[]` toggle button. The framework's own
+	 * toggle command (`agentSessions.toggleAgentSessionsSidebar`) cycles
+	 * the orientation enum — broken on our setup because we force-pin
+	 * orientation to `SideBySide` (commit 87a8c5af166). A user-driven
+	 * visibility toggle needs to bypass the derived
+	 * `hasSessions && !welcome` gating, so we keep a tri-state override:
+	 *   - `undefined` → defer to the default visibility logic
+	 *   - `true`      → show sidebar regardless of welcome / session count
+	 *   - `false`     → hide sidebar even if defaults would show it
+	 */
+	private _chiposForceSessionsVisible: boolean | undefined;
+
+	chiposIsSessionsSidebarVisible(): boolean {
+		return this.sessionsViewerVisible;
+	}
+
+	chiposToggleSessionsSidebar(): void {
+		const next = !this.chiposIsSessionsSidebarVisible();
+		this._chiposForceSessionsVisible = next;
+		this.updateSessionsControlVisibility();
+		// Re-layout so the new visibility takes effect immediately
+		// without waiting for the next external resize event.
+		if (this.lastDimensions) {
+			this.layoutBody(this.lastDimensions.height, this.lastDimensions.width);
+		}
+	}
+
 	updateConfiguredSessionsViewerOrientation(orientation: 'stacked' | 'sideBySide' | unknown, options?: { transient?: boolean }): void {
 		return this.doUpdateConfiguredSessionsViewerOrientation(orientation, {
 			updateConfiguration: true,
@@ -490,7 +519,12 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		}
 
 		let newSessionsContainerVisible: boolean;
-		if (!this.configurationService.getValue<boolean>(ChatConfiguration.ChatViewSessionsEnabled)) {
+		if (this._chiposForceSessionsVisible !== undefined) {
+			// [ChipOS] User-driven override via chipos tabs row `[]` toggle.
+			// Bypasses the derived hasSessions/welcome gating below so a
+			// click on the toggle button always flips visibility deterministically.
+			newSessionsContainerVisible = this._chiposForceSessionsVisible;
+		} else if (!this.configurationService.getValue<boolean>(ChatConfiguration.ChatViewSessionsEnabled)) {
 			newSessionsContainerVisible = false; // disabled in settings
 		} else {
 			// [ChipOS] Don't show an empty sessions sidebar — it just covers the chat
@@ -508,10 +542,21 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 			// Sessions control: sidebar
 			else {
+				// [ChipOS] Don't gate visibility on width — when the chat
+				// panel is narrower than SESSIONS_SIDEBAR_VIEW_MIN_WIDTH
+				// (600px), the framework used to hide the sessions sidebar
+				// outright AND auto-fallback orientation to Stacked. We've
+				// disabled the Stacked fallback (see same commit's
+				// orientation switch). That left toggling broken on narrow
+				// panels: the `[]` button would dispatch the framework's
+				// toggle command which flips orientation, but force-Side-
+				// By-Side made that a no-op. Drop the width check so
+				// SideBySide + has-sessions is enough to show the sidebar.
+				// Users on tight panels can still hide it via the same
+				// `[]` button.
 				newSessionsContainerVisible =
-					hasSessions &&																						// [ChipOS] only when at least one session exists
-					!this.welcomeController?.isShowingWelcome.get() &&													// welcome not showing
-					!!this.lastDimensions && this.lastDimensions.width >= ChatViewPane.SESSIONS_SIDEBAR_VIEW_MIN_WIDTH;	// has sessions or is showing all sessions
+					hasSessions &&
+					!this.welcomeController?.isShowingWelcome.get();
 			}
 		}
 
