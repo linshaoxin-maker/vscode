@@ -454,7 +454,23 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	 *   - `true`      → show sidebar regardless of welcome / session count
 	 *   - `false`     → hide sidebar even if defaults would show it
 	 */
-	private _chiposForceSessionsVisible: boolean | undefined;
+	private _chiposForceSessionsVisible: boolean | undefined = (() => {
+		// Restore the user's last toggle choice across IDE restarts. Stored
+		// as a JSON tri-state (`true` / `false` / absent) under the chipos
+		// PROFILE scope so it follows the user across machines that share
+		// the same Settings Sync profile. Absent → no override (defer to
+		// derived visibility logic).
+		try {
+			const raw = this.storageService.get('chipos.chat.sessionsSidebarVisible', StorageScope.PROFILE);
+			if (raw === undefined) {
+				return undefined;
+			}
+			const parsed = JSON.parse(raw);
+			return typeof parsed === 'boolean' ? parsed : undefined;
+		} catch {
+			return undefined;
+		}
+	})();
 
 	chiposIsSessionsSidebarVisible(): boolean {
 		return this.sessionsViewerVisible;
@@ -463,6 +479,10 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 	chiposToggleSessionsSidebar(): void {
 		const next = !this.chiposIsSessionsSidebarVisible();
 		this._chiposForceSessionsVisible = next;
+		// Persist for next launch.
+		try {
+			this.storageService.store('chipos.chat.sessionsSidebarVisible', JSON.stringify(next), StorageScope.PROFILE, StorageTarget.USER);
+		} catch { /* noop */ }
 		this.updateSessionsControlVisibility();
 		// Re-layout so the new visibility takes effect immediately
 		// without waiting for the next external resize event.

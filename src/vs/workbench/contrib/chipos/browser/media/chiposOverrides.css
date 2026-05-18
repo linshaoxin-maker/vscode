@@ -544,6 +544,16 @@
 	color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
 }
 
+/* Drag-and-drop reorder feedback */
+.chipos-session-tab-dragging {
+	opacity: 0.35;
+}
+
+.chipos-session-tab-drop-target {
+	background: var(--vscode-list-dropBackground, rgba(0, 127, 212, 0.18));
+	box-shadow: inset 2px 0 0 var(--vscode-focusBorder, #007fd4);
+}
+
 .chipos-session-tab-icon {
 	font-size: 12px;
 	flex-shrink: 0;

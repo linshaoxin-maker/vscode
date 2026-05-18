@@ -167,6 +167,27 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 		this._saveOpenTabs();
 	}
 
+	/**
+	 * Move tab `from` to land at the same position as `to`. Drag-and-drop
+	 * reorder from the widget. If `to` was a higher index than `from`, the
+	 * effective drop position shifts by 1 once `from` is removed — handle
+	 * that here so the result matches the user's visual intent.
+	 */
+	private _reorderTab(from: URI, to: URI): void {
+		const fromIdx = this._openTabs.findIndex(u => isEqual(u, from));
+		const toIdx = this._openTabs.findIndex(u => isEqual(u, to));
+		if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) {
+			return;
+		}
+		const next = this._openTabs.slice();
+		const [moved] = next.splice(fromIdx, 1);
+		const insertAt = fromIdx < toIdx ? toIdx : toIdx; // splice already shifted indices after fromIdx
+		next.splice(insertAt, 0, moved);
+		this._openTabs = next;
+		this._saveOpenTabs();
+		this._renderAll();
+	}
+
 	private _removeTab(uri: URI): void {
 		const before = this._openTabs.length;
 		this._openTabs = this._openTabs.filter(u => !isEqual(u, uri));
@@ -181,6 +202,15 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 				this._openSessionByUri(next);
 			} else {
 				this._activeUri = undefined;
+				// Last tab closed — reset the chat widget so the user lands on
+				// the welcome state instead of staring at the previous
+				// (now-detached) session's transcript. Same `clear()` call as
+				// the `+` new-chat handler, just without a follow-up open.
+				const w = this._chatWidgetService.lastFocusedWidget
+					?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat)
+						.find(x => x.viewModel)
+					?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat)[0];
+				w?.clear().catch(err => this._logService.warn('[ChipOS Tabs] close-last clear failed', err));
 			}
 		}
 	}
@@ -230,6 +260,7 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 						this._commandService.executeCommand('chipos.toggleChatSessionsSidebar')
 							.catch(err => this._logService.warn('[ChipOS Tabs] toggleSessions command failed', err));
 					},
+					onReorderTabs: (from: URI, to: URI) => this._reorderTab(from, to),
 				});
 				this._tabs.set(slot, tabs);
 			}

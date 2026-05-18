@@ -10,6 +10,8 @@ import { isEqual } from '../../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
+import { getDefaultHoverDelegate } from '../../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IAgentSession } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsModel.js';
@@ -43,7 +45,11 @@ export interface IChipOSChatTabsCallbacks {
 	readonly onCloseTab: (sessionResource: URI) => void;
 	readonly onNewTab: () => void;
 	readonly onToggleSessions: () => void;
+	/** Reorder open tabs: move `from` to land at the position of `to`. */
+	readonly onReorderTabs: (from: URI, to: URI) => void;
 }
+
+const DRAG_MIME = 'application/x-chipos-chat-session-tab-uri';
 
 export class ChipOSChatSessionTabs extends Disposable {
 
@@ -56,6 +62,7 @@ export class ChipOSChatSessionTabs extends Disposable {
 		private readonly _callbacks: IChipOSChatTabsCallbacks,
 		@IAgentSessionsService private readonly _agentSessionsService: IAgentSessionsService,
 		@IChatService private readonly _chatService: IChatService,
+		@IHoverService private readonly _hoverService: IHoverService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
@@ -166,7 +173,8 @@ export class ChipOSChatSessionTabs extends Disposable {
 		tab.setAttribute('aria-selected', String(isActive));
 		tab.setAttribute('tabindex', '0');
 		const label = this._labelForUri(uri);
-		tab.title = label;
+		// VS Code-styled hover (faster + theme-consistent vs native `title` tooltip)
+		this._rowListeners.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), tab, label));
 
 		const iconEl = dom.append(tab, dom.$('span.chipos-session-tab-icon.codicon'));
 		iconEl.classList.add(...ThemeIcon.asClassNameArray(Codicon.commentDiscussion));
@@ -176,7 +184,7 @@ export class ChipOSChatSessionTabs extends Disposable {
 
 		const closeBtn = dom.append(tab, dom.$('span.chipos-session-tab-close.codicon.codicon-close'));
 		closeBtn.setAttribute('role', 'button');
-		closeBtn.title = localize('chipos.sessionTabs.close', 'Close tab');
+		this._rowListeners.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), closeBtn, localize('chipos.sessionTabs.close', 'Close tab')));
 
 		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.CLICK, (e: MouseEvent) => {
 			if (e.target === closeBtn || closeBtn.contains(e.target as Node)) {
@@ -188,6 +196,7 @@ export class ChipOSChatSessionTabs extends Disposable {
 			e.stopPropagation();
 			this._callbacks.onCloseTab(uri);
 		}));
+		this._wireTabDragDrop(tab, uri);
 	}
 
 	private _renderTab(session: IAgentSession, isActive: boolean): void {
@@ -196,7 +205,8 @@ export class ChipOSChatSessionTabs extends Disposable {
 		tab.setAttribute('role', 'tab');
 		tab.setAttribute('aria-selected', String(isActive));
 		tab.setAttribute('tabindex', '0');
-		tab.title = session.label;
+		// VS Code-styled hover (faster + theme-consistent vs native `title` tooltip)
+		this._rowListeners.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), tab, session.label));
 
 		const icon = dom.append(tab, dom.$('span.chipos-session-tab-icon.codicon'));
 		icon.classList.add(...ThemeIcon.asClassNameArray(session.icon ?? Codicon.commentDiscussion));
@@ -207,7 +217,7 @@ export class ChipOSChatSessionTabs extends Disposable {
 		const closeBtn = dom.append(tab, dom.$('span.chipos-session-tab-close.codicon.codicon-close'));
 		closeBtn.setAttribute('role', 'button');
 		closeBtn.setAttribute('aria-label', localize('chipos.sessionTabs.close', 'Close tab'));
-		closeBtn.title = localize('chipos.sessionTabs.close', 'Close tab');
+		this._rowListeners.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), closeBtn, localize('chipos.sessionTabs.close', 'Close tab')));
 
 		// Click body → open; click × → close (stopPropagation so close doesn't
 		// also trigger an open). Same logic on KEY_DOWN for keyboard parity.
@@ -236,6 +246,57 @@ export class ChipOSChatSessionTabs extends Disposable {
 			});
 		}
 		void this._logService; // reserved for future telemetry hooks
+		this._wireTabDragDrop(tab, session.resource);
+	}
+
+	/**
+	 * Wire HTML5 drag-and-drop on a tab so users can reorder. Source tabs
+	 * carry their URI in a chipos-specific MIME so we don't conflict with
+	 * the framework's editor-tab DnD on other surfaces. Drop target reorders
+	 * via the `onReorderTabs` callback.
+	 */
+	private _wireTabDragDrop(tab: HTMLElement, tabUri: URI): void {
+		tab.draggable = true;
+
+		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_START, (e: DragEvent) => {
+			if (!e.dataTransfer) {
+				return;
+			}
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData(DRAG_MIME, tabUri.toString());
+			tab.classList.add('chipos-session-tab-dragging');
+		}));
+		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_END, () => {
+			tab.classList.remove('chipos-session-tab-dragging');
+		}));
+
+		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_OVER, (e: DragEvent) => {
+			if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes(DRAG_MIME)) {
+				return; // not a chipos tab drag
+			}
+			e.preventDefault();
+			e.dataTransfer.dropEffect = 'move';
+			tab.classList.add('chipos-session-tab-drop-target');
+		}));
+		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_LEAVE, () => {
+			tab.classList.remove('chipos-session-tab-drop-target');
+		}));
+		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DROP, (e: DragEvent) => {
+			tab.classList.remove('chipos-session-tab-drop-target');
+			if (!e.dataTransfer) {
+				return;
+			}
+			const sourceStr = e.dataTransfer.getData(DRAG_MIME);
+			if (!sourceStr) {
+				return;
+			}
+			e.preventDefault();
+			const sourceUri = URI.parse(sourceStr);
+			if (isEqual(sourceUri, tabUri)) {
+				return; // dropped on itself — no-op
+			}
+			this._callbacks.onReorderTabs(sourceUri, tabUri);
+		}));
 	}
 }
 
