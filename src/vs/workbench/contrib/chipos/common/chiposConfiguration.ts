@@ -219,6 +219,17 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		// ── FEAT-X.3.2 — auto-open RTL files created externally ──
+		'chipos.editor.autoOpenRtlOnCreate': {
+			type: 'boolean',
+			default: false,
+			description: localize(
+				'chipos.editor.autoOpenRtlOnCreate.desc',
+				'When enabled, automatically opens newly-created Verilog/SystemVerilog files (.v / .sv / .svh / .vh) as preview tabs. Useful for agent-driven flows where the agent shells out to a template generator instead of using write_file (which already auto-opens). Off by default to avoid pane churn in non-EDA workspaces.'
+			),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Trace upload (T6b ADR-009 §4.2 / T11 opt-out tier 2) ──
 		'chipos.trace.uploadEnabled': {
 			type: 'boolean',
