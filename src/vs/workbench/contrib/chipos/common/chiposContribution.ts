@@ -84,6 +84,7 @@ import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposEdaSnippetP
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposModelQuickPick.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatSessionsSidebarContribution.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatSessionTabsService.js';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposQueuedMessagesService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposStartupFocus.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatInputHistory.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposRtlFileWatcher.js';

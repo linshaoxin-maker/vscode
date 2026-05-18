@@ -845,3 +845,129 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	min-width: 0;
 	opacity: 0.7;
 }
+
+/*
+ *  ── ChipOS Queued Messages Bar ──────────────────────────────────────────
+ *  Claude Code–style "what's queued up next" panel rendered directly above
+ *  the chat input. Slot is seeded in `chatInputPart.ts`'s element tree
+ *  between `.chat-getting-started-tip-container` and
+ *  `.interactive-input-and-side-toolbar`; widget lives in
+ *  `chiposQueuedMessages.ts`.
+ *
+ *  Visual contract:
+ *    - Hidden completely when empty (no border, no gap) so the input
+ *      doesn't shift up by a few pixels every time someone queues a msg.
+ *    - When populated: subtle bordered card with a header row + per-msg
+ *      cards, sized to match the chat input padding so the eye reads it
+ *      as "part of the composer".
+ */
+.chipos-queued-messages-slot {
+	display: contents;
+}
+
+.chipos-queued-messages {
+	display: flex;
+	flex-direction: column;
+	margin: 0 4px 6px 4px;
+	padding: 6px 8px 4px 8px;
+	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, transparent));
+	border-radius: 6px;
+	background: var(--vscode-chat-requestBackground, var(--vscode-editor-background));
+	gap: 4px;
+}
+
+.chipos-queued-messages.chipos-queued-messages-empty {
+	display: none;
+}
+
+.chipos-queued-messages-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 0 2px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+}
+
+.chipos-queued-messages-header-icon {
+	font-size: 12px;
+	opacity: 0.8;
+}
+
+.chipos-queued-messages-header-label {
+	font-size: 11px;
+}
+
+.chipos-queued-messages-list {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.chipos-queued-message {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 6px 5px 8px;
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	border: 1px solid transparent;
+	transition: border-color 120ms ease, background 120ms ease;
+}
+
+.chipos-queued-message:hover {
+	border-color: var(--vscode-focusBorder);
+	background: var(--vscode-list-hoverBackground, var(--vscode-input-background));
+}
+
+.chipos-queued-message-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	opacity: 0.9;
+}
+
+.chipos-queued-message-close {
+	flex: 0 0 auto;
+	width: 18px;
+	height: 18px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 3px;
+	font-size: 12px;
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 120ms ease, background 120ms ease;
+}
+
+.chipos-queued-message:hover .chipos-queued-message-close,
+.chipos-queued-message-close:focus {
+	opacity: 0.8;
+}
+
+.chipos-queued-message-close:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	opacity: 1;
+}
+
+/*
+ *  Claude Code parity: queued messages should appear ONLY in the chipos
+ *  bar above the input, not duplicated as a "Queued" divider + pending
+ *  request rows at the bottom of the transcript. Hide both.
+ *  - Divider rows get `data-divider-kind` from our patch to chatListRenderer.
+ *  - Queued request rows already get `data-pending-kind` from the framework.
+ *  Steering dividers + requests remain visible since they're system-level
+ *  signals (the agent is about to yield), not user-managed.
+ */
+.interactive-item-container.pending-divider[data-divider-kind="queued"],
+.interactive-item-container.pending-request[data-pending-kind="queued"] {
+	display: none !important;
+}

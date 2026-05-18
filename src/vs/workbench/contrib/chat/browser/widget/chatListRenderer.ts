@@ -704,6 +704,9 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		templateData.dragHandle = undefined;
 		delete templateData.rowContainer.dataset.pendingRequestId;
 		delete templateData.rowContainer.dataset.pendingKind;
+		// [ChipOS] See `renderPendingDivider` — clear the per-row divider
+		// kind marker so re-rendered rows don't carry stale CSS targeting.
+		delete templateData.rowContainer.dataset.dividerKind;
 
 		// Handle pending divider with simplified rendering
 		if (isPendingDividerVM(element)) {
@@ -898,6 +901,12 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 		const dividerContent = dom.$('.pending-divider-content');
 		const label = dom.append(dividerContent, dom.$('span.pending-divider-label'));
+
+		// [ChipOS] Surface the divider kind on the row so chiposOverrides.css
+		// can hide queued dividers (since chipos shows queued messages above
+		// the input via `ChipOSQueuedMessages`) without affecting steering
+		// dividers, which should remain visible in the transcript.
+		templateData.rowContainer.dataset.dividerKind = element.dividerKind;
 
 		if (element.dividerKind === ChatRequestQueueKind.Steering) {
 			label.textContent = localize('steeringDivider', "Steering");

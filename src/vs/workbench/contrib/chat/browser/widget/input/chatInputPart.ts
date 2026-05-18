@@ -1970,6 +1970,12 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 					dom.h('.chat-todo-list-widget-container@chatInputTodoListWidgetContainer'),
 					dom.h('.chat-editing-session@chatEditingSessionWidgetContainer'),
 					dom.h('.chat-getting-started-tip-container@chatGettingStartedTipContainer'),
+					// [ChipOS] Claude Code–style queued messages bar — sits
+					// directly above the input box so users see what's queued
+					// up while a request is in flight, and can cancel from
+					// here without scrolling the transcript to the bottom.
+					// `ChipOSQueuedMessagesContribution` mounts the widget.
+					dom.h('.chipos-queued-messages-slot'),
 					dom.h('.interactive-input-and-side-toolbar@inputAndSideToolbar', [
 						dom.h('.chat-input-container@inputContainer', [
 							dom.h('.chat-editor-container@editorContainer'),
@@ -1993,6 +1999,12 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				dom.h('.chat-todo-list-widget-container@chatInputTodoListWidgetContainer'),
 				dom.h('.chat-editing-session@chatEditingSessionWidgetContainer'),
 				dom.h('.chat-getting-started-tip-container@chatGettingStartedTipContainer'),
+				// [ChipOS] Claude Code–style queued messages bar — sits
+				// directly above the input box so users see what's queued
+				// up while a request is in flight, and can cancel from
+				// here without scrolling the transcript to the bottom.
+				// `ChipOSQueuedMessagesContribution` mounts the widget.
+				dom.h('.chipos-queued-messages-slot'),
 				dom.h('.interactive-input-and-side-toolbar@inputAndSideToolbar', [
 					dom.h('.chat-input-container@inputContainer', [
 						dom.h('.chat-attachments-container@attachmentsContainer', [
