@@ -49,8 +49,14 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 	static readonly placeholdeViewContainersKey = 'workbench.auxiliarybar.placeholderPanels';
 	static readonly viewContainersWorkspaceStateKey = 'workbench.auxiliarybar.viewContainersWorkspaceState';
 
-	// Use the side bar dimensions
-	override readonly minimumWidth: number = 170;
+	// [ChipOS] Bumped from 170 → 300 to give the chat panel enough
+	// horizontal breathing room. At 170px chat tabs got truncated to
+	// "Ne…", the welcome cards collapsed into a single squished column,
+	// and the input row's action buttons crowded into each other. 300px
+	// matches `ChatViewPane.SESSIONS_SIDEBAR_VIEW_MIN_WIDTH` and is also
+	// roughly the minimum Worker Tools / Skill Tree need to render their
+	// list rows without ellipsis hell.
+	override readonly minimumWidth: number = 300;
 	override readonly maximumWidth: number = Number.POSITIVE_INFINITY;
 	override readonly minimumHeight: number = 0;
 	override readonly maximumHeight: number = Number.POSITIVE_INFINITY;
