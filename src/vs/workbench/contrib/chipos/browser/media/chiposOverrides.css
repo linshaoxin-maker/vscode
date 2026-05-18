@@ -596,20 +596,21 @@
 	justify-content: center;
 	width: 26px;
 	height: 26px;
+	/* Mirror the tab's own vertical structure so labels and action
+	 * icons share a baseline — same 2px transparent slot at the bottom
+	 * (where the active-tab underline lives on tabs) and same -1px
+	 * negative margin to overlap the row's 1px bottom border. Without
+	 * this the action box sat at the row's geometric center while tab
+	 * content sat 1-2px above it, leaving `+` / `[]` looking optically
+	 * higher than the tab labels right next to them. */
+	border-bottom: 2px solid transparent;
+	margin-bottom: -1px;
 	font-size: 14px;
 	color: var(--vscode-foreground);
 	opacity: 0.65;
 	cursor: pointer;
 	text-decoration: none;
 	border-radius: 3px;
-	/* Tab content sits 1px ABOVE row geometric center because each tab
-	 * carries a 2px transparent border-bottom (for the active-underline
-	 * slot) which pushes tab content up. Action buttons have no such
-	 * border, so without compensation they end up 1-2px lower than the
-	 * tab labels they sit next to. transform doesn't affect flex layout,
-	 * so we shift the whole action box up by the same offset to make the
-	 * glyph optically share the tab labels' baseline. */
-	transform: translateY(-1px);
 }
 
 .chipos-session-tabs-action:hover {
