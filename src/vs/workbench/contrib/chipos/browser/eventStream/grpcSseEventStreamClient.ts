@@ -113,6 +113,18 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	private _state: ConnectionState = ConnectionState.Disconnected;
 	private _reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _seenEventIds = new Set<string>();
+	// L1 (2026-05-18): cache last sendTask params so we can auto-resubmit
+	// on SESSION_NOT_FOUND (reasoner restart recovery). One-shot — cleared
+	// after a retry fires or when a new sendTask supersedes it.
+	private _lastTaskParams: {
+		sessionId: string;
+		query: string;
+		mentions: IMentionItem[];
+		mode: 'agent' | 'spec';
+		options: { thinking: boolean; autoApproveMode: string; workspacePath?: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } };
+		ts: number;
+		retried: boolean;
+	} | undefined;
 
 	private readonly _onDidReceiveEvent = this._register(new Emitter<AgentEvent>());
 	readonly onDidReceiveEvent = this._onDidReceiveEvent.event;
@@ -267,6 +279,12 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			this._seenEventIds.clear();
 		}
 		this._sessionId = sessionId;
+		// L1: cache params for one-shot SESSION_NOT_FOUND recovery.
+		this._lastTaskParams = {
+			sessionId, query, mentions, mode, options,
+			ts: Date.now(),
+			retried: false,
+		};
 
 		// Send POST first so the backend creates the session before the
 		// EventSource connects — avoids SESSION_NOT_FOUND → reconnect loop.
@@ -590,6 +608,49 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			return;
 		}
 
+		// L1 (2026-05-18): SESSION_NOT_FOUND on reconnect means the reasoner
+		// restarted and lost in-memory session state. Spamming reconnects only
+		// gets the same answer — break the loop, auto-resubmit the last task
+		// if recent, otherwise surface an actionable error.
+		if (type === 'error') {
+			const data = (raw['data'] as Record<string, unknown> | undefined) || {};
+			const code = (data['code'] as string | undefined) || '';
+			if (code === 'SESSION_NOT_FOUND') {
+				this._logService?.warn('[SseClient] SESSION_NOT_FOUND — backend lost session, stopping reconnect loop');
+				this._closeEventSource();
+				this._clearReconnectTimer();
+				this._reconnectAttempts = 0;
+				const params = this._lastTaskParams;
+				const recent = params && !params.retried && (Date.now() - params.ts) < 300_000;
+				if (recent && params) {
+					this._logService?.info('[SseClient] Auto-resubmitting last task after SESSION_NOT_FOUND');
+					params.retried = true;
+					// Surface a low-key status so the chat panel can show
+					// "reasoner restarted — resending your last message".
+					this._onDidReceiveEvent.fire({
+						event_id: `status_${Date.now()}`,
+						event_type: AgentEventType.Status,
+						timestamp: Date.now() / 1000,
+						payload: {
+							level: 'info',
+							message: 'reasoner restarted — resending your last message',
+							text: 'reasoner restarted — resending your last message',
+						},
+					} as unknown as AgentEvent);
+					this.sendTask(params.sessionId, params.query, params.mentions, params.mode, params.options);
+					return;
+				}
+				this._setState(ConnectionState.Disconnected);
+				this._emitError(
+					'Backend lost track of this session (likely restarted). Send another message to start a fresh session.',
+					'SESSION_LOST_RECOVERABLE',
+					'SESSION',
+					true,
+				);
+				return;
+			}
+		}
+
 		// 更新 sequence_id（断线续传用）
 		const seqId = raw['sequence_id'] as string | undefined;
 		if (seqId) {
@@ -654,6 +715,9 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 			this._sessionDone = true;
 			this._closeEventSource();
 			this._clearReconnectTimer();
+			// L1: clear retry cache so a later reconnect of a different
+			// (older) session doesn't trigger unwanted resubmits.
+			this._lastTaskParams = undefined;
 		}
 	}
 
