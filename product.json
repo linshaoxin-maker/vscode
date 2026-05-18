@@ -93,6 +93,18 @@
 				},
 				"publisherDisplayName": "Microsoft"
 			}
+		},
+		{
+			"_comment": "Vaporview — VCD/FST waveform viewer (customEditor for .vcd/.fst). Ships as builtin so chipos IDE users can double-click .vcd → see waveform without third-party install. The `vsix` field points to a vendor copy so we avoid network at build time and the build is reproducible offline. Bump version + sha256 + replace vendor file together when upgrading.",
+			"name": "lramseyer.vaporview",
+			"version": "1.5.2",
+			"sha256": "44257eb71c9d107d1016673cb60f56cdd9685fdf66436f0c91ea217976123480",
+			"repo": "https://github.com/Lramseyer/vaporview",
+			"vsix": "vendor/builtin-vsix/lramseyer.vaporview-1.5.2.vsix",
+			"metadata": {
+				"id": "lramseyer.vaporview",
+				"publisherDisplayName": "Lucas Ramseyer"
+			}
 		}
 	],
 	"defaultChatAgent": {},
