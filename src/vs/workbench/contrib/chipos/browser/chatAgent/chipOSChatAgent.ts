@@ -1331,7 +1331,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// ── FEAT-29: Rich confirm cards based on card_type ──
 			case AgentEventType.ConfirmRequest: {
 				const p = event.payload as IConfirmRequestPayload;
-				const title = ChipOSChatAgent._confirmTitle(p.card_type, p.title);
+				const title = ChipOSChatAgent._confirmTitle(p.card_type, p.card_data, p.title);
 				const richMessage = this._renderConfirmMessage(p);
 				// Extract buttons from p.options or card_data.options
 				const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
@@ -2289,15 +2289,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 	}
 
-	private static _confirmTitle(cardType: string, _fallbackTitle?: string): string {
+	private static _confirmTitle(cardType: string, cardData?: Record<string, unknown>, _fallbackTitle?: string): string {
+		let base: string;
 		switch (cardType) {
-			case 'spec_confirm': return 'Spec Review';
-			case 'arch_confirm': return 'Architecture Review';
-			case 'design_confirm': return 'Design Review';
-			case 'code_confirm': return 'Code Review';
-			case 'agent_ask': return 'Decision Required';
-			default: return cardType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+			case 'spec_confirm': base = 'Spec Review'; break;
+			case 'arch_confirm': base = 'Architecture Review'; break;
+			case 'design_confirm': base = 'Design Review'; break;
+			case 'code_confirm': base = 'Code Review'; break;
+			case 'agent_ask': base = 'Decision Required'; break;
+			// FEAT-X.1.3 — verification_pipeline (H14-H17) emit these two card types
+			// from `composite_tools/verification_pipeline.py` when a stage group
+			// finishes or a checker requests human review. Without explicit cases
+			// the default branch would render "VERIFICATION GROUP REVIEW" /
+			// "VERIFICATION HUMAN CHECK" — readable but obviously not localized.
+			case 'VERIFICATION_GROUP_REVIEW': base = 'Verification Stage Review'; break;
+			case 'VERIFICATION_HUMAN_CHECK': base = 'Verification Human Check'; break;
+			default: base = cardType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 		}
+		// Mirror vscode-extension confirmCard.js: prefix "[H14] " when the
+		// backend hook supplied an id in card_data, so users can tell apart
+		// e.g. H14 (Tag doc) vs H15 (Coverage framework) review cards.
+		const hookId = cardData && typeof cardData['hook_id'] === 'string' ? cardData['hook_id'] as string : undefined;
+		return hookId ? `[${hookId}] ${base}` : base;
 	}
 
 	// ── FEAT-29: Render rich confirm message based on card_type ──
@@ -2348,6 +2361,63 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'agent_ask': {
 				const context = (data.context as string) ?? '';
 				return context || 'Please select an option.';
+			}
+
+			// FEAT-X.1.3 — verification_pipeline group review (H14/H15/H16/H17).
+			// `card_data` = { stage_group: "A"|"B"|"C"|"D", state_summary: {...} }.
+			// stage_group → human-readable group name (matches the V-prefix
+			// labels from verification_pipeline.py: A=Spec, B=Coverage Model,
+			// C=Sim Validation, D=Coverage Boost & Summary).
+			case 'VERIFICATION_GROUP_REVIEW': {
+				const sections: string[] = [];
+				const groupNames: Record<string, string> = {
+					A: 'Spec Analysis (V1–V3.5)',
+					B: 'Coverage Model (V3–V4.5)',
+					C: 'Sim Validation (V5a–V6.5)',
+					D: 'Coverage Boost & Summary (V7–V8)',
+				};
+				const stageGroup = data['stage_group'] as string | undefined;
+				if (stageGroup) {
+					sections.push(`**Stage Group:** ${groupNames[stageGroup] ?? stageGroup}`);
+				}
+				const summary = data['state_summary'];
+				if (summary && typeof summary === 'object') {
+					try {
+						sections.push('```json\n' + JSON.stringify(summary, null, 2).slice(0, 800) + '\n```');
+					} catch {
+						sections.push(String(summary).slice(0, 500));
+					}
+				} else if (typeof summary === 'string' && summary.length > 0) {
+					sections.push(summary.slice(0, 800));
+				}
+				if (p.message) { sections.push(p.message); }
+				return sections.length > 0 ? sections.join('\n\n') : 'Review the stage group results and approve or revise.';
+			}
+
+			// FEAT-X.1.3 — verification_pipeline per-stage human check.
+			// `card_data` = { stage: <name>, results: [<CheckResult>, ...] }.
+			// Renders a compact one-row-per-checker summary so reviewers can
+			// see at a glance which checker(s) escalated to human.
+			case 'VERIFICATION_HUMAN_CHECK': {
+				const sections: string[] = [];
+				const stage = data['stage'] as string | undefined;
+				if (stage) { sections.push(`**Stage:** \`${stage}\``); }
+				const results = Array.isArray(data['results']) ? data['results'] as Array<Record<string, unknown>> : [];
+				if (results.length > 0) {
+					sections.push('', '| Checker | Status | Message |', '|---|---|---|');
+					for (const r of results.slice(0, 20)) {
+						const name = String(r['name'] ?? r['checker'] ?? '—');
+						const status = String(r['status'] ?? r['outcome'] ?? '—');
+						const icon = status === 'pass' ? '✓' : status === 'fail' ? '✗' : '⚠';
+						const msg = String(r['message'] ?? r['detail'] ?? '').slice(0, 120).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+						sections.push(`| ${name} | ${icon} ${status} | ${msg} |`);
+					}
+					if (results.length > 20) {
+						sections.push('', `_(${results.length - 20} more checker(s) elided)_`);
+					}
+				}
+				if (p.message) { sections.push(p.message); }
+				return sections.length > 0 ? sections.join('\n') : 'A checker has requested human review.';
 			}
 
 			// ── ChipOS UI polish: render EDA report payloads as markdown tables ──
