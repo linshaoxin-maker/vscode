@@ -544,14 +544,20 @@
 	color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
 }
 
-/* Drag-and-drop reorder feedback */
-.chipos-session-tab-dragging {
-	opacity: 0.35;
+/* Cursor-style smooth slide: every tab gets a transform transition so
+ * siblings slide aside when one is dragged. The dragging source tab
+ * overrides this with `transition: none` (set inline by the pointer
+ * handler) so it tracks the cursor 1:1. */
+.chipos-session-tab {
+	transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.chipos-session-tab-drop-target {
-	background: var(--vscode-list-dropBackground, rgba(0, 127, 212, 0.18));
-	box-shadow: inset 2px 0 0 var(--vscode-focusBorder, #007fd4);
+/* Source tab being dragged: lifted via shadow, full opacity (we track
+ * its position visually so dimming would be confusing). */
+.chipos-session-tab-dragging {
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+	background: var(--vscode-tab-activeBackground, var(--vscode-editor-background, #1f1f1f));
+	cursor: grabbing !important;
 }
 
 .chipos-session-tab-icon {

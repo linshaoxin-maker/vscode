@@ -49,7 +49,6 @@ export interface IChipOSChatTabsCallbacks {
 	readonly onReorderTabs: (from: URI, to: URI) => void;
 }
 
-const DRAG_MIME = 'application/x-chipos-chat-session-tab-uri';
 
 export class ChipOSChatSessionTabs extends Disposable {
 
@@ -250,64 +249,126 @@ export class ChipOSChatSessionTabs extends Disposable {
 	}
 
 	/**
-	 * Wire HTML5 drag-and-drop on a tab so users can reorder. Source tabs
-	 * carry their URI in a chipos-specific MIME so we don't conflict with
-	 * the framework's editor-tab DnD on other surfaces. Drop target reorders
-	 * via the `onReorderTabs` callback.
+	 * Wire Cursor-style pointer-driven drag reorder. The source tab follows
+	 * the cursor in real time (1:1, no transition); sibling tabs slide aside
+	 * to make room with a CSS transform transition for smoothness. On
+	 * release, the service's `onReorderTabs(from, to)` callback commits the
+	 * new ordering and the rendered tab list snaps to the final positions.
+	 *
+	 * Why not HTML5 DnD: the native drag generates a translucent ghost
+	 * snapshot that follows the cursor in addition to the in-place source
+	 * tab, giving a "two of the same tab" appearance (see prior commit
+	 * f0a8a1b5720 for the half-measure). Pointer events let us drive the
+	 * tab's transform directly, matching the Cursor IDE's tab-drag feel.
+	 *
+	 * Click-vs-drag: we don't start the visual drag until the cursor has
+	 * moved past a 5px threshold. Below that, pointerup is followed by the
+	 * usual `click` event so single-click tab activation still works.
 	 */
 	private _wireTabDragDrop(tab: HTMLElement, tabUri: URI): void {
-		tab.draggable = true;
+		tab.dataset.chiposTabUri = tabUri.toString();
 
-		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_START, (e: DragEvent) => {
-			if (!e.dataTransfer) {
+		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.POINTER_DOWN, (e: PointerEvent) => {
+			if (e.button !== 0) {
+				return; // only primary button
+			}
+			// Don't intercept clicks on the × close button.
+			const closeBtn = tab.querySelector('.chipos-session-tab-close');
+			if (closeBtn && (closeBtn === e.target || closeBtn.contains(e.target as Node))) {
 				return;
 			}
-			e.dataTransfer.effectAllowed = 'move';
-			e.dataTransfer.setData(DRAG_MIME, tabUri.toString());
-			// Suppress the browser's default ghost snapshot (the floating
-			// translucent clone that follows the cursor). Without this you
-			// see "two of the same tab" during a drag — the real one
-			// dimming in place AND the ghost beside the cursor. Replace it
-			// with a 1×1 transparent image so the only visible cue is the
-			// in-place dimming (.chipos-session-tab-dragging) plus the drop
-			// target's blue left-edge highlight.
-			const emptyImg = new Image();
-			emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-			try {
-				e.dataTransfer.setDragImage(emptyImg, 0, 0);
-			} catch { /* setDragImage unsupported — fall through to default ghost */ }
-			tab.classList.add('chipos-session-tab-dragging');
-		}));
-		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_END, () => {
-			tab.classList.remove('chipos-session-tab-dragging');
-		}));
 
-		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_OVER, (e: DragEvent) => {
-			if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes(DRAG_MIME)) {
-				return; // not a chipos tab drag
-			}
-			e.preventDefault();
-			e.dataTransfer.dropEffect = 'move';
-			tab.classList.add('chipos-session-tab-drop-target');
-		}));
-		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DRAG_LEAVE, () => {
-			tab.classList.remove('chipos-session-tab-drop-target');
-		}));
-		this._rowListeners.add(dom.addDisposableListener(tab, dom.EventType.DROP, (e: DragEvent) => {
-			tab.classList.remove('chipos-session-tab-drop-target');
-			if (!e.dataTransfer) {
+			const DRAG_THRESHOLD = 5;
+			const startX = e.clientX;
+			const allTabs = Array.from(this._tabsContainer.querySelectorAll<HTMLElement>('.chipos-session-tab'));
+			const sourceIndex = allTabs.indexOf(tab);
+			if (sourceIndex < 0) {
 				return;
 			}
-			const sourceStr = e.dataTransfer.getData(DRAG_MIME);
-			if (!sourceStr) {
-				return;
-			}
-			e.preventDefault();
-			const sourceUri = URI.parse(sourceStr);
-			if (isEqual(sourceUri, tabUri)) {
-				return; // dropped on itself — no-op
-			}
-			this._callbacks.onReorderTabs(sourceUri, tabUri);
+			const sourceRect = tab.getBoundingClientRect();
+			// Slot width = tab width + flex gap. `gap` is on the parent row.
+			const gap = parseFloat(getComputedStyle(this._tabsContainer).gap) || 0;
+			const slotWidth = sourceRect.width + gap;
+
+			let dragging = false;
+			let currentTargetIndex = sourceIndex;
+			let onPointerMove: ((ev: PointerEvent) => void) | null = null;
+			let onPointerUp: ((ev: PointerEvent) => void) | null = null;
+
+			const cleanup = () => {
+				if (onPointerMove) {
+					document.removeEventListener('pointermove', onPointerMove);
+				}
+				if (onPointerUp) {
+					document.removeEventListener('pointerup', onPointerUp);
+					document.removeEventListener('pointercancel', onPointerUp);
+				}
+				tab.classList.remove('chipos-session-tab-dragging');
+				tab.style.transform = '';
+				tab.style.transition = '';
+				tab.style.zIndex = '';
+				for (const sib of allTabs) {
+					if (sib !== tab) {
+						sib.style.transform = '';
+					}
+				}
+			};
+
+			onPointerMove = (ev: PointerEvent) => {
+				const deltaX = ev.clientX - startX;
+
+				if (!dragging) {
+					if (Math.abs(deltaX) < DRAG_THRESHOLD) {
+						return;
+					}
+					dragging = true;
+					tab.classList.add('chipos-session-tab-dragging');
+					tab.style.transition = 'none'; // source follows cursor 1:1
+					tab.style.zIndex = '10';
+				}
+
+				// Source tab moves with the cursor.
+				tab.style.transform = `translateX(${deltaX}px)`;
+
+				// Map cursor X to an integer "target index" relative to source.
+				// Each slot is `slotWidth` wide; crossing the midpoint of an
+				// adjacent slot moves the target index by 1.
+				const slotsCrossed = Math.round(deltaX / slotWidth);
+				const newTargetIndex = Math.max(0, Math.min(allTabs.length - 1, sourceIndex + slotsCrossed));
+
+				if (newTargetIndex !== currentTargetIndex) {
+					currentTargetIndex = newTargetIndex;
+					// Slide siblings: tabs between source and target shift the
+					// opposite direction to "make room" for the source.
+					for (let i = 0; i < allTabs.length; i++) {
+						if (i === sourceIndex) {
+							continue;
+						}
+						const sib = allTabs[i];
+						let offset = 0;
+						if (sourceIndex < currentTargetIndex && i > sourceIndex && i <= currentTargetIndex) {
+							offset = -slotWidth;
+						} else if (sourceIndex > currentTargetIndex && i >= currentTargetIndex && i < sourceIndex) {
+							offset = slotWidth;
+						}
+						sib.style.transform = offset ? `translateX(${offset}px)` : '';
+					}
+				}
+			};
+
+			onPointerUp = () => {
+				const didReorder = dragging && currentTargetIndex !== sourceIndex;
+				const targetTab = allTabs[currentTargetIndex];
+				const targetUri = targetTab?.dataset.chiposTabUri;
+				cleanup();
+				if (didReorder && targetUri) {
+					this._callbacks.onReorderTabs(tabUri, URI.parse(targetUri));
+				}
+			};
+
+			document.addEventListener('pointermove', onPointerMove);
+			document.addEventListener('pointerup', onPointerUp);
+			document.addEventListener('pointercancel', onPointerUp);
 		}));
 	}
 }
