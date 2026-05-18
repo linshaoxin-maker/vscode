@@ -273,6 +273,10 @@ export class EdaToolsTab extends Disposable {
 			this._renderToolsTableFiltered();
 		}));
 
+		// Spacer pushes the bulk-action button to the right edge so the
+		// toolbar reads as: [search] [filter] ········· [Disable Selected]
+		dom.append(toolbar, dom.$('.chipos-eda-toolbar-spacer'));
+
 		// P1 F1: bulk actions toolbar (always rendered but disabled until ≥1 selected)
 		const bulkBtn = dom.append(toolbar, dom.$('button.chipos-btn-secondary')) as HTMLButtonElement;
 		bulkBtn.textContent = localize('chipos.edaTools.bulkDisable', 'Disable Selected');

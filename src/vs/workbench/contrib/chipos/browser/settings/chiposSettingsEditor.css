@@ -64,6 +64,29 @@
 	container-name: chipos-settings-editor;
 }
 
+/* The editor root + content area both have tabIndex=0 (for Cmd+F focus
+ * routing) which would otherwise paint VS Code's blue focus outline as a
+ * giant rectangle around the whole pane (VS Code applies `outline:
+ * 1px solid var(--vscode-focusBorder)` to any focused element via a
+ * `*:focus-visible` rule). Suppress it on these top-level containers —
+ * focus is already conveyed by the search input ring, the nav item
+ * highlight, and button hover states.
+ *
+ * `!important` is required because VS Code's global rule has the same
+ * specificity (one class) as ours would, and the cascade order would
+ * otherwise let theirs win.
+ *
+ * Buttons and other interactive controls keep their own :focus-visible
+ * shadow (keyboard-only focus ring), so accessibility is preserved. */
+.chipos-settings-editor,
+.chipos-settings-editor:focus,
+.chipos-settings-editor:focus-visible,
+.chipos-settings-content,
+.chipos-settings-content:focus,
+.chipos-settings-content:focus-visible {
+	outline: none !important;
+}
+
 /* ── Sidebar Search (sits under the account card) ─────────────────────── */
 
 .chipos-settings-search {
@@ -377,10 +400,31 @@
 	margin-bottom: 10px;
 	padding-bottom: 0;
 	border-bottom: none;
+	min-height: 28px;
+	gap: 12px;
 }
 
 .chipos-settings-section-header .chipos-settings-section-title {
 	margin-bottom: 0;
+}
+
+/* Buttons that sit in the section header (e.g. "⟳ Refresh All") get a
+ * compact ghost-button look so they don't dominate the row. */
+.chipos-settings-section-header > button.chipos-btn-secondary {
+	height: 26px;
+	padding: 0 12px;
+	font-size: 11.5px;
+	font-weight: 500;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	border-color: var(--chipos-border-soft);
+	color: var(--chipos-text-secondary);
+}
+
+.chipos-settings-section-header > button.chipos-btn-secondary:hover {
+	color: var(--chipos-text-primary);
+	border-color: var(--chipos-border-medium);
 }
 
 /* === Cursor-style continuous list ===
@@ -1413,77 +1457,98 @@
  * hover background other lists use.
  */
 
-/* Strategy radio group — pill-style rows, generous padding */
+/* Strategy radio group — joined card with hairline dividers, matching
+ * the rest of the Settings sections. Active row gets the focus accent. */
 .chipos-radio-group {
 	display: flex;
 	flex-direction: column;
-	gap: 2px;
+	gap: 0;
 	margin: 8px 0 16px;
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	border-radius: var(--chipos-radius-lg);
+	overflow: hidden;
 }
 
 .chipos-radio-row {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 8px 12px;
+	gap: 10px;
+	padding: 10px 14px;
 	cursor: pointer;
-	font-size: 13px;
-	border-radius: var(--chipos-radius-md);
-	border: 1px solid transparent;
-	transition: background-color 0.12s ease, border-color 0.12s ease;
+	font-size: 12px;
+	border: none;
+	border-bottom: 1px solid var(--chipos-border-soft);
+	transition: background-color 0.12s ease;
+}
+
+.chipos-radio-row:last-child {
+	border-bottom: none;
 }
 
 .chipos-radio-row:hover {
-	background: var(--chipos-surface-2);
-	border-color: var(--chipos-border-soft);
+	background: var(--chipos-surface-3);
+}
+
+.chipos-radio-row:has(input[type="radio"]:checked) {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 8%, var(--chipos-surface-2));
 }
 
 .chipos-radio-row input[type="radio"] {
 	margin: 0;
 	accent-color: var(--vscode-focusBorder);
+	flex-shrink: 0;
 }
 
 .chipos-radio-label {
-	font-weight: 600;
+	font-weight: 500;
 	color: var(--chipos-text-primary);
+	margin-right: 4px;
 }
 
 .chipos-radio-desc {
 	color: var(--chipos-text-tertiary);
-	font-size: 12px;
+	font-size: 11.5px;
 }
 
-/* Toolbar (search + filter + bulk button) — same height + spacing as
- * existing ChipOS section headers */
+/* Toolbar (search + filter + bulk button) — Cursor-style filter bar that
+ * lives directly below the section header. The search input takes priority
+ * with a cap so it doesn't dominate; filter + bulk button cluster on the
+ * right with consistent height + radius. */
 .chipos-eda-toolbar {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	margin: 12px 0 8px;
+	gap: 6px;
+	margin: 6px 0 10px;
 	flex-wrap: wrap;
 }
 
 .chipos-eda-search {
-	flex: 1 1 200px;
+	flex: 1 1 220px;
 	min-width: 160px;
-	padding: 6px 10px;
+	max-width: 320px;
+	height: 26px;
+	padding: 0 10px;
 	border: 1px solid var(--chipos-border-soft);
 	background: var(--chipos-surface-2);
 	color: var(--chipos-text-primary);
 	border-radius: var(--chipos-radius-sm);
 	font: inherit;
 	font-size: 12px;
-	transition: border-color 0.12s ease, background-color 0.12s ease;
+	line-height: 24px;
+	transition: border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .chipos-eda-search:hover {
 	border-color: var(--chipos-border-medium);
+	background: var(--chipos-surface-3);
 }
 
 .chipos-eda-search:focus {
 	outline: none;
 	border-color: var(--vscode-focusBorder);
-	background: var(--chipos-surface-3);
+	background: var(--vscode-input-background);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 22%, transparent);
 }
 
 .chipos-eda-search::placeholder {
@@ -1491,7 +1556,8 @@
 }
 
 .chipos-eda-impl-filter {
-	padding: 6px 10px;
+	height: 26px;
+	padding: 0 28px 0 10px;
 	border: 1px solid var(--chipos-border-soft);
 	background: var(--chipos-surface-2);
 	color: var(--chipos-text-primary);
@@ -1499,40 +1565,79 @@
 	font: inherit;
 	font-size: 12px;
 	cursor: pointer;
-	transition: border-color 0.12s ease;
+	appearance: none;
+	-webkit-appearance: none;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6 L8 10 L12 6' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 8px center;
+	background-size: 12px;
+	transition: border-color 0.12s ease, background-color 0.12s ease;
 }
 
 .chipos-eda-impl-filter:hover {
 	border-color: var(--chipos-border-medium);
+	background-color: var(--chipos-surface-3);
 }
 
-/* Tools table — card-style row look, no raw <table> borders */
+.chipos-eda-impl-filter:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-focusBorder) 22%, transparent);
+}
+
+/* Spacer pushes the bulk-action button to the right edge of the toolbar
+ * so the toolbar reads: [search] [filter] ········· [Disable Selected] */
+.chipos-eda-toolbar > .chipos-eda-toolbar-spacer {
+	flex: 1 1 auto;
+}
+
+/* When the toolbar's "Disable Selected" button lives inside the toolbar,
+ * give it the same height as the input + select. */
+.chipos-eda-toolbar > button.chipos-btn-secondary {
+	height: 26px;
+	padding: 0 12px;
+	display: inline-flex;
+	align-items: center;
+}
+
+/* Tools table — Cursor-style card-row look, no raw <table> borders.
+ * Wraps in a soft-bordered card so the table sits as a single visual unit
+ * rather than naked rows on the page background. */
 table.chipos-eda-tools-table {
 	width: 100%;
 	border-collapse: separate;
 	border-spacing: 0;
 	margin-top: 4px;
 	font-size: 12px;
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	border-radius: var(--chipos-radius-lg);
+	overflow: hidden;
 }
 
 table.chipos-eda-tools-table th {
 	text-align: left;
-	padding: 8px 10px 6px;
+	padding: 9px 12px 7px;
 	font-weight: 600;
 	color: var(--chipos-text-tertiary);
 	font-size: 10.5px;
 	text-transform: uppercase;
 	letter-spacing: 0.06em;
 	border-bottom: 1px solid var(--chipos-border-soft);
-	background: transparent;
+	background: var(--chipos-surface-3);
 }
 
 table.chipos-eda-tools-table td {
 	text-align: left;
-	padding: 8px 10px;
+	padding: 9px 12px;
 	vertical-align: middle;
 	color: var(--chipos-text-primary);
 	border-bottom: 1px solid var(--chipos-border-soft);
+}
+
+/* Last row drops its bottom border so the rounded card edge sits flush. */
+table.chipos-eda-tools-table tr:last-child > td {
+	border-bottom: none;
 }
 
 table.chipos-eda-tools-table tr.chipos-eda-tool-row {
@@ -1540,13 +1645,14 @@ table.chipos-eda-tools-table tr.chipos-eda-tool-row {
 }
 
 table.chipos-eda-tools-table tr.chipos-eda-tool-row:hover {
-	background: var(--chipos-surface-2);
+	background: var(--chipos-surface-3);
 }
 
 .chipos-eda-tool-name {
 	font-family: var(--vscode-editor-font-family);
 	color: var(--chipos-text-primary);
 	font-weight: 500;
+	white-space: nowrap;
 }
 
 /* Checkbox column — keep narrow but use ChipOS-themed checkbox accent */
@@ -1561,35 +1667,79 @@ table.chipos-eda-tools-table tr.chipos-eda-tool-row:hover {
 	cursor: pointer;
 }
 
-/* Source column "auto / managed / local / mcp" — text link style with subtle hover */
+/* Source column "auto / managed / local / mcp" — ghost-chip with a tiny
+ * caret hint so users see it's clickable. Hover lifts the background. */
+.chipos-eda-tool-source {
+	white-space: nowrap;
+}
+
 .chipos-eda-tool-source button.chipos-btn-link {
-	background: none;
-	border: none;
-	color: var(--vscode-textLink-foreground);
+	background: transparent;
+	border: 1px solid transparent;
+	color: var(--chipos-text-secondary);
 	cursor: pointer;
-	padding: 2px 6px;
-	font-size: inherit;
+	padding: 2px 8px;
+	font-size: 11.5px;
 	font-family: inherit;
 	border-radius: var(--chipos-radius-sm);
-	transition: background-color 0.08s ease;
+	transition: background-color 0.08s ease, border-color 0.08s ease, color 0.08s ease;
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+}
+
+.chipos-eda-tool-source button.chipos-btn-link::after {
+	content: '⌄';
+	font-size: 9px;
+	opacity: 0.55;
+	margin-top: -2px;
 }
 
 .chipos-eda-tool-source button.chipos-btn-link:hover {
 	background: var(--chipos-surface-3);
+	border-color: var(--chipos-border-soft);
+	color: var(--chipos-text-primary);
 	text-decoration: none;
 }
 
-/* Status indicators — color + icon, no italics */
+/* Status column never wraps — even on a narrow pane "✓ local-binary" stays
+ * one line so the column reads as a single badge instead of stacking. */
+.chipos-eda-tool-status {
+	white-space: nowrap;
+}
+
+/* Status indicators — pill-shaped badges that read like GitHub labels:
+ * subtle colored background + matching foreground. Stays on one line. */
 .chipos-eda-tool-status span {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
-	font-size: 12px;
+	gap: 5px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 500;
+	line-height: 16px;
+	white-space: nowrap;
 }
 
-.chipos-eda-tool-status span.ready { color: var(--vscode-charts-green); }
-.chipos-eda-tool-status span.missing { color: var(--chipos-text-tertiary); }
-.chipos-eda-tool-status span.disabled { color: var(--chipos-text-tertiary); font-style: italic; }
+.chipos-eda-tool-status span.ready {
+	color: var(--vscode-charts-green, #3fb950);
+	background: color-mix(in srgb, var(--vscode-charts-green, #3fb950) 14%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-charts-green, #3fb950) 28%, transparent);
+}
+
+.chipos-eda-tool-status span.missing {
+	color: var(--chipos-text-secondary);
+	background: var(--chipos-surface-3);
+	border: 1px solid var(--chipos-border-soft);
+}
+
+.chipos-eda-tool-status span.disabled {
+	color: var(--chipos-text-tertiary);
+	background: transparent;
+	border: 1px dashed var(--chipos-border-soft);
+	font-style: italic;
+}
 
 .chipos-eda-tool-detail {
 	color: var(--chipos-text-tertiary);
@@ -1601,23 +1751,34 @@ table.chipos-eda-tools-table tr.chipos-eda-tool-row:hover {
 	white-space: nowrap;
 }
 
-/* Kebab (⋯) menu trigger — matches other ChipOS row action buttons */
+/* Kebab (⋯) menu trigger — circular ghost button, sized to feel like a
+ * proper row action affordance instead of stray punctuation. */
 button.chipos-btn-icon {
 	background: transparent;
 	border: 1px solid transparent;
 	color: var(--chipos-text-secondary);
 	cursor: pointer;
-	padding: 2px 8px;
-	border-radius: var(--chipos-radius-sm);
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border-radius: 50%;
 	font-size: 16px;
 	line-height: 1;
-	transition: background-color 0.08s ease, border-color 0.08s ease;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background-color 0.08s ease, border-color 0.08s ease, color 0.08s ease;
 }
 
 button.chipos-btn-icon:hover {
 	background: var(--chipos-surface-3);
 	border-color: var(--chipos-border-soft);
 	color: var(--chipos-text-primary);
+}
+
+button.chipos-btn-icon:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 40%, transparent);
 }
 
 /* Sortable column header — subtle hover hint */
