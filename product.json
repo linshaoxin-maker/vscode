@@ -42,7 +42,7 @@
 	"chiposReleases": {
 		"_comment": "Single source of truth for ChipOS Worker / REH binary distribution. `repo` is owner/name on GitHub. `workerVersion` pins the IDE to a specific Worker binary release (e.g. 'v0.2.2') — IDE always loads / downloads this exact version, never queries GitHub `latest`. Bump together with the IDE release that ships a matching Worker. Both releaseConfig.ts files (workbench-side + chipos-remote-ssh extension) read these fields. When changing `repo`, ALSO update updateUrl + downloadUrl below — they must match the same repo.",
 		"repo": "linshaoxin-maker/chipos-releases",
-		"workerVersion": "v0.2.2"
+		"workerVersion": "v0.3.0"
 	},
 	"webviewContentExternalBaseUrlTemplate": "https://{{uuid}}.vscode-cdn.net/insider/ef65ac1ba57f57f2a3961bfe94aa20481caca4c6/out/vs/workbench/contrib/webview/browser/pre/",
 	"builtInExtensions": [
