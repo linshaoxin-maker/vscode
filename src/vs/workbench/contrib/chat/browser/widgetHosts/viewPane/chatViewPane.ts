@@ -1150,13 +1150,27 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 		if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.SideBySide) {
 			const sessionsViewerSidebarWidth = this.computeEffectiveSideBySideSessionsSidebarWidth(width);
 
-			this.sessionsControlContainer.style.height = `${availableSessionsHeight}px`;
-			this.sessionsControlContainer.style.width = `${sessionsViewerSidebarWidth}px`;
-			this.sessionsControl.layout(availableSessionsHeight, sessionsViewerSidebarWidth);
-			this.sessionsViewerSash?.layout();
+			// [ChipOS] If there's not enough horizontal room for both the
+			// chat widget's 300px floor AND the sessions sidebar's 200px
+			// minimum, `computeEffective…` returns 0. In that state we
+			// must hide the WHOLE sessions container — not just shrink
+			// the list — because the title bar / search input / "New
+			// Agent" button still have ~200px of intrinsic width that
+			// would otherwise crush the chat widget anyway.
+			if (sessionsViewerSidebarWidth === 0) {
+				this.sessionsContainer.style.display = 'none';
+				heightReduction = 0;
+				widthReduction = 0;
+			} else {
+				this.sessionsContainer.style.display = '';
+				this.sessionsControlContainer.style.height = `${availableSessionsHeight}px`;
+				this.sessionsControlContainer.style.width = `${sessionsViewerSidebarWidth}px`;
+				this.sessionsControl.layout(availableSessionsHeight, sessionsViewerSidebarWidth);
+				this.sessionsViewerSash?.layout();
 
-			heightReduction = 0; // side by side to chat widget
-			widthReduction = this.sessionsContainer.offsetWidth;
+				heightReduction = 0; // side by side to chat widget
+				widthReduction = this.sessionsContainer.offsetWidth;
+			}
 		}
 
 		// Show stacked
