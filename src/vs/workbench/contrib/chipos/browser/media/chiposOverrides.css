@@ -594,14 +594,14 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 26px;
-	height: 26px;
-	/* Mirror the tab's vertical structure (same 2px transparent
-	 * border-bottom and -1px margin) AND the tab icon's font-size so
-	 * the codicon glyph lands on the same optical baseline as the tab
-	 * icons it sits next to. A larger font-size (14px) on the action
-	 * pushed the codicon's ascender-heavy glyph optically higher than
-	 * the 12px tab icons, even with identical box geometry. */
+	min-width: 26px;
+	/* No explicit height — let the box sit at its natural content
+	 * height so it matches the tab's intrinsic height. A fixed 26px
+	 * height made the action box ~8px taller than tab boxes; even
+	 * when the glyph center mathematically landed on the same row,
+	 * the larger box made the icon look optically off because the
+	 * surrounding click-target area floated higher than the tab. */
+	padding: 4px 0;
 	border-bottom: 2px solid transparent;
 	margin-bottom: -1px;
 	font-size: 12px;
