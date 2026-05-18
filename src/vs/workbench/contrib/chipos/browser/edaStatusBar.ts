@@ -35,7 +35,19 @@ import {
 
 const POLL_INTERVAL_MS = 60_000;          // 60s — EDA install state changes rarely
 const INITIAL_DELAY_MS = 2_000;           // wait 2s after worker connect before first poll
+
+// Diagnostic states (pending / disconnected / error) point at the Worker
+// Tools panel so the user can see *why* the worker isn't reporting back.
 const COMMAND_OPEN_PANEL = 'chipos.workerTools.focus';
+
+// Healthy "EDA: N/M" pill jumps to the Settings → EDA Tools tab where the
+// user can actually configure / install / override individual tools. Wired
+// as a Command object because chipos.openSettings takes a `tab` argument.
+const COMMAND_OPEN_EDA_TAB = {
+	id: 'chipos.openSettings',
+	title: '',
+	arguments: ['edaTools'],
+};
 
 export class EdaStatusBarContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'chipos.edaStatusBar';
@@ -169,7 +181,12 @@ export class EdaStatusBarContribution extends Disposable implements IWorkbenchCo
 		if (summary.missing_binaries.length > 0) {
 			tooltipLines.push('');
 			tooltipLines.push(
-				localize('chipos.eda.statusbar.summary.action', 'Click to open WORKER TOOLS panel & install missing tools'),
+				localize('chipos.eda.statusbar.summary.action', 'Click to open EDA Tools settings — install / override / disable individual tools'),
+			);
+		} else {
+			tooltipLines.push('');
+			tooltipLines.push(
+				localize('chipos.eda.statusbar.summary.action.all', 'Click to open EDA Tools settings'),
 			);
 		}
 
@@ -178,7 +195,7 @@ export class EdaStatusBarContribution extends Disposable implements IWorkbenchCo
 			text,
 			ariaLabel: summary.summary_line,
 			tooltip: { value: tooltipLines.join('\n'), isTrusted: false, supportThemeIcons: true } as any,
-			command: COMMAND_OPEN_PANEL,
+			command: COMMAND_OPEN_EDA_TAB,
 		});
 	}
 

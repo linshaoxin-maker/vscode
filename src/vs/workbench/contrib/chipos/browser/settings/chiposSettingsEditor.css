@@ -1427,6 +1427,25 @@
 		justify-content: center;
 		padding: 6px;
 		gap: 0;
+		/* Relative so the .active::before pseudo can absolutely-position itself
+		 * as a left-edge accent bar in narrow mode (full-width label is hidden,
+		 * so we need a different active-state cue). */
+		position: relative;
+	}
+
+	/* In narrow mode the label disappears, so the .active highlight needs
+	 * to read at a glance against just an icon. Add a vivid 2px accent bar
+	 * on the left edge that runs the row's height — VS Code's standard
+	 * "selected item" affordance (matches the activity bar). */
+	.chipos-settings-nav-item.active::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		top: 4px;
+		bottom: 4px;
+		width: 2px;
+		border-radius: 2px;
+		background: var(--vscode-focusBorder);
 	}
 
 	.chipos-settings-nav-divider {
@@ -1804,6 +1823,18 @@ td.chipos-eda-empty {
 	padding: 18px 12px;
 	font-style: italic;
 	font-size: 12px;
+}
+
+/* Footer caption below the tools table: "31 tools · 19 ready · 5 missing"
+ * (or "Showing 7 of 31 tools" when filter active). Sits outside the table
+ * card so it reads as commentary, not as a row. */
+.chipos-eda-tools-footer {
+	margin: 8px 4px 0;
+	font-size: 11.5px;
+	color: var(--chipos-text-tertiary);
+	line-height: 14px;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
 }
 
 /* UX #C: ChipOS-themed kebab menu popover.

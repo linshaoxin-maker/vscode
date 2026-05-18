@@ -86,7 +86,10 @@ export class GeneralTab extends Disposable {
 		const renderButton = (signedIn: boolean) => {
 			dom.clearNode(buttonRow);
 			if (signedIn) {
-				const logoutBtn = dom.append(buttonRow, dom.$('button.chipos-btn-secondary'));
+				// Destructive action — use the secondary+danger combo so the
+				// button reads as "this is a logout" (red text + red border)
+				// instead of looking like another primary call-to-action.
+				const logoutBtn = dom.append(buttonRow, dom.$('button.chipos-btn-secondary.chipos-btn-danger'));
 				logoutBtn.textContent = localize('chipos.auth.logout', 'Sign out');
 				this._disposables.add(dom.addDisposableListener(logoutBtn, 'click', () => {
 					this._commandService.executeCommand('chipos.auth.logout');

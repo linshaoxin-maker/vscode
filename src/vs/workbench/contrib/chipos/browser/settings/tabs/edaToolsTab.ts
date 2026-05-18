@@ -314,9 +314,16 @@ export class EdaToolsTab extends Disposable {
 		dom.append(headRow, dom.$('th', undefined, 'Detail'));
 		dom.append(headRow, dom.$('th', undefined, ''));
 		this._toolsTableBody = dom.append(table, dom.$('tbody'));
+
+		// Footer line below the table: "31 tools · 19 ready · 5 missing"
+		// or, when filter active, "Showing 7 of 31 (filter: equiv)".
+		// Lives outside the .chipos-eda-tools-table card so it reads as a
+		// caption, not a table row.
+		this._toolsFooter = dom.append(section, dom.$('.chipos-eda-tools-footer'));
 	}
 
 	private _bulkBtn: HTMLButtonElement | undefined;
+	private _toolsFooter: HTMLElement | undefined;
 
 	private _renderToolsTableFiltered(): void {
 		if (!this._lastResolutions) { return; }
@@ -426,7 +433,8 @@ export class EdaToolsTab extends Disposable {
 
 		// Apply current filter + sort (P2 UX). Default sort = status puts
 		// READY tools first (less anxiety-inducing than missing-first).
-		const rows = this._applyFilterAndSort(Object.values(payload.by_tool));
+		const allRows = Object.values(payload.by_tool);
+		const rows = this._applyFilterAndSort(allRows);
 
 		if (rows.length === 0) {
 			const empty = dom.append(this._toolsTableBody, dom.$('tr'));
@@ -435,6 +443,7 @@ export class EdaToolsTab extends Disposable {
 			cell.textContent = this._filterQuery || this._implFilter !== 'all'
 				? localize('chipos.edaTools.noMatch', 'No tools match the current filter.')
 				: localize('chipos.edaTools.empty', 'No EDA tools registered.');
+			this._updateFooter(0, allRows);
 			return;
 		}
 
@@ -442,11 +451,42 @@ export class EdaToolsTab extends Disposable {
 			this._renderToolRow(this._toolsTableBody, r);
 		}
 
+		this._updateFooter(rows.length, allRows);
+
 		// Restore scroll on next animation frame (after layout settles)
 		if (scrollEl && prevScrollTop > 0) {
 			requestAnimationFrame(() => {
 				scrollEl.scrollTop = prevScrollTop;
 			});
+		}
+	}
+
+	/**
+	 * Render the footer caption below the table. When no filter is active,
+	 * shows the breakdown "31 tools · 19 ready · 5 missing · 2 disabled".
+	 * When a filter is active, shows "Showing 7 of 31 tools" so users can
+	 * tell at a glance how aggressive their current filter is.
+	 */
+	private _updateFooter(visibleCount: number, allRows: EdaToolResolution[]): void {
+		if (!this._toolsFooter) { return; }
+		const ready = allRows.filter(r => r.ready).length;
+		const missing = allRows.filter(r => !r.ready && this._getToolOverride(r.tool_name)?.source !== 'disabled').length;
+		const disabled = allRows.filter(r => this._getToolOverride(r.tool_name)?.source === 'disabled').length;
+		const total = allRows.length;
+		const filterActive = this._filterQuery !== '' || this._implFilter !== 'all';
+
+		dom.clearNode(this._toolsFooter);
+		if (filterActive) {
+			dom.append(this._toolsFooter, dom.$('span', undefined,
+				localize('chipos.edaTools.footer.filtered', 'Showing {0} of {1} tools', visibleCount, total)));
+		} else {
+			const parts: string[] = [
+				localize('chipos.edaTools.footer.total', '{0} tools', total),
+				localize('chipos.edaTools.footer.ready', '{0} ready', ready),
+			];
+			if (missing > 0) { parts.push(localize('chipos.edaTools.footer.missing', '{0} missing', missing)); }
+			if (disabled > 0) { parts.push(localize('chipos.edaTools.footer.disabled', '{0} disabled', disabled)); }
+			dom.append(this._toolsFooter, dom.$('span', undefined, parts.join(' · ')));
 		}
 	}
 
@@ -516,12 +556,19 @@ export class EdaToolsTab extends Disposable {
 	private _formatDetail(r: EdaToolResolution): string {
 		switch (r.impl) {
 			case 'managed':
+				// Prefer the resolved binary path when the resolver provided one
+				// (e.g. iverilog → .../oss-cad-suite/bin/iverilog). Composite/
+				// dep-only managed tools (check_syntax, equiv_check, format, …)
+				// have no direct binary, so fall back to a friendly label that
+				// signals "this comes from the managed bundle" instead of
+				// leaving the column blank and looking broken.
+				return r.detail.path ?? localize('chipos.edaTools.detail.managedBundle', 'via oss-cad-suite');
 			case 'local-binary':
-				return r.detail.path ?? '';
+				return r.detail.path ?? localize('chipos.edaTools.detail.localPath', 'via system PATH');
 			case 'mcp':
 				return r.detail.server_name
 					? localize('chipos.edaTools.detail.mcp', 'via {0}', r.detail.server_name)
-					: '';
+					: localize('chipos.edaTools.detail.mcpAny', 'via MCP server');
 			case 'missing':
 				return r.detail.hint ? r.detail.hint.slice(0, 80) + (r.detail.hint.length > 80 ? '…' : '') : '';
 			default:
