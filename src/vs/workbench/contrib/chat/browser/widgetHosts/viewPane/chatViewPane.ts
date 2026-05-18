@@ -316,8 +316,16 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 	private createControls(parent: HTMLElement): void {
 
-		// Sessions Control
-		const sessionsControl = this.createSessionsControl(parent);
+		// [ChipOS] Sessions list now lives in the standalone
+		// `ChatSessionsViewPane` (registered as a sibling view in the
+		// chat view container). Skip creating the in-pane embedded
+		// sessions control — otherwise the AgentSessionsFilter inside
+		// both pane and standalone view would try to register the same
+		// `agentSessions.filter.toggleExclude:...` command IDs, and the
+		// standalone view would fail to render. Pass `undefined` for
+		// sessions control to `registerControlsListeners`; it's already
+		// nullable-aware downstream.
+		const sessionsControl = undefined;
 
 		// Welcome Control (used to show chat specific extension provided welcome views via `chatViewsWelcome` contribution point)
 		const welcomeController = this.welcomeController = this._register(this.instantiationService.createInstance(ChatViewWelcomeController, parent, this, ChatAgentLocation.Chat));
@@ -748,7 +756,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 	//#endregion
 
-	private registerControlsListeners(sessionsControl: AgentSessionsControl, chatWidget: ChatWidget, welcomeController: ChatViewWelcomeController): void {
+	private registerControlsListeners(sessionsControl: AgentSessionsControl | undefined, chatWidget: ChatWidget, welcomeController: ChatViewWelcomeController): void {
 
 		// Sessions control visibility is impacted by multiple things:
 		// - chat widget being in empty state or showing a chat
@@ -759,7 +767,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 			Event.fromObservable(welcomeController.isShowingWelcome),
 			Event.filter(this.configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(ChatConfiguration.ChatViewSessionsEnabled))
 		)(() => {
-			if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
+			if (sessionsControl && this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
 				sessionsControl.clearFocus(); // improve visual appearance when switching visibility by clearing focus
 			}
 			const { changed: visibilityChanged } = this.updateSessionsControlVisibility();
@@ -770,7 +778,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 
 		// Track the active chat model and reveal it in the sessions control if side-by-side
 		this._register(chatWidget.onDidChangeViewModel(() => {
-			if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
+			if (!sessionsControl || this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
 				return; // only reveal in side-by-side mode
 			}
 
@@ -796,7 +804,7 @@ export class ChatViewPane extends ViewPane implements IViewWelcomeDelegate {
 				this.relayout();
 			}
 
-			if (this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
+			if (!sessionsControl || this.sessionsViewerOrientation === AgentSessionsViewerOrientation.Stacked) {
 				return; // only reveal in side-by-side mode
 			}
 

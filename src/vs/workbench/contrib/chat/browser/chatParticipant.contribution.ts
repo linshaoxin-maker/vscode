@@ -32,6 +32,7 @@ import { IRawChatParticipantContribution } from '../common/participants/chatPart
 import { ChatAgentLocation, ChatModeKind } from '../common/constants.js';
 import { ChatViewId, ChatViewContainerId } from './chat.js';
 import { ChatViewPane } from './widgetHosts/viewPane/chatViewPane.js';
+import { ChatSessionsViewPane } from './widgetHosts/viewPane/chatSessionsViewPane.js';
 
 // --- Chat Container &  View Registration
 
@@ -77,7 +78,25 @@ const chatViewDescriptor: IViewDescriptor = {
 		ChatContextKeys.extensionInvalid
 	)
 };
-Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([chatViewDescriptor], chatViewContainer);
+// [ChipOS] Sessions list as a standalone sibling view (rather than being
+// embedded inside `ChatViewPane`). When the user toggles the sessions
+// sidebar via the chipos `[]` button, this view's visibility flips —
+// VS Code's view-grid takes care of the column layout so the chat pane's
+// own width stays put instead of being compressed by an in-pane split.
+const chatSessionsViewDescriptor: IViewDescriptor = {
+	id: ChatSessionsViewPane.ID,
+	containerIcon: chatViewContainer.icon,
+	containerTitle: chatViewContainer.title.value,
+	singleViewPaneContainerTitle: chatViewContainer.title.value,
+	name: localize2('chat.sessionsView.label', "Chat Sessions"),
+	canToggleVisibility: true,
+	canMoveView: true,
+	hideByDefault: true, // sessions pane hidden by default; chipos `[]` button reveals it
+	order: 2,
+	ctorDescriptor: new SyncDescriptor(ChatSessionsViewPane),
+	when: chatViewDescriptor.when,
+};
+Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([chatViewDescriptor, chatSessionsViewDescriptor], chatViewContainer);
 
 const chatParticipantExtensionPoint = extensionsRegistry.ExtensionsRegistry.registerExtensionPoint<IRawChatParticipantContribution[]>({
 	extensionPoint: 'chatParticipants',
