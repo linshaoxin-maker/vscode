@@ -983,6 +983,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				} catch (eventErr) {
 					this._logService.error('[ChipOS Agent] Event handler error for', event.event_type, eventErr);
 				}
+
+				// Mirror the SESSION_LOST_RECOVERABLE handling from
+				// `_listenForContinuation`: the reasoner forgot us, the SSE
+				// client just emitted the error event, no more events will
+				// ever arrive. Without this finish(), the listener stays
+				// alive forever (invoke() has no idle watchdog like
+				// continuation does) and the chat spinner reads as still
+				// "connecting" indefinitely.
+				if (event.event_type === AgentEventType.Error) {
+					const payload = event.payload as { code?: string; error_code?: string } | undefined;
+					const code = payload?.code ?? payload?.error_code;
+					if (code === 'SESSION_LOST_RECOVERABLE') {
+						this._logService.info('[ChipOS Agent] SESSION_LOST_RECOVERABLE — finishing invoke immediately');
+						finish({ errorDetails: { message: 'Session lost (reasoner restart) — start a new chat' } });
+					}
+				}
 			});
 
 			token.onCancellationRequested(() => {
