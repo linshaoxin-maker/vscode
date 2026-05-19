@@ -1019,3 +1019,182 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
  *  semantic work; we don't want a second visual signal that competes
  *  with the badge.
  */
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+ *  ChipOS Card Design Tokens — UI #UX-2026-05 (token sweep)
+ *
+ *  Single source of truth for the chat-card family:
+ *    • chatQuestionCarousel  — agent-issued multiple choice
+ *    • chipOSPermissionCard  — worker-side permission ASK
+ *    • chatConfirmation widgets (Keep/Undo etc.)
+ *    • future cards
+ *
+ *  All values resolve to standard `--vscode-*` tokens underneath so light /
+ *  dark / high-contrast all keep working. The point of this layer is
+ *  consistency BETWEEN cards: one place to tune card padding / button
+ *  hierarchy / selected-state weight without chasing them across files.
+ *
+ *  Naming: `--chipos-card-*` = card chrome, `--chipos-option-*` = list items
+ *  inside a card, `--chipos-btn-*` = action buttons.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+:root {
+	/* ── Card chrome ────────────────────────────────────────────────────── */
+	--chipos-card-radius: var(--vscode-cornerRadius-medium, 6px);
+	--chipos-card-border: 1px solid color-mix(in srgb, var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.35))) 78%, transparent);
+	--chipos-card-bg: var(--vscode-input-background, var(--vscode-editor-background));
+	--chipos-card-shadow: 0 4px 14px color-mix(in srgb, var(--vscode-widget-shadow, transparent) 14%, transparent);
+	--chipos-card-focus-border: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 60%, var(--vscode-chat-requestBorder, var(--vscode-input-border)) 40%);
+	--chipos-card-focus-glow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 32%, transparent);
+	--chipos-card-padding: 12px 14px;
+	--chipos-card-gap: 8px;
+
+	/* ── Title / metadata ───────────────────────────────────────────────── */
+	--chipos-card-title-color: var(--vscode-foreground);
+	--chipos-card-title-size: var(--vscode-chat-font-size-body-s, 12px);
+	--chipos-card-title-weight: 600;
+	--chipos-card-meta-color: var(--vscode-descriptionForeground);
+	--chipos-card-meta-size: 11px;
+
+	/* ── Option rows (A / B / C choice lists) ───────────────────────────── */
+	--chipos-option-radius: var(--vscode-cornerRadius-medium, 4px);
+	--chipos-option-padding: 8px 10px;
+	--chipos-option-gap: 10px;
+	--chipos-option-min-height: 32px;
+	--chipos-option-hover-bg: color-mix(in srgb, var(--vscode-list-hoverBackground, #2a2d2e) 72%, transparent);
+
+	/* Selected state: LIGHT fill + 2px left accent bar. NOT a full 60%
+	   activeSelection block — that reads as a pressed/transient state. */
+	--chipos-option-selected-bg: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 10%, transparent);
+	--chipos-option-selected-border: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 35%, transparent);
+	--chipos-option-selected-rail: var(--vscode-focusBorder, #007fd4);
+
+	/* A/B/C letter / number badges */
+	--chipos-badge-bg: transparent;
+	--chipos-badge-border: 1px solid color-mix(in srgb, var(--vscode-foreground) 35%, transparent);
+	--chipos-badge-color: var(--vscode-descriptionForeground);
+	--chipos-badge-bg-selected: var(--vscode-button-background, #0078d4);
+	--chipos-badge-color-selected: var(--vscode-button-foreground, #ffffff);
+	--chipos-badge-size: 20px;
+	--chipos-badge-radius: 4px;
+
+	/* ── Buttons: primary / secondary / ghost / danger ──────────────────── */
+	--chipos-btn-height: 28px;
+	--chipos-btn-radius: var(--vscode-cornerRadius-medium, 4px);
+	--chipos-btn-padding: 0 12px;
+	--chipos-btn-gap: 6px;
+	--chipos-btn-font-size: var(--vscode-chat-font-size-body-s, 12px);
+	--chipos-btn-font-weight: 600;
+
+	--chipos-btn-primary-bg: var(--vscode-button-background, #0078d4);
+	--chipos-btn-primary-fg: var(--vscode-button-foreground, #ffffff);
+	--chipos-btn-primary-bg-hover: var(--vscode-button-hoverBackground, #1f8ad2);
+
+	--chipos-btn-secondary-bg: transparent;
+	--chipos-btn-secondary-fg: var(--vscode-foreground);
+	--chipos-btn-secondary-border: 1px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+	--chipos-btn-secondary-bg-hover: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.12));
+
+	/* Ghost = no border, muted text. For tertiary actions like "Skip". */
+	--chipos-btn-ghost-bg: transparent;
+	--chipos-btn-ghost-fg: var(--vscode-descriptionForeground);
+	--chipos-btn-ghost-bg-hover: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.10));
+
+	--chipos-btn-danger-fg: var(--vscode-inputValidation-errorBorder, #f48771);
+	--chipos-btn-danger-border: 1px solid var(--vscode-inputValidation-errorBorder, #f48771);
+	--chipos-btn-danger-bg-hover: color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #f48771) 12%, transparent);
+}
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+ *  Visual fixes for chatQuestionCarousel (the A/B/C choice card).
+ *
+ *  These overrides target the upstream `.chat-question-*` selectors so we
+ *  don't need to touch Microsoft-copyright files. They re-apply the tokens
+ *  above to align with chipOSPermissionCard's visual language.
+ *
+ *  Fixed (UX-2026-05):
+ *    1. Selected row no longer has heavy fill — light bg + 2px left rail
+ *    2. A/B/C number badge: outline when unselected, filled accent when selected
+ *    3. Row padding bumped from 4px → 8px (readability)
+ *    4. Submit button: drop the legacy "→" arrow appended in markup
+ *    5. Question title: bump font weight + accent color for clearer hierarchy
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+.interactive-session .chat-question-carousel-container {
+	border: var(--chipos-card-border);
+	border-radius: var(--chipos-card-radius);
+	background-color: var(--chipos-card-bg);
+	box-shadow: var(--chipos-card-shadow);
+}
+
+.interactive-session .chat-question-carousel-container:focus-within {
+	border-color: var(--chipos-card-focus-border);
+	box-shadow: var(--chipos-card-focus-glow);
+}
+
+/* Title: stronger hierarchy. */
+.interactive-session .chat-question-carousel-container .chat-question-title {
+	font-weight: var(--chipos-card-title-weight);
+	color: var(--chipos-card-title-color);
+}
+
+/* Option rows: more breathing room. */
+.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item {
+	min-height: var(--chipos-option-min-height);
+	padding: var(--chipos-option-padding);
+	gap: var(--chipos-option-gap);
+}
+
+.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item:hover {
+	background-color: var(--chipos-option-hover-bg);
+}
+
+/* Selected: light fill + 2px left rail (instead of full activeSelection block). */
+.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item.selected {
+	background-color: var(--chipos-option-selected-bg);
+	border-color: var(--chipos-option-selected-border);
+	box-shadow: inset 2px 0 0 var(--chipos-option-selected-rail);
+}
+
+.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item.selected:hover {
+	background-color: color-mix(in srgb, var(--chipos-option-selected-bg) 160%, transparent);
+}
+
+/* A/B/C number badge: outlined when unselected, filled accent when selected. */
+.interactive-session .chat-question-carousel-container .chat-question-list-number,
+.interactive-session .chat-question-carousel-container .chat-question-freeform-number {
+	background: var(--chipos-badge-bg);
+	color: var(--chipos-badge-color);
+	border: var(--chipos-badge-border);
+	min-width: var(--chipos-badge-size);
+	height: var(--chipos-badge-size);
+	border-radius: var(--chipos-badge-radius);
+	line-height: calc(var(--chipos-badge-size) - 2px);
+}
+
+.interactive-session .chat-question-carousel-container .chat-question-list-item.selected .chat-question-list-number,
+.interactive-session .chat-question-carousel-container .chat-question-list-item.checked .chat-question-list-number {
+	background: var(--chipos-badge-bg-selected);
+	color: var(--chipos-badge-color-selected);
+	border-color: transparent;
+}
+
+/* Submit button: drop the legacy "→" character if it's appended via ::after. */
+.interactive-session .chat-question-carousel-container .monaco-button.chat-question-submit-button::after {
+	content: none;
+}
+.interactive-session .chat-question-carousel-container .monaco-button.chat-question-submit-button {
+	height: var(--chipos-btn-height);
+	border-radius: var(--chipos-btn-radius);
+	padding: var(--chipos-btn-padding);
+	font-weight: var(--chipos-btn-font-weight);
+	font-size: var(--chipos-btn-font-size);
+	background: var(--chipos-btn-primary-bg) !important;
+	color: var(--chipos-btn-primary-fg) !important;
+}
+.interactive-session .chat-question-carousel-container .monaco-button.chat-question-submit-button:hover:not(.disabled) {
+	background: var(--chipos-btn-primary-bg-hover) !important;
+}
+

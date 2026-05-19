@@ -1,14 +1,12 @@
 /*---------------------------------------------------------------------------------------------
- *  ChipOS Permission Card — Phase B visual polish
+ *  ChipOS Permission Card
  *
- *  UX #7 (2026-05-14): styling refactored to match the framework's
- *  `.chat-question-carousel-container` (used by the `askQuestions` LLM
- *  clarification tool). Both cards now share the same border, radius,
- *  background, and focus-within glow tokens so that when a turn produces
- *  both (LLM clarification ⟶ then worker permission ask), they read as
- *  siblings rather than two disconnected widgets.
- *
- *  Uses VS Code CSS variables so light / dark / high-contrast modes all work.
+ *  UX-2026-05 (token sweep): chrome / buttons now reference the shared
+ *  `--chipos-card-*` and `--chipos-btn-*` tokens defined in
+ *  `media/chiposOverrides.css`. Local rules here only own per-tool
+ *  specifics (color bar, code preview pane, copy button etc.) — anything
+ *  shared with chatQuestionCarousel lives in the token layer so both
+ *  cards drift together when tuned.
  *--------------------------------------------------------------------------------------------*/
 
 /* ── Root card ──────────────────────────────────────────────────────────────── */
@@ -16,15 +14,14 @@
 .chipos-permission-card {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: var(--chipos-card-gap);
 	margin: 8px 0;
-	padding: 10px 12px 8px 14px;
-	/* Matches `.chat-question-carousel-container` so cards align visually. */
-	border-radius: var(--vscode-cornerRadius-medium, 6px);
-	border: 1px solid color-mix(in srgb, var(--vscode-chat-requestBorder, var(--vscode-input-border, rgba(127, 127, 127, 0.35))) 80%, transparent);
-	background-color: var(--vscode-input-background, var(--vscode-editor-background));
-	box-shadow: 0 4px 14px color-mix(in srgb, var(--vscode-widget-shadow, transparent) 14%, transparent);
-	font-size: 12px;
+	padding: var(--chipos-card-padding);
+	border-radius: var(--chipos-card-radius);
+	border: var(--chipos-card-border);
+	background-color: var(--chipos-card-bg);
+	box-shadow: var(--chipos-card-shadow);
+	font-size: var(--chipos-card-title-size);
 	line-height: 1.5;
 	/* Left color bar differentiates by tool type */
 	border-left-width: 3px;
@@ -33,12 +30,9 @@
 	outline: none;
 }
 
-/* Focus-within glow — mirrors what chat-question-carousel-container does,
-   so when the user tabs into the buttons row the whole card pops the same
-   way the clarification card does. */
 .chipos-permission-card:focus-within {
-	border-color: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 60%, var(--vscode-chat-requestBorder, var(--vscode-input-border)) 40%);
-	box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 32%, transparent);
+	border-color: var(--chipos-card-focus-border);
+	box-shadow: var(--chipos-card-focus-glow);
 }
 
 /* Tool-type color bars */
@@ -202,16 +196,14 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	gap: 6px;
-	height: 26px;
+	gap: var(--chipos-btn-gap);
+	height: var(--chipos-btn-height);
 	padding: 0 10px 0 6px;
-	/* UX #7: same radius token as `.chat-question-list-item` so the buttons
-	   feel like the same UI family as the LLM clarification chips. */
-	border-radius: var(--vscode-cornerRadius-medium, 4px);
-	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.4));
-	background: transparent;
-	color: var(--vscode-foreground);
-	font-size: var(--vscode-chat-font-size-body-s, 11.5px);
+	border-radius: var(--chipos-btn-radius);
+	border: var(--chipos-btn-secondary-border);
+	background: var(--chipos-btn-secondary-bg);
+	color: var(--chipos-btn-secondary-fg);
+	font-size: var(--chipos-btn-font-size);
 	font-family: inherit;
 	cursor: pointer;
 	white-space: nowrap;
@@ -251,7 +243,7 @@
 }
 
 .chipos-action-btn:hover {
-	background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.12));
+	background: var(--chipos-btn-secondary-bg-hover);
 	border-color: var(--vscode-focusBorder, #007fd4);
 }
 
@@ -264,31 +256,28 @@
 	background: var(--vscode-list-activeSelectionBackground, rgba(127, 127, 127, 0.25));
 }
 
-/* "Allow once" — neutral, no fill */
-.chipos-btn-allow-once {
-	border-color: var(--vscode-input-border, rgba(127, 127, 127, 0.4));
-}
+/* "Allow once" — neutral, no fill (default secondary look from base rule) */
 
 /* "Always in workspace" / "Always globally" — accent border */
 .chipos-btn-allow-workspace,
 .chipos-btn-allow-always {
-	border-color: var(--vscode-button-background, #0078d4);
-	color: var(--vscode-button-background, #0078d4);
+	border-color: var(--chipos-btn-primary-bg);
+	color: var(--chipos-btn-primary-bg);
 }
 
 .chipos-btn-allow-workspace:hover,
 .chipos-btn-allow-always:hover {
-	background: color-mix(in srgb, var(--vscode-button-background, #0078d4) 10%, transparent);
+	background: color-mix(in srgb, var(--chipos-btn-primary-bg) 10%, transparent);
 }
 
-/* "Deny" — red border */
+/* "Deny" — red border (danger) */
 .chipos-btn-deny {
-	border-color: var(--vscode-inputValidation-errorBorder, #f48771);
-	color: var(--vscode-inputValidation-errorBorder, #f48771);
+	border: var(--chipos-btn-danger-border);
+	color: var(--chipos-btn-danger-fg);
 }
 
 .chipos-btn-deny:hover {
-	background: color-mix(in srgb, var(--vscode-inputValidation-errorBorder, #f48771) 10%, transparent);
+	background: var(--chipos-btn-danger-bg-hover);
 }
 
 /* Disabled state after user clicks */
