@@ -1858,8 +1858,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							const editingSession = this._getEditingSession(ctx.request!.sessionResource);
 							const responseModel = this._getResponseModel(ctx.request!.sessionResource);
 							if (editingSession && responseModel) {
-								// Start and immediately stop — file is already on disk
-								editingSession.startExternalEdits(responseModel, opId, [fileUri], ctx.request!.requestId).then(() => {
+								// Start and immediately stop — file is already on disk.
+								// Pass `''` as the beforeSnapshot so the framework seeds
+								// the entry's originalModel to empty content: the diff
+								// computed for the working-set widget then shows +N -0
+								// (real content count vs. empty baseline) instead of
+								// +0/-0 (entry's originalModel === modifiedModel because
+								// the backend already wrote the file by the time this
+								// event fires). Same lossy-but-accurate defaulting as
+								// `_flushWatchedFileChanges`.
+								const beforeSnapshots = new ResourceMap<string>();
+								beforeSnapshots.set(fileUri, '');
+								editingSession.startExternalEdits(responseModel, opId, [fileUri], ctx.request!.requestId, beforeSnapshots).then(() => {
 									return editingSession.stopExternalEdits(responseModel, opId);
 								}).then(editProgress => {
 									if (editProgress.length > 0) {

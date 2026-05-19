@@ -661,8 +661,21 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 					return;
 				}
 
-				const entry = await this._getOrCreateModifiedFileEntry(resource, NotExistBehavior.Abort, telemetryInfo);
-				this._logService.info(`[ChatEditingSession] startExternalEdits: resource=${resource.path}, entry=${!!entry}`);
+				// Read callerSnapshot up front so we can use it as initialContent
+				// when creating the entry. Without this, the entry's
+				// originalModel is seeded from the current file content; for
+				// callers that fire startExternalEdits AFTER an edit has
+				// already happened on disk (e.g. chipos fs-watcher flush at
+				// task complete), the originalModel ends up matching the
+				// post-edit modifiedModel, so the derived `linesAdded`/
+				// `linesRemoved` (computed from diffInfo between original and
+				// modified models) both stay at 0 — even though the file
+				// clearly changed. The working set then renders `+0 -0` for
+				// every entry. Seeding originalModel with callerSnapshot
+				// restores the correct diff.
+				const callerSnapshot = beforeSnapshots?.get(resource);
+				const entry = await this._getOrCreateModifiedFileEntry(resource, NotExistBehavior.Abort, telemetryInfo, callerSnapshot);
+				this._logService.info(`[ChatEditingSession] startExternalEdits: resource=${resource.path}, entry=${!!entry}, hasCallerSnapshot=${callerSnapshot !== undefined}`);
 				if (entry) {
 					await this._acceptStreamingEditsStart(responseModel, undoStopId, resource);
 				}
@@ -675,7 +688,6 @@ export class ChatEditingSession extends Disposable implements IChatEditingSessio
 				await entry?.save();
 
 				// Take snapshot of current state — prefer caller-provided snapshot if available
-				const callerSnapshot = beforeSnapshots?.get(resource);
 				const snapshotValue = callerSnapshot !== undefined ? callerSnapshot : (entry && this._getCurrentTextOrNotebookSnapshot(entry));
 				this._logService.info(`[ChatEditingSession] startExternalEdits: resource=${resource.path}, snapshotLength=${snapshotValue?.length ?? 'undefined'}, usedCallerSnapshot=${callerSnapshot !== undefined}`);
 				snapshots.set(resource, snapshotValue);
