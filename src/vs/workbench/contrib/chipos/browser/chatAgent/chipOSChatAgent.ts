@@ -2999,12 +2999,37 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		lines.push(`### ${verdict} ${title}\n`);
 
 		const kv: [string, string][] = [];
+		// 2026-05-19 dogfood: some structured_data values are pre-formatted
+		// multi-line markdown tables (e.g. test_case_rows, remaining_errors
+		// _table) that the backend SummaryAssembler joined with \n. Embedding
+		// them into a single | label | value | cell shreds the outer table
+		// layout (pipes inside the value collide with the column separator,
+		// newlines split the row). Render those as their own sub-table after
+		// the kv summary instead.
 		const skip = new Set(['verdict_badge', 'task_description', 'next_steps', 'generated_files_list']);
+		const tableHeaderByKey: Record<string, string> = {
+			test_case_rows: '| Case | Status | Details |\n|---|---|---|',
+			remaining_errors_table: '| Location | Severity | Message |\n|---|---|---|',
+			fixes_applied_list: '',
+			debug_fixes_list: '',
+		};
+		const inlineTables: [string, string, string][] = []; // [label, header, body]
 		for (const [k, v] of Object.entries(d)) {
 			if (skip.has(k) || v === undefined || v === null || v === '' || v === '无') { continue; }
 			if (typeof v === 'object') { continue; }
 			const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-			kv.push([label, String(v)]);
+			const sval = String(v);
+			if (k in tableHeaderByKey && (sval.includes('\n') || sval.startsWith('|'))) {
+				inlineTables.push([label, tableHeaderByKey[k], sval]);
+				continue;
+			}
+			// Anything else that still contains a pipe or newline would also
+			// break the kv table — collapse to a single line and escape pipes.
+			if (sval.includes('\n') || sval.includes('|')) {
+				kv.push([label, sval.replace(/\|/g, '\\|').replace(/\n+/g, ' · ')]);
+				continue;
+			}
+			kv.push([label, sval]);
 		}
 
 		if (kv.length) {
@@ -3013,6 +3038,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			for (const [label, val] of kv) {
 				lines.push(`| ${label} | ${val} |`);
 			}
+			lines.push('');
+		}
+
+		for (const [label, header, body] of inlineTables) {
+			lines.push(`**${label}**`);
+			if (header) {
+				lines.push(header);
+			}
+			lines.push(body);
 			lines.push('');
 		}
 
