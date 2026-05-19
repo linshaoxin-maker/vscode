@@ -1140,31 +1140,34 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	color: var(--chipos-card-title-color);
 }
 
-/* Option rows: more breathing room. */
-.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item {
+/* Option rows: more breathing room. Specificity matches upstream
+   `.chat-question-input-container .chat-question-list ...` chain so our
+   overrides actually beat the source rules. */
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-list .chat-question-list-item {
 	min-height: var(--chipos-option-min-height);
 	padding: var(--chipos-option-padding);
 	gap: var(--chipos-option-gap);
 }
 
-.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item:hover {
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-list .chat-question-list-item:hover {
 	background-color: var(--chipos-option-hover-bg);
 }
 
 /* Selected: light fill + 2px left rail (instead of full activeSelection block). */
-.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item.selected {
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-list .chat-question-list-item.selected {
 	background-color: var(--chipos-option-selected-bg);
 	border-color: var(--chipos-option-selected-border);
 	box-shadow: inset 2px 0 0 var(--chipos-option-selected-rail);
 }
 
-.interactive-session .chat-question-carousel-container .chat-question-list .chat-question-list-item.selected:hover {
-	background-color: color-mix(in srgb, var(--chipos-option-selected-bg) 160%, transparent);
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-list .chat-question-list-item.selected:hover {
+	background-color: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 14%, transparent);
 }
 
-/* A/B/C number badge: outlined when unselected, filled accent when selected. */
-.interactive-session .chat-question-carousel-container .chat-question-list-number,
-.interactive-session .chat-question-carousel-container .chat-question-freeform-number {
+/* A/B/C number badge: outlined when unselected, filled accent when selected.
+   Targets both legacy `.chat-question-list-number` and the freeform variant. */
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-list-number,
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-freeform-number {
 	background: var(--chipos-badge-bg);
 	color: var(--chipos-badge-color);
 	border: var(--chipos-badge-border);
@@ -1174,15 +1177,19 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	line-height: calc(var(--chipos-badge-size) - 2px);
 }
 
-.interactive-session .chat-question-carousel-container .chat-question-list-item.selected .chat-question-list-number,
-.interactive-session .chat-question-carousel-container .chat-question-list-item.checked .chat-question-list-number {
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-list .chat-question-list-item.selected .chat-question-list-number,
+.interactive-session .chat-question-carousel-container .chat-question-input-container .chat-question-list .chat-question-list-item.checked .chat-question-list-number {
 	background: var(--chipos-badge-bg-selected);
 	color: var(--chipos-badge-color-selected);
 	border-color: transparent;
 }
 
-/* Submit button: drop the legacy "→" character if it's appended via ::after. */
+/* Submit button: hide the legacy `$(arrow-right)` codicon appended in the
+   button label by upstream `setSubmitButtonLabel()` — modern chat UIs
+   (Claude / Cursor) don't decorate Submit. Pure text reads cleaner. */
+.interactive-session .chat-question-carousel-container .monaco-button.chat-question-submit-button .codicon-arrow-right,
 .interactive-session .chat-question-carousel-container .monaco-button.chat-question-submit-button::after {
+	display: none !important;
 	content: none;
 }
 .interactive-session .chat-question-carousel-container .monaco-button.chat-question-submit-button {
