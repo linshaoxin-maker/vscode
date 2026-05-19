@@ -627,27 +627,33 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (this._isWorkerAskConfirmationData(data)) {
 				const { decision, scope } = this._mapWorkerActionToDecision(action);
 				this._logService.info('[ChipOS Agent] Worker confirm response (accepted):', data.__chiposWorkerAskId, decision, scope);
-				try {
-					await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision, undefined, scope);
-					let progressMsg: string;
-					if (decision === 'deny') {
-						progressMsg = '$(circle-slash) Permission denied';
-					} else if (scope === 'workspace') {
-						progressMsg = '$(check) Allowed + remembered in workspace';
-					} else if (scope === 'user') {
-						progressMsg = '$(check) Allowed + remembered globally';
-					} else {
-						progressMsg = '$(check) Permission granted';
+				// Race-fix: enter listener-registration FIRST, then POST /decide
+				// inside postRegisterAction. The reasoner SSE burst kicked off
+				// by the worker proceeding now lands on a live listener instead
+				// of dropping into a fire-and-forget Emitter (which used to
+				// surface 90 s later as CONTINUATION_IDLE_TIMEOUT).
+				return this._listenForContinuation(streamClient, progress, token, request, async () => {
+					try {
+						await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision, undefined, scope);
+						let progressMsg: string;
+						if (decision === 'deny') {
+							progressMsg = '$(circle-slash) Permission denied';
+						} else if (scope === 'workspace') {
+							progressMsg = '$(check) Allowed + remembered in workspace';
+						} else if (scope === 'user') {
+							progressMsg = '$(check) Allowed + remembered globally';
+						} else {
+							progressMsg = '$(check) Permission granted';
+						}
+						progress([this._progress(progressMsg)]);
+					} catch (err) {
+						this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
+						// Surface the failure so the user knows the click didn't
+						// land — otherwise the LLM ends up reporting a permission
+						// failure with no UI explanation.
+						progress([this._progress(`$(error) Permission delivery failed: ${err instanceof Error ? err.message : String(err)}`)]);
 					}
-					progress([this._progress(progressMsg)]);
-				} catch (err) {
-					this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
-					// Surface the failure so the user knows the click didn't
-					// land — otherwise the LLM ends up reporting a permission
-					// failure with no UI explanation.
-					progress([this._progress(`$(error) Permission delivery failed: ${err instanceof Error ? err.message : String(err)}`)]);
-				}
-				return this._listenForContinuation(streamClient, progress, token, request);
+				});
 			}
 			// Use the sessionId stored in the confirmation data, NOT a new one
 			const confirmSessionId = data.sessionId ?? runtime.backendSessionId;
@@ -693,24 +699,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					'[ChipOS Agent] Worker confirm response (resolved via reject path):',
 					data.__chiposWorkerAskId, action, '→', decision, scope,
 				);
-				try {
-					await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision, undefined, scope);
-					let progressMsg: string;
-					if (decision === 'deny') {
-						progressMsg = '$(circle-slash) Permission denied';
-					} else if (scope === 'workspace') {
-						progressMsg = '$(check) Allowed + remembered in workspace';
-					} else if (scope === 'user') {
-						progressMsg = '$(check) Allowed + remembered globally';
-					} else {
-						progressMsg = '$(check) Permission granted';
+				// Race-fix: same listener-first ordering as the accepted-data path.
+				return this._listenForContinuation(streamClient, progress, token, request, async () => {
+					try {
+						await this._workerPermissionService.decide(data.__chiposWorkerAskId, decision, undefined, scope);
+						let progressMsg: string;
+						if (decision === 'deny') {
+							progressMsg = '$(circle-slash) Permission denied';
+						} else if (scope === 'workspace') {
+							progressMsg = '$(check) Allowed + remembered in workspace';
+						} else if (scope === 'user') {
+							progressMsg = '$(check) Allowed + remembered globally';
+						} else {
+							progressMsg = '$(check) Permission granted';
+						}
+						progress([this._progress(progressMsg)]);
+					} catch (err) {
+						this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
+						progress([this._progress(`$(error) Permission delivery failed: ${err instanceof Error ? err.message : String(err)}`)]);
 					}
-					progress([this._progress(progressMsg)]);
-				} catch (err) {
-					this._logService.warn('[ChipOS Agent] worker decide failed:', String(err));
-					progress([this._progress(`$(error) Permission delivery failed: ${err instanceof Error ? err.message : String(err)}`)]);
-				}
-				return this._listenForContinuation(streamClient, progress, token, request);
+				});
 			}
 
 			streamClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
@@ -2119,11 +2127,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	// ── FEAT-23: Listen for backend events after sending confirm response ──
 
+	/**
+	 * Register the SSE event listener for the next round of backend events.
+	 *
+	 * Callers may pass `postRegisterAction` to perform an asynchronous side
+	 * effect (e.g. POST a worker `decide`) AFTER the listener is attached.
+	 * This closes the race window where the action causes the reasoner to
+	 * stream events before any listener exists — a fire-and-forget Emitter
+	 * drops those events, which then surfaces as `CONTINUATION_IDLE_TIMEOUT`
+	 * 90 s later because no event ever reaches the watchdog reset.
+	 *
+	 * Ordering invariant for the worker permission path:
+	 *   1. `onDidReceiveEvent` listener attached
+	 *   2. idle watchdog armed
+	 *   3. `postRegisterAction()` runs (POSTs /decide; worker proceeds; reasoner streams events;
+	 *      events captured by step 1)
+	 *   4. listener processes captured events, watchdog reset on each
+	 */
 	private _listenForContinuation(
 		streamClient: IEventStreamClient,
 		progress: (parts: IChatProgress[]) => void,
 		token: CancellationToken,
 		request?: IChatAgentRequest,
+		postRegisterAction?: () => Promise<void>,
 	): Promise<IChatAgentResult> {
 		const startTime = Date.now();
 		const effects = this._ensureEditorEffects();
@@ -2281,6 +2307,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// not count against the idle window — the timer only starts
 			// counting from now.
 			armIdleTimer();
+
+			// Race-fix (2026-05-19): now that the listener is attached and
+			// the watchdog armed, run any deferred decide/POST that the
+			// caller wants to ride INSIDE the listener window. Previously
+			// callers awaited `_workerPermissionService.decide(...)` BEFORE
+			// invoking `_listenForContinuation`, and the worker → reasoner
+			// → SSE event burst could fire before this listener registered
+			// — those events vanished into a fire-and-forget Emitter and
+			// `CONTINUATION_IDLE_TIMEOUT` surfaced 90 s later.
+			if (postRegisterAction) {
+				postRegisterAction().catch(err => {
+					this._logService.warn(
+						'[ChipOS Agent] postRegisterAction failed during continuation: %s',
+						err instanceof Error ? err.message : String(err),
+					);
+				});
+			}
 		});
 	}
 
