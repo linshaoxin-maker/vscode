@@ -164,17 +164,67 @@ async function startVeribleClient(_context: vscode.ExtensionContext, pathOverrid
 	}
 }
 
-async function startSvLangServerClient(_context: vscode.ExtensionContext): Promise<void> {
-	// PHASE 2 (deferred): svlangserver provides better completion +
-	// goto-def + rename for SystemVerilog. Bundling it requires either:
-	//   a) Custom esbuild step to bundle svlangserver's CLI entry +
-	//      all its deps (chokidar, antlr4-c3, ...) into dist/svlangserver-
-	//      bundle.js. ChipOS IDE built-in extensions don't ship
-	//      node_modules in the .app, so we can't just `require()` it.
-	//   b) Runtime download on first .sv open (network required).
-	// Phase 1 ships verible-verilog-ls only — user gets format/lint/
-	// hover; completion falls back to syntax-only word-based.
-	log('svlangserver: Phase 2 feature, not yet shipped — see chipos-product-roadmap.md 2.5 Phase 2');
+async function startSvLangServerClient(context: vscode.ExtensionContext): Promise<void> {
+	// PHASE 2 (shipped 2026-05-19): svlangserver is bundled via esbuild
+	// into dist/svlangserver-server.js (see esbuild.mts). We spawn it with
+	// `node <bundle>` and let the bundled bin/main.js auto-append --stdio.
+	//
+	// What it gives us over verible:
+	//   - Hover (signal width, port direction, module signature)
+	//   - Completion (identifier, port name, signal name)
+	//   - Goto-def with cross-file index (vs verible's lexical-only)
+	//   - Rename refactor with all-files awareness
+	// What it does NOT give us:
+	//   - Verilog (pure .v) — svlangserver is SV-focused; verible covers .v
+	//   - Formatting — verible owns format
+	// So in practice both servers run side-by-side: verible for format/lint,
+	// svlangserver for hover/completion/goto-def. VS Code's LSP framework
+	// de-dupes overlapping capabilities (first responder wins).
+	const bundlePath = path.join(context.extensionPath, 'dist', 'svlangserver-server.js');
+	if (!fs.existsSync(bundlePath)) {
+		log(`svlangserver: bundle not found at ${bundlePath} — build artefact missing. The extension ships dist/svlangserver-server.js by default; if you're hacking on the extension source, run \`npx tsx esbuild.mts\` in extensions/chipos-verilog-lsp/.`);
+		return;
+	}
+
+	// `process.execPath` is the Electron binary in extension host context.
+	// We can't use it as a Node interpreter (Electron rejects unrelated JS).
+	// Instead use the user's `node` from PATH or whatever process.versions.node
+	// is bound to via `process.argv0` when ELECTRON_RUN_AS_NODE is set.
+	// Simplest: rely on system `node`. If absent we tell the user.
+	const nodeBin = await discoverOnPath('node');
+	if (!nodeBin) {
+		log('svlangserver: system `node` not found on PATH — cannot spawn bundled server. Install Node.js (https://nodejs.org) or set chipos.verilog.lsp.svlangserver.enabled=false to silence.');
+		return;
+	}
+
+	const serverOptions: ServerOptions = {
+		command: nodeBin,
+		args: [bundlePath],
+		// No `transport` field — see verible client above for why.
+		// bin/main.js auto-pushes --stdio when no --node-ipc/--socket/--stdio
+		// is provided, which is exactly what the LSP framework expects.
+	};
+	const clientOptions: LanguageClientOptions = {
+		documentSelector: DOCUMENT_SELECTOR,
+		outputChannel,
+		synchronize: {
+			configurationSection: SECTION,
+		},
+	};
+
+	svClient = new LanguageClient(
+		'chipos-svlangserver',
+		'svlangserver',
+		serverOptions,
+		clientOptions,
+	);
+	try {
+		await svClient.start();
+		log(`svlangserver: started (node=${nodeBin}, bundle=${bundlePath})`);
+	} catch (err) {
+		log('svlangserver: start failed:', err);
+		svClient = undefined;
+	}
 }
 
 /**

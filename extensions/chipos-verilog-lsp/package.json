@@ -1,9 +1,9 @@
 {
 	"name": "chipos-verilog-lsp",
 	"publisher": "chipos",
-	"description": "Verilog/SystemVerilog LSP client for ChipOS IDE — spawns Verible (formatting / lint / hover) and svlangserver (completion / goto-def). Both are off-by-default opt-ins via chipos.verilog.lsp.* settings.",
+	"description": "Verilog/SystemVerilog LSP client for ChipOS IDE — spawns Verible (format / lint / outline / goto-def via lexer) and svlangserver (hover / completion / cross-file goto-def / rename). Both ship bundled, both default on, both configurable via chipos.verilog.lsp.* settings.",
 	"displayName": "ChipOS Verilog/SV Language Server",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"license": "MIT",
 	"engines": {
@@ -17,6 +17,7 @@
 		"watch": "gulp watch-extension:chipos-verilog-lsp"
 	},
 	"dependencies": {
+		"@imc-trading/svlangserver": "^0.4.1",
 		"vscode-languageclient": "^9.0.1"
 	},
 	"devDependencies": {
@@ -52,8 +53,8 @@
 				},
 				"chipos.verilog.lsp.svlangserver.enabled": {
 					"type": "boolean",
-					"default": false,
-					"description": "(Phase 2 — not yet shipped) Enable svlangserver for completion / goto-def / rename. See chipos-product-roadmap.md 2.5 Phase 2 — currently no-op because the npm package is not bundled in the .app."
+					"default": true,
+					"description": "Enable @imc-trading/svlangserver for hover, completion, cross-file goto-def, and rename — primarily SystemVerilog-focused but also handles .v. Bundled into the extension; requires `node` on PATH at runtime (Electron's bundled JS runtime can't host arbitrary npm packages). Set to false to disable if you only want Verible."
 				}
 			}
 		}
