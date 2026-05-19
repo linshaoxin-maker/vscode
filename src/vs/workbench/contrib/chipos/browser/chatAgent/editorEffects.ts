@@ -367,14 +367,25 @@ export class ChipOSEditorEffects extends Disposable {
 		try {
 			const cp: typeof import('child_process') = require('child_process');
 			cp.exec('git diff --numstat HEAD', { cwd: workspacePath, timeout: 5000 }, (err, stdout) => {
-				if (err || !stdout.trim()) { return; }
+				const numstatEmpty = !stdout || !stdout.trim();
+				if (err || numstatEmpty) {
+					// Workspace isn't a git repo, or no tracked changes (the
+					// case for net-new untracked files like sim/report_*.txt).
+					// Without a fallback, additions/deletions stay at 0/0 and
+					// the working-set widget shows the misleading "+0 -0"
+					// label even though the files have real content.
+					this._applyFilesystemFallbackStats(sessionResource, state);
+					return;
+				}
 				let updated = false;
+				const seenPaths = new Set<string>();
 				for (const line of stdout.trim().split('\n')) {
 					const parts = line.split('\t');
 					if (parts.length < 3) { continue; }
 					const additions = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
 					const deletions = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
 					const path = parts[2];
+					seenPaths.add(path);
 					const existing = state.fileChanges.get(path);
 					if (existing && (existing.additions !== additions || existing.deletions !== deletions)) {
 						existing.additions = additions;
@@ -385,9 +396,82 @@ export class ChipOSEditorEffects extends Disposable {
 				if (updated) {
 					this._syncProjectionIfActive(sessionResource);
 				}
+				// numstat doesn't report untracked / unindexed files even when
+				// the workspace IS a git repo. Anything still at 0/0 after
+				// the numstat pass needs the filesystem fallback to avoid
+				// the same "+0 -0" rendering bug.
+				const missing: string[] = [];
+				for (const [p, info] of state.fileChanges) {
+					if (!seenPaths.has(p) && info.additions === 0 && info.deletions === 0) {
+						missing.push(p);
+					}
+				}
+				if (missing.length > 0) {
+					this._applyFilesystemFallbackStats(sessionResource, state, missing);
+				}
 			});
 		} catch {
-			// require('child_process') not available in browser context
+			// require('child_process') not available in browser context — try
+			// the filesystem fallback directly so we still produce real line
+			// counts in restricted environments.
+			this._applyFilesystemFallbackStats(sessionResource, state);
+		}
+	}
+
+	/**
+	 * Fallback line counter used when `git diff --numstat HEAD` can't tell us
+	 * how many lines a tracked file gained/lost. Reads each file's current
+	 * content and treats every line as an addition.
+	 *
+	 * This is lossy on modified files (we don't have the prior baseline, so
+	 * the deletions column stays at 0 and additions reflect the new total),
+	 * but it's still far more useful than the "+0 -0" sentinel the widget
+	 * shows otherwise. For brand-new files (the common worker-write case
+	 * like sim/report_*.txt) the count is accurate.
+	 */
+	private _applyFilesystemFallbackStats(
+		sessionResource: URI,
+		state: ISessionEditorEffectsState,
+		onlyPaths?: readonly string[],
+	): void {
+		let fs: typeof import('fs');
+		try {
+			fs = require('fs');
+		} catch {
+			return;
+		}
+
+		const targets = onlyPaths
+			? onlyPaths.map(p => state.fileChanges.get(p)).filter((e): e is IFileChangeInfo => !!e)
+			: Array.from(state.fileChanges.values());
+
+		let updated = false;
+		for (const entry of targets) {
+			if (entry.additions !== 0 || entry.deletions !== 0) {
+				continue;
+			}
+			const absPath = this._resolveFileUri(entry.path).fsPath;
+			try {
+				const stat = fs.statSync(absPath);
+				if (!stat.isFile()) {
+					continue;
+				}
+				const content = fs.readFileSync(absPath, 'utf8');
+				if (!content.length) {
+					continue;
+				}
+				const trimmed = content.endsWith('\n') ? content.slice(0, -1) : content;
+				const lines = trimmed.length === 0 ? 0 : trimmed.split('\n').length;
+				if (lines !== entry.additions) {
+					entry.additions = lines;
+					updated = true;
+				}
+			} catch {
+				// File may have been removed or be unreadable; leave entry alone.
+			}
+		}
+		if (updated) {
+			this._syncProjectionIfActive(sessionResource);
 		}
 	}
 
