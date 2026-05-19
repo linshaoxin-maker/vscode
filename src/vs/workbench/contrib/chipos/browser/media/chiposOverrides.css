@@ -959,15 +959,49 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 }
 
 /*
- *  Claude Code parity: queued messages should appear ONLY in the chipos
- *  bar above the input, not duplicated as a "Queued" divider + pending
- *  request rows at the bottom of the transcript. Hide both.
+ *  Claude Code parity: pending messages (both Queued and Steering kinds)
+ *  should appear ONLY in the chipos bar above the input, not duplicated
+ *  as dividers + pending request rows at the bottom of the transcript.
  *  - Divider rows get `data-divider-kind` from our patch to chatListRenderer.
- *  - Queued request rows already get `data-pending-kind` from the framework.
- *  Steering dividers + requests remain visible since they're system-level
- *  signals (the agent is about to yield), not user-managed.
+ *  - Pending request rows already get `data-pending-kind` from the framework.
+ *  Hide both kinds: the chipos bar renders Queued (no badge) and Steering
+ *  (with a "STEER" badge) inline above the input so the user manages all
+ *  pending submissions in one place.
  */
 .interactive-item-container.pending-divider[data-divider-kind="queued"],
-.interactive-item-container.pending-request[data-pending-kind="queued"] {
+.interactive-item-container.pending-divider[data-divider-kind="steering"],
+.interactive-item-container.pending-request[data-pending-kind="queued"],
+.interactive-item-container.pending-request[data-pending-kind="steering"] {
 	display: none !important;
+}
+
+/*
+ *  Steering variant: subtly different background tint so the user reads
+ *  it as "will yield + send sooner" without making it visually loud.
+ *  The "STEER" badge does most of the semantic work; the tint is just a
+ *  light scan-cue.
+ */
+.chipos-queued-message-steering {
+	border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-focusBorder));
+}
+
+.chipos-queued-message-steering:hover {
+	border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-focusBorder));
+	background: var(--vscode-list-warningForeground, var(--vscode-input-background));
+}
+
+.chipos-queued-message-badge {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 5px;
+	margin-right: 2px;
+	border-radius: 3px;
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: 0.5px;
+	background: var(--vscode-inputValidation-warningBorder, var(--vscode-focusBorder));
+	color: var(--vscode-editor-background);
+	text-transform: uppercase;
+	line-height: 1.2;
 }

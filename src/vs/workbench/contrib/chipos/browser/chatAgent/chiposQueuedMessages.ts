@@ -108,9 +108,14 @@ export class ChipOSQueuedMessages extends Disposable {
 			this._container.classList.add('chipos-queued-messages-empty');
 			return;
 		}
-		// Only show user-queued items. Steering requests are framework-
-		// generated yield signals and shouldn't appear as user-facing cards.
-		const pending = vm.model.getPendingRequests().filter(p => p.kind === ChatRequestQueueKind.Queued);
+		// Include BOTH user-pending kinds:
+		//   - Queued: waits for current request to fully complete
+		//   - Steering: signals current request to yield, then sends next
+		// Both are user-submitted-while-busy messages. The framework default
+		// for `chat.requestQueuing.defaultAction` is 'steer', so Enter-while-
+		// busy actually produces Steering by default — filtering Queued-only
+		// would leave the chipos bar empty for the most common case.
+		const pending = vm.model.getPendingRequests();
 		if (pending.length === 0) {
 			this._container.classList.add('chipos-queued-messages-empty');
 			return;
@@ -122,8 +127,8 @@ export class ChipOSQueuedMessages extends Disposable {
 		void headerIcon;
 		const headerLabel = dom.append(header, dom.$('span.chipos-queued-messages-header-label'));
 		headerLabel.textContent = pending.length === 1
-			? localize('chipos.queue.headerOne', '1 queued message')
-			: localize('chipos.queue.headerN', '{0} queued messages', pending.length);
+			? localize('chipos.queue.headerOne', '1 pending message')
+			: localize('chipos.queue.headerN', '{0} pending messages', pending.length);
 
 		const list = dom.append(this._container, dom.$('.chipos-queued-messages-list'));
 		for (const p of pending) {
@@ -133,6 +138,27 @@ export class ChipOSQueuedMessages extends Disposable {
 
 	private _renderItem(parent: HTMLElement, pending: IChatPendingRequest, sessionResource: URI): void {
 		const card = dom.append(parent, dom.$('.chipos-queued-message'));
+		// Steering vs Queued affects styling + the small "kind" badge.
+		// Steering carries a yield-now intent so we mark it visually
+		// distinct, but the cancel behavior is identical (both flow
+		// through `chatService.removePendingRequest`).
+		const isSteering = pending.kind === ChatRequestQueueKind.Steering;
+		if (isSteering) {
+			card.classList.add('chipos-queued-message-steering');
+		}
+
+		// Small inline badge for steering items so the user understands
+		// the semantic difference vs a plain queued message. No badge for
+		// Queued (the default-looking card already conveys "waiting").
+		if (isSteering) {
+			const badge = dom.append(card, dom.$('span.chipos-queued-message-badge'));
+			badge.textContent = localize('chipos.queue.steeringBadge', 'STEER');
+			this._rowListeners.add(this._hoverService.setupManagedHover(
+				getDefaultHoverDelegate('mouse'),
+				badge,
+				localize('chipos.queue.steeringTooltip', "Steering: will be sent at the next tool-call boundary, signaling the current request to yield"),
+			));
+		}
 
 		const textEl = dom.append(card, dom.$('.chipos-queued-message-text'));
 		// `request.message.text` is the raw user input (with @mentions,
@@ -142,11 +168,14 @@ export class ChipOSQueuedMessages extends Disposable {
 		// framework usually rejects empty requests, but be safe).
 		textEl.textContent = pending.request.message.text.trim();
 
+		const cancelTooltip = isSteering
+			? localize('chipos.queue.cancelSteering', 'Cancel steering message')
+			: localize('chipos.queue.cancel', 'Cancel queued message');
 		const closeBtn = dom.append(card, dom.$('span.chipos-queued-message-close.codicon.codicon-close'));
 		closeBtn.setAttribute('role', 'button');
-		closeBtn.setAttribute('aria-label', localize('chipos.queue.cancel', 'Cancel queued message'));
+		closeBtn.setAttribute('aria-label', cancelTooltip);
 		closeBtn.setAttribute('tabindex', '0');
-		this._rowListeners.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), closeBtn, localize('chipos.queue.cancel', 'Cancel queued message')));
+		this._rowListeners.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), closeBtn, cancelTooltip));
 
 		const removeRequest = () => {
 			try {
