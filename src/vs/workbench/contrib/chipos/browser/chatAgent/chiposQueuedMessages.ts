@@ -152,7 +152,7 @@ export class ChipOSQueuedMessages extends Disposable {
 		// Queued (the default-looking card already conveys "waiting").
 		if (isSteering) {
 			const badge = dom.append(card, dom.$('span.chipos-queued-message-badge'));
-			badge.textContent = localize('chipos.queue.steeringBadge', 'STEER');
+			badge.textContent = localize('chipos.queue.steeringBadge', 'steer');
 			this._rowListeners.add(this._hoverService.setupManagedHover(
 				getDefaultHoverDelegate('mouse'),
 				badge,

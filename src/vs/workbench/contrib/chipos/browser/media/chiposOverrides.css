@@ -865,92 +865,130 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	display: contents;
 }
 
+/*
+ *  Container: no outer border, no background fill. Just a stack of cards
+ *  with breathing room. The "this is part of the composer" cue comes from
+ *  the cards themselves matching the input box's hover/focus look.
+ */
 .chipos-queued-messages {
 	display: flex;
 	flex-direction: column;
-	margin: 0 4px 6px 4px;
-	padding: 6px 8px 4px 8px;
-	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-input-border, transparent));
-	border-radius: 6px;
-	background: var(--vscode-chat-requestBackground, var(--vscode-editor-background));
-	gap: 4px;
+	margin: 0 2px 4px 2px;
+	gap: 2px;
 }
 
 .chipos-queued-messages.chipos-queued-messages-empty {
 	display: none;
 }
 
+/*
+ *  Header: small, low-key, lowercase. Sits above the cards like a section
+ *  label, not a UPPERCASE BLOCK PRINT shout.
+ */
 .chipos-queued-messages-header {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	padding: 0 2px;
+	gap: 5px;
+	padding: 2px 4px 0 4px;
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
-	text-transform: uppercase;
-	letter-spacing: 0.4px;
+	opacity: 0.75;
 }
 
 .chipos-queued-messages-header-icon {
-	font-size: 12px;
-	opacity: 0.8;
+	font-size: 11px;
 }
 
 .chipos-queued-messages-header-label {
 	font-size: 11px;
+	letter-spacing: 0;
 }
 
 .chipos-queued-messages-list {
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
+	gap: 2px;
 }
 
+/*
+ *  Card: rounded pill with the same background tint as the input box, no
+ *  hard border. Hover lifts the background a notch (matches list row
+ *  hover convention) — no border-color flash.
+ */
 .chipos-queued-message {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	padding: 5px 6px 5px 8px;
-	border-radius: 4px;
+	gap: 8px;
+	padding: 6px 8px 6px 10px;
+	border-radius: 8px;
 	background: var(--vscode-input-background);
-	border: 1px solid transparent;
-	transition: border-color 120ms ease, background 120ms ease;
+	color: var(--vscode-input-foreground, var(--vscode-foreground));
+	transition: background 140ms ease;
 }
 
 .chipos-queued-message:hover {
-	border-color: var(--vscode-focusBorder);
 	background: var(--vscode-list-hoverBackground, var(--vscode-input-background));
+}
+
+/*
+ *  Steering badge: a soft pill with text color tint, NOT a loud warning
+ *  background. Matches how Cursor / Claude Code mark non-default states —
+ *  semantic, not alarming.
+ *
+ *  Why we don't use --vscode-charts-orange directly for the foreground:
+ *  some themes ship it with alpha applied (e.g. rgba(...0.33)), so
+ *  `color: var(--charts-orange)` renders the text near-invisible. We
+ *  hard-code a readable orange (matches the chart palette in spirit) and
+ *  use the variable only for the background tint where alpha is fine.
+ */
+.chipos-queued-message-badge {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	padding: 2px 7px;
+	border-radius: 4px;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+	background: color-mix(in srgb, #ea5c00 14%, transparent);
+	color: #ea5c00;
+	text-transform: lowercase;
+	line-height: 1.4;
 }
 
 .chipos-queued-message-text {
 	flex: 1 1 auto;
 	min-width: 0;
-	font-size: 12px;
+	font-size: 13px;
 	color: var(--vscode-foreground);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	opacity: 0.9;
 }
 
+/*
+ *  Close button: ghost icon, only visible on row hover (or own focus).
+ *  Hover state is a soft rounded background — no harsh outline.
+ */
 .chipos-queued-message-close {
 	flex: 0 0 auto;
-	width: 18px;
-	height: 18px;
+	width: 20px;
+	height: 20px;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	border-radius: 3px;
+	border-radius: 5px;
 	font-size: 12px;
 	color: var(--vscode-icon-foreground);
 	cursor: pointer;
 	opacity: 0;
-	transition: opacity 120ms ease, background 120ms ease;
+	transition: opacity 140ms ease, background 140ms ease;
 }
 
 .chipos-queued-message:hover .chipos-queued-message-close,
 .chipos-queued-message-close:focus {
-	opacity: 0.8;
+	opacity: 0.7;
 }
 
 .chipos-queued-message-close:hover {
@@ -976,32 +1014,8 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 }
 
 /*
- *  Steering variant: subtly different background tint so the user reads
- *  it as "will yield + send sooner" without making it visually loud.
- *  The "STEER" badge does most of the semantic work; the tint is just a
- *  light scan-cue.
+ *  Steering variant: no extra border-color override. The lowercase
+ *  "steer" badge (defined above with the orange-tint pill) does the
+ *  semantic work; we don't want a second visual signal that competes
+ *  with the badge.
  */
-.chipos-queued-message-steering {
-	border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-focusBorder));
-}
-
-.chipos-queued-message-steering:hover {
-	border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-focusBorder));
-	background: var(--vscode-list-warningForeground, var(--vscode-input-background));
-}
-
-.chipos-queued-message-badge {
-	flex: 0 0 auto;
-	display: inline-flex;
-	align-items: center;
-	padding: 1px 5px;
-	margin-right: 2px;
-	border-radius: 3px;
-	font-size: 9px;
-	font-weight: 600;
-	letter-spacing: 0.5px;
-	background: var(--vscode-inputValidation-warningBorder, var(--vscode-focusBorder));
-	color: var(--vscode-editor-background);
-	text-transform: uppercase;
-	line-height: 1.2;
-}
