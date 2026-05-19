@@ -110,6 +110,20 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	private _lastSequenceId: number = 0;
 	private _reconnectAttempts: number = 0;
 	private _sessionDone: boolean = false;
+	/**
+	 * Terminal failure flag — set when the reasoner replies SESSION_NOT_FOUND
+	 * AND we have no recent task params to auto-resubmit. Distinct from
+	 * `_sessionDone` (graceful completion); `_sessionLost` means the backend
+	 * forgot us and reconnecting can never recover, so `_scheduleReconnect`
+	 * must short-circuit. Cleared on every new sendTask via `_connect()`.
+	 *
+	 * Without this, line 538's `if (!this._sessionDone)` gate kept firing
+	 * reconnects every time the SSE stream ended after SESSION_NOT_FOUND,
+	 * even though the dispatcher had already called `_closeEventSource` +
+	 * `_clearReconnectTimer`. The infinite WARN/INFO/INFO loop in DevTools
+	 * console was this exact race.
+	 */
+	private _sessionLost: boolean = false;
 	private _state: ConnectionState = ConnectionState.Disconnected;
 	private _reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _seenEventIds = new Set<string>();
@@ -256,6 +270,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		this._closeEventSource();
 		this._reconnectAttempts = 0;
 		this._sessionDone = false;
+		this._sessionLost = false;
 		// When the chat thread reuses the same backend session across rounds
 		// (chipOSChatAgent does this so reasoner Memory persists), DO NOT
 		// reset _lastSequenceId. The reasoner's session retains an
@@ -640,6 +655,15 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 					this.sendTask(params.sessionId, params.query, params.mentions, params.mode, params.options);
 					return;
 				}
+				// Mark the session terminally lost so the processStream
+				// fall-through (line ~538: `if (!this._sessionDone) {...}`)
+				// no longer schedules another reconnect attempt. Without
+				// this, _closeEventSource closes the current stream → the
+				// awaiting reader returns → finally block runs → since
+				// _sessionDone is still false → _scheduleReconnect fires
+				// → new SSE → reasoner replies SESSION_NOT_FOUND again →
+				// infinite WARN/INFO loop in the console.
+				this._sessionLost = true;
 				this._setState(ConnectionState.Disconnected);
 				this._emitError(
 					'Backend lost track of this session (likely restarted). Send another message to start a fresh session.',
@@ -724,6 +748,15 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 	// ── 重连 ────────────────────────────────────────────────────────────────
 
 	private _scheduleReconnect(): void {
+		// Defense in depth — any caller landing here after a terminal
+		// failure must NOT schedule another reconnect. `_sessionDone` covers
+		// graceful task completion; `_sessionLost` covers SESSION_NOT_FOUND
+		// (reasoner forgot us). Without this guard the processStream
+		// fall-through fires reconnect even though the dispatcher already
+		// surfaced SESSION_LOST_RECOVERABLE to the user.
+		if (this._sessionDone || this._sessionLost) {
+			return;
+		}
 		const maxAttempts = this._config.maxReconnectAttempts ?? 10;
 		if (this._reconnectAttempts >= maxAttempts) {
 			this._setState(ConnectionState.Error);
