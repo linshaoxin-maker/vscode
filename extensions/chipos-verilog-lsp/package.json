@@ -55,6 +55,51 @@
 					"type": "boolean",
 					"default": true,
 					"description": "Enable @imc-trading/svlangserver for hover, completion, cross-file goto-def, and rename — primarily SystemVerilog-focused but also handles .v. Bundled into the extension; requires `node` on PATH at runtime (Electron's bundled JS runtime can't host arbitrary npm packages). Set to false to disable if you only want Verible."
+				},
+				"systemverilog.includeIndexing": {
+					"type": "array",
+					"items": { "type": "string" },
+					"default": [
+						"**/*.sv",
+						"**/*.svh",
+						"**/*.v",
+						"**/*.vh"
+					],
+					"description": "(svlangserver) Glob patterns of files to index for cross-file symbol resolution (hover / completion / goto-def). ChipOS default includes both .sv/.svh and .v/.vh — upstream svlangserver default is only .sv/.svh."
+				},
+				"systemverilog.excludeIndexing": {
+					"type": "array",
+					"items": { "type": "string" },
+					"default": [
+						"**/test/**",
+						"**/tests/**",
+						"**/sim/**",
+						"**/work/**",
+						"**/build/**",
+						"**/out/**",
+						"**/output/**",
+						"**/log/**",
+						"**/logs/**",
+						"**/*_debug/**",
+						"**/.coderust/**",
+						"**/.git/**",
+						"**/node_modules/**",
+						"**/dist/**",
+						"**/coverage/**",
+						"**/vcd/**"
+					],
+					"description": "(svlangserver) Glob patterns of files to skip when indexing. ChipOS default excludes common simulation/build/log/debug output directories so the indexer doesn't time out on generated artefacts (typical symptom: 'Timeout trying to index document'). Upstream svlangserver default is only ['**/test/**']."
+				},
+				"systemverilog.disableLinting": {
+					"type": "boolean",
+					"default": true,
+					"description": "(svlangserver) When true, svlangserver skips invoking its external linter (verilator / iverilog). Default true because verible-verilog-ls already provides style lint via diagnosticProvider — running a second SV-semantic lint pass would surface duplicate Problems and slow saves. Set false + `systemverilog.linter='verilator'` if you want the stronger semantic lint."
+				},
+				"systemverilog.linter": {
+					"type": "string",
+					"enum": ["verilator", "icarus"],
+					"default": "verilator",
+					"description": "(svlangserver) Linter to invoke on save when `systemverilog.disableLinting` is false. Only 'verilator' and 'icarus' are supported by svlangserver. Requires the chosen binary on PATH; ChipOS auto-installs both via the oss-cad-suite pack."
 				}
 			}
 		}
