@@ -6,8 +6,9 @@
 import * as cp from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as vscode from 'vscode';
-import { DocumentSelector, LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
+import { DocumentSelector, LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-languageclient/node';
 
 /**
  * ChipOS Verilog/SystemVerilog LSP — spawns two external LSP servers
@@ -107,9 +108,11 @@ async function syncServersFromConfig(context: vscode.ExtensionContext): Promise<
 }
 
 async function startVeribleClient(_context: vscode.ExtensionContext, pathOverride: string): Promise<void> {
+	log(`verible: lookup start (override=${pathOverride || '(empty)'}, managed dirs=${chiposManagedBinDirs().join(',')})`);
 	const binary = pathOverride || (await discoverOnPath(VERIBLE_BINARY_NAME));
+	log(`verible: lookup result = ${binary ?? '(none)'}`);
 	if (!binary) {
-		log(`verible: binary '${VERIBLE_BINARY_NAME}' not found on PATH and chipos.verilog.lsp.verible.path is empty — running in syntax-only mode. Install with 'brew install verible' (macOS) or 'apt install verible' (Linux) to enable format/lint/hover.`);
+		log(`verible: binary '${VERIBLE_BINARY_NAME}' not found on PATH (and not in ~/.coderust/eda/verible/bin) and chipos.verilog.lsp.verible.path is empty — running in syntax-only mode. Install with 'brew install verible' (macOS) or 'apt install verible' (Linux), or let the ChipOS worker auto-fetch it (~/.coderust/eda/verible/), to enable format/lint/hover.`);
 		// One-time notification so user knows why their hover isn't working.
 		const shown = _context.workspaceState.get<boolean>('chipos.verilog.veribleMissingNotified', false);
 		if (!shown) {
@@ -127,10 +130,16 @@ async function startVeribleClient(_context: vscode.ExtensionContext, pathOverrid
 		return;
 	}
 
+	// IMPORTANT: do NOT set `transport: TransportKind.stdio` — vscode-languageclient
+	// would then auto-append `--stdio` to args, but verible-verilog-ls doesn't
+	// recognise that flag and exits with code 1 ("ERROR: Unknown command line
+	// flag 'stdio'"). When `transport` is undefined the framework just talks to
+	// the child process's stdin/stdout directly, which is exactly what verible
+	// expects (and how `vscode-languageclient` v9 documents `Executable` for
+	// servers that don't take a transport-mode flag).
 	const serverOptions: ServerOptions = {
 		command: binary,
 		args: [],
-		transport: TransportKind.stdio,
 	};
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: DOCUMENT_SELECTOR,
@@ -169,12 +178,48 @@ async function startSvLangServerClient(_context: vscode.ExtensionContext): Promi
 }
 
 /**
+ * Standard install locations the worker (VeriblePackManager + EdaPackManager)
+ * uses for auto-fetched EDA binaries. We check these BEFORE walking $PATH so
+ * the LSP extension and the worker agree on which verible binary to use,
+ * even when GUI-launched VS Code doesn't inherit the user's shell PATH.
+ *
+ * Order matters:
+ *  1. verible/bin — VeriblePackManager install path (Phase 1.5 standard)
+ *  2. oss-cad-suite/bin — EdaPackManager install path (verible isn't in it
+ *     today but reserved if upstream adds it)
+ */
+function chiposManagedBinDirs(): string[] {
+	const home = os.homedir();
+	return [
+		path.join(home, '.coderust', 'eda', 'verible', 'bin'),
+		path.join(home, '.coderust', 'eda', 'oss-cad-suite', 'bin'),
+	];
+}
+
+/**
  * Walk $PATH looking for an executable named `name`. Cross-platform
  * enough for macOS/Linux (Windows would need PATHEXT handling, but
  * verible-verilog-ls is currently not shipped for Windows by upstream).
+ *
+ * Also checks ChipOS-managed install directories (~/.coderust/eda/...)
+ * first — those are populated by the worker's auto-fetch step and won't
+ * be in the IDE process's PATH when launched from Finder/Dock.
  */
 function discoverOnPath(name: string): Promise<string | undefined> {
 	return new Promise((resolve) => {
+		// 1. ChipOS-managed install dirs (covers Phase 1.5 auto-fetch).
+		for (const p of chiposManagedBinDirs()) {
+			const candidate = path.join(p, name);
+			try {
+				if (fs.existsSync(candidate)) {
+					fs.accessSync(candidate, fs.constants.X_OK);
+					return resolve(candidate);
+				}
+			} catch {
+				// not executable — try next
+			}
+		}
+		// 2. $PATH walk.
 		const paths = (process.env.PATH ?? '').split(path.delimiter);
 		for (const p of paths) {
 			if (!p) { continue; }
@@ -188,7 +233,7 @@ function discoverOnPath(name: string): Promise<string | undefined> {
 				// not executable — try next
 			}
 		}
-		// As a safety net try `which` directly, which respects shell
+		// 3. As a safety net try `which` directly, which respects shell
 		// aliases and additional PATH entries injected by login shells
 		// that GUI-launched VS Code doesn't inherit.
 		cp.exec(`command -v ${JSON.stringify(name)}`, (err, stdout) => {

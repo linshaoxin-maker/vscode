@@ -53,6 +53,7 @@ export const dirs = [
 	'extensions/vscode-colorize-perf-tests',
 	'extensions/vscode-test-resolver',
 	'extensions/chipos-remote-ssh',
+	'extensions/chipos-verilog-lsp',
 	'remote',
 	'remote/web',
 	'test/automation',
