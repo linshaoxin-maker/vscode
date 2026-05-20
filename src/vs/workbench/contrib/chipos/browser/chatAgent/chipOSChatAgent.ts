@@ -80,6 +80,7 @@ import {
 	type IToolCallPayload,
 	type IToolResultPayload,
 	type IConfirmRequestPayload,
+	type IConfirmAutoResolvedPayload,
 	type IStatusPayload,
 	type ITodoUpdatePayload,
 	type ITaskCompletePayload,
@@ -1022,6 +1023,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				finish({});
 			});
 
+			// A6: precise diagnostic when required LLM settings are unset, so users
+			// don't get an opaque 401/404 from a half-configured fresh install.
+			const missingLlm = this._getMissingLlmFields();
+			if (missingLlm.length > 0) {
+				const msg = `ChipOS LLM 配置未填写：${missingLlm.join(', ')}。请打开 Settings → ChipOS 填写后重试。`;
+				this._logService.warn('[ChipOS Agent] sendTask blocked — missing LLM fields: %s', missingLlm.join(','));
+				progress([this._progress(`$(warning) ${msg}`, false)]);
+				finish({}, 'LLM settings missing');
+				return;
+			}
+
 			streamClient.sendTask(
 				sessionId,
 				userMessage,
@@ -1423,10 +1435,38 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					data: { requestId: p.request_id, sessionId: ctx.sessionId, options: p.options ?? cardOpts },
 					buttons,
 				};
+				// A1 (issue #51 comment 2): remember the live confirmation so a
+				// later confirm_auto_resolved can withdraw the buttons. IChat-
+				// Confirmation has no native dismiss API, so we mutate `isUsed`
+				// on the same object — the renderer reads it at hit-test time
+				// (chatConfirmationContentPart.ts §96).
+				this._pendingConfirmations.set(p.request_id, confirmation);
 				ctx.progress([confirmation]);
 				// Finish the current request so the framework can accept
 				// the next invoke() when the user clicks a confirmation button.
 				ctx.finish({}, 'Awaiting confirmation');
+				break;
+			}
+
+			case AgentEventType.ConfirmAutoResolved: {
+				const p = event.payload as IConfirmAutoResolvedPayload;
+				const stored = this._pendingConfirmations.get(p.request_id);
+				if (stored) {
+					// Mark the original card as "used" so its buttons stop
+					// looking actionable. The framework hides them on the next
+					// re-render — see chatConfirmationContentPart §96.
+					stored.isUsed = true;
+					this._pendingConfirmations.delete(p.request_id);
+				}
+				const timeoutSec = Math.round((p.timeout_ms || 0) / 1000);
+				const hint = timeoutSec > 0
+					? `已自动确认（${p.reason}，${timeoutSec}s 超时 → action=${p.action}）`
+					: `已自动确认（${p.reason} → action=${p.action}）`;
+				ctx.progress([this._progress(`$(check) ${hint}`)]);
+				this._logService.info(
+					'[ChipOS Agent] confirm_auto_resolved: request_id=%s, action=%s, reason=%s',
+					p.request_id, p.action, p.reason,
+				);
 				break;
 			}
 
@@ -3314,6 +3354,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return { provider, api_key: apiKey, base_url: baseUrl, model };
 	}
 
+	/**
+	 * Return the list of required LLM settings that are still empty.
+	 * Used to surface a precise diagnostic before talking to the backend,
+	 * so users don't see opaque 401/404 errors when they simply haven't
+	 * filled in the form.
+	 */
+	private _getMissingLlmFields(): string[] {
+		const missing: string[] = [];
+		if (!(this._configurationService.getValue<string>('chipos.apiKey') ?? '').trim()) {
+			missing.push('chipos.apiKey');
+		}
+		if (!(this._configurationService.getValue<string>('chipos.apiBaseUrl') ?? '').trim()) {
+			missing.push('chipos.apiBaseUrl');
+		}
+		if (!(this._configurationService.getValue<string>('chipos.model') ?? '').trim()) {
+			missing.push('chipos.model');
+		}
+		return missing;
+	}
+
 	// ── FEAT-R72: IDE 端工具执行 ────────────────────────────────────────────
 
 	/**
@@ -3321,6 +3381,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * 用于 get_terminal_output 工具读取之前 run_in_terminal 的输出
 	 */
 	private readonly _terminalOutputCache = new Map<string, { output: string; exitCode?: number }>();
+
+	/**
+	 * A1 (issue #51 comment 2): live confirmation cards keyed by request_id.
+	 * Lets `confirm_auto_resolved` flip `isUsed = true` on the original card so
+	 * its buttons stop accepting clicks once the server-side timeout has
+	 * already moved on with a default action.
+	 */
+	private readonly _pendingConfirmations = new Map<string, IChatConfirmation>();
 
 	/**
 	 * 处理 Reasoner 推送的 ide_tool_call 事件。
@@ -3671,27 +3739,42 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// returned without ever calling registerIdeMcpTools, so reasoner's
 			// `_ide_mcp_tool_names = {}` and the LLM had no awareness of
 			// terminal capabilities at all.
-			tools.push({
-				name: 'run_in_terminal',
-				description:
-					"Execute a shell command in the user's IDE terminal with sandbox protection. " +
-					'The command runs in a sandboxed environment that restricts file system and network access. ' +
-					'Use this for: running scripts (python, node, bash), installing packages (pip, npm), ' +
-					'building / testing / linting code, executing EDA tools (yosys, verilator, iverilog), ' +
-					'or any other shell command the user explicitly requested. ' +
-					'Returns the command stdout/stderr and a `terminal_id` that can be passed to ' +
-					'`get_terminal_output` to read further output of long-running commands.',
-				parameters_json_schema: JSON.stringify({
-					type: 'object',
-					properties: {
-						command: { type: 'string', description: 'The shell command to run.' },
-						explanation: { type: 'string', description: 'Brief explanation of why this command is being run (shown to user in approval dialog).' },
-						isBackground: { type: 'boolean', description: 'Whether the command should be started as a background task (default false).' },
-					},
-					required: ['command'],
-				}),
-				source: 'ide-builtin',
-			});
+			// Bug #17 (2026-05-20 dogfood): the chipos-side run_in_terminal
+			// handler at line ~3416 uses IDialogService.confirm() for the
+			// approval — that renders a modal centered on the IDE window,
+			// draggable, blocking all clicks (user reported as "system
+			// popup, not chat card"). Worker-side `execute_command` /
+			// `execute` provide the same shell-run capability AND go
+			// through the unified ChipOSPermissionCard inline flow.
+			// Stop advertising run_in_terminal to the LLM so it picks the
+			// worker tools instead. The `chipos.terminal.
+			// disableRunInTerminalTool` config (default true) leaves an
+			// escape hatch — set it to false to restore the modal flow.
+			const disableRunInTerminal = this._configurationService.getValue<boolean>('chipos.terminal.disableRunInTerminalTool');
+			const effectiveDisable = disableRunInTerminal === undefined ? true : disableRunInTerminal;
+			if (!effectiveDisable) {
+				tools.push({
+					name: 'run_in_terminal',
+					description:
+						"Execute a shell command in the user's IDE terminal with sandbox protection. " +
+						'The command runs in a sandboxed environment that restricts file system and network access. ' +
+						'Use this for: running scripts (python, node, bash), installing packages (pip, npm), ' +
+						'building / testing / linting code, executing EDA tools (yosys, verilator, iverilog), ' +
+						'or any other shell command the user explicitly requested. ' +
+						'Returns the command stdout/stderr and a `terminal_id` that can be passed to ' +
+						'`get_terminal_output` to read further output of long-running commands.',
+					parameters_json_schema: JSON.stringify({
+						type: 'object',
+						properties: {
+							command: { type: 'string', description: 'The shell command to run.' },
+							explanation: { type: 'string', description: 'Brief explanation of why this command is being run (shown to user in approval dialog).' },
+							isBackground: { type: 'boolean', description: 'Whether the command should be started as a background task (default false).' },
+						},
+						required: ['command'],
+					}),
+					source: 'ide-builtin',
+				});
+			}
 			tools.push({
 				name: 'get_terminal_output',
 				description:
