@@ -65,6 +65,7 @@ const SSE_TYPE_MAP: Record<string, AgentEventType> = {
 	'tool_result': AgentEventType.ToolResult,
 	'file_edit': AgentEventType.FileEdit,
 	'confirm_request': AgentEventType.ConfirmRequest,
+	'confirm_auto_resolved': AgentEventType.ConfirmAutoResolved,
 	'confirm': AgentEventType.Confirm,
 	'status': AgentEventType.Status,
 	'round_start': AgentEventType.RoundStart,
@@ -137,7 +138,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		mode: 'agent' | 'spec';
 		options: { thinking: boolean; autoApproveMode: string; workspacePath?: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } };
 		ts: number;
-		retried: boolean;
+		retry_count: number;
 	} | undefined;
 
 	private readonly _onDidReceiveEvent = this._register(new Emitter<AgentEvent>());
@@ -298,7 +299,7 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 		this._lastTaskParams = {
 			sessionId, query, mentions, mode, options,
 			ts: Date.now(),
-			retried: false,
+			retry_count: 0,
 		};
 
 		// Send POST first so the backend creates the session before the
@@ -636,10 +637,18 @@ export class SseEventStreamClient extends Disposable implements IEventStreamClie
 				this._clearReconnectTimer();
 				this._reconnectAttempts = 0;
 				const params = this._lastTaskParams;
-				const recent = params && !params.retried && (Date.now() - params.ts) < 300_000;
-				if (recent && params) {
-					this._logService?.info('[SseClient] Auto-resubmitting last task after SESSION_NOT_FOUND');
-					params.retried = true;
+				// Bug #15 (2026-05-20 dogfood): the prior one-shot retry +
+				// 5-min recency check was too narrow. When the reasoner
+				// restarts back-to-back (hot-patch cycle), the 2nd restart
+				// trips SESSION_LOST_RECOVERABLE even though the user's
+				// session is still active. Allow up to 3 auto-resubmits per
+				// session and remove the time gate — recency was always
+				// implicitly checked by sendTask refreshing params.ts on
+				// every new round anyway.
+				const canRetry = params && params.retry_count < 3;
+				if (canRetry && params) {
+					this._logService?.info('[SseClient] Auto-resubmitting last task after SESSION_NOT_FOUND (retry %d/3)', params.retry_count + 1);
+					params.retry_count += 1;
 					// Surface a low-key status so the chat panel can show
 					// "reasoner restarted — resending your last message".
 					this._onDidReceiveEvent.fire({

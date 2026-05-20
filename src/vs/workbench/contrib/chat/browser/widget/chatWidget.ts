@@ -83,7 +83,6 @@ import { ChatViewWelcomePart, IChatViewWelcomeContent } from '../viewsWelcome/ch
 import { IChatTipService } from '../chatTipService.js';
 import { ChatTipContentPart } from './chatContentParts/chatTipContentPart.js';
 import { ChatContentMarkdownRenderer } from './chatContentMarkdownRenderer.js';
-import { isChipOSPermissionCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
 import { IAgentSessionsService } from '../agentSessions/agentSessionsService.js';
 import { IChatDebugService } from '../../common/chatDebugService.js';
 
@@ -2559,16 +2558,19 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		// see this because the floating button overlay sits at the bottom of
 		// the widget regardless of scroll position; chipos cards render
 		// inline so the same snap visibly yanks the entire response.
-		const containsChipOSCard = lastItem && isResponseVM(lastItem) && lastItem.response?.value.some(
-			part => part.kind === 'confirmation' && isChipOSPermissionCardData(part.data),
-		);
-
 		// Auto-scroll: only scroll to end when the user was already at the bottom.
 		// Skip auto-scroll when the confirmation overlay is present — the overlay
 		// insertion already scrolls to end once, and subsequent layout calls should
 		// not fight with the user's manual scrolling.
 		const shouldScroll = lastElementVisible
-			&& !containsChipOSCard
+			// Bug #14 (2026-05-20 dogfood): removed `!containsChipOSCard`
+			// guard. It disabled auto-scroll on EVERY layout pass while a
+			// chipos worker-permission card was at chat end — side effect:
+			// new content (SESSION_LOST banner, progress bars, follow-up
+			// bash cards) landed below the viewport, AND chat-input-part
+			// height growth (working-set widget, mention pill) shrank the
+			// list without re-aligning scroll. Streaming snap is already
+			// covered by lastResponseIsRendering.
 			&& (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll));
 		if (shouldScroll && !overlayEl) {
 			this.listWidget.scrollToEnd();
