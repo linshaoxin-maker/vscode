@@ -856,6 +856,21 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// catches the SSE-close + cancellation + error paths too.
 					this._flushWatchedFileChanges(request.sessionResource, request.requestId, runtime, progress)
 						.catch(err => this._logService.warn('[ChipOS Agent] flushWatchedFileChanges@finish failed', err));
+
+					// Fix P2 (2026-05-20): FullTracer.flush was only wired to the
+					// task_complete branch above, despite the comment promising
+					// "flush at finish". Result: any round that ends via
+					// SSE-close / cancellation / error (no task_complete event)
+					// left N events buffered, and the next round's begin() would
+					// drop them ("[FullTracer] new round trace_id X while Y still
+					// active — dropping 35 buffered events" pattern observed
+					// every round during today's verification). Calling flush()
+					// here releases the buffer + resets _activeTraceId so the next
+					// begin() starts clean. Fire-and-forget, no-op when buffer
+					// is empty.
+					this._fullTracer.flush().catch(err => {
+						this._logService.warn('[ChipOS Agent] FullTracer.flush@invoke-finish failed:', err);
+					});
 					// InlineChat v2: if this invoke came from Cmd+I (EditorInline)
 					// and produced NO file edits but DID produce some answer text,
 					// surface the answer as a notification toast. The inline
@@ -2247,6 +2262,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						this._flushWatchedFileChanges(request.sessionResource, request.requestId, runtime, progress)
 							.catch(err => this._logService.warn('[ChipOS Agent] flushWatchedFileChanges@cont-finish failed', err));
 					}
+					// Fix P2 (2026-05-20): mirror the invoke()-side flush to release
+					// the FullTracer buffer when continuation ends without a
+					// task_complete event. See the same comment in invoke().
+					this._fullTracer.flush().catch(err => {
+						this._logService.warn('[ChipOS Agent] FullTracer.flush@cont-finish failed:', err);
+					});
 					if (thinkingTitle || contStepCount > 0) {
 						const title = thinkingTitle ?? `Completed ${contStepCount} step${contStepCount === 1 ? '' : 's'}`;
 						progress([{ kind: 'thinking', value: '', generatedTitle: title } satisfies IChatThinkingPart]);
