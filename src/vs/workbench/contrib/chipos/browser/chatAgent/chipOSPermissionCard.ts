@@ -197,6 +197,35 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 
 		if (!confirmation.isUsed && isPending && !hasFollowUpRequest && responseVM) {
 			this._buildButtons(buttonsRow, data, responseVM, widget);
+			// 2026-05-20 dogfood (Bug #12): chatWidget.ts:2571's
+			// `containsChipOSCard` branch deliberately disables auto-scroll on
+			// every layout pass once a worker-permission card lands in chat —
+			// to stop the scroll-snap that yanked the user back to bottom
+			// during streaming. Side effect: when a NEW pending card is
+			// appended at the end of chat content, the button row sits BELOW
+			// the chat-list viewport edge, visually covered by the chat-
+			// input-part (working set / mention / input box stack), with no
+			// indication to the user that scrolling will reveal them.
+			//
+			// Fix: when the card first attaches AND its buttons are still
+			// active, scroll the card's bottom edge into view exactly once.
+			// `block: 'end'` aligns the buttons row with the bottom of the
+			// scroll container — guaranteed visible regardless of how tall
+			// the input-part below has grown.
+			const scrollButtonsIntoView = () => {
+				if (!card.isConnected) {
+					const rafId = requestAnimationFrame(scrollButtonsIntoView);
+					this._register({ dispose: () => cancelAnimationFrame(rafId) });
+					return;
+				}
+				try {
+					card.scrollIntoView({ block: 'end', behavior: 'auto' });
+				} catch {
+					// scrollIntoView can throw if card is detached between
+					// the isConnected check and the call; ignore.
+				}
+			};
+			requestAnimationFrame(scrollButtonsIntoView);
 		} else {
 			const usedPill = dom.$('span.chipos-used-pill');
 			usedPill.textContent = localize('chipos.card.used', 'Responded');
