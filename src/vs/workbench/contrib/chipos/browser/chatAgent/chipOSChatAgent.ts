@@ -2278,6 +2278,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						idleTimer = undefined;
 					}
 					listener.dispose();
+					connStateListener.dispose();
 					result = {
 						...result,
 						timings: { totalElapsed: Date.now() - startTime },
@@ -2295,6 +2296,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				}
 			};
 			runtime.activeFinish = finish;
+
+			// Race-fix (2026-05-20): pause the idle watchdog while the SSE
+			// stream itself is down. The 90s timer is meant to catch a
+			// "backend still healthy but silent" case (e.g. hot-event drop
+			// window between worker /decide and listener registration —
+			// see the comment block on _listenForContinuation). It is NOT
+			// meant to fire when the SSE stream is reconnecting after a
+			// reasoner restart: events legitimately can't arrive in that
+			// window, and tearing down the listener here makes the IDE
+			// miss the worker tool result when reconnect completes —
+			// reproduced 2026-05-20 by `docker restart` of the reasoner
+			// mid-Verification-Upgrade. Clear the timer on any non-
+			// Connected transition; re-arm on Connected.
+			const connStateListener = streamClient.onDidChangeConnectionState((state: ConnectionState) => {
+				if (resolved) { return; }
+				if (state !== ConnectionState.Connected) {
+					if (idleTimer !== undefined) {
+						this._logService.info('[ChipOS Agent] SSE state=%s — clearing idle timer until reconnect', state);
+						clearTimeout(idleTimer);
+						idleTimer = undefined;
+					}
+				} else {
+					this._logService.info('[ChipOS Agent] SSE state=connected — re-arming idle timer');
+					armIdleTimer();
+				}
+			});
 
 			const listener = streamClient.onDidReceiveEvent((event: AgentEvent) => {
 				if (resolved) { return; }
