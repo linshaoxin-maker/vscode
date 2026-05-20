@@ -82,6 +82,7 @@ class ChatAgentToolsContribution extends Disposable implements IWorkbenchContrib
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
 		@ILanguageModelToolsService toolsService: ILanguageModelToolsService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -101,11 +102,32 @@ class ChatAgentToolsContribution extends Disposable implements IWorkbenchContrib
 		this._register(toolsService.registerTool(KillTerminalToolData, killTerminalTool));
 		this._register(toolsService.executeToolSet.addTool(KillTerminalToolData));
 
-		instantiationService.invokeFunction(createRunInTerminalToolData).then(runInTerminalToolData => {
-			const runInTerminalTool = instantiationService.createInstance(RunInTerminalTool);
-			this._register(toolsService.registerTool(runInTerminalToolData, runInTerminalTool));
-			this._register(toolsService.executeToolSet.addTool(runInTerminalToolData));
-		});
+		// Bug #17 (2026-05-20 dogfood): the upstream `run_in_terminal` tool
+		// surfaces its confirmation through VS Code's IDialogService — a
+		// modal, draggable dialog centered on the IDE window that blocks
+		// all other clicks until resolved. This is inconsistent with every
+		// other chat tool in ChipOS, which routes through the worker
+		// permission stream and renders as an inline ChipOSPermissionCard
+		// (Allow once / Always in workspace / Always globally / Deny)
+		// directly in the chat list. Users reported this as "popup in the
+		// middle of ChipOS IDE — system dialog, not chat card."
+		//
+		// The chipos worker already exposes `execute` and `execute_command`
+		// tools for the same operation (run a shell command), both of
+		// which go through the unified permission UX. Skip the upstream
+		// registration so the LLM picks one of those instead. The setting
+		// `chipos.terminal.disableRunInTerminalTool` (default true) leaves
+		// an escape hatch for users who explicitly want the upstream
+		// dialog back.
+		const disableRunInTerminal = configurationService.getValue<boolean>('chipos.terminal.disableRunInTerminalTool');
+		const effectiveDisable = disableRunInTerminal === undefined ? true : disableRunInTerminal;
+		if (!effectiveDisable) {
+			instantiationService.invokeFunction(createRunInTerminalToolData).then(runInTerminalToolData => {
+				const runInTerminalTool = instantiationService.createInstance(RunInTerminalTool);
+				this._register(toolsService.registerTool(runInTerminalToolData, runInTerminalTool));
+				this._register(toolsService.executeToolSet.addTool(runInTerminalToolData));
+			});
+		}
 
 		const getTerminalSelectionTool = instantiationService.createInstance(GetTerminalSelectionTool);
 		this._register(toolsService.registerTool(GetTerminalSelectionToolData, getTerminalSelectionTool));
