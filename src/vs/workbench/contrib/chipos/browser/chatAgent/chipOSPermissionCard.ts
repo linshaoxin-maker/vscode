@@ -208,24 +208,27 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			// indication to the user that scrolling will reveal them.
 			//
 			// Fix: when the card first attaches AND its buttons are still
-			// active, scroll the card's bottom edge into view exactly once.
-			// `block: 'end'` aligns the buttons row with the bottom of the
-			// scroll container — guaranteed visible regardless of how tall
-			// the input-part below has grown.
-			const scrollButtonsIntoView = () => {
+			// active, use the IChatWidget.revealElement API (which knows
+			// about the virtualized list internals — naive
+			// element.scrollIntoView gets undone by the next listWidget
+			// layout pass since the list mounts rows lazily). revealElement
+			// is exactly meant for "scroll chat list so given DOM element is
+			// visible at the bottom of the viewport". Fire once per mount;
+			// subsequent user scrolling is not fought.
+			const revealButtonsRow = () => {
 				if (!card.isConnected) {
-					const rafId = requestAnimationFrame(scrollButtonsIntoView);
+					const rafId = requestAnimationFrame(revealButtonsRow);
 					this._register({ dispose: () => cancelAnimationFrame(rafId) });
 					return;
 				}
 				try {
-					card.scrollIntoView({ block: 'end', behavior: 'auto' });
+					widget?.revealElement(card);
 				} catch {
-					// scrollIntoView can throw if card is detached between
-					// the isConnected check and the call; ignore.
+					// revealElement is best-effort; if the row's not mounted
+					// yet or widget became disposed, ignore.
 				}
 			};
-			requestAnimationFrame(scrollButtonsIntoView);
+			requestAnimationFrame(revealButtonsRow);
 		} else {
 			const usedPill = dom.$('span.chipos-used-pill');
 			usedPill.textContent = localize('chipos.card.used', 'Responded');
