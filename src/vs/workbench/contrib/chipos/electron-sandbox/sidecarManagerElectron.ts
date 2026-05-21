@@ -191,8 +191,31 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		// wrong identity (or none at all). Respawn so the new worker_token
 		// (or absence thereof) takes effect immediately instead of after the
 		// next 23h refresh cycle. Skipped while no Worker is running yet.
-		this._register(this._authService.onDidChangeLoginState(() => {
+		//
+		// 2026-05-20 fix (second layer of onDidChangeLoginState spurious flip):
+		// even with the publisher-side gate in chiposAuthService.ts, the FIRST
+		// onDidChangeToken after IDE startup can legitimately flip the cached
+		// loginState (false -> true) -- which means a real `fire(true)` is
+		// emitted even though the user did NOT sign in (their token was just
+		// restored from SecretStorage and the first refresh cycle ran). In
+		// that case the worker is ALREADY running with the correct identity
+		// (we minted its token from the same SecretStorage credentials), so
+		// respawning it is pure waste plus 60s+ of UI lag. Track first-event
+		// here too: when the worker is already alive and the new state is
+		// "logged in", skip respawn.
+		let lastSeenLoggedIn: boolean | undefined = undefined;
+		this._register(this._authService.onDidChangeLoginState(isLoggedIn => {
+			const wasSeen = lastSeenLoggedIn;
+			lastSeenLoggedIn = isLoggedIn;
 			if (this._workerState === WorkerState.NotStarted) {
+				return;
+			}
+			// First event after listener construction + worker already running
+			// + new state is logged-in => this is the startup-restore flow,
+			// not a real signin. The worker is already bound to the right
+			// identity from the SecretStorage-derived worker_token.
+			if (wasSeen === undefined && isLoggedIn === true) {
+				this._logService.info('[ChipOS SidecarElectron] initial onDidChangeLoginState(true) with worker already running; suppressing startup-flow respawn');
 				return;
 			}
 			this._logService.info('[ChipOS SidecarElectron] login state changed — respawning Worker to refresh identity');

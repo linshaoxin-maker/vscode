@@ -845,6 +845,18 @@ ${tslib}`,
 				'unsupported-require-call': 'silent',
 			},
 			tsconfigRaw,
+			// 2026-05-20 (ChipOS build fix): force ASCII output + strip ALL
+			// comments. Without these, non-ASCII chars from source comments
+			// (Korean Jamo in src/vs/base/common/naturalLanguage/korean.ts,
+			// em dashes in JSDoc all over the codebase) leak into the bundled
+			// out-vscode/.js and then trip the post-minify non-ASCII guard
+			// in build/lib/optimize.ts. Two settings are needed:
+			//   - charset:'ascii' escapes any non-ASCII string-literal bytes
+			//   - legalComments:'none' removes ALL comments (default is to
+			//     keep license/JSDoc comments, which is how Korean Jamo
+			//     single-line comments survived previously).
+			charset: 'ascii',
+			legalComments: 'none',
 		};
 
 		const result = await esbuild.build(buildOptions);

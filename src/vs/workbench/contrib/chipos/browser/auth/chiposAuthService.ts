@@ -59,6 +59,22 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 	private readonly _onDidChangeLoginState = this._register(new Emitter<boolean>());
 	readonly onDidChangeLoginState = this._onDidChangeLoginState.event;
 
+	/**
+	 * 2026-05-20 fix (onDidChangeLoginState spurious flip): cached prior
+	 * value of `isLoggedIn()` used to gate the event below. Without this gate,
+	 * every routine token refresh (storeTokens / restoreUserFromServer in
+	 * ChipOSTokenManager) re-fires onDidChangeLoginState even though the
+	 * boolean login state has not actually changed -- which made the IDE
+	 * sidecar (sidecarManagerElectron.ts:194-202) respawn the worker on
+	 * every refresh (~every 55-60 min, matching JWT refresh cadence).
+	 *
+	 * The event's contract is "login state changed", so this gate just
+	 * makes the implementation honor the name. Initialized to `undefined`
+	 * so the very first onDidChangeToken event (e.g. token restored from
+	 * SecretStorage at startup) still fires for genuine new subscribers.
+	 */
+	private _lastLoggedInState: boolean | undefined = undefined;
+
 	constructor(
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@ILogService private readonly _logService: ILogService,
@@ -67,9 +83,34 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 	) {
 		super();
 
-		// Forward token changes to login state
+		// Snapshot the initial login state at construction time. Without this
+		// the first onDidChangeToken event after IDE startup (which arrives
+		// from the first storeTokens / refresh call -- TokenManager.init
+		// itself does NOT fire onDidChangeToken when it restores tokens from
+		// SecretStorage) would always pass the gate below (undefined !==
+		// true) and respawn the worker for what is in fact "we were already
+		// logged in, this is just the first refresh after startup". Capture
+		// what TokenManager currently reports so the gate has a real
+		// baseline. If TokenManager has not finished its async restore yet,
+		// isLoggedIn() returns false; then the first true storeTokens after
+		// restore will legitimately flip false -> true and that DOES need to
+		// fire (it's the first real "logged in" signal). The listener-side
+		// guard in sidecarManagerElectron handles "worker already running so
+		// don't respawn" for the latter case.
+		this._lastLoggedInState = this._tokenManager.isLoggedIn();
+
+		// Forward token changes to login state -- but only when the boolean
+		// login state actually flips. Token refreshes that keep the user
+		// logged in (true -> true) must NOT re-fire, otherwise sidecar
+		// respawns the worker every refresh cycle.
 		this._register(this._tokenManager.onDidChangeToken(() => {
-			this._onDidChangeLoginState.fire(this._tokenManager.isLoggedIn());
+			const newState = this._tokenManager.isLoggedIn();
+			if (this._lastLoggedInState === newState) {
+				this._logService.trace('[ChipOS Auth] onDidChangeToken with unchanged loginState=%s; suppressing spurious flip', String(newState));
+				return;
+			}
+			this._lastLoggedInState = newState;
+			this._onDidChangeLoginState.fire(newState);
 		}));
 	}
 

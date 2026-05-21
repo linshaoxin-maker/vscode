@@ -579,8 +579,15 @@ class ChipOSEdaTriggerCompletionsProvider implements CompletionItemProvider {
 
 		const suggestions: CompletionItem[] = [];
 		for (const snippet of SNIPPETS) {
-			// Snippet label format: "gen <trigger> — <description>"
-			const labelMatch = /^gen\s+(.+?)\s+—\s+(.+)$/.exec(snippet.label);
+			// Snippet label format: "gen <trigger> — <description>" (em dash separator).
+			// 2026-05-20: use the unicode escape — instead of a literal em dash
+			// in the regex. esbuild's `charset: 'ascii'` mode (set in
+			// build/lib/optimize.ts and build/next/index.ts) does NOT transform
+			// regex literals -- a literal em dash here survives all the way into
+			// the minified workbench bundle and trips the post-minify non-ASCII
+			// guard. The regex matches the SAME character either way (— is
+			// U+2014 em dash), but the source is now pure ASCII.
+			const labelMatch = /^gen\s+(.+?)\s+\u2014\s+(.+)$/.exec(snippet.label);
 			if (!labelMatch) {
 				continue;
 			}

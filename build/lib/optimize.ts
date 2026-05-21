@@ -163,6 +163,19 @@ function bundleESMTask(opts: IBundleESMTaskOpts): NodeJS.ReadWriteStream {
 				write: false, // enables res.outputFiles
 				metafile: true, // enables res.metafile
 				// minify: NOT enabled because we have a separate minify task that takes care of the TSLib banner as well
+				// 2026-05-20 (ChipOS build fix): force ASCII output + strip
+				// all comments so non-ASCII chars in source comments (e.g.
+				// JSDoc `* #3 -- Open or reveal` style em dashes, or the
+				// Hangul Jamo `// ㄱ` in src/vs/base/common/naturalLanguage/
+				// korean.ts) don't leak through to the bundled .js.
+				// Without this, the downstream non-ASCII guard in
+				// minifyTask (line ~271) fails when it scans the minified
+				// output. Note: bundle does NOT enable `minify`, so we
+				// can't rely on the minifier to strip comments. esbuild
+				// supports `charset` / `legalComments` on the bundle path
+				// too.
+				charset: 'ascii',
+				legalComments: 'none',
 			}).then(res => {
 				for (const file of res.outputFiles) {
 					let sourceMapFile: esbuild.OutputFile | undefined = undefined;
@@ -249,6 +262,18 @@ export function minifyTask(src: string, sourceMapBaseUrl?: string): (cb: any) =>
 					platform: 'neutral', // makes esm
 					target: [target],
 					write: false,
+					// 2026-05-20 (ChipOS build fix): force ASCII output + strip
+					// all comments. Without these, the post-minify non-ASCII
+					// guard below trips on pre-existing Hangul Jamo characters
+					// in single-line comments (e.g. src/vs/base/common/
+					// naturalLanguage/korean.ts has `// ㄱ` etc). esbuild's
+					// default `charset` is platform-dependent; setting it
+					// explicitly here also keeps the bundle smaller. Setting
+					// `legalComments: 'none'` removes ALL comments so even
+					// innocuous source documentation doesn't survive into
+					// the production bundle.
+					charset: 'ascii',
+					legalComments: 'none',
 				}).then(res => {
 					const jsOrCSSFile = res.outputFiles.find(f => /\.(js|css)$/.test(f.path))!;
 					const sourceMapFile = res.outputFiles.find(f => /\.(js|css)\.map$/.test(f.path))!;
