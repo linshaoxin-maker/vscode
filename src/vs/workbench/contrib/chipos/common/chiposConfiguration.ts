@@ -36,15 +36,15 @@ configurationRegistry.registerConfiguration({
 
 		'chipos.apiBaseUrl': {
 			type: 'string',
-			default: 'https://open.bigmodel.cn/api/paas/v4',
-			description: localize('chipos.apiBaseUrl.desc', 'LLM API base URL.'),
+			default: '',
+			description: localize('chipos.apiBaseUrl.desc', 'LLM API base URL (required — e.g. https://open.bigmodel.cn/api/paas/v4 for ZhiPu, https://api.deepseek.com for DeepSeek).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
 		'chipos.model': {
 			type: 'string',
-			default: 'glm-5',
-			description: localize('chipos.model.desc', 'LLM model name.'),
+			default: '',
+			description: localize('chipos.model.desc', 'LLM model name (required — e.g. glm-4-flash, deepseek-chat).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 

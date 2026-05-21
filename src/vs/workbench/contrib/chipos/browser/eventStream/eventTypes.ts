@@ -13,6 +13,7 @@ export const enum AgentEventType {
 	FileEdit = 'file_edit',
 	Confirm = 'confirm',
 	ConfirmRequest = 'confirm_request',
+	ConfirmAutoResolved = 'confirm_auto_resolved',
 	Error = 'error',
 	Done = 'done',
 	Status = 'status',
@@ -170,6 +171,20 @@ export interface IConfirmRequestPayload {
 	readonly message?: string;
 	readonly options?: Array<{ label: string; action?: string; action_id?: string }>;
 	readonly is_background?: boolean;
+}
+
+/**
+ * Payload for `confirm_auto_resolved` — emitted by reasoner when a
+ * confirm card timed out server-side and the agent moved on with a
+ * default action. Lets the IDE retire the card (issue #51 comment 2).
+ */
+export interface IConfirmAutoResolvedPayload {
+	readonly request_id: string;
+	readonly hook_id: string;
+	readonly card_type: string;
+	readonly action: string;
+	readonly reason: string;
+	readonly timeout_ms: number;
 }
 
 export interface IRoundStartPayload {
@@ -393,6 +408,11 @@ export interface IConfirmRequestEvent extends IAgentEventBase {
 	readonly payload: IConfirmRequestPayload;
 }
 
+export interface IConfirmAutoResolvedEvent extends IAgentEventBase {
+	readonly event_type: AgentEventType.ConfirmAutoResolved;
+	readonly payload: IConfirmAutoResolvedPayload;
+}
+
 export interface IRoundStartEvent extends IAgentEventBase {
 	readonly event_type: AgentEventType.RoundStart;
 	readonly payload: IRoundStartPayload;
@@ -498,6 +518,7 @@ export type AgentEvent =
 	| ITaskCompleteEvent
 	| ISkillTreeEvent
 	| IConfirmRequestEvent
+	| IConfirmAutoResolvedEvent
 	| IRoundStartEvent
 	| IPlanEvent
 	| IDiffPreviewEvent

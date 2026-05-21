@@ -22,6 +22,7 @@ import {
 	type ITodoUpdateEvent,
 	type ITaskCompleteEvent,
 	type ISkillTreeEvent,
+	type IConfirmAutoResolvedEvent,
 	type IConfirmRequestEvent,
 	type IRoundStartEvent,
 	type IPlanEvent,
@@ -58,7 +59,7 @@ interface IServerMessage {
 		| 'status' | 'todo' | 'chat' | 'heartbeat' | 'error'
 		| 'model_output' | 'tool_start' | 'tool_result'
 		| 'round_start' | 'plan' | 'timing_highlight'
-		| 'confirm_request' | 'parallel_progress' | 'diff_preview'
+		| 'confirm_request' | 'confirm_auto_resolved' | 'parallel_progress' | 'diff_preview'
 		| 'sim_report' | 'negotiation_view' | 'coverage_report' | 'lint_report'
 		| 'task_complete' | 'task_summary' | 'subagent_event'
 		| 'model_turn_start' | 'model_turn_end'
@@ -181,8 +182,8 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 		options: { thinking: boolean; autoApproveMode: string; workspacePath?: string; llmConfig?: { provider: string; api_key: string; base_url: string; model: string } },
 	): void {
 		const apiKey = this._configurationService.getValue<string>('chipos.apiKey') || '';
-		const apiBaseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') || 'https://open.bigmodel.cn/api/paas/v4';
-		const model = this._configurationService.getValue<string>('chipos.model') || 'glm-5';
+		const apiBaseUrl = this._configurationService.getValue<string>('chipos.apiBaseUrl') || '';
+		const model = this._configurationService.getValue<string>('chipos.model') || '';
 		const provider = this._configurationService.getValue<string>('chipos.provider') || 'openai';
 		const enableBuiltinTools = this._configurationService.getValue<boolean>('chipos.enableBuiltinTools') ?? true;
 
@@ -360,6 +361,10 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 		// ── Confirmations (Hook approval) ──
 		case 'confirm_request':
 			this._handleConfirmRequest(msg.data as Record<string, unknown>);
+			break;
+
+		case 'confirm_auto_resolved':
+			this._handleConfirmAutoResolved(msg.data as Record<string, unknown>);
 			break;
 
 		// ── Code diff preview ──
@@ -607,6 +612,22 @@ export class WebSocketEventStreamClient extends Disposable implements IEventStre
 				is_background: Boolean(data.is_background),
 			},
 		} as IConfirmRequestEvent);
+	}
+
+	private _handleConfirmAutoResolved(data: Record<string, unknown>): void {
+		this._emit({
+			event_id: nextEventId(),
+			event_type: AgentEventType.ConfirmAutoResolved,
+			timestamp: Date.now() / 1000,
+			payload: {
+				request_id: String(data.request_id ?? ''),
+				hook_id: String(data.hook_id ?? ''),
+				card_type: String(data.card_type ?? ''),
+				action: String(data.action ?? ''),
+				reason: String(data.reason ?? 'timeout'),
+				timeout_ms: Number(data.timeout_ms ?? 0),
+			},
+		} as IConfirmAutoResolvedEvent);
 	}
 
 	// ── diff_preview ─────────────────────────────────────────────────────────
