@@ -1205,3 +1205,317 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	background: var(--chipos-btn-primary-bg-hover) !important;
 }
 
+
+/* ════════════════════════════════════════════════════════════════════════════
+ *  Confirmation cards — visual unification with ChipOSPermissionCard
+ *
+ *  We don't touch the framework's TS/DOM (would risk merge pain forever).
+ *  Instead this layer re-styles the upstream `.chat-confirmation-widget*`
+ *  and `.chat-confirmation-floating-buttons` selectors to share the same
+ *  `--chipos-card-*` / `--chipos-btn-*` design primitives the
+ *  `ChipOSPermissionCard` already uses. Result: the MCP permission ask,
+ *  the `run_in_terminal` confirmation, and the chipos hook confirm prompt
+ *  all read as the same visual family — only their button SETS differ
+ *  (semantic difference: MCP has 4 levels, terminal has Run/Cancel,
+ *  hook can have A/B/C dynamic choices).
+ *
+ *  Targets:
+ *    1. `.chat-confirmation-widget2` — used by terminal tool confirmation
+ *       sub-part (and any future framework tool confirm using the v2
+ *       container). Has title / preview / buttons rows.
+ *    2. `.chat-confirmation-widget` — older framework confirm container
+ *       (some tool sub-parts still emit this).
+ *    3. `.chat-confirmation-floating-buttons` — hook confirm overlay
+ *       (`ChatConfirmationContentPart` floating mode + letter-chip
+ *       options A/B/C).
+ *    4. Inner button rows in all three — pull from the chipos btn tokens.
+ *
+ *  Why CSS-only and not a refactor:
+ *    - Button sets are semantically distinct → can't be merged into one
+ *      widget class without losing meaning.
+ *    - Framework keeps evolving these selectors upstream; a CSS layer is
+ *      cheap to re-apply after every merge.
+ *    - All visual primitives already live in `--chipos-*` tokens; this is
+ *      exactly what they were designed for.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Card chrome: widget2 (terminal etc.) ─────────────────────────────── */
+
+.interactive-session .chat-confirmation-widget2 {
+	border: var(--chipos-card-border);
+	border-radius: var(--chipos-card-radius);
+	background-color: var(--chipos-card-bg);
+	box-shadow: var(--chipos-card-shadow);
+	overflow: hidden;
+	transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.interactive-session .chat-confirmation-widget2:hover {
+	border-color: var(--chipos-card-focus-border);
+}
+
+.interactive-session .chat-confirmation-widget2:focus-within {
+	border-color: var(--chipos-card-focus-border);
+	box-shadow: var(--chipos-card-focus-glow);
+}
+
+/* Title row — match permission card header weight + color. */
+.interactive-session .chat-confirmation-widget2 .chat-confirmation-widget-title {
+	padding: 10px 14px 6px 14px;
+	color: var(--chipos-card-title-color);
+
+	.rendered-markdown p {
+		font-weight: var(--chipos-card-title-weight) !important;
+		font-size: var(--chipos-card-title-size) !important;
+		color: var(--chipos-card-title-color);
+	}
+	.codicon {
+		font-size: 14px;
+		color: var(--vscode-foreground);
+	}
+}
+
+/* Preview row — same vertical rhythm as permission card meta row. */
+.interactive-session .chat-confirmation-widget2 .chat-confirmation-widget-preview {
+	padding: 0 14px 8px 14px;
+	font-size: var(--chipos-card-meta-size);
+	color: var(--chipos-card-meta-color);
+	border-top: none;
+}
+
+/* Inner code/editor preview — give it the same monospace inset look as
+ * permission card's `.chipos-permission-preview` block. */
+.interactive-session .chat-confirmation-widget2 .chat-confirmation-widget-message-container,
+.interactive-session .chat-confirmation-widget2 .chat-confirmation-message-terminal-editor {
+	margin: 0 14px 8px 14px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-input-border, color-mix(in srgb, var(--vscode-foreground) 18%, transparent));
+	background: var(--vscode-textBlockQuote-background, color-mix(in srgb, var(--vscode-foreground) 4%, transparent));
+}
+
+.interactive-session .chat-confirmation-widget2 .chat-confirmation-message-terminal-editor {
+	border-bottom: 1px solid var(--vscode-input-border, color-mix(in srgb, var(--vscode-foreground) 18%, transparent));
+}
+
+/* Buttons row — match `.chipos-permission-buttons`: wrap, 6px gap, top margin. */
+.interactive-session .chat-confirmation-widget2 .chat-confirmation-widget-buttons {
+	padding: 0 14px 12px 14px;
+	border-top: none;
+	background: transparent;
+
+	.chat-buttons {
+		flex-wrap: wrap;
+		gap: var(--chipos-btn-gap);
+		column-gap: var(--chipos-btn-gap);
+	}
+}
+
+/* Individual buttons inside widget2 — adopt chipos secondary button look as
+ * the default. Primary (first / has-default class) gets the primary fill. */
+.interactive-session .chat-confirmation-widget2 .chat-buttons .monaco-button {
+	height: var(--chipos-btn-height);
+	min-height: var(--chipos-btn-height);
+	padding: 0 12px;
+	border-radius: var(--chipos-btn-radius);
+	border: var(--chipos-btn-secondary-border);
+	background: var(--chipos-btn-secondary-bg);
+	color: var(--chipos-btn-secondary-fg);
+	font-size: var(--chipos-btn-font-size);
+	font-weight: var(--chipos-btn-font-weight);
+	transition: background 120ms ease, border-color 120ms ease;
+}
+
+.interactive-session .chat-confirmation-widget2 .chat-buttons .monaco-button:hover:not(.disabled) {
+	background: var(--chipos-btn-secondary-bg-hover);
+	border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* The framework marks the default-accent button with `.monaco-button` + no
+ * `.secondary` class. Apply primary fill to the first button (typically the
+ * affirmative action: Run / Continue / Allow). */
+.interactive-session .chat-confirmation-widget2 .chat-buttons > .monaco-button:not(.secondary):not(.monaco-dropdown-button):first-child,
+.interactive-session .chat-confirmation-widget2 .chat-buttons > .monaco-button-dropdown:first-child > .monaco-button:not(.monaco-dropdown-button) {
+	background: var(--chipos-btn-primary-bg);
+	color: var(--chipos-btn-primary-fg);
+	border-color: transparent;
+}
+
+.interactive-session .chat-confirmation-widget2 .chat-buttons > .monaco-button:not(.secondary):not(.monaco-dropdown-button):first-child:hover:not(.disabled),
+.interactive-session .chat-confirmation-widget2 .chat-buttons > .monaco-button-dropdown:first-child > .monaco-button:not(.monaco-dropdown-button):hover:not(.disabled) {
+	background: var(--chipos-btn-primary-bg-hover);
+	border-color: transparent;
+}
+
+/* Dropdown chevron sibling — keep height + primary tint together. */
+.interactive-session .chat-confirmation-widget2 .chat-buttons .monaco-button-dropdown {
+	height: var(--chipos-btn-height);
+
+	> .monaco-button.monaco-dropdown-button {
+		height: var(--chipos-btn-height);
+		border-radius: 0 var(--chipos-btn-radius) var(--chipos-btn-radius) 0;
+	}
+
+	> .monaco-button:not(.monaco-dropdown-button) {
+		border-top-right-radius: 0;
+		border-bottom-right-radius: 0;
+	}
+}
+
+
+/* ── 2. Card chrome: legacy widget (used by some tool sub-parts) ─────────── */
+
+.interactive-session .chat-tool-invocation-part .chat-confirmation-widget {
+	border-radius: var(--chipos-card-radius);
+}
+
+.interactive-session .chat-tool-invocation-part .chat-confirmation-widget .chat-confirmation-widget-message {
+	border: var(--chipos-card-border);
+	border-radius: var(--chipos-card-radius);
+	background-color: var(--chipos-card-bg);
+	box-shadow: var(--chipos-card-shadow);
+}
+
+.interactive-session .chat-tool-invocation-part .chat-confirmation-widget .chat-confirmation-widget-message-container {
+	border: var(--chipos-card-border);
+	border-radius: var(--chipos-card-radius);
+}
+
+.interactive-session .chat-confirmation-widget .chat-buttons .monaco-button {
+	height: var(--chipos-btn-height);
+	border-radius: var(--chipos-btn-radius);
+	padding: 0 12px;
+	font-size: var(--chipos-btn-font-size);
+	font-weight: var(--chipos-btn-font-weight);
+}
+
+.interactive-session .chat-confirmation-widget .chat-buttons .monaco-button.secondary {
+	background: var(--chipos-btn-secondary-bg);
+	color: var(--chipos-btn-secondary-fg);
+	border: var(--chipos-btn-secondary-border);
+}
+
+.interactive-session .chat-confirmation-widget .chat-buttons .monaco-button.secondary:hover:not(.disabled) {
+	background: var(--chipos-btn-secondary-bg-hover);
+	border-color: var(--vscode-focusBorder);
+}
+
+
+/* ── 3. Hook confirm: floating overlay + letter chips ────────────────────── */
+
+.interactive-session .chat-confirmation-floating-buttons {
+	padding: var(--chipos-card-padding);
+	background-color: var(--chipos-card-bg);
+	border: var(--chipos-card-border);
+	border-radius: var(--chipos-card-radius);
+	box-shadow: var(--chipos-card-shadow);
+	gap: var(--chipos-card-gap);
+}
+
+.interactive-session .chat-confirmation-floating-buttons:focus-within {
+	border-color: var(--chipos-card-focus-border);
+	box-shadow: var(--chipos-card-focus-glow);
+}
+
+/* Title — match permission card header. */
+.interactive-session .chat-confirm-title {
+	font-size: var(--chipos-card-title-size);
+	font-weight: var(--chipos-card-title-weight);
+	color: var(--chipos-card-title-color);
+	margin-bottom: 6px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+/* Option list spacing — bring it in line with `.chipos-permission-buttons`
+ * vertical rhythm. */
+.interactive-session .chat-confirm-options {
+	gap: 2px;
+	margin-bottom: 8px;
+}
+
+/* Option row (A / B / C) — adopt chipos option visual: light selected fill
+ * + accent left rail, no heavy activeSelection block. */
+.interactive-session .chat-confirm-chip {
+	padding: var(--chipos-option-padding);
+	min-height: var(--chipos-option-min-height);
+	border-radius: var(--chipos-option-radius);
+	border: 1px solid transparent;
+	transition: background 120ms ease, border-color 120ms ease;
+}
+
+.interactive-session .chat-confirm-chip:hover {
+	background: var(--chipos-option-hover-bg);
+}
+
+.interactive-session .chat-confirm-chip.selected {
+	background: var(--chipos-option-selected-bg);
+	color: var(--vscode-foreground);
+	border-color: var(--chipos-option-selected-border);
+	border-left: 2px solid var(--chipos-option-selected-rail);
+	padding-left: calc(10px - 2px); /* compensate for thicker left border */
+}
+
+/* Letter badge — outline by default, filled accent when selected. Same
+ * visual as `.chipos-permission-card` number badges. */
+.interactive-session .chat-confirm-chip-letter {
+	min-width: var(--chipos-badge-size);
+	height: var(--chipos-badge-size);
+	border-radius: var(--chipos-badge-radius);
+	background: var(--chipos-badge-bg);
+	border: var(--chipos-badge-border);
+	color: var(--chipos-badge-color);
+	margin-right: var(--chipos-option-gap);
+	font-weight: 600;
+}
+
+.interactive-session .chat-confirm-chip.selected .chat-confirm-chip-letter {
+	background: var(--chipos-badge-bg-selected);
+	color: var(--chipos-badge-color-selected);
+	border-color: transparent;
+}
+
+/* Skip / Continue action row — pull buttons in line with chipos btn tokens. */
+.interactive-session .chat-confirm-actions {
+	gap: var(--chipos-btn-gap);
+	padding-top: 8px;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+
+.interactive-session .chat-confirm-actions .monaco-button {
+	height: var(--chipos-btn-height) !important;
+	border-radius: var(--chipos-btn-radius) !important;
+	font-size: var(--chipos-btn-font-size) !important;
+	font-weight: var(--chipos-btn-font-weight) !important;
+	padding: 0 12px !important;
+}
+
+.interactive-session .chat-confirm-btn-skip {
+	background: var(--chipos-btn-ghost-bg) !important;
+	color: var(--chipos-btn-ghost-fg) !important;
+	border: none !important;
+}
+
+.interactive-session .chat-confirm-btn-skip:hover:not(.disabled) {
+	background: var(--chipos-btn-ghost-bg-hover) !important;
+}
+
+.interactive-session .chat-confirm-btn-continue {
+	background: var(--chipos-btn-primary-bg) !important;
+	color: var(--chipos-btn-primary-fg) !important;
+	border: none !important;
+}
+
+.interactive-session .chat-confirm-btn-continue:hover:not(.disabled) {
+	background: var(--chipos-btn-primary-bg-hover) !important;
+}
+
+
+/* ── 4. Subtle: kill the framework's "warning border on hover" tint on
+ *  widget2; we already use `--chipos-card-focus-border` which is calmer
+ *  and matches the rest of the card vocabulary. ─────────────────────────── */
+.interactive-session .chat-confirmation-widget2 {
+	transition-property: border-color, box-shadow;
+	transition-duration: 120ms;
+	transition-timing-function: ease;
+}
+
