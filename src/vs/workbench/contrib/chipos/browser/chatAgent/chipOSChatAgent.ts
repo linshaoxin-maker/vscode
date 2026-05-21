@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
@@ -14,7 +15,6 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
-import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -335,7 +335,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@ITerminalChatService private readonly _terminalChatService: ITerminalChatService,
 		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
 		@IMcpService private readonly _mcpService: IMcpService,
-		@IDialogService private readonly _dialogService: IDialogService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IProductService private readonly _productService: IProductService,
 		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
@@ -599,6 +598,37 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			runtime.activeFinish = undefined;
 			return { errorDetails: { message: 'Backend not connected' } };
+		}
+
+		// ── Inline terminal approval: resolve the run_in_terminal Deferred,
+		//    then keep listening on the stream so the tool result lands in
+		//    the chat UI. The marker `__chiposTerminalConfirmId` is stamped
+		//    on the confirmation `data` in `_awaitTerminalApproval`; once we
+		//    see it on accepted/rejected data here, we route to the local
+		//    Deferred instead of forwarding the action to the reasoner. ──
+		const terminalAccepted = request.acceptedConfirmationData?.find((d): d is { __chiposTerminalConfirmId: string; command?: string } =>
+			!!d && typeof (d as { __chiposTerminalConfirmId?: unknown }).__chiposTerminalConfirmId === 'string',
+		);
+		const terminalRejected = request.rejectedConfirmationData?.find((d): d is { __chiposTerminalConfirmId: string; command?: string } =>
+			!!d && typeof (d as { __chiposTerminalConfirmId?: unknown }).__chiposTerminalConfirmId === 'string',
+		);
+		if (terminalAccepted || terminalRejected) {
+			const id = (terminalAccepted ?? terminalRejected)!.__chiposTerminalConfirmId;
+			const approved = !!terminalAccepted;
+			const deferred = this._pendingTerminalApprovals.get(id);
+			this._pendingTerminalApprovals.delete(id);
+			if (deferred) {
+				this._logService.info('[ChipOS Agent] terminal approval resolved: call_id=%s, approved=%s', id, approved);
+				deferred.complete(approved);
+			} else {
+				this._logService.warn('[ChipOS Agent] terminal approval click but no pending Deferred: call_id=%s', id);
+			}
+			progress([this._progress(approved ? '$(check) Allowed' : '$(circle-slash) Rejected')]);
+			// Keep listening on the existing stream so the IdeToolResult sent
+			// by the (still-running, fire-and-forget) _executeIdeToolCall —
+			// and the reasoner events that follow — land in this invoke's
+			// chat output.
+			return this._listenForContinuation(streamClient, progress, token, request);
 		}
 
 		// ── FEAT-23: Route confirmation responses instead of starting a new task ──
@@ -3391,6 +3421,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _pendingConfirmations = new Map<string, IChatConfirmation>();
 
 	/**
+	 * run_in_terminal inline-approval bridge.
+	 *
+	 * Replaces the old `IDialogService.confirm()` modal: the run_in_terminal
+	 * IDE tool handler emits an `IChatConfirmation` instead of blocking on a
+	 * native dialog, then awaits this Deferred while the chat finishes the
+	 * current invoke. When the user clicks Run / Reject in the inline card,
+	 * the next `invoke()` (with `acceptedConfirmationData` /
+	 * `rejectedConfirmationData`) routes here via the
+	 * `__chiposTerminalConfirmId` marker on the confirmation data — resolves
+	 * the Deferred with `true` / `false` so `_executeIdeToolCall` (which is
+	 * fire-and-forget at line 2090) can continue execution and send the
+	 * `IdeToolResult` whenever it's ready.
+	 *
+	 * Key invariants:
+	 *   - keyed by call_id (the LLM's tool_call.id), which is unique per
+	 *     pending tool invocation;
+	 *   - cleaned up either at resolution time OR if `_executeIdeToolCall`
+	 *     exits early (timeout / runtime dispose) so the map doesn't leak.
+	 */
+	private readonly _pendingTerminalApprovals = new Map<string, DeferredPromise<boolean>>();
+
+	/**
 	 * 处理 Reasoner 推送的 ide_tool_call 事件。
 	 * 根据工具名分发到对应的执行方法，执行完毕后回传结果。
 	 */
@@ -3440,17 +3492,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 				}
 
-				// Approval gate: require user confirmation unless full_auto mode
+				// Approval gate: inline IChatConfirmation (instead of the old
+				// modal `_dialogService.confirm`). Renders as a
+				// `.chat-confirmation-widget*` inline in the chat — same
+				// visual family as the chipos permission card and hook
+				// confirm card — and resolves via `_pendingTerminalApprovals`
+				// when the user clicks Run / Reject on the inline card. See
+				// the field's JSDoc for the full handshake.
 				const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
 				const cmd = typeof args.command === 'string' ? args.command : '';
 				this._logService.info('[ChipOS Agent] run_in_terminal approval: mode=%s, cmd=%s', approveMode, cmd);
 				if (approveMode !== 'full_auto') {
-					const { confirmed } = await this._dialogService.confirm({
-						message: localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command'),
-						detail: cmd || '(empty command)',
-						primaryButton: localize('chipos.terminal.approval.run', 'Run'),
-						cancelButton: localize('chipos.terminal.approval.reject', 'Reject'),
-					});
+					const confirmed = await this._awaitTerminalApproval(call_id, cmd, runtime);
 					if (!confirmed) {
 						content = 'User rejected the terminal command.';
 						isError = true;
@@ -3489,6 +3542,81 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			call_id, isError, content.length,
 		);
 		streamClient.sendIdeToolResult(sessionId, call_id, content, isError);
+	}
+
+	/**
+	 * Inline approval helper for `run_in_terminal`. Emits an
+	 * `IChatConfirmation` into the chat (rendered as
+	 * `.chat-confirmation-widget*` — same visual family as the chipos
+	 * permission card and hook confirm card), finishes the current invoke so
+	 * the click can land on a fresh `acceptedConfirmationData` /
+	 * `rejectedConfirmationData`, and awaits a Deferred resolved by the
+	 * `invoke()` entry-point dispatcher.
+	 *
+	 * Why this design (vs the modal `IDialogService.confirm` it replaces):
+	 *   - Visual continuity: the modal didn't share any styling with the
+	 *     other chipos confirm cards (MCP permission, hook confirm). Inline
+	 *     puts terminal approval in the SAME card vocabulary, no modal
+	 *     overlay, no center-screen interruption.
+	 *   - `_executeIdeToolCall` is called fire-and-forget (line 2091) — it
+	 *     can await indefinitely without blocking the event loop, so the
+	 *     "wait for click in a future invoke" pattern works without state
+	 *     machine surgery on the rest of the dispatcher.
+	 *
+	 * If `activeProgress` / `activeFinish` are unset (runtime not in an
+	 * invoke right now — shouldn't happen during tool execution but defend
+	 * anyway), fall back to auto-reject so the tool call doesn't hang.
+	 */
+	private _awaitTerminalApproval(call_id: string, cmd: string, runtime: IChatSessionRuntime): Promise<boolean> {
+		const progress = runtime.activeProgress;
+		const finish = runtime.activeFinish;
+		if (!progress || !finish) {
+			this._logService.warn('[ChipOS Agent] terminal approval: no activeProgress/Finish — auto-rejecting');
+			return Promise.resolve(false);
+		}
+
+		// One pending approval per call_id. The next invoke matches via
+		// `__chiposTerminalConfirmId` on the accepted/rejected data.
+		const existing = this._pendingTerminalApprovals.get(call_id);
+		if (existing) {
+			// Duplicate dispatch (shouldn't happen): re-use the existing
+			// deferred so we don't lose the first awaiter.
+			return existing.p;
+		}
+		const deferred = new DeferredPromise<boolean>();
+		this._pendingTerminalApprovals.set(call_id, deferred);
+
+		const title = localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command');
+		const runLabel = localize('chipos.terminal.approval.run', 'Run');
+		const rejectLabel = localize('chipos.terminal.approval.reject', 'Reject');
+
+		// Render the command as fenced bash so the chat list renders a
+		// monospace preview (matches how other chipos confirm cards expose
+		// a code preview block).
+		const message = new MarkdownString('```bash\n' + (cmd || '(empty command)') + '\n```', {
+			supportThemeIcons: true,
+			isTrusted: true,
+		});
+
+		const confirmation: IChatConfirmation = {
+			kind: 'confirmation',
+			title,
+			message,
+			data: {
+				__chiposTerminalConfirmId: call_id,
+				command: cmd,
+			},
+			buttons: [runLabel, rejectLabel],
+		};
+
+		progress([confirmation]);
+		// Finish the in-flight invoke so the framework opens the input for
+		// the next request (button click → new invoke with the
+		// accepted/rejected data). Mirrors the existing pattern used by
+		// `ConfirmRequest` handler (line 1447).
+		finish({}, localize('chipos.terminal.approval.awaiting', 'Awaiting terminal approval'));
+
+		return deferred.p;
 	}
 
 	/**
