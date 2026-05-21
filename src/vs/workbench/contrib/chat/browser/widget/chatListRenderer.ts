@@ -76,7 +76,7 @@ import { ChatCheckpointFileChangesSummaryContentPart } from './chatContentParts/
 import { ChatCodeCitationContentPart } from './chatContentParts/chatCodeCitationContentPart.js';
 import { ChatCommandButtonContentPart } from './chatContentParts/chatCommandContentPart.js';
 import { ChatConfirmationContentPart } from './chatContentParts/chatConfirmationContentPart.js';
-import { ChipOSPermissionCardContentPart, isChipOSPermissionCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
+import { ChipOSPermissionCardContentPart, isChipOSCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
 import { DiffEditorPool, EditorPool } from './chatContentParts/chatContentCodePools.js';
 import { IChatContentPart, IChatContentPartRenderContext, InlineTextModelCollection } from './chatContentParts/chatContentParts.js';
 import { ChatElicitationContentPart } from './chatContentParts/chatElicitationContentPart.js';
@@ -1563,7 +1563,7 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		// user tries to scroll up to read history. Skip pinning for chipos cards;
 		// they remain at response tail naturally and the user can scroll freely.
 		if (part.kind === 'confirmation') {
-			if (isChipOSPermissionCardData(part.data)) {
+			if (isChipOSCardData(part.data)) {
 				return false;
 			}
 			return true;
@@ -2196,7 +2196,10 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 
 	private renderConfirmation(context: IChatContentPartRenderContext, confirmation: IChatConfirmation, templateData: IChatListItemTemplate): IChatContentPart {
-		if (isChipOSPermissionCardData(confirmation.data)) {
+		// Both worker permission asks AND chipos terminal-command confirms
+		// render through the custom card content part — checked via the
+		// umbrella `isChipOSCardData` so the two share the same visual.
+		if (isChipOSCardData(confirmation.data)) {
 			return this.instantiationService.createInstance(ChipOSPermissionCardContentPart, confirmation, context);
 		}
 		const part = this.instantiationService.createInstance(ChatConfirmationContentPart, confirmation, context);

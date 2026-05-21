@@ -606,15 +606,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		//    on the confirmation `data` in `_awaitTerminalApproval`; once we
 		//    see it on accepted/rejected data here, we route to the local
 		//    Deferred instead of forwarding the action to the reasoner. ──
-		const terminalAccepted = request.acceptedConfirmationData?.find((d): d is { __chiposTerminalConfirmId: string; command?: string } =>
-			!!d && typeof (d as { __chiposTerminalConfirmId?: unknown }).__chiposTerminalConfirmId === 'string',
-		);
-		const terminalRejected = request.rejectedConfirmationData?.find((d): d is { __chiposTerminalConfirmId: string; command?: string } =>
-			!!d && typeof (d as { __chiposTerminalConfirmId?: unknown }).__chiposTerminalConfirmId === 'string',
-		);
-		if (terminalAccepted || terminalRejected) {
-			const id = (terminalAccepted ?? terminalRejected)!.__chiposTerminalConfirmId;
-			const approved = !!terminalAccepted;
+		type TerminalConfirmData = {
+			__chiposTerminalConfirmId: string;
+			options?: ReadonlyArray<{ label: string; action_id: string }>;
+		};
+		const isTerminalConfirmData = (d: unknown): d is TerminalConfirmData =>
+			!!d && typeof d === 'object' && typeof (d as TerminalConfirmData).__chiposTerminalConfirmId === 'string';
+		const terminalAccepted = request.acceptedConfirmationData?.find(isTerminalConfirmData);
+		const terminalRejected = request.rejectedConfirmationData?.find(isTerminalConfirmData);
+		const terminalData = terminalAccepted ?? terminalRejected;
+		if (terminalData) {
+			const id = terminalData.__chiposTerminalConfirmId;
+			// Determine which button was clicked by matching the request
+			// message prefix (`${label}: ${title}`) against options. This
+			// is the same convention the worker permission card uses
+			// (chipOSPermissionCard sends `prompt = label + ": " + title`).
+			// `acceptedConfirmationData` carries the click regardless of
+			// which button — only `action_id` tells us run vs reject.
+			let approved = !!terminalAccepted;
+			if (terminalData.options?.length) {
+				const msgLabel = request.message.split(':')[0]?.trim();
+				const matched = terminalData.options.find(o => o.label === msgLabel);
+				if (matched) {
+					approved = matched.action_id === 'run';
+				}
+			}
 			const deferred = this._pendingTerminalApprovals.get(id);
 			this._pendingTerminalApprovals.delete(id);
 			if (deferred) {
@@ -3546,26 +3562,36 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	/**
 	 * Inline approval helper for `run_in_terminal`. Emits an
-	 * `IChatConfirmation` into the chat (rendered as
-	 * `.chat-confirmation-widget*` — same visual family as the chipos
-	 * permission card and hook confirm card), finishes the current invoke so
-	 * the click can land on a fresh `acceptedConfirmationData` /
-	 * `rejectedConfirmationData`, and awaits a Deferred resolved by the
-	 * `invoke()` entry-point dispatcher.
+	 * `IChatConfirmation` carrying the **chipos terminal-confirm card
+	 * data shape** (see `chipOSPermissionCard.ts:IChipOSTerminalConfirmCardData`)
+	 * so the chat list dispatches to `ChipOSPermissionCardContentPart`
+	 * instead of the framework's stock confirmation widget. Same visual
+	 * vocabulary as the MCP worker permission ask — header + clickable
+	 * "path" (here: the command) + 2 horizontal buttons (Run / Reject).
+	 *
+	 * Click handling: the card uses chipos's standard
+	 * `acceptedConfirmationData` path — every button click sends the
+	 * card data back via `sendRequest`, the `invoke()` dispatcher picks
+	 * the `__chiposTerminalConfirmId` branch, looks up the matching
+	 * `options[].action_id` (`run` or `reject`) via the message label,
+	 * and resolves the Deferred. `_executeIdeToolCall` then continues
+	 * with command exec or rejection content.
 	 *
 	 * Why this design (vs the modal `IDialogService.confirm` it replaces):
 	 *   - Visual continuity: the modal didn't share any styling with the
-	 *     other chipos confirm cards (MCP permission, hook confirm). Inline
-	 *     puts terminal approval in the SAME card vocabulary, no modal
-	 *     overlay, no center-screen interruption.
-	 *   - `_executeIdeToolCall` is called fire-and-forget (line 2091) — it
-	 *     can await indefinitely without blocking the event loop, so the
-	 *     "wait for click in a future invoke" pattern works without state
-	 *     machine surgery on the rest of the dispatcher.
+	 *     other chipos confirm cards (MCP permission, hook confirm).
+	 *     Routing through `ChipOSPermissionCardContentPart` puts
+	 *     terminal approval in the SAME custom card vocabulary, with
+	 *     tool icon + color bar + horizontal button row.
+	 *   - `_executeIdeToolCall` is called fire-and-forget (line 2091) —
+	 *     it can await indefinitely without blocking the event loop, so
+	 *     the "wait for click in a future invoke" pattern works without
+	 *     state machine surgery on the rest of the dispatcher.
 	 *
 	 * If `activeProgress` / `activeFinish` are unset (runtime not in an
-	 * invoke right now — shouldn't happen during tool execution but defend
-	 * anyway), fall back to auto-reject so the tool call doesn't hang.
+	 * invoke right now — shouldn't happen during tool execution but
+	 * defend anyway), fall back to auto-reject so the tool call doesn't
+	 * hang.
 	 */
 	private _awaitTerminalApproval(call_id: string, cmd: string, runtime: IChatSessionRuntime): Promise<boolean> {
 		const progress = runtime.activeProgress;
@@ -3590,21 +3616,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const runLabel = localize('chipos.terminal.approval.run', 'Run');
 		const rejectLabel = localize('chipos.terminal.approval.reject', 'Reject');
 
-		// Render the command as fenced bash so the chat list renders a
-		// monospace preview (matches how other chipos confirm cards expose
-		// a code preview block).
-		const message = new MarkdownString('```bash\n' + (cmd || '(empty command)') + '\n```', {
-			supportThemeIcons: true,
-			isTrusted: true,
-		});
+		// Plain string message (visible to screen-readers + accessible
+		// preview when the custom card collapses). The card's main visual
+		// — header + buttons — is built by `ChipOSPermissionCardContentPart`
+		// from the data fields below, not from this message body.
+		const message = `${cmd || '(empty command)'}`;
 
 		const confirmation: IChatConfirmation = {
 			kind: 'confirmation',
 			title,
 			message,
+			// IChipOSTerminalConfirmCardData shape — routes to chipos
+			// permission card renderer via `isChipOSCardData` umbrella.
 			data: {
 				__chiposTerminalConfirmId: call_id,
-				command: cmd,
+				tool: 'Bash',
+				specifier: cmd || '(empty command)',
+				sessionId: runtime.backendSessionId ?? '',
+				requestId: call_id,
+				options: [
+					{ label: runLabel,    action_id: 'run' },
+					{ label: rejectLabel, action_id: 'reject' },
+				],
 			},
 			buttons: [runLabel, rejectLabel],
 		};

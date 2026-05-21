@@ -33,6 +33,14 @@ import './chipOSPermissionCard.css';
 
 // ── Data shape stored in confirmation.data ────────────────────────────────────
 
+/**
+ * Worker permission ASK card data (the original v2 shape).
+ *
+ * Identified by `__chiposWorkerAskId`. Click handling in
+ * `chipOSChatAgent`'s `acceptedConfirmationData` branch routes the user's
+ * choice to `_workerPermissionService.decide()` against the worker's
+ * local HTTP endpoint.
+ */
 export interface IChipOSPermissionCardData {
 	readonly __chiposWorkerAskId: string;
 	readonly requestId: string;
@@ -55,6 +63,62 @@ export function isChipOSPermissionCardData(data: unknown): data is IChipOSPermis
 	);
 }
 
+/**
+ * Terminal-command confirmation card data — the IDE-side run_in_terminal
+ * approval flow piggybacking on the permission card's visual.
+ *
+ * Identified by `__chiposTerminalConfirmId` (the LLM tool_call.id).
+ * Routes through the same `ChipOSPermissionCardContentPart` renderer so
+ * the user sees one consistent UX across MCP permission asks and
+ * terminal-command approvals — but click handling lands in
+ * `chipOSChatAgent`'s terminal-Deferred branch (resolves
+ * `_pendingTerminalApprovals` instead of calling the worker), see
+ * `_awaitTerminalApproval`.
+ *
+ * Subset of permission-card fields used:
+ *   - `tool: 'Bash'`   → renders the terminal codicon in the header.
+ *   - `specifier: cmd` → the command string, displayed as the clickable
+ *     "path" line (clicking does nothing useful for a command, that's
+ *     ignored downstream).
+ *   - `contentPreview?: cwd / explanation` → optional context block.
+ *   - `options: [Run, Reject]` → two buttons with action_id `run` /
+ *     `reject`. The invoke() handler reads action_id to decide whether
+ *     to resolve the Deferred with true or false.
+ *
+ * Permission-card-only fields (`targetExists`, `targetSizeBytes`,
+ * `matchedRule`, `matchedLayer`) are unset — the renderer already
+ * checks them with `if (data.matchedRule)` etc., so it gracefully
+ * skips those sections when missing.
+ */
+export interface IChipOSTerminalConfirmCardData {
+	readonly __chiposTerminalConfirmId: string;
+	readonly tool: 'Bash';
+	readonly specifier: string;
+	readonly contentPreview?: string;
+	readonly options: ReadonlyArray<{ readonly label: string; readonly action_id: 'run' | 'reject' }>;
+	// Permission-card schema parity (fields the renderer touches even if
+	// terminal cards don't carry meaningful values for them):
+	readonly sessionId?: string;
+	readonly requestId?: string;
+}
+
+export function isChipOSTerminalConfirmCardData(data: unknown): data is IChipOSTerminalConfirmCardData {
+	return (
+		!!data &&
+		typeof data === 'object' &&
+		typeof (data as IChipOSTerminalConfirmCardData).__chiposTerminalConfirmId === 'string'
+	);
+}
+
+/**
+ * Umbrella check: any chipos confirmation card data shape. Used by the
+ * chatListRenderer / chatListWidget dispatch so both permission asks
+ * and terminal confirms route to `ChipOSPermissionCardContentPart`.
+ */
+export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardData | IChipOSTerminalConfirmCardData {
+	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data);
+}
+
 // ── Content part ──────────────────────────────────────────────────────────────
 
 export class ChipOSPermissionCardContentPart extends Disposable implements IChatContentPart {
@@ -70,7 +134,11 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 	) {
 		super();
 
-		const data = confirmation.data as IChipOSPermissionCardData;
+		// Accept either a worker permission-ask card or a terminal-command
+		// confirmation card. The renderer treats permission-only fields
+		// (matchedRule, targetSizeBytes, …) as optional with existing
+		// `if (data.foo)` checks — terminal cards just don't carry them.
+		const data = confirmation.data as IChipOSPermissionCardData | IChipOSTerminalConfirmCardData;
 		const element = context.element;
 		const responseVM: IChatResponseViewModel | undefined = isResponseVM(element) ? element : undefined;
 		const widget: IChatWidget | undefined = responseVM
@@ -130,22 +198,25 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		card.appendChild(meta);
 		let hasMeta = false;
 
-		if (data.matchedRule) {
+		// matchedRule + matchedLayer only exist on the permission-ask
+		// variant. Terminal-confirm cards skip this row entirely.
+		const matchedRule = 'matchedRule' in data ? data.matchedRule : undefined;
+		const matchedLayer = 'matchedLayer' in data ? data.matchedLayer : undefined;
+		if (matchedRule) {
 			hasMeta = true;
 			const ruleSpan = dom.$('span.chipos-meta-rule');
 			ruleSpan.appendChild(document.createTextNode(localize('chipos.card.ruleLabel', 'Rule: ')));
 			const ruleCode = dom.$('code.chipos-meta-rule-code');
-			ruleCode.textContent = data.matchedRule;
+			ruleCode.textContent = matchedRule;
 			ruleSpan.appendChild(ruleCode);
-			ruleSpan.appendChild(document.createTextNode(` (${data.matchedLayer || 'default'})`));
+			ruleSpan.appendChild(document.createTextNode(` (${matchedLayer || 'default'})`));
 
 			const copyBtn = dom.$('button.chipos-copy-btn');
 			copyBtn.setAttribute('type', 'button');
-			copyBtn.setAttribute('aria-label', localize('chipos.card.copyRuleAria', 'Copy rule key {0} to clipboard', data.matchedRule));
+			copyBtn.setAttribute('aria-label', localize('chipos.card.copyRuleAria', 'Copy rule key {0} to clipboard', matchedRule));
 			copyBtn.setAttribute('title', localize('chipos.card.copyRuleTooltip', 'Copy rule key'));
 			const copyIcon = dom.$('span.codicon.codicon-copy');
 			copyBtn.appendChild(copyIcon);
-			const matchedRule = data.matchedRule;
 			this._register(dom.addDisposableListener(copyBtn, 'click', async (e: MouseEvent) => {
 				e.preventDefault();
 				e.stopPropagation();
@@ -162,7 +233,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			meta.appendChild(ruleSpan);
 		}
 
-		const sessionTail = this._truncateSession(data.sessionId);
+		const sessionTail = this._truncateSession(data.sessionId ?? '');
 		if (sessionTail) {
 			if (hasMeta) {
 				meta.appendChild(document.createTextNode(' · '));
@@ -242,7 +313,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 
 	private _buildButtons(
 		buttonsRow: HTMLElement,
-		data: IChipOSPermissionCardData,
+		data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData,
 		element: IChatResponseViewModel,
 		widget: IChatWidget | undefined,
 	): void {
@@ -398,7 +469,12 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
-	private _makeBadge(data: IChipOSPermissionCardData): HTMLElement | undefined {
+	private _makeBadge(data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData): HTMLElement | undefined {
+		// Terminal-confirm cards don't carry file-existence metadata —
+		// the badge slot stays empty for them.
+		if (!('targetExists' in data)) {
+			return undefined;
+		}
 		let text: string | undefined;
 		if (data.targetExists === false) {
 			text = localize('chipos.card.newFile', 'new file');
@@ -459,7 +535,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		if (other.kind !== 'confirmation') {
 			return false;
 		}
-		return isChipOSPermissionCardData((other as IChatConfirmation).data);
+		return isChipOSCardData((other as IChatConfirmation).data);
 	}
 
 	addDisposable(disposable: IDisposable): void {

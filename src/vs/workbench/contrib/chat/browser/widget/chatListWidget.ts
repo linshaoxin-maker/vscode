@@ -35,7 +35,7 @@ import { CodeBlockPart } from './chatContentParts/codeBlockPart.js';
 import { ChatListDelegate, ChatListItemRenderer, IChatListItemTemplate, IChatRendererDelegate } from './chatListRenderer.js';
 import { ChatEditorOptions } from './chatOptions.js';
 import { ChatPendingDragController } from './chatPendingDragAndDrop.js';
-import { isChipOSPermissionCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
+import { isChipOSCardData } from '../../../chipos/browser/chatAgent/chipOSPermissionCard.js';
 
 export interface IChatListWidgetStyles {
 	listForeground?: string;
@@ -357,7 +357,7 @@ export class ChatListWidget extends Disposable {
 			// card is appended.
 			if (isResponseVM(e.element) && e.element.model?.isPendingConfirmation.get()) {
 				const containsChipOSCard = e.element.response?.value.some(
-					part => part.kind === 'confirmation' && isChipOSPermissionCardData(part.data),
+					part => part.kind === 'confirmation' && isChipOSCardData(part.data),
 				);
 				if (!containsChipOSCard) {
 					this.reveal(e.element, 1);
@@ -804,7 +804,7 @@ export class ChatListWidget extends Disposable {
 				continue;
 			}
 			for (const part of parts) {
-				if (part.kind === 'confirmation' && isChipOSPermissionCardData(part.data)) {
+				if (part.kind === 'confirmation' && isChipOSCardData(part.data)) {
 					return true;
 				}
 			}
@@ -927,7 +927,7 @@ export class ChatListWidget extends Disposable {
 				);
 				if (pendingItem && isResponseVM(pendingItem)) {
 					const isChipOSCard = pendingItem.response?.value.some(
-						part => part.kind === 'confirmation' && isChipOSPermissionCardData(part.data),
+						part => part.kind === 'confirmation' && isChipOSCardData(part.data),
 					);
 					if (!isChipOSCard) {
 						// Stock confirmation: scroll into view via the buttons overlay element.
