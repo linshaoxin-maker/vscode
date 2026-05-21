@@ -183,6 +183,56 @@
 	overflow-x: auto;
 }
 
+/* Markdown variant of the preview block — generic confirm cards
+ * (spec/arch/code/agent/file_edit/verification) opt into this via
+ * `renderMessageAsMarkdown: true`. The renderer drops a fully-rendered
+ * markdown DOM tree inside; we just need to scope typography + scroll. */
+.chipos-permission-preview-markdown {
+	padding: 10px 12px;
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: var(--vscode-foreground);
+	max-height: 280px;
+}
+
+.chipos-permission-preview-markdown p:first-child {
+	margin-top: 0;
+}
+
+.chipos-permission-preview-markdown p:last-child {
+	margin-bottom: 0;
+}
+
+.chipos-permission-preview-markdown pre,
+.chipos-permission-preview-markdown code {
+	font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.chipos-permission-preview-markdown pre {
+	padding: 6px 8px;
+	border-radius: 3px;
+	background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.08));
+	overflow-x: auto;
+	font-size: 11.5px;
+}
+
+.chipos-permission-preview-markdown :not(pre) > code {
+	padding: 1px 4px;
+	border-radius: 2px;
+	background: var(--vscode-textPreformat-background, rgba(127, 127, 127, 0.14));
+	color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+	font-size: 11.5px;
+}
+
+.chipos-permission-preview-markdown h1,
+.chipos-permission-preview-markdown h2,
+.chipos-permission-preview-markdown h3,
+.chipos-permission-preview-markdown h4 {
+	font-size: 13px;
+	font-weight: 600;
+	margin: 6px 0 4px;
+}
+
 /* ── Buttons row ────────────────────────────────────────────────────────────── */
 
 .chipos-permission-buttons {

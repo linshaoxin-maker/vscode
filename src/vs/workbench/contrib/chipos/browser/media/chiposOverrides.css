@@ -1550,3 +1550,56 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 }
 
 
+/* ════════════════════════════════════════════════════════════════════════════
+ *  Merge consecutive assistant responses after a confirmation click.
+ *
+ *  Symptom (user feedback 2026-05-21): one chat turn shows TWO separate
+ *  "ChipOS AI Assistant / Finished with N step" headers — the first
+ *  contains the chipos card, the second contains the post-decision agent
+ *  output (e.g. command output, hook result). Looks like two turns when
+ *  it's logically one.
+ *
+ *  Why two: the click on a chipos card fires
+ *  `chatService.sendRequest(..., { acceptedConfirmationData })` which the
+ *  framework treats as a new chat request → new IChatRequestModel + new
+ *  IChatResponseModel. The corresponding response renders a fresh
+ *  ".interactive-item-container.interactive-response" with its own
+ *  ".header" (avatar + username + step-counter).
+ *
+ *  We hid the request bubble above. Now also collapse the second response's
+ *  header so the chipos card + the post-click agent content read as one
+ *  continuous assistant block.
+ *
+ *  Selector: an `.interactive-response` row that's the IMMEDIATE sibling
+ *  of a hidden `.confirmation-message` row. Adjacent-sibling combinator
+ *  (`+`) still works because the hidden row IS in the DOM, just
+ *  display:none — so it remains a sibling for selector purposes.
+ *
+ *  Caveats:
+ *    - Doesn't apply if the user injects another message between the
+ *      confirmation and the followup response (rare; the chat framework
+ *      doesn't naturally produce that interleaving).
+ *    - The step-counter ("Finished with N step") lives in `.detail` which
+ *      is inside `.header`, so it's covered.
+ *    - We keep the value/body area unchanged — the actual content shows.
+ * ════════════════════════════════════════════════════════════════════════════ */
+/* Each `.interactive-item-container` lives inside
+ *   .monaco-list-rows > .monaco-list-row > .monaco-tl-row > .monaco-tl-contents > .interactive-item-container
+ * so the `+` adjacent-sibling combinator at the `.interactive-item-container`
+ * level never matches across rows. Step the selector up to `.monaco-list-row`
+ * and use `:has()` to identify the row that contains the hidden
+ * confirmation-message — then `+ .monaco-list-row` is the next row, where
+ * we drill back down to the response's `.header`. */
+.interactive-session .monaco-list-row:has(.interactive-item-container.confirmation-message) + .monaco-list-row .interactive-item-container.interactive-response > .header {
+	display: none !important;
+}
+
+/* Trim the top padding/margin of the merged response row so it visually
+ * butts up against the card row instead of leaving the original between-
+ * turn gap. */
+.interactive-session .monaco-list-row:has(.interactive-item-container.confirmation-message) + .monaco-list-row .interactive-item-container.interactive-response {
+	padding-top: 0 !important;
+	margin-top: -8px !important;
+}
+
+

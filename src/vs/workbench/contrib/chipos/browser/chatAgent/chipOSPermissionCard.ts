@@ -19,12 +19,14 @@
 
 import * as dom from '../../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../../base/browser/keyboardEvent.js';
+import { MarkdownString, isMarkdownString } from '../../../../../base/common/htmlContent.js';
 import { KeyCode } from '../../../../../base/common/keyCodes.js';
 import { Disposable, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { IMarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
 import { ChatSendResult, IChatConfirmation, IChatSendRequestOptions, IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
 import { IChatContentPart, IChatContentPartRenderContext } from '../../../../contrib/chat/browser/widget/chatContentParts/chatContentParts.js';
 import { IChatRendererContent, IChatResponseViewModel, isResponseVM } from '../../../../contrib/chat/common/model/chatViewModel.js';
@@ -151,13 +153,51 @@ export function isChipOSHookConfirmCardData(data: unknown): data is IChipOSHookC
 }
 
 /**
+ * Generic confirmation card data — chipos backend `ConfirmRequest`
+ * events that carry rich markdown content (spec_confirm, arch_confirm,
+ * code_confirm, design_confirm, agent_ask, file_edit, verification_*
+ * pipeline cards). Renders through the same ChipOSPermissionCardContentPart
+ * so all confirmation flows share one card vocabulary, with the rich
+ * markdown content rendered into the preview slot (vs. plain-text for
+ * terminal / hook variants).
+ *
+ * Routes click through the existing FEAT-23 `acceptedConfirmationData`
+ * branch — same as hook confirms — which forwards to backend via
+ * `streamClient.sendConfirmResponse`.
+ *
+ * Identified by `__chiposGenericConfirmCard: true`. The renderer checks
+ * `renderMessageAsMarkdown: true` on the data to know it should render
+ * `confirmation.message` (an IMarkdownString) into the preview slot via
+ * IMarkdownRendererService instead of treating `contentPreview` as plain
+ * text.
+ */
+export interface IChipOSGenericConfirmCardData {
+	readonly __chiposGenericConfirmCard: true;
+	readonly tool: string;
+	readonly specifier: string;
+	readonly renderMessageAsMarkdown: true;
+	readonly options: ReadonlyArray<{ readonly label: string; readonly action_id?: string; readonly action?: string }>;
+	readonly requestId: string;
+	readonly sessionId?: string;
+}
+
+export function isChipOSGenericConfirmCardData(data: unknown): data is IChipOSGenericConfirmCardData {
+	return (
+		!!data &&
+		typeof data === 'object' &&
+		(data as IChipOSGenericConfirmCardData).__chiposGenericConfirmCard === true
+	);
+}
+
+/**
  * Umbrella check: any chipos confirmation card data shape. Used by the
  * chatListRenderer / chatListWidget dispatch so worker permission asks,
- * terminal command approvals, AND hook confirms all route to
+ * terminal command approvals, hook confirms, AND generic ConfirmRequest
+ * cards (spec/arch/code/agent/file_edit/verification) all route to
  * `ChipOSPermissionCardContentPart` for one unified visual.
  */
-export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData {
-	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data) || isChipOSHookConfirmCardData(data);
+export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData | IChipOSGenericConfirmCardData | IChipOSGenericConfirmCardData {
+	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data) || isChipOSHookConfirmCardData(data) || isChipOSGenericConfirmCardData(data);
 }
 
 // ── Content part ──────────────────────────────────────────────────────────────
@@ -172,15 +212,19 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		@IChatWidgetService chatWidgetService: IChatWidgetService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
 	) {
 		super();
 
-		// Accept any chipos card data shape (worker permission ask /
-		// terminal-command confirm / hook confirm). The renderer treats
-		// permission-only fields (matchedRule, targetSizeBytes, …) as
-		// optional with existing `if (data.foo)` checks; cards that don't
-		// carry them just skip those sections.
-		const data = confirmation.data as IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData;
+		// Accept any chipos card data shape — worker permission ask /
+		// terminal-command confirm / hook confirm / generic ConfirmRequest
+		// (spec/arch/code/agent/file_edit/verification etc.). The renderer
+		// treats permission-only fields (matchedRule, targetSizeBytes, …)
+		// as optional with existing `if (data.foo)` checks; cards that
+		// don't carry them just skip those sections. Generic cards opt
+		// into markdown rendering of `confirmation.message` via the
+		// `renderMessageAsMarkdown` flag below.
+		const data = confirmation.data as IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData | IChipOSGenericConfirmCardData | IChipOSGenericConfirmCardData;
 		const element = context.element;
 		const responseVM: IChatResponseViewModel | undefined = isResponseVM(element) ? element : undefined;
 		const widget: IChatWidget | undefined = responseVM
@@ -290,12 +334,34 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			meta.style.display = 'none';
 		}
 
-		// ── Code preview ──────────────────────────────────────────────────────
-		if (data.contentPreview) {
+		// ── Preview ───────────────────────────────────────────────────────────
+		// Two modes:
+		//   (a) Generic-confirm cards (spec/arch/code/agent/file_edit/...)
+		//       opt into markdown rendering via `renderMessageAsMarkdown`.
+		//       The full `confirmation.message` MarkdownString flows through
+		//       IMarkdownRendererService so headings / code blocks / links
+		//       all render properly. Otherwise these card types' rich
+		//       content would be lost (which was the reason chipOSChatAgent
+		//       used to keep them on the framework's default confirmation
+		//       renderer pre-this-commit).
+		//   (b) Worker permission ask / terminal / hook cards carry plain
+		//       text in `contentPreview` and render it inside a `<pre>`
+		//       monospace block — matches the design-spec for showing a
+		//       command / file snippet inline.
+		const renderAsMarkdown = (data as IChipOSGenericConfirmCardData).renderMessageAsMarkdown === true;
+		if (renderAsMarkdown) {
+			const previewWrap = dom.$('.chipos-permission-preview.chipos-permission-preview-markdown');
+			card.appendChild(previewWrap);
+			const md = isMarkdownString(confirmation.message)
+				? confirmation.message
+				: new MarkdownString(typeof confirmation.message === 'string' ? confirmation.message : String(confirmation.message ?? ''), { supportThemeIcons: true, isTrusted: true });
+			const rendered = this._register(this.markdownRendererService.render(md));
+			previewWrap.appendChild(rendered.element);
+		} else if ((data as { contentPreview?: string }).contentPreview) {
 			const previewWrap = dom.$('.chipos-permission-preview');
 			card.appendChild(previewWrap);
 			const pre = dom.$('pre.chipos-code-preview');
-			pre.textContent = data.contentPreview;
+			pre.textContent = (data as { contentPreview?: string }).contentPreview ?? '';
 			previewWrap.appendChild(pre);
 		}
 
@@ -355,7 +421,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 
 	private _buildButtons(
 		buttonsRow: HTMLElement,
-		data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData,
+		data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData | IChipOSGenericConfirmCardData,
 		element: IChatResponseViewModel,
 		widget: IChatWidget | undefined,
 	): void {
@@ -529,7 +595,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
-	private _makeBadge(data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData): HTMLElement | undefined {
+	private _makeBadge(data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData | IChipOSGenericConfirmCardData): HTMLElement | undefined {
 		// Terminal-confirm cards don't carry file-existence metadata —
 		// the badge slot stays empty for them.
 		if (!('targetExists' in data)) {

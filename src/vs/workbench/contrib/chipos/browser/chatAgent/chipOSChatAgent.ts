@@ -1476,13 +1476,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				const buttons = rawButtons.length > 0 ? rawButtons : ['Approve', 'Reject'];
 				const options = p.options ?? cardOpts;
 
-				// For `hook_confirm` cards: route through the chipos custom
-				// card visual (same renderer as MCP permission ask + terminal
-				// confirm) so all three confirmation flows look identical.
-				// Other card_types (spec/arch/code/agent review) carry rich
-				// markdown content that the chipos card's plain-text preview
-				// would lose, so they stay on the framework's default
-				// `ChatConfirmationContentPart` renderer.
+				// Card data shape per card_type. ALL confirmation cards route
+				// through `ChipOSPermissionCardContentPart` now — uniform
+				// visual vocabulary with the worker permission ask and the
+				// terminal-command approval:
+				//   - `hook_confirm` → plain-text preview (description /
+				//     impact / command from card_data)
+				//   - everything else (spec/arch/code/agent/file_edit/
+				//     verification etc.) → opts into markdown rendering of
+				//     the rich `confirmation.message` via the
+				//     `renderMessageAsMarkdown: true` flag (the chipos card
+				//     uses IMarkdownRendererService for that branch).
 				const baseData = { requestId: p.request_id, sessionId: ctx.sessionId, options };
 				const data: Record<string, unknown> = p.card_type === 'hook_confirm'
 					? {
@@ -1492,7 +1496,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						specifier: ChipOSChatAgent._hookSpecifier(p.card_data, title),
 						contentPreview: ChipOSChatAgent._hookContentPreview(p.card_data),
 					}
-					: baseData;
+					: {
+						...baseData,
+						__chiposGenericConfirmCard: true,
+						tool: ChipOSChatAgent._cardTypeToTool(p.card_type),
+						specifier: ChipOSChatAgent._cardSpecifier(p.card_type, p.card_data, title),
+						renderMessageAsMarkdown: true,
+					};
 
 				const confirmation: IChatConfirmation = {
 					kind: 'confirmation',
@@ -2647,6 +2657,73 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			lines.push(`Command: ${command}`);
 		}
 		return lines.length > 0 ? lines.join('\n') : undefined;
+	}
+
+	/**
+	 * Map a backend `ConfirmRequest.card_type` to the chipos card's `tool`
+	 * field — that drives the codicon header + left-bar tool color (see
+	 * `ChipOSPermissionCardContentPart._toolCodicon` and the
+	 * `.chipos-permission-card.tool-{x}` rules in chipOSPermissionCard.css).
+	 *
+	 * Falls back to `'Edit'` (pencil + purple bar) which is neutral enough
+	 * for review-flavor cards (spec / arch / code / design / agent) — the
+	 * verification-pipeline H14/H15 etc. also land here. `hook_confirm`
+	 * doesn't reach this path (it has its own branch with `tool: 'Bash'`).
+	 */
+	private static _cardTypeToTool(cardType: string): string {
+		switch (cardType) {
+			case 'file_edit': return 'Edit';
+			case 'agent_ask': return 'Read'; // file/document icon for decision-required
+			case 'VERIFICATION_GROUP_REVIEW':
+			case 'VERIFICATION_HUMAN_CHECK': return 'Edit';
+			case 'spec_confirm':
+			case 'arch_confirm':
+			case 'design_confirm':
+			case 'code_confirm':
+			default: return 'Edit';
+		}
+	}
+
+	/**
+	 * Pick a one-line "subject" for the chipos card's `specifier` slot
+	 * (the inline-code chip next to the tool icon) based on card_type.
+	 * Each card_type has its own subject field in `card_data`; fall
+	 * through them in order of specificity, then use the title as last
+	 * resort. Truncate at 80 chars to keep the header row compact.
+	 */
+	private static _cardSpecifier(cardType: string, cardData: Record<string, unknown> | undefined, fallbackTitle: string): string {
+		const data = cardData ?? {};
+		const pick = (k: string): string | undefined => {
+			const v = data[k];
+			return typeof v === 'string' && v.length > 0 ? v : undefined;
+		};
+		let subject: string | undefined;
+		switch (cardType) {
+			case 'file_edit':
+				subject = pick('file_path');
+				break;
+			case 'spec_confirm':
+				subject = pick('module_name') ?? pick('spec_title') ?? pick('subject');
+				break;
+			case 'arch_confirm':
+				subject = pick('module_name') ?? pick('arch_title') ?? pick('subject');
+				break;
+			case 'design_confirm':
+			case 'code_confirm':
+				subject = pick('module_name') ?? pick('subject');
+				break;
+			case 'agent_ask':
+				subject = pick('question') ?? pick('subject');
+				break;
+			case 'VERIFICATION_GROUP_REVIEW':
+			case 'VERIFICATION_HUMAN_CHECK':
+				subject = pick('module_name') ?? pick('stage') ?? pick('subject');
+				break;
+			default:
+				subject = pick('subject') ?? pick('name');
+		}
+		subject = subject ?? fallbackTitle;
+		return subject.length > 80 ? subject.slice(0, 77) + '…' : subject;
 	}
 
 	private static _confirmTitle(cardType: string, cardData?: Record<string, unknown>, _fallbackTitle?: string): string {
