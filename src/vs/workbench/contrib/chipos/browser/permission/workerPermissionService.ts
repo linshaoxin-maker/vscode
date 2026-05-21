@@ -129,7 +129,32 @@ interface ISubscriptionEntry {
 	reconnectHandle?: ReturnType<typeof setTimeout>;
 	/** Set to true once dispose() runs; the read loop checks before reconnecting. */
 	disposed: boolean;
+	/**
+	 * Bug #10: askIds we've already emitted on `onAsk` for this subscription.
+	 *
+	 * Worker side `PendingAskRegistry.get_backlog_after()` (registry.py:282)
+	 * intentionally re-sends resolved asks on SSE reconnect so a client that
+	 * missed events during disconnect can see the complete history. The IDE
+	 * does NOT render this as history though — every `onAsk` fires a fresh
+	 * confirmation card. Without dedup, every SSE reconnect duplicates each
+	 * card the worker has in its 60s backlog window. Observed in dogfood as
+	 * "stale ASK cards pile up" after a few network blips.
+	 *
+	 * Bounded to MAX_SEEN_ASK_IDS to cap memory; LRU eviction by insertion
+	 * order via `Map` + manual size check. Cleared when subscription is
+	 * disposed (closeSubscription → entry deleted, set GC'd).
+	 */
+	seenAskIds: Map<string, number>;
 }
+
+/**
+ * Bug #10: per-subscription seen-askId cache cap.
+ *
+ * Worker side has MAX_PENDING_ASKS=64 (registry.py:46) and BACKLOG_SIZE=10
+ * (line 49), so 128 is comfortably above any realistic working set while
+ * bounding memory in pathological cases (worker bug spamming askIds).
+ */
+const MAX_SEEN_ASK_IDS = 128;
 
 /** Backoff schedule (ms) for fetch-based SSE reconnect — same shape as grpcSseEventStreamClient. */
 const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 5000, 10000];
@@ -165,6 +190,7 @@ export class ChipOSWorkerPermissionService extends Disposable implements IChipOS
 			abortController: new AbortController(),
 			lastEventId: 0,
 			disposed: false,
+			seenAskIds: new Map<string, number>(),
 		};
 		this._subscriptions.set(sessionId, entry);
 
@@ -404,6 +430,35 @@ export class ChipOSWorkerPermissionService extends Disposable implements IChipOS
 			this._logService.warn(`[ChipOS WorkerPermission] permission_ask missing ask_id: ${data.slice(0, 200)}`);
 			return;
 		}
+
+		// Bug #10: dedup by ask_id within this subscription.
+		//
+		// Worker side `PendingAskRegistry.get_backlog_after()` re-sends resolved
+		// asks on SSE reconnect (registry.py:282 — "包括已 resolve 的"). Without
+		// this guard each network blip stacks duplicate cards in the chat for
+		// every ask still in the worker's 60s backlog window. Observed in
+		// dogfood as "stale ASK cards pile up".
+		//
+		// Single-emission policy: same ask_id never fires `onAsk` twice from
+		// this subscription. Idempotency at the worker decide endpoint already
+		// covers double-click (decide called twice returns 200 {resolved:false}),
+		// so we don't need to relay re-fires for that case either.
+		if (entry.seenAskIds.has(payload.ask_id)) {
+			this._logService.info(
+				`[ChipOS WorkerPermission] ASK dedup: skip already-seen ask_id=${payload.ask_id} session=${entry.sessionId} (likely SSE backlog replay)`
+			);
+			return;
+		}
+		entry.seenAskIds.set(payload.ask_id, Date.now());
+		// LRU-ish: trim oldest entries when the cache grows. Map preserves
+		// insertion order, so deleting from .keys()[0] is O(1) per evict.
+		if (entry.seenAskIds.size > MAX_SEEN_ASK_IDS) {
+			const oldest = entry.seenAskIds.keys().next().value;
+			if (oldest !== undefined) {
+				entry.seenAskIds.delete(oldest);
+			}
+		}
+
 		const ask: IWorkerPermissionAsk = {
 			askId: payload.ask_id,
 			sessionId: payload.session_id ?? entry.sessionId,
