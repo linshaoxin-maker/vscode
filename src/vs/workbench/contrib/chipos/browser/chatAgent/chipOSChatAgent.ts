@@ -3867,19 +3867,25 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// returned without ever calling registerIdeMcpTools, so reasoner's
 			// `_ide_mcp_tool_names = {}` and the LLM had no awareness of
 			// terminal capabilities at all.
-			// Bug #17 (2026-05-20 dogfood): the chipos-side run_in_terminal
-			// handler at line ~3416 uses IDialogService.confirm() for the
-			// approval — that renders a modal centered on the IDE window,
-			// draggable, blocking all clicks (user reported as "system
-			// popup, not chat card"). Worker-side `execute_command` /
-			// `execute` provide the same shell-run capability AND go
-			// through the unified ChipOSPermissionCard inline flow.
-			// Stop advertising run_in_terminal to the LLM so it picks the
-			// worker tools instead. The `chipos.terminal.
-			// disableRunInTerminalTool` config (default true) leaves an
-			// escape hatch — set it to false to restore the modal flow.
+			// run_in_terminal advertisement gate.
+			//
+			// History: Bug #17 (2026-05-20 dogfood) found the chipos
+			// `run_in_terminal` handler used `IDialogService.confirm()` for
+			// approval — a centered, draggable, blocking modal. The previous
+			// fix here was to STOP advertising the tool to the LLM (default
+			// `disable = true`) so the model would prefer worker-side
+			// `execute_command` / `execute` (which already used the inline
+			// ChipOSPermissionCard).
+			//
+			// 2026-05-21: the modal is gone — the handler now emits an
+			// inline `IChatConfirmation` (commit ed9e1bc420e). The flow
+			// renders in the same widget family as the chipos permission
+			// card + hook confirm card, so there's no longer a UX reason
+			// to hide the tool. Flip the default to **enabled**; the
+			// config key stays as an escape hatch (set to `true` to
+			// disable if the inline approval flow misbehaves).
 			const disableRunInTerminal = this._configurationService.getValue<boolean>('chipos.terminal.disableRunInTerminalTool');
-			const effectiveDisable = disableRunInTerminal === undefined ? true : disableRunInTerminal;
+			const effectiveDisable = disableRunInTerminal === undefined ? false : disableRunInTerminal;
 			if (!effectiveDisable) {
 				tools.push({
 					name: 'run_in_terminal',
