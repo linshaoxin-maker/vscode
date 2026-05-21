@@ -111,12 +111,53 @@ export function isChipOSTerminalConfirmCardData(data: unknown): data is IChipOST
 }
 
 /**
- * Umbrella check: any chipos confirmation card data shape. Used by the
- * chatListRenderer / chatListWidget dispatch so both permission asks
- * and terminal confirms route to `ChipOSPermissionCardContentPart`.
+ * Hook confirmation card data — chipos backend `hook_confirm` cards
+ * (verification pipeline H14/H15/H16/H17, etc.) routed through the
+ * same custom card visual as MCP permission asks and terminal
+ * confirms.
+ *
+ * Identified by `__chiposHookConfirmCard: true`. Click handling
+ * flows through the standard FEAT-23 `acceptedConfirmationData`
+ * branch in `chipOSChatAgent.invoke()` — it reads `options[]` to
+ * map the clicked label → action_id and forwards via
+ * `streamClient.sendConfirmResponse(requestId, action, ...)`. No
+ * Deferred / IDE-side state machine (unlike terminal confirms): the
+ * backend is the source of truth for hook approvals.
+ *
+ * Field mapping (set in `ConfirmRequest` event handler):
+ *   - `tool: 'Bash'`        — picks the terminal codicon header.
+ *   - `specifier`           — hook_name (or command, or title).
+ *   - `contentPreview`      — flattened description / impact /
+ *     command from card_data, plain-text (chipos card renders a
+ *     `<pre>` block, no markdown — see `_buildHookContentPreview`).
+ *   - `options`             — passed through from backend.
  */
-export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardData | IChipOSTerminalConfirmCardData {
-	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data);
+export interface IChipOSHookConfirmCardData {
+	readonly __chiposHookConfirmCard: true;
+	readonly tool: 'Bash';
+	readonly specifier: string;
+	readonly contentPreview?: string;
+	readonly options: ReadonlyArray<{ readonly label: string; readonly action_id?: string; readonly action?: string }>;
+	readonly requestId: string;
+	readonly sessionId?: string;
+}
+
+export function isChipOSHookConfirmCardData(data: unknown): data is IChipOSHookConfirmCardData {
+	return (
+		!!data &&
+		typeof data === 'object' &&
+		(data as IChipOSHookConfirmCardData).__chiposHookConfirmCard === true
+	);
+}
+
+/**
+ * Umbrella check: any chipos confirmation card data shape. Used by the
+ * chatListRenderer / chatListWidget dispatch so worker permission asks,
+ * terminal command approvals, AND hook confirms all route to
+ * `ChipOSPermissionCardContentPart` for one unified visual.
+ */
+export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData {
+	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data) || isChipOSHookConfirmCardData(data);
 }
 
 // ── Content part ──────────────────────────────────────────────────────────────
@@ -134,11 +175,12 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 	) {
 		super();
 
-		// Accept either a worker permission-ask card or a terminal-command
-		// confirmation card. The renderer treats permission-only fields
-		// (matchedRule, targetSizeBytes, …) as optional with existing
-		// `if (data.foo)` checks — terminal cards just don't carry them.
-		const data = confirmation.data as IChipOSPermissionCardData | IChipOSTerminalConfirmCardData;
+		// Accept any chipos card data shape (worker permission ask /
+		// terminal-command confirm / hook confirm). The renderer treats
+		// permission-only fields (matchedRule, targetSizeBytes, …) as
+		// optional with existing `if (data.foo)` checks; cards that don't
+		// carry them just skip those sections.
+		const data = confirmation.data as IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData;
 		const element = context.element;
 		const responseVM: IChatResponseViewModel | undefined = isResponseVM(element) ? element : undefined;
 		const widget: IChatWidget | undefined = responseVM
@@ -313,7 +355,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 
 	private _buildButtons(
 		buttonsRow: HTMLElement,
-		data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData,
+		data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData,
 		element: IChatResponseViewModel,
 		widget: IChatWidget | undefined,
 	): void {
@@ -327,22 +369,39 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			}
 		};
 
-		// Replace the action-button row with a "Responded" pill once the user
-		// has resolved the card. This is the visual confirmation that the
-		// click landed; without it the card keeps rendering active buttons
-		// indefinitely (confirmation.isUsed is set on the model object but
-		// the existing DOM has no reactive binding to it, so it never knows
-		// to re-render).
-		const swapToRespondedPill = () => {
+		// Replace the action-button row with a pill showing WHICH action the
+		// user picked once the card resolves. Reads "Allow once" / "Reject"
+		// / "Run" / etc. — same label that was on the button — with a check
+		// icon prefix. This is the visual confirmation that the click
+		// landed AND surfaces the user's choice inline in the card, so the
+		// separate "Selected 'Run'" framework bubble below the card becomes
+		// redundant (hidden by chiposOverrides.css; see the
+		// `.interactive-item-container.confirmation-message` rule).
+		//
+		// When called WITHOUT an option arg (historical re-render of a card
+		// that landed but we no longer have button context), falls back to
+		// the generic "Responded" label.
+		const swapToRespondedPill = (chosen?: { label: string; action_id?: string }) => {
 			while (buttonsRow.firstChild) {
 				buttonsRow.removeChild(buttonsRow.firstChild);
 			}
 			const pill = dom.$('span.chipos-used-pill');
-			pill.textContent = localize('chipos.card.used', 'Responded');
+			if (chosen) {
+				if (chosen.action_id) {
+					pill.classList.add(`chipos-btn-${chosen.action_id.replace(/_/g, '-')}`);
+				}
+				const icon = dom.$('span.codicon.codicon-check.chipos-used-pill-icon');
+				pill.appendChild(icon);
+				const labelEl = dom.$('span.chipos-used-pill-label');
+				labelEl.textContent = chosen.label;
+				pill.appendChild(labelEl);
+			} else {
+				pill.textContent = localize('chipos.card.used', 'Responded');
+			}
 			buttonsRow.appendChild(pill);
 		};
 
-		const sendAction = async (opt: { label: string; action_id: string }) => {
+		const sendAction = async (opt: { label: string; action_id?: string }) => {
 			// Double-click / re-entry protection — confirmation.isUsed is the
 			// authoritative "already responded" flag (set after a successful
 			// sendRequest), but the request is async, so guard with a local
@@ -377,7 +436,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 				}
 				if (ChatSendResult.isSent(result)) {
 					this.confirmation.isUsed = true;
-					swapToRespondedPill();
+					swapToRespondedPill(opt);
 					return;
 				}
 			} catch {
@@ -390,7 +449,8 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		for (let i = 0; i < data.options.length; i++) {
 			const opt = data.options[i];
 			const btn = document.createElement('button');
-			btn.className = `chipos-action-btn chipos-btn-${opt.action_id.replace(/_/g, '-')}`;
+			const actionSlug = opt.action_id ? opt.action_id.replace(/_/g, '-') : `option-${i + 1}`;
+			btn.className = `chipos-action-btn chipos-btn-${actionSlug}`;
 			// #1 — Show 1-4 number hint inside the button so users learn the
 			// keyboard shortcuts inline (Cursor / Claude Code pattern).
 			const numHint = dom.$('span.chipos-btn-num');
@@ -399,7 +459,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			const labelSpan = dom.$('span.chipos-btn-label');
 			labelSpan.textContent = opt.label;
 			btn.appendChild(labelSpan);
-			btn.setAttribute('aria-label', this._ariaLabel(opt.action_id, data.specifier));
+			btn.setAttribute('aria-label', this._ariaLabel(opt.action_id ?? opt.label, data.specifier));
 			btn.setAttribute('aria-keyshortcuts', String(i + 1));
 			btn.setAttribute('type', 'button');
 			this._register(dom.addDisposableListener(btn, 'click', () => { void sendAction(opt); }));
@@ -469,7 +529,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
-	private _makeBadge(data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData): HTMLElement | undefined {
+	private _makeBadge(data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData): HTMLElement | undefined {
 		// Terminal-confirm cards don't carry file-existence metadata —
 		// the badge slot stays empty for them.
 		if (!('targetExists' in data)) {

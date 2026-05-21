@@ -1519,3 +1519,34 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	transition-timing-function: ease;
 }
 
+
+/* ════════════════════════════════════════════════════════════════════════════
+ *  Hide framework's "Selected '{X}'" confirmation-response request bubble.
+ *
+ *  Background: when a user clicks an action button on a chipos card
+ *  (permission, terminal, hook), the renderer in chipOSPermissionCard.ts
+ *  calls `chatService.sendRequest(prompt, { confirmation: opt.label, ... })`
+ *  to deliver `acceptedConfirmationData` to the next invoke. The framework
+ *  then renders this synthetic request as a regular user message in chat —
+ *  with a "Selected '{label}'" detail tagline (see chatListRenderer.ts:945).
+ *
+ *  Problem: the chipos card already shows what the user picked via the
+ *  `chipos-used-pill` chip ("Allow once" / "Run" / "Reject" with check icon).
+ *  The external bubble is now redundant — and worse, makes the choice look
+ *  detached from the card (user feedback: "卡片下面那条独立气泡显得割裂").
+ *
+ *  Fix: hide the external bubble. The framework marks these rows with
+ *  `.confirmation-message` class (see chatListRenderer.ts:841). Hiding
+ *  affects ALL confirmation responses — both chipos cards and any future
+ *  framework confirmation flows — but that's the right tradeoff because
+ *  the card pill is the canonical display.
+ *
+ *  We keep `display: none` (not `visibility: hidden`) so the row takes
+ *  zero vertical space — no phantom gap between the resolved card and the
+ *  next agent response.
+ * ════════════════════════════════════════════════════════════════════════════ */
+.interactive-session .interactive-item-container.confirmation-message {
+	display: none !important;
+}
+
+

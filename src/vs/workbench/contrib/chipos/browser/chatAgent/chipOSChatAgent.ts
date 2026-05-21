@@ -1474,11 +1474,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					?? cardOpts?.map(o => o.label ?? o.action_id ?? 'Option').filter(Boolean) as string[] | undefined
 					?? ['Approve', 'Reject'];
 				const buttons = rawButtons.length > 0 ? rawButtons : ['Approve', 'Reject'];
+				const options = p.options ?? cardOpts;
+
+				// For `hook_confirm` cards: route through the chipos custom
+				// card visual (same renderer as MCP permission ask + terminal
+				// confirm) so all three confirmation flows look identical.
+				// Other card_types (spec/arch/code/agent review) carry rich
+				// markdown content that the chipos card's plain-text preview
+				// would lose, so they stay on the framework's default
+				// `ChatConfirmationContentPart` renderer.
+				const baseData = { requestId: p.request_id, sessionId: ctx.sessionId, options };
+				const data: Record<string, unknown> = p.card_type === 'hook_confirm'
+					? {
+						...baseData,
+						__chiposHookConfirmCard: true,
+						tool: 'Bash',
+						specifier: ChipOSChatAgent._hookSpecifier(p.card_data, title),
+						contentPreview: ChipOSChatAgent._hookContentPreview(p.card_data),
+					}
+					: baseData;
+
 				const confirmation: IChatConfirmation = {
 					kind: 'confirmation',
 					title,
 					message: new MarkdownString(richMessage, { supportThemeIcons: true, isTrusted: true }),
-					data: { requestId: p.request_id, sessionId: ctx.sessionId, options: p.options ?? cardOpts },
+					data,
 					buttons,
 				};
 				// A1 (issue #51 comment 2): remember the live confirmation so a
@@ -2568,6 +2588,65 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		} catch {
 			return content;
 		}
+	}
+
+	/**
+	 * Pick the best one-line "subject" for a `hook_confirm` card to surface
+	 * as the chipos card's `specifier` (the clickable code-style slot next
+	 * to the tool icon). Hook payloads carry several candidate strings; we
+	 * fall through them in order of specificity: hook_name → command →
+	 * description (truncated) → the card title as a last resort. The
+	 * specifier is rendered as inline-code so we keep it short and stable.
+	 */
+	private static _hookSpecifier(cardData: Record<string, unknown> | undefined, fallbackTitle: string): string {
+		const data = cardData ?? {};
+		const hookName = typeof data['hook_name'] === 'string' ? data['hook_name'] as string : undefined;
+		if (hookName) {
+			return hookName;
+		}
+		const command = typeof data['command'] === 'string' ? data['command'] as string : undefined;
+		if (command) {
+			// Hook commands can be long shell strings — trim so the header
+			// row doesn't wrap aggressively.
+			return command.length > 80 ? command.slice(0, 77) + '…' : command;
+		}
+		const description = typeof data['description'] === 'string' ? data['description'] as string : undefined;
+		if (description) {
+			return description.length > 80 ? description.slice(0, 77) + '…' : description;
+		}
+		return fallbackTitle;
+	}
+
+	/**
+	 * Render a `hook_confirm` card's secondary fields (description / impact
+	 * / command) into a plain-text preview block. The chipos card uses a
+	 * `<pre>` element for the preview slot — no markdown, no codicons —
+	 * so we flatten the markdown markers (the same fields are already
+	 * rendered as rich markdown in `confirmation.message` for accessibility,
+	 * but the visual card uses this plain version).
+	 */
+	private static _hookContentPreview(cardData: Record<string, unknown> | undefined): string | undefined {
+		const data = cardData ?? {};
+		const lines: string[] = [];
+		const description = typeof data['description'] === 'string' ? data['description'] as string : undefined;
+		const impact = typeof data['impact'] === 'string' ? data['impact'] as string : undefined;
+		const command = typeof data['command'] === 'string' ? data['command'] as string : undefined;
+		if (description) {
+			lines.push(description);
+		}
+		if (impact) {
+			if (lines.length > 0) {
+				lines.push('');
+			}
+			lines.push(`Impact: ${impact}`);
+		}
+		if (command) {
+			if (lines.length > 0) {
+				lines.push('');
+			}
+			lines.push(`Command: ${command}`);
+		}
+		return lines.length > 0 ? lines.join('\n') : undefined;
 	}
 
 	private static _confirmTitle(cardType: string, cardData?: Record<string, unknown>, _fallbackTitle?: string): string {

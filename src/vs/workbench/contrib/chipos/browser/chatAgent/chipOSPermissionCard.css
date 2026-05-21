@@ -288,12 +288,53 @@
 	pointer-events: none;
 }
 
-/* ── Used pill (historical cards) ───────────────────────────────────────────── */
+/* ── Used pill (after the user responds) ───────────────────────────────────── */
 
+/* Base pill: chip with check icon + chosen label. Color tint comes from
+ * an `action_id`-specific class (.chipos-btn-allow-once etc.) the renderer
+ * adds when the user clicked a specific option. Fallback (no action_id
+ * class) inherits the neutral descriptionForeground tint. */
 .chipos-used-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
-	padding: 2px 8px;
+	padding: 3px 10px 3px 8px;
 	border-radius: 10px;
 	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.3));
+	background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+	font-weight: 500;
+	max-width: 100%;
+}
+
+.chipos-used-pill-icon.codicon {
+	font-size: 11px;
+	opacity: 0.85;
+}
+
+.chipos-used-pill-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Tint variants — match the corresponding action button colors so the
+ * pill stays semantically anchored to the user's choice. Allow flavors
+ * borrow the primary-accent color; Deny / Reject get the danger color
+ * tint. */
+.chipos-used-pill.chipos-btn-allow-once,
+.chipos-used-pill.chipos-btn-allow-workspace,
+.chipos-used-pill.chipos-btn-allow-always,
+.chipos-used-pill.chipos-btn-run {
+	color: var(--chipos-btn-primary-bg);
+	border-color: color-mix(in srgb, var(--chipos-btn-primary-bg) 45%, transparent);
+	background: color-mix(in srgb, var(--chipos-btn-primary-bg) 8%, transparent);
+}
+
+.chipos-used-pill.chipos-btn-deny,
+.chipos-used-pill.chipos-btn-reject {
+	color: var(--chipos-btn-danger-fg);
+	border-color: color-mix(in srgb, var(--chipos-btn-danger-fg) 45%, transparent);
+	background: color-mix(in srgb, var(--chipos-btn-danger-fg) 8%, transparent);
 }
