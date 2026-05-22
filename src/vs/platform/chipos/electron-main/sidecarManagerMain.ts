@@ -171,8 +171,34 @@ async function readLoginShellPath(): Promise<string | undefined> {
 	});
 }
 
+/**
+ * Canonicalize the workspace path before hashing so that aliases of the same
+ * physical directory hash to the same instance dir.
+ *
+ * Background (2026-05-22): the dev IDE opened `/private/tmp/chipos-wave-demo`
+ * while the prod IDE opened `/tmp/chipos-wave-demo`. macOS resolves both to
+ * the same realpath, but `fs.fsPath` preserves whichever form the URI was
+ * built from, so the two IDEs hashed to different instance dirs and ended
+ * up spawning two separate workers (8081 + 8082) for the SAME physical
+ * workspace. Same class of bug shows up with symlinked project dirs and
+ * Windows junctions.
+ *
+ * Falls back to the as-given path if realpath throws (workspace doesn't
+ * exist, network drive unmounted, permission denied, etc.) — the worker
+ * keying becomes wrong in those edge cases but at least nothing crashes,
+ * and the alternative would be refusing to spawn entirely.
+ */
+function canonicalizeWorkspaceRoot(workspaceRoot: string): string {
+	try {
+		return fs.realpathSync(workspaceRoot);
+	} catch {
+		return workspaceRoot;
+	}
+}
+
 function workspaceHash(workspaceRoot: string): string {
-	return crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
+	const canonical = canonicalizeWorkspaceRoot(workspaceRoot);
+	return crypto.createHash('sha256').update(canonical).digest('hex').substring(0, 12);
 }
 
 function instanceDir(workspaceRoot: string): string {

@@ -48,8 +48,32 @@ function chiposHome(): string {
 	return process.env['CHIPOS_HOME'] ?? path.join(os.homedir(), '.chipos');
 }
 
+/**
+ * Canonicalize before hashing — see sidecarManagerMain.ts for the full
+ * story. Short version: macOS `/tmp` vs `/private/tmp`, symlinked project
+ * dirs, and Windows junctions can produce different fs paths for the same
+ * physical directory, which would hash to different instance dirs and
+ * fork a second worker for what's really the same workspace. realpath
+ * collapses the aliases. Falls back to the as-given path if realpath
+ * raises (workspace gone, network drive unmounted, etc.) so we degrade
+ * to the previous broken-but-non-crashing behavior instead of refusing
+ * to spawn at all.
+ *
+ * MUST stay byte-identical to the sidecarManagerMain.ts copy — if these
+ * two drift the local Electron path and the REH path will hash to
+ * different dirs again, reintroducing the dual-worker bug.
+ */
+function canonicalizeWorkspaceRoot(workspaceRoot: string): string {
+	try {
+		return fs.realpathSync(workspaceRoot);
+	} catch {
+		return workspaceRoot;
+	}
+}
+
 function workspaceHash(workspaceRoot: string): string {
-	return crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
+	const canonical = canonicalizeWorkspaceRoot(workspaceRoot);
+	return crypto.createHash('sha256').update(canonical).digest('hex').substring(0, 12);
 }
 
 function instanceDir(workspaceRoot: string): string {
