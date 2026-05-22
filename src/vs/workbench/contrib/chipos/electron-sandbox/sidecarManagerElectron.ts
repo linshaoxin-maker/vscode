@@ -759,7 +759,31 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	private async _probeWorkerHealth(): Promise<boolean> {
 		// (a) Local worker /health — only meaningful in Local mode.
 		if (this._mode === BackendMode.Local) {
-			const port = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+			// 2026-05-23: read the ACTUAL bound port from instance.json
+			// rather than trusting `chipos.backend.workerHttpPort`. The
+			// worker's start_http_server falls back to a kernel-assigned
+			// port on EADDRINUSE (port-roll TOCTOU fix), so the config
+			// default (8081) lies more often than not when two workers
+			// share a host. Without this read, probe hits a dead port
+			// → 60s "Worker registration not observed" → Reconnect badge
+			// even though the worker is fully functional.
+			//
+			// Fallback to config value when instance.json isn't readable
+			// yet (worker mid-startup, never spawned, REH path, etc.) —
+			// the probe will likely fail, but that's the same as today.
+			const folders = this._workspaceContextService.getWorkspace().folders;
+			const workspaceRoot = folders[0]?.uri.fsPath ?? '';
+			let port = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+			if (workspaceRoot) {
+				try {
+					const meta = await this.readInstanceMeta(workspaceRoot);
+					if (meta && typeof meta.http_port === 'number' && meta.http_port > 0) {
+						port = meta.http_port;
+					}
+				} catch {
+					// Keep config default; probe failure below will surface it
+				}
+			}
 			try {
 				const controller = new AbortController();
 				const timer = setTimeout(() => controller.abort(), 1500);

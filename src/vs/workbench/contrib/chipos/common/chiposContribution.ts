@@ -952,8 +952,21 @@ class ChipOSContribution extends Disposable {
 
 		this._applyEmptyWindowLayout();
 
+		// 2026-05-23: prime + track the Worker pill's empty-workbench gate.
+		// In empty workbench the worker is deferred ("no workspace folder
+		// open — deferring worker spawn") so the Reconnect/Error badge is
+		// pointing at a worker that intentionally doesn't exist — misleading
+		// UX. StatusBarHandler.setWorkspaceOpen(false) suppresses the pill
+		// in that state; flipping it back replays the latest reason.
+		const refreshWorkerPillVisibility = (): void => {
+			const hasFolder = this._contextService.getWorkbenchState() !== WorkbenchState.EMPTY;
+			this._statusBarHandler?.setWorkspaceOpen(hasFolder);
+		};
+		refreshWorkerPillVisibility();
+
 		this._register(this._contextService.onDidChangeWorkbenchState(() => {
 			this._applyEmptyWindowLayout();
+			refreshWorkerPillVisibility();
 		}));
 
 		this._register(this._sidecarManager.onDidChangeState(state => {

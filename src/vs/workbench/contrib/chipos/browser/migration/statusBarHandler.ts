@@ -49,6 +49,17 @@ export class StatusBarHandler extends Disposable {
 	private _usageEntry: IStatusbarEntryAccessor | undefined;
 	private _reconnectEntry: IStatusbarEntryAccessor | undefined;
 
+	// 2026-05-23: empty-workbench gate for the Worker pill.
+	// _ensureLocalWorker() short-circuits when no folder is open ("no
+	// workspace folder open — deferring worker spawn"), so the pill
+	// flipping to Reconnect/Error in that state is misleading —
+	// there's literally nothing to reconnect to. Track workspace
+	// presence here and suppress the pill while empty; the last
+	// reason is remembered so re-opening a folder restores whatever
+	// state we were trying to render.
+	private _workspaceHasFolder = true;
+	private _lastReconnectReason: ReconnectReason | undefined;
+
 	constructor(
 		@IStatusbarService private readonly _statusbarService: IStatusbarService,
 	) {
@@ -245,7 +256,42 @@ export class StatusBarHandler extends Disposable {
 	//   - worker connected           → 绿色 "$(check) Connected" 仍可点 = 主动 force restart
 	//   - worker connecting/starting → 灰色 "$(loading~spin) Connecting" 不可点
 	// 这样 update() 永远 work, 不依赖 dispose() 的 race-condition 状态.
+	/**
+	 * Mark whether the workbench currently has a folder open.
+	 *
+	 * Called from chiposContribution on onDidChangeWorkbenchState. When
+	 * false, the Worker pill is suppressed entirely — the worker is
+	 * deferred to "no workspace folder open" mode anyway, so showing a
+	 * Reconnect/Error/Connecting badge for it is just noise pointing at
+	 * a non-existent worker. When toggled back to true, replays the last
+	 * reason so the pill picks up where the underlying state machine
+	 * actually was.
+	 */
+	setWorkspaceOpen(open: boolean): void {
+		if (this._workspaceHasFolder === open) {
+			return;
+		}
+		this._workspaceHasFolder = open;
+		if (!open) {
+			this._reconnectEntry?.dispose();
+			this._reconnectEntry = undefined;
+			return;
+		}
+		// Workspace just opened — replay the cached reason so the pill
+		// reflects whatever the sidecar/worker is actually doing.
+		this.updateReconnectButton(this._lastReconnectReason);
+	}
+
 	updateReconnectButton(reason: ReconnectReason | undefined): void {
+		// Remember every requested reason so setWorkspaceOpen(true) can
+		// restore the right pill after coming back from empty workbench.
+		this._lastReconnectReason = reason;
+		// Empty workbench → no worker to reconnect to. Suppress.
+		if (!this._workspaceHasFolder) {
+			this._reconnectEntry?.dispose();
+			this._reconnectEntry = undefined;
+			return;
+		}
 		// undefined === connected (旧 API 调用方传 undefined 表示"连上了, 不用显示"). 现在保留按钮但显示 connected 态.
 		const effective: ReconnectReason = reason ?? 'connected';
 
