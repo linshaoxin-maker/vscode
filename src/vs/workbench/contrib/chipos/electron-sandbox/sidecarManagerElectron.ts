@@ -110,6 +110,30 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	private _healthWatchTimer: ReturnType<typeof setInterval> | undefined;
 	private _healthWatchFailureCount = 0;
 
+	// 2026-05-23: cached "actually-bound" worker HTTP port.
+	//
+	// Background: `chipos.backend.workerHttpPort` (config) used to equal
+	// the worker's actual bound port — the worker bound exactly what
+	// --http-port said, no exceptions. The 2026-05-22 port-roll TOCTOU
+	// fix (ac0bd277) broke that invariant: on EADDRINUSE the worker
+	// falls back to a kernel-assigned port (e.g. 51597 instead of 8081).
+	// The actual port is written to instance.json by the worker.
+	//
+	// Multiple sites in this class previously read the config value as
+	// if it were the actual port (workerHttpUrl getter, probe, tools
+	// panel base URL, permission SSE base URL, etc). After port-roll
+	// fallback fires, all of those silently point at a dead port.
+	//
+	// Fix: _probeWorkerHealth reads instance.json each probe (1s during
+	// observation, 30s during health watch) and stashes the real port
+	// here. The synchronous `workerHttpUrl` getter returns this cached
+	// value when present, falling back to the config default before the
+	// first probe lands or when the worker is intentionally down.
+	//
+	// Cache invalidation: cleared on stopBackend so a re-spawn doesn't
+	// reuse a stale port for the brief window before the next probe.
+	private _cachedActualWorkerHttpPort: number | undefined;
+
 	get state(): SidecarState { return this._state; }
 	get workerState(): WorkerState { return this._workerState; }
 	get mode(): BackendMode { return this._mode; }
@@ -138,7 +162,17 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		if (explicit) {
 			return explicit;
 		}
-		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		// 2026-05-23: prefer the actually-bound port observed via the last
+		// instance.json read in _probeWorkerHealth. The config value is
+		// only a HINT to the worker (passed via --http-port); the worker
+		// may have port-rolled to a kernel-assigned port. See the field
+		// declaration of _cachedActualWorkerHttpPort for the full story.
+		// Falls back to config when no probe has landed yet (early
+		// spawn) or when the user is in REH/Manual mode where the
+		// hint is the truth.
+		const workerHttpPort = this._cachedActualWorkerHttpPort
+			?? this._configurationService.getValue<number>('chipos.backend.workerHttpPort')
+			?? 8081;
 		if (this._mode === BackendMode.CloudReasoning || this._mode === BackendMode.Local) {
 			// CloudReasoning: chipos-remote-ssh forwarded the remote worker HTTP port to local loopback.
 			// Local: the worker runs on this machine, also bound to loopback.
@@ -779,6 +813,13 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 					const meta = await this.readInstanceMeta(workspaceRoot);
 					if (meta && typeof meta.http_port === 'number' && meta.http_port > 0) {
 						port = meta.http_port;
+						// Stash for synchronous callers (workerHttpUrl getter,
+						// workerToolManager base URL, permission SSE, etc).
+						// They all derived from config before the port-roll
+						// TOCTOU fix; without this cache they'd silently
+						// target a dead port whenever the kernel picks
+						// something other than what config requested.
+						this._cachedActualWorkerHttpPort = meta.http_port;
 					}
 				} catch {
 					// Keep config default; probe failure below will surface it
@@ -821,6 +862,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		}
 		this._setWorkerState(WorkerState.NotStarted);
 		this._setState(SidecarState.NotStarted);
+		// Invalidate the observed-port cache so the next worker spawn
+		// doesn't reuse a stale port for the brief window before its
+		// first health probe lands. workerHttpUrl falls back to config
+		// in the meantime — same as the original pre-port-roll behavior.
+		this._cachedActualWorkerHttpPort = undefined;
 	}
 
 	async restartWorker(): Promise<void> {
