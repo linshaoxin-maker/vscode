@@ -286,7 +286,19 @@ interface InstanceMeta {
 	workspace?: string;
 	http_port?: number;
 	ref_count?: number;
-	refs?: { caller_id: string; acquired_at: string }[];
+	/**
+	 * Live refs holding this worker open. Each entry is one IDE main process
+	 * that has acquireRef'd this workspace.
+	 *
+	 * `ide_pid` was added 2026-05-22 so the worker can self-GC stale entries
+	 * when an IDE crashed / kill -9'd / power-lost without going through the
+	 * release IPC. Worker periodically checks `os.kill(ide_pid, 0)` and
+	 * evicts dead entries; when ref_count hits 0 after GC, worker graceful-
+	 * shuts down. Legacy entries without ide_pid are kept (treated as alive
+	 * forever) — the field is added by new acquireRef writes, so the leak
+	 * fix naturally rolls in as IDEs upgrade.
+	 */
+	refs?: { caller_id: string; acquired_at: string; ide_pid?: number }[];
 	started_at?: string;
 	version?: string;
 	/**
@@ -1208,7 +1220,14 @@ export function registerSidecarIpcHandlers(): void {
 			if (!meta) { return 0; }
 			meta.ref_count = (meta.ref_count ?? 1) + 1;
 			meta.refs = meta.refs ?? [];
-			meta.refs.push({ caller_id: args.callerId, acquired_at: new Date().toISOString() });
+			// 2026-05-22: include main-process pid so worker-side periodic GC
+			// can drop this entry if/when the IDE goes away without releasing
+			// (kill -9, OS crash, power loss). See InstanceMeta.refs comment.
+			meta.refs.push({
+				caller_id: args.callerId,
+				acquired_at: new Date().toISOString(),
+				ide_pid: process.pid,
+			});
 			writeInstanceJson(args.workspaceRoot, meta);
 			return meta.ref_count;
 		});
