@@ -325,6 +325,47 @@ async function withInstanceLock<T>(workspaceRoot: string, fn: () => T): Promise<
 	return fn();
 }
 
+/**
+ * Synchronous twin of {@link withInstanceLock} for use in code paths that
+ * MUST complete before the main process exits — specifically the
+ * `'destroyed'` listener and `app.on('before-quit')` drains during Cmd+Q.
+ *
+ * The async version's `await delay(20)` yields back to the event loop, which
+ * lets the IPC layer schedule but also lets `app.quit()` race ahead and
+ * SIGTERM the process before the file lock is acquired. Same root-cause
+ * class as the fire-and-forget IPC bug we were trying to fix in the first
+ * place — async cleanup at quit time is just unreliable.
+ *
+ * Busy-waits with `Date.now()` instead. Burns CPU for at most ~1s; in
+ * practice the only contention point is the main process competing with
+ * itself across senders (rare), so we typically acquire on the first try.
+ */
+function withInstanceLockSync<T>(workspaceRoot: string, fn: () => T): T {
+	const lockDir = instanceLockPath(workspaceRoot);
+	fs.mkdirSync(instanceDir(workspaceRoot), { recursive: true });
+	const start = Date.now();
+	while (Date.now() - start < 1000) {
+		try {
+			fs.mkdirSync(lockDir);
+			try {
+				return fn();
+			} finally {
+				try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
+			}
+		} catch (err: unknown) {
+			if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+				// Busy-wait — no await/yield, this is the whole point.
+				const spinEnd = Date.now() + 20;
+				while (Date.now() < spinEnd) { /* spin */ }
+				continue;
+			}
+			throw err;
+		}
+	}
+	// Contention timeout — proceed unlocked. Worst case: ref_count off by 1.
+	return fn();
+}
+
 function delay(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -1016,6 +1057,21 @@ export function registerSidecarIpcHandlers(): void {
 	//     OLD renderer's state is now dead; the new renderer that will
 	//     populate this same sender.id is required to acquire its own ref.
 	// Both paths drain the map and let the bookkeeping match reality.
+
+	// Reusable inner body — sync code, run under either the async or the
+	// sync lock depending on caller. Factored out so we don't drift the two
+	// paths apart.
+	function _decrementRefOnDisk(r: SenderRef): void {
+		const meta = readInstanceJson(r.workspaceRoot);
+		if (!meta) { return; }
+		meta.ref_count = Math.max((meta.ref_count ?? 1) - 1, 0);
+		meta.refs = (meta.refs ?? []).filter(x => x.caller_id !== r.callerId);
+		writeInstanceJson(r.workspaceRoot, meta);
+	}
+
+	// Async release — used by the reload path. Main process stays alive
+	// across reload, no race with app exit, so async + 20ms-yield spin is
+	// fine and avoids burning CPU.
 	function releaseAllRefsForSender(senderId: number): void {
 		const refs = senderRefs.get(senderId) ?? [];
 		if (refs.length === 0) { return; }
@@ -1025,13 +1081,7 @@ export function registerSidecarIpcHandlers(): void {
 		void (async () => {
 			for (const r of refs) {
 				try {
-					await withInstanceLock(r.workspaceRoot, () => {
-						const meta = readInstanceJson(r.workspaceRoot);
-						if (!meta) { return; }
-						meta.ref_count = Math.max((meta.ref_count ?? 1) - 1, 0);
-						meta.refs = (meta.refs ?? []).filter(x => x.caller_id !== r.callerId);
-						writeInstanceJson(r.workspaceRoot, meta);
-					});
+					await withInstanceLock(r.workspaceRoot, () => _decrementRefOnDisk(r));
 				} catch {
 					// best-effort; lost release is exactly the bug we're
 					// trying to fix, but if THIS path raises there's
@@ -1041,12 +1091,43 @@ export function registerSidecarIpcHandlers(): void {
 		})();
 	}
 
+	// 2026-05-22 sync follow-up to the async A fix.
+	//
+	// SYNC release — used by paths that race with main-process exit:
+	//   - 'destroyed' (window/IDE close — under Cmd+Q the main process is
+	//     spinning down and any awaited file write gets SIGKILL'd before
+	//     it completes; same root-cause class as the original fire-and-
+	//     forget IPC bug)
+	//   - 'before-quit' (last-chance drain of anything still in the map)
+	//
+	// fs.writeFileSync inside a sync mkdir-based file lock — no event loop
+	// yielding, returns when the bytes are on disk. The async version of A
+	// passed e2e on reload because reload doesn't quit the main process,
+	// but Cmd+Q is the actual race we care about.
+	function releaseAllRefsForSenderSync(senderId: number): void {
+		const refs = senderRefs.get(senderId) ?? [];
+		if (refs.length === 0) { return; }
+		senderRefs.set(senderId, []);
+		for (const r of refs) {
+			try {
+				withInstanceLockSync(r.workspaceRoot, () => _decrementRefOnDisk(r));
+			} catch {
+				// best-effort, see releaseAllRefsForSender comment
+			}
+		}
+	}
+
 	function autoReleaseOnDestroy(senderId: number, webContents: Electron.WebContents): void {
 		if (senderDestroyArmed.has(senderId)) { return; }
 		senderDestroyArmed.add(senderId);
-		// 1) Window/IDE close path — webContents really gone.
+		// 1) Window/IDE close path — webContents really gone. Use SYNC
+		// release: Cmd+Q fires 'destroyed' while app.quit() is already in
+		// flight; an async release loses the race vs the imminent process
+		// exit and leaves instance.json unchanged. The sync path's
+		// fs.writeFileSync blocks until bytes hit disk, so the decrement
+		// is guaranteed to land.
 		webContents.once('destroyed', () => {
-			releaseAllRefsForSender(senderId);
+			releaseAllRefsForSenderSync(senderId);
 			senderRefs.delete(senderId);
 			senderDestroyArmed.delete(senderId);
 		});
@@ -1060,6 +1141,9 @@ export function registerSidecarIpcHandlers(): void {
 		// leaks 1 ref per workspace into instance.json (the exact bug
 		// observed on 2026-05-22: 17 stale callerIds in 20 hours).
 		//
+		// Async is fine here — reload doesn't end the main process, so no
+		// race with exit. (We use sync only where we MUST.)
+		//
 		// Note: we DON'T `once()` this; reload can happen many times over
 		// a window's lifetime. We rely on the senderRefs[]=[] reset inside
 		// releaseAllRefsForSender to make repeated calls idempotent.
@@ -1067,6 +1151,23 @@ export function registerSidecarIpcHandlers(): void {
 			releaseAllRefsForSender(senderId);
 		});
 	}
+
+	// 3) App-wide quit path — belt-and-suspenders. If for any reason a
+	// 'destroyed' didn't fire in time (Electron internal ordering quirks,
+	// child window closures racing with app.quit, etc.) we drain everything
+	// left in the map BEFORE the windows even start closing. 'before-quit'
+	// is fired synchronously by Electron and waits for sync handlers to
+	// return before continuing the quit sequence, which is exactly the
+	// contract we need.
+	//
+	// Idempotent with the per-sender 'destroyed' handler: each sender's
+	// list is reset to [] inside releaseAllRefsForSenderSync, so if both
+	// fire the second one is a no-op.
+	app.on('before-quit', () => {
+		for (const senderId of Array.from(senderRefs.keys())) {
+			releaseAllRefsForSenderSync(senderId);
+		}
+	});
 
 	// chipos:acquireRef ────────────────────────────────────────────────────
 	validatedIpcMain.handle('vscode:chipos:acquireRef', async (event, args: RefArgs) => {
