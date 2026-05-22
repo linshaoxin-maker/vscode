@@ -989,8 +989,93 @@ export function registerSidecarIpcHandlers(): void {
 		};
 	});
 
+	// 2026-05-22 fix: auto-release ref when the renderer that acquired it
+	// dies. Renderers call _releaseLocalWorkerRef() from dispose(), but
+	// dispose() is synchronous and the IPC is fire-and-forget — when the
+	// renderer is reload-window'd or quit, the IPC message is in-flight at
+	// destruction time and gets dropped before reaching main process.
+	// Real-world evidence (2026-05-22 instance.json): 17 stale caller_id
+	// entries accumulated over 20 hours of normal reload-window cycles,
+	// keeping ref_count > 0 forever → worker process never auto-killed →
+	// orphan workers per workspace pile up indefinitely (~50 MB each)
+	// until reboot. The previous "kill decision uses local-process
+	// tracking as a backstop" comment was aspirational — there was no
+	// actual local-process tracking.
+	//
+	// Fix: track (senderId → list of (workspaceRoot, callerId)) here, and
+	// hook the sender's `destroyed` event to release everything that
+	// sender holds. Releases via main-process-internal call so they
+	// can't be lost to IPC-during-destruction races.
+	type SenderRef = { workspaceRoot: string; callerId: string };
+	const senderRefs = new Map<number, SenderRef[]>();
+	const senderDestroyArmed = new Set<number>();
+
+	// Release every ref this sender holds. Called from BOTH:
+	//   - 'destroyed' (window/IDE close) — sender gone for good
+	//   - 'did-start-loading' (reload window) — same webContents reused but
+	//     OLD renderer's state is now dead; the new renderer that will
+	//     populate this same sender.id is required to acquire its own ref.
+	// Both paths drain the map and let the bookkeeping match reality.
+	function releaseAllRefsForSender(senderId: number): void {
+		const refs = senderRefs.get(senderId) ?? [];
+		if (refs.length === 0) { return; }
+		// Reset the per-sender list immediately so concurrent acquires by
+		// the new renderer don't get drained along with the old refs.
+		senderRefs.set(senderId, []);
+		void (async () => {
+			for (const r of refs) {
+				try {
+					await withInstanceLock(r.workspaceRoot, () => {
+						const meta = readInstanceJson(r.workspaceRoot);
+						if (!meta) { return; }
+						meta.ref_count = Math.max((meta.ref_count ?? 1) - 1, 0);
+						meta.refs = (meta.refs ?? []).filter(x => x.caller_id !== r.callerId);
+						writeInstanceJson(r.workspaceRoot, meta);
+					});
+				} catch {
+					// best-effort; lost release is exactly the bug we're
+					// trying to fix, but if THIS path raises there's
+					// nothing left to fall back on.
+				}
+			}
+		})();
+	}
+
+	function autoReleaseOnDestroy(senderId: number, webContents: Electron.WebContents): void {
+		if (senderDestroyArmed.has(senderId)) { return; }
+		senderDestroyArmed.add(senderId);
+		// 1) Window/IDE close path — webContents really gone.
+		webContents.once('destroyed', () => {
+			releaseAllRefsForSender(senderId);
+			senderRefs.delete(senderId);
+			senderDestroyArmed.delete(senderId);
+		});
+		// 2) Reload window path — Electron reuses the SAME webContents (same
+		// sender.id) across reload(), so 'destroyed' never fires. But
+		// 'did-start-loading' fires every time the renderer navigates,
+		// which includes the reload triggered by Cmd+R / Developer:
+		// Reload Window. We drain the per-sender refs there too — the new
+		// renderer running after reload re-acquires via the normal IPC
+		// path and gets fresh entries. Without this, every reload-window
+		// leaks 1 ref per workspace into instance.json (the exact bug
+		// observed on 2026-05-22: 17 stale callerIds in 20 hours).
+		//
+		// Note: we DON'T `once()` this; reload can happen many times over
+		// a window's lifetime. We rely on the senderRefs[]=[] reset inside
+		// releaseAllRefsForSender to make repeated calls idempotent.
+		webContents.on('did-start-loading', () => {
+			releaseAllRefsForSender(senderId);
+		});
+	}
+
 	// chipos:acquireRef ────────────────────────────────────────────────────
-	validatedIpcMain.handle('vscode:chipos:acquireRef', async (_event, args: RefArgs) => {
+	validatedIpcMain.handle('vscode:chipos:acquireRef', async (event, args: RefArgs) => {
+		const senderId = event.sender.id;
+		// Record this acquisition under the sender so destroy can roll it back.
+		const list = senderRefs.get(senderId) ?? [];
+		list.push({ workspaceRoot: args.workspaceRoot, callerId: args.callerId });
+		senderRefs.set(senderId, list);
+		autoReleaseOnDestroy(senderId, event.sender);
 		return withInstanceLock(args.workspaceRoot, () => {
 			const meta = readInstanceJson(args.workspaceRoot);
 			if (!meta) { return 0; }
@@ -1003,7 +1088,17 @@ export function registerSidecarIpcHandlers(): void {
 	});
 
 	// chipos:releaseRef ────────────────────────────────────────────────────
-	validatedIpcMain.handle('vscode:chipos:releaseRef', async (_event, args: RefArgs) => {
+	validatedIpcMain.handle('vscode:chipos:releaseRef', async (event, args: RefArgs) => {
+		// Mirror the disk release in the in-memory map so destroy doesn't
+		// double-release. Match on (workspaceRoot, callerId) — same key as
+		// the disk records.
+		const senderId = event.sender.id;
+		const list = senderRefs.get(senderId);
+		if (list) {
+			const idx = list.findIndex(r =>
+				r.workspaceRoot === args.workspaceRoot && r.callerId === args.callerId);
+			if (idx >= 0) { list.splice(idx, 1); }
+		}
 		return withInstanceLock(args.workspaceRoot, () => {
 			const meta = readInstanceJson(args.workspaceRoot);
 			if (!meta) { return 0; }

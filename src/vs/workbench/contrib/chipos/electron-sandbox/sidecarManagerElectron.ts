@@ -693,10 +693,29 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 					this._healthWatchFailureCount = 0;
 					return;
 				}
+				// 2026-05-22 fix: worker is single-threaded aiohttp; it
+				// briefly blocks on MCP listTools (5-10s) and EDA toolchain
+				// self-check (1-3s). A single 30s tick that hits one of
+				// those bursts shouldn't snowball into a Disconnected flip
+				// — that just lies to the user about the worker being dead
+				// while it's actually serving requests. Before counting a
+				// real failure, retry once after 500-2000ms jitter. If the
+				// burst was transient, retry succeeds and we don't bump
+				// the counter; if worker is truly gone, retry also fails
+				// and we continue the existing 3/3 logic.
+				await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1500));
+				const retryOk = await this._probeWorkerHealth();
+				if (retryOk) {
+					this._healthWatchFailureCount = 0;
+					this._logService.info(
+						'[ChipOS SidecarElectron] health probe recovered on jitter-retry; not counting failure',
+					);
+					return;
+				}
 				this._healthWatchFailureCount++;
 				this._logService.info(
 					`[ChipOS SidecarElectron] health watch probe failed `
-					+ `(${this._healthWatchFailureCount}/3)`,
+					+ `(${this._healthWatchFailureCount}/3, retry also failed)`,
 				);
 				if (this._healthWatchFailureCount >= 3) {
 					this._logService.warn(
