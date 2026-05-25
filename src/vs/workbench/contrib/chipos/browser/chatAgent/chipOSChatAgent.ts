@@ -467,8 +467,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		_history: IChatAgentHistoryEntry[],
 		token: CancellationToken,
 	): Promise<IChatAgentResult> {
-		// ── FEAT-32: Connection status feedback ──
-		progress([this._progress('$(sync~spin) Connecting to backend...', true)]);
+		// ── [ChipOS] FEAT-32 superseded by sticky streaming footer ──
+		// The "Connecting to backend..." progress message used to be the
+		// only feedback that the request had started. Now the sticky
+		// streaming footer above the input box (`⟳ Xs`, ticking every
+		// second) provides the same signal without taking space inside
+		// the response card. Suppressed here to avoid duplicate UI.
 		const runtime = this._getOrCreateRuntime(request.sessionResource);
 		// Working-set fallback (see IChatSessionRuntime.workspaceWatcher comment):
 		// ensure a workspace watcher is up for this session and reset the
@@ -639,7 +643,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			} else {
 				this._logService.warn('[ChipOS Agent] terminal approval click but no pending Deferred: call_id=%s', id);
 			}
-			progress([this._progress(approved ? '$(check) Allowed' : '$(circle-slash) Rejected')]);
+			// [ChipOS] Allowed/Rejected progress emit removed — the in-card
+			// pill (chipos-used-pill ✓ Run / ✗ Reject, swapped on click)
+			// already surfaces the user's choice. A second progress message
+			// in the chat row is duplicate UI.
 			// Keep listening on the existing stream so the IdeToolResult sent
 			// by the (still-running, fire-and-forget) _executeIdeToolCall —
 			// and the reasoner events that follow — land in this invoke's
@@ -1096,8 +1103,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// R55: 上报 IDE 侧 MCP 工具定义给 Reasoner
 			this._collectAndReportMcpTools(streamClient, sessionId);
 
-			// UX: Show "Thinking" indicator while waiting for first backend event
-			progress([this._progress('$(loading~spin) Waiting for backend response...', true)]);
+			// [ChipOS] "Waiting for backend response..." suppressed — the sticky
+			// streaming footer above the input (`⟳ Xs`, ticking) provides the same
+			// signal without taking space inside the response card.
 		});
 	}
 
@@ -2697,30 +2705,33 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const v = data[k];
 			return typeof v === 'string' && v.length > 0 ? v : undefined;
 		};
+		// For analysis-style cards the backend ships a multi-line text
+		// blob (spec_result / arch_result / context) rather than a short
+		// subject — surface the first non-empty line, stripping any
+		// leading markdown heading prefix, so the chip reads cleanly.
+		const firstLine = (k: string): string | undefined => {
+			const blob = pick(k);
+			if (!blob) { return undefined; }
+			const line = blob.split('\n').find(l => l.trim().length > 0)?.trim();
+			return line ? line.replace(/^#+\s*/, '') : undefined;
+		};
 		let subject: string | undefined;
 		switch (cardType) {
-			case 'file_edit':
-				subject = pick('file_path');
-				break;
-			case 'spec_confirm':
-				subject = pick('module_name') ?? pick('spec_title') ?? pick('subject');
-				break;
-			case 'arch_confirm':
-				subject = pick('module_name') ?? pick('arch_title') ?? pick('subject');
-				break;
-			case 'design_confirm':
-			case 'code_confirm':
-				subject = pick('module_name') ?? pick('subject');
-				break;
-			case 'agent_ask':
-				subject = pick('question') ?? pick('subject');
-				break;
-			case 'VERIFICATION_GROUP_REVIEW':
-			case 'VERIFICATION_HUMAN_CHECK':
-				subject = pick('module_name') ?? pick('stage') ?? pick('subject');
-				break;
+			// confirm_phases.py:351 ships {spec_result|arch_result: <analysis>}
+			case 'spec_confirm': subject = firstLine('spec_result'); break;
+			case 'arch_confirm': subject = firstLine('arch_result'); break;
+			// agent_core.py:1204 + flow_tools.py:48 ship {context, options}
+			case 'agent_ask': subject = firstLine('context'); break;
+			// verification_pipeline.py:{530,1213}
+			case 'VERIFICATION_GROUP_REVIEW': subject = pick('stage_group'); break;
+			case 'VERIFICATION_HUMAN_CHECK': subject = pick('stage'); break;
+			// permission_middleware._build_permission_card
+			case 'permission_ask': subject = pick('tool'); break;
 			default:
-				subject = pick('subject') ?? pick('name');
+				// sim_fail_decision / max_loops_reached / coverage_decision /
+				// worktree_apply / *_escalation / etc. — most carry one of
+				// these common keys; fall back to the card title otherwise.
+				subject = pick('subject') ?? pick('stage') ?? pick('name');
 		}
 		subject = subject ?? fallbackTitle;
 		return subject.length > 80 ? subject.slice(0, 77) + '…' : subject;

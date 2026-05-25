@@ -737,13 +737,11 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		}
 		templateData.footerToolbar.context = element;
 
-		// Render result details in footer if available
-		if (isResponseVM(element) && element.result?.details) {
-			templateData.footerDetailsContainer.textContent = element.result.details;
-			templateData.footerDetailsContainer.classList.remove('hidden');
-		} else {
-			templateData.footerDetailsContainer.classList.add('hidden');
-		}
+		// [ChipOS] Render per-turn footer: elapsed time + token usage (split ↑/↓) +
+		// existing result.details. For streaming responses we start an interval that
+		// reruns this every 500ms so the elapsed counter ticks live. The timer is
+		// owned by elementDisposables and gets cleared in disposeElement.
+		this.updateResponseFooter(element, templateData);
 
 		ChatContextKeys.responseHasError.bindTo(templateData.contextKeyService).set(isResponseVM(element) && !!element.errorDetails);
 		const isFiltered = !!(isResponseVM(element) && element.errorDetails?.responseIsFiltered);
@@ -2611,6 +2609,146 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 	private hoverHidden(requestHover: HTMLElement) {
 		requestHover.style.opacity = '0';
+	}
+
+	/**
+	 * [ChipOS] Render the per-turn footer beneath a response (elapsed · tokens ·
+	 * result details). For an in-flight response we drive the elapsed counter
+	 * with a 500ms interval that re-reads the model — no event subscription is
+	 * needed because the timer self-cancels once the response is complete.
+	 *
+	 * Layout:
+	 *   [spinner only while streaming] elapsed · status/tokens · result.details
+	 *
+	 * Non-response items (requests, welcome, dividers) just hide the footer
+	 * details slot, preserving the previous behavior.
+	 */
+	private updateResponseFooter(element: ChatTreeItem, templateData: IChatListItemTemplate): void {
+		const footer = templateData.footerDetailsContainer;
+
+		if (!isResponseVM(element)) {
+			dom.clearNode(footer);
+			footer.classList.add('hidden');
+			return;
+		}
+
+		const responseElement = element;
+		const renderFooter = () => {
+			dom.clearNode(footer);
+			// Reset title each render — only set when usage is present (below).
+			footer.removeAttribute('title');
+
+			const isStreaming = !responseElement.isComplete && !responseElement.isCanceled;
+
+			// Build text parts.
+			const textParts: string[] = [];
+
+			// Elapsed time: response creation → completedAt (or now while streaming).
+			const start = responseElement.model.timestamp;
+			const completedAt = responseElement.model.completedAt;
+			const end = typeof completedAt === 'number' ? completedAt : Date.now();
+			if (typeof start === 'number' && end >= start) {
+				textParts.push(ChatListItemRenderer.formatElapsed(end - start));
+			}
+
+			// Status / token usage.
+			if (responseElement.isCanceled) {
+				textParts.push(localize('chatFooter.cancelled', "cancelled"));
+			} else if (responseElement.errorDetails) {
+				textParts.push(localize('chatFooter.failed', "failed"));
+			} else if (responseElement.model.usage) {
+				// [ChipOS] Match Claude Code's footer style: a single combined
+				// token count `X.Yk tokens` (prompt+completion). The hover title
+				// preserves the breakdown for users who want to see it.
+				const u = responseElement.model.usage;
+				const total = (u.promptTokens ?? 0) + (u.completionTokens ?? 0);
+				textParts.push(localize('chatFooter.tokens', "{0} tokens", ChatListItemRenderer.formatTokenCount(total)));
+				footer.title = localize('chatFooter.tokensBreakdown', "{0} prompt + {1} completion = {2} total tokens",
+					u.promptTokens ?? 0, u.completionTokens ?? 0, total);
+			}
+
+			// Preserve the existing result.details extension surface — agents that
+			// stuffed metadata into result.details (e.g. model name) still show up.
+			if (responseElement.result?.details) {
+				textParts.push(responseElement.result.details);
+			}
+
+			if (textParts.length === 0 && !isStreaming) {
+				footer.classList.add('hidden');
+				return;
+			}
+
+			// While streaming, prepend a CSS ring spinner so the row visibly
+			// "breathes" alongside the ticking elapsed counter. We use a symmetric
+			// painted ring (not the codicon-loading glyph) — the codicon glyph is
+			// asymmetric and visually jitters because the eye locks onto its gap.
+			// The spinner element is purely decorative — aria-hidden so screen
+			// readers don't announce it.
+			if (isStreaming) {
+				const spinner = dom.append(footer, dom.$('span.chipos-spinner-ring.chat-footer-spinner'));
+				spinner.setAttribute('aria-hidden', 'true');
+			}
+
+			if (textParts.length > 0) {
+				const text = dom.append(footer, dom.$('span.chat-footer-text'));
+				// · = · separator, consistent with checkpoint label dot above.
+				text.textContent = textParts.join(' · ');
+			}
+
+			footer.classList.remove('hidden');
+		};
+
+		renderFooter();
+
+		// While streaming, tick the elapsed counter. Once the response flips to
+		// complete/cancelled we render one final time (to pick up usage + end
+		// time + drop the spinner) and cancel the timer.
+		if (!responseElement.isComplete && !responseElement.isCanceled) {
+			const timer = templateData.elementDisposables.add(new dom.WindowIntervalTimer());
+			timer.cancelAndSet(() => {
+				renderFooter();
+				if (responseElement.isComplete || responseElement.isCanceled) {
+					timer.cancel();
+				}
+			}, 500, dom.getWindow(templateData.rowContainer));
+		}
+
+		// [ChipOS] Re-render whenever the underlying response model changes.
+		// This catches the case where token usage arrives AFTER the response
+		// completes (e.g. when the backend sends a delayed `Usage` event for
+		// providers like zhipu/glm). Without this, the in-row footer shows
+		// only "Xs" and never picks up the `↑Xk ↓Yk` tokens.
+		templateData.elementDisposables.add(responseElement.model.onDidChange(() => {
+			renderFooter();
+		}));
+	}
+
+	private static formatElapsed(ms: number): string {
+		if (ms < 1000) {
+			return `${ms}ms`;
+		}
+		const totalSeconds = Math.floor(ms / 1000);
+		if (totalSeconds < 60) {
+			return `${totalSeconds}s`;
+		}
+		const totalMinutes = Math.floor(totalSeconds / 60);
+		const seconds = totalSeconds % 60;
+		if (totalMinutes < 60) {
+			return `${totalMinutes}m ${seconds}s`;
+		}
+		const hours = Math.floor(totalMinutes / 60);
+		const minutes = totalMinutes % 60;
+		return `${hours}h ${minutes}m`;
+	}
+
+	private static formatTokenCount(n: number): string {
+		if (n < 1000) {
+			return String(n);
+		}
+		if (n < 1_000_000) {
+			return `${(n / 1000).toFixed(1)}k`;
+		}
+		return `${(n / 1_000_000).toFixed(1)}M`;
 	}
 
 }

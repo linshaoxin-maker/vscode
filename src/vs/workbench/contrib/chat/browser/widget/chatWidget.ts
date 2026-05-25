@@ -249,6 +249,14 @@ export class ChatWidget extends Disposable implements IChatWidget {
 	private readonly visibilityTimeoutDisposable: MutableDisposable<IDisposable> = this._register(new MutableDisposable());
 	private readonly visibilityAnimationFrameDisposable: MutableDisposable<IDisposable> = this._register(new MutableDisposable());
 
+	// [ChipOS] Sticky streaming footer – positioned absolutely above the input area
+	private _chipOsStreamingFooter: HTMLElement | undefined;
+	private readonly _chipOsStreamingTimer = this._register(new MutableDisposable());
+	private readonly _chipOsStreamingResponseSub = this._register(new MutableDisposable());
+	private _chipOsStreamingStartMs = 0;
+	/** Latest streaming response — read each tick so we can show running token usage. */
+	private _chipOsStreamingResponse: IChatResponseModel | undefined;
+
 	private readonly inputPartDisposable: MutableDisposable<ChatInputPart> = this._register(new MutableDisposable());
 	private readonly inlineInputPartDisposable: MutableDisposable<ChatInputPart> = this._register(new MutableDisposable());
 	private inputContainer!: HTMLElement;
@@ -686,6 +694,17 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			this.listContainer = dom.append(this.container, $(`.interactive-list`));
 			dom.append(this.container, this.chatSuggestNextWidget.domNode);
 			this.createInput(this.container, { renderFollowups, renderStyle, renderInputToolbarBelowInput });
+		}
+
+		// [ChipOS] Insert sticky streaming footer as the first child of the input part.
+		// position:absolute keeps it visually above the input box with zero layout impact —
+		// the flex heights of .interactive-list and .interactive-input-part are unchanged,
+		// so the permission-hook card coverage issue is completely unaffected.
+		if (!this.viewOptions.renderInputOnTop) {
+			this._chipOsStreamingFooter = dom.prepend(
+				this.inputPart.element,
+				$('.chipos-streaming-footer.hidden')
+			);
 		}
 
 		this.renderWelcomeViewContentIfNeeded();
@@ -1920,6 +1939,110 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		this.container.style.setProperty('--vscode-chat-list-background', this.themeService.getColorTheme().getColor(this.styles.listBackground)?.toString() ?? '');
 	}
 
+	// ── [ChipOS] Sticky streaming footer helpers ───────────────────────────────
+
+	/** Start showing the sticky elapsed-time footer above the input area. */
+	private _chipOsStartStreaming(): void {
+		if (!this._chipOsStreamingFooter) {
+			return;
+		}
+		this._chipOsStreamingStartMs = Date.now();
+		this._chipOsStreamingFooter.classList.remove('hidden');
+		// Mark the chat container so CSS can suppress the in-row footer's
+		// hover state while sticky is shown (avoids duplicate "Xs" labels).
+		this.container?.classList.add('chipos-streaming-active');
+
+		// [ChipOS] Track the response model of the request that just started so
+		// we can read running token usage. If the backend emits progressive
+		// Usage events, the footer updates live; otherwise we still get the
+		// final count when the response completes (just before stop is called).
+		this._chipOsStreamingResponse = this.viewModel?.model.getRequests().at(-1)?.response;
+		this._chipOsStreamingResponseSub.value = this._chipOsStreamingResponse?.onDidChange(() => {
+			this._chipOsUpdateStreamingFooter();
+		});
+
+		this._chipOsUpdateStreamingFooter();
+		const timer = new dom.WindowIntervalTimer();
+		timer.cancelAndSet(() => this._chipOsUpdateStreamingFooter(), 500, dom.getWindow(this.container));
+		this._chipOsStreamingTimer.value = timer;
+	}
+
+	/** Stop the sticky footer and hide it (response finished or was cancelled). */
+	private _chipOsStopStreaming(): void {
+		this._chipOsStreamingTimer.clear();
+		this._chipOsStreamingResponseSub.clear();
+		this._chipOsStreamingResponse = undefined;
+		this.container?.classList.remove('chipos-streaming-active');
+		if (this._chipOsStreamingFooter) {
+			this._chipOsStreamingFooter.classList.add('hidden');
+			// Clear stale content so it doesn't linger in the DOM
+			dom.clearNode(this._chipOsStreamingFooter);
+		}
+	}
+
+	/** Re-render the footer content with the current elapsed time
+	 * (and running token count, if available). */
+	private _chipOsUpdateStreamingFooter(): void {
+		const footer = this._chipOsStreamingFooter;
+		if (!footer) {
+			return;
+		}
+		const elapsedMs = Date.now() - this._chipOsStreamingStartMs;
+		const parts: string[] = [ChatWidget._chipOsFormatElapsed(elapsedMs)];
+
+		// [ChipOS] If the backend has reported any usage so far for the active
+		// response, show running token count (same combined format as Claude
+		// Code: `X.Yk tokens`). Most backends send Usage only at the end, in
+		// which case this fires once just before stop is called; some stream
+		// progressive Usage events and the count ticks up live.
+		const usage = this._chipOsStreamingResponse?.usage;
+		if (usage) {
+			const total = (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+			if (total > 0) {
+				parts.push(localize('chatFooter.tokens', "{0} tokens", ChatWidget._chipOsFormatTokenCount(total)));
+			}
+		}
+
+		dom.clearNode(footer);
+		// [ChipOS] CSS-painted ring spinner (symmetric — smooth-looking rotation)
+		// instead of codicon-loading, which is asymmetric and visually jitters.
+		const spinner = dom.append(footer, dom.$('span.chipos-spinner-ring'));
+		spinner.setAttribute('aria-hidden', 'true');
+		const text = dom.append(footer, dom.$('span.chipos-streaming-footer-text'));
+		text.textContent = parts.join(' · ');
+	}
+
+	/** Compact token count formatter — mirrors ChatListItemRenderer.formatTokenCount
+	 * so sticky and in-row footers display "1.2k" / "12.3k" the same way. */
+	private static _chipOsFormatTokenCount(n: number): string {
+		if (n < 1000) {
+			return String(n);
+		}
+		const k = n / 1000;
+		return k < 10 ? `${k.toFixed(1)}k` : `${Math.round(k)}k`;
+	}
+
+	/** Same elapsed-format ladder as ChatListItemRenderer.formatElapsed to keep
+	 * the sticky and in-row footers visually consistent (ms < 1s, then s/m/h). */
+	private static _chipOsFormatElapsed(ms: number): string {
+		if (ms < 1000) {
+			return `${ms}ms`;
+		}
+		const totalSeconds = Math.floor(ms / 1000);
+		if (totalSeconds < 60) {
+			return `${totalSeconds}s`;
+		}
+		const totalMinutes = Math.floor(totalSeconds / 60);
+		const seconds = totalSeconds % 60;
+		if (totalMinutes < 60) {
+			return `${totalMinutes}m ${seconds}s`;
+		}
+		const hours = Math.floor(totalMinutes / 60);
+		const minutes = totalMinutes % 60;
+		return `${hours}h ${minutes}m`;
+	}
+
+	// ──────────────────────────────────────────────────────────────────────────
 
 	setModel(model: IChatModel | undefined): void {
 		if (!this.container) {
@@ -1939,6 +2062,9 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		if (isEqual(model.sessionResource, this.viewModel?.sessionResource)) {
 			return;
 		}
+
+		// [ChipOS] Stop any in-progress streaming footer when switching sessions
+		this._chipOsStopStreaming();
 
 		if (this.viewModel?.editing) {
 			this.finishedEditing();
@@ -2033,15 +2159,21 @@ export class ChatWidget extends Disposable implements IChatWidget {
 				this.inputPart.clearTodoListWidget(this.viewModel?.sessionResource, false);
 				this._sessionIsEmptyContextKey.set(false);
 				this.chatSuggestNextWidget.hide();
+				// [ChipOS] Start the sticky streaming footer timer
+				this._chipOsStartStreaming();
 			}
 			// Hide widget on request removal
 			if (e.kind === 'removeRequest') {
 				this.inputPart.clearTodoListWidget(this.viewModel?.sessionResource, true);
 				this.chatSuggestNextWidget.hide();
 				this._sessionIsEmptyContextKey.set((this.viewModel?.model.getRequests().length ?? 0) === 0);
+				// [ChipOS] Safety stop in case a request is removed mid-stream
+				this._chipOsStopStreaming();
 			}
 			// Show next steps widget when response completes (not when request starts)
 			if (e.kind === 'completedRequest') {
+				// [ChipOS] Stop the sticky streaming footer
+				this._chipOsStopStreaming();
 				const lastRequest = this.viewModel?.model.getRequests().at(-1);
 				const wasCancelled = lastRequest?.response?.isCanceled ?? false;
 				if (wasCancelled) {

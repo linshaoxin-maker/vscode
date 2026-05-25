@@ -755,7 +755,20 @@ export class ChatListWidget extends Disposable {
 		// tolerates this because confirmation buttons live in a fixed
 		// floating overlay; chipos cards render inline so the snap visibly
 		// yanks the response. Suppress here so every caller is covered.
+		//
+		// [ChipOS UPDATE] EXCEPT when the row is taller than the viewport —
+		// in that case, the permission card's action buttons (at the row
+		// bottom) would never be visible if we don't reveal-bottom at least
+		// once. So when row height > viewport, do the bottom-aligned reveal.
 		if (this._hasChipOSPermissionCardInView()) {
+			if (this._lastItem && this._tree.hasElement(this._lastItem)) {
+				const rowHeight = this._lastItem.currentRenderedHeight ?? 0;
+				// renderHeight is the visible viewport height of the list
+				const viewportHeight = this._tree.renderHeight ?? 0;
+				if (rowHeight > viewportHeight && viewportHeight > 0) {
+					this._tree.reveal(this._lastItem, 1e6);
+				}
+			}
 			return;
 		}
 		if (this._lastItem) {

@@ -227,6 +227,22 @@
 	min-height: var(--chat-current-response-min-height);
 }
 
+/* [ChipOS] Force a generous bottom gap on the latest response row so the
+ * auto-scroll-on-stream cannot clip the last line behind the input area.
+ * Uses !important to defeat any specific-element padding (e.g. 5px on
+ * inner content blocks). Matches both `.interactive-item-container.chat-most-recent-response`
+ * AND the bare `.chat-most-recent-response` to cover whichever DOM layer
+ * the class actually lands on.
+ *
+ * Sizing: input area (textarea + toolbar buttons + file pill row + model/
+ * mode dropdowns + sticky `⟳ Xs` footer) totals ~140-150px when streaming.
+ * 56px was empirically too tight — the last line still got clipped. 160px
+ * gives a small safety margin without burning excessive whitespace. */
+.chat-most-recent-response,
+.interactive-item-container.chat-most-recent-response {
+	padding-bottom: 160px !important;
+}
+
 .interactive-item-container.interactive-response:not(.chat-response-loading) .chat-footer-toolbar,
 .interactive-item-container.interactive-response:not(.chat-response-loading) .chat-footer-toolbar .chat-footer-details {
 	/* Complete response only */
@@ -241,6 +257,10 @@
 /* Show toolbar on hover and last response. Also show when the item has keyboard focus (focus-within) or when the surrounding list row is marked focused (monaco list keyboard navigation). */
 .interactive-item-container.interactive-response:not(.chat-response-loading):hover .chat-footer-toolbar,
 .interactive-item-container.interactive-response.chat-most-recent-response:not(.chat-response-loading) .chat-footer-toolbar,
+/* [ChipOS fix] most-recent rule was missing the .chat-footer-details child —
+ * toolbar was opacity:1 but the inner details (where the "Xs · tokens" text
+ * lives) stayed opacity:0, so users saw nothing on the latest response. */
+.interactive-item-container.interactive-response.chat-most-recent-response:not(.chat-response-loading) .chat-footer-toolbar .chat-footer-details,
 .interactive-item-container.interactive-response:not(.chat-response-loading):hover .chat-footer-toolbar .chat-footer-details,
 .interactive-item-container.interactive-response:not(.chat-response-loading):focus-within .chat-footer-toolbar,
 .interactive-item-container.interactive-response:not(.chat-response-loading):focus-within .chat-footer-toolbar .chat-footer-details,
@@ -275,6 +295,96 @@
 
 .interactive-item-container .chat-footer-details.hidden {
 	display: none !important;
+}
+
+/* ============================================================
+ * [ChipOS] Per-turn meta footer (elapsed time + token usage)
+ *
+ * VS Code's upstream rules above gate the entire .chat-footer-toolbar
+ * to :not(.chat-response-loading) — i.e. completed responses only —
+ * which hides the toolbar (and our details strip inside it) while a
+ * response is streaming. For the per-turn meta we WANT the elapsed
+ * counter to tick live on hover during streaming, so we re-open the
+ * toolbar container for streaming rows but keep the action buttons
+ * (vote / copy etc.) hidden — only the .chat-footer-details strip
+ * gets to show through the hover gate.
+ * ============================================================ */
+
+.interactive-item-container.interactive-response.chat-response-loading .chat-footer-toolbar,
+.interactive-item-container.interactive-response.chat-response-loading .chat-footer-toolbar .chat-footer-details {
+	display: block;
+	opacity: 0;
+	visibility: hidden;
+	padding-top: 6px;
+	height: 22px;
+	transition: opacity 0.1s ease-in-out, visibility 0s linear 0.1s;
+}
+
+.interactive-item-container.interactive-response.chat-response-loading:hover .chat-footer-toolbar,
+.interactive-item-container.interactive-response.chat-response-loading:hover .chat-footer-toolbar .chat-footer-details,
+.interactive-item-container.interactive-response.chat-response-loading:focus-within .chat-footer-toolbar,
+.interactive-item-container.interactive-response.chat-response-loading:focus-within .chat-footer-toolbar .chat-footer-details,
+.monaco-list-row.focused .interactive-item-container.interactive-response.chat-response-loading .chat-footer-toolbar,
+.monaco-list-row.focused .interactive-item-container.interactive-response.chat-response-loading .chat-footer-toolbar .chat-footer-details,
+.interactive-item-container.interactive-response.chat-response-loading.group-hovered .chat-footer-toolbar,
+.interactive-item-container.interactive-response.chat-response-loading.group-hovered .chat-footer-toolbar .chat-footer-details {
+	opacity: 1;
+	visibility: visible;
+	transition: opacity 0.1s ease-in-out, visibility 0s linear 0s;
+}
+
+/* During streaming we only surface the details strip, not the vote/share
+ * action buttons. Those reappear automatically when the response completes
+ * (via the upstream :not(.chat-response-loading) rules). */
+.interactive-item-container.interactive-response.chat-response-loading .chat-footer-toolbar .monaco-toolbar .actions-container {
+	display: none;
+}
+
+/* When the sticky streaming footer above the input is showing, suppress the
+ * in-row hover footer for streaming responses to avoid showing the same
+ * "⟳ Xs" label in two places. The in-row footer reappears once the response
+ * completes (sticky goes away then). */
+.interactive-session.chipos-streaming-active .interactive-item-container.interactive-response.chat-response-loading:hover .chat-footer-toolbar,
+.interactive-session.chipos-streaming-active .interactive-item-container.interactive-response.chat-response-loading:hover .chat-footer-toolbar .chat-footer-details,
+.interactive-session.chipos-streaming-active .interactive-item-container.interactive-response.chat-response-loading:focus-within .chat-footer-toolbar,
+.interactive-session.chipos-streaming-active .interactive-item-container.interactive-response.chat-response-loading:focus-within .chat-footer-toolbar .chat-footer-details,
+.interactive-session.chipos-streaming-active .monaco-list-row.focused .interactive-item-container.interactive-response.chat-response-loading .chat-footer-toolbar,
+.interactive-session.chipos-streaming-active .monaco-list-row.focused .interactive-item-container.interactive-response.chat-response-loading .chat-footer-toolbar .chat-footer-details,
+.interactive-session.chipos-streaming-active .interactive-item-container.interactive-response.chat-response-loading.group-hovered .chat-footer-toolbar,
+.interactive-session.chipos-streaming-active .interactive-item-container.interactive-response.chat-response-loading.group-hovered .chat-footer-toolbar .chat-footer-details {
+	opacity: 0;
+	visibility: hidden;
+}
+
+/* [ChipOS] CSS-painted ring spinner. Replaces the asymmetric codicon-loading
+ * glyph (which visually jitters when rotated — the eye locks on the gap).
+ * Three-quarter ring of currentColor with a transparent top quadrant; rotates
+ * linearly so the animation reads as smooth motion, not stepped. */
+@keyframes chipos-spinner-ring-spin {
+	to { transform: rotate(360deg); }
+}
+
+.chipos-spinner-ring {
+	display: inline-block;
+	width: 11px;
+	height: 11px;
+	box-sizing: border-box;
+	/* Two-tone ring: bright accent on top, dimmer color on rest. The rotation
+	 * direction is clear because the bright arc travels visibly around the ring.
+	 * Plain 3/4 ring + transparent gap can look "broken" — eye locks the gap. */
+	border: 1.5px solid color-mix(in srgb, currentColor 35%, transparent);
+	border-top-color: var(--vscode-progressBar-background, currentColor);
+	border-radius: 50%;
+	animation: chipos-spinner-ring-spin 0.9s linear infinite;
+	vertical-align: -2px;
+}
+
+.interactive-item-container .chat-footer-details .chat-footer-spinner {
+	margin-right: 4px;
+}
+
+.interactive-item-container .chat-footer-details .chat-footer-text {
+	/* Inline span — inherits color/font from .chat-footer-details. */
 }
 
 .interactive-item-container .value {
@@ -1770,7 +1880,58 @@ have to be updated for changes to the rules above, or to support more deeply nes
 	/* Have to override default styles which apply to all lists */
 }
 
+/* ============================================================
+ * [ChipOS] Sticky streaming footer
+ *
+ * Floats above .interactive-input-part using position:absolute so it
+ * takes ZERO layout space.  The chat-list height and input height are
+ * unaffected, meaning the pre-existing permission-hook card coverage
+ * issue is not worsened by this element.
+ *
+ * Visible only while a response is streaming (element toggled by JS).
+ * ============================================================ */
+.interactive-session .interactive-input-part .chipos-streaming-footer {
+	position: absolute;
+	top: -24px;
+	left: 0;
+	right: 0;
+	height: 22px;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 5px;
+	padding: 0 6px;
+	font-size: var(--vscode-chat-font-size-body-xs);
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.75;
+	pointer-events: none;
+	z-index: 1;
+	/* Subtle fade so text doesn't clash with chat list content below */
+	background: linear-gradient(to bottom,
+		transparent 0%,
+		color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) 80%, transparent) 50%,
+		var(--vscode-sideBar-background, var(--vscode-editor-background)) 100%);
+}
+
+.interactive-session .interactive-input-part .chipos-streaming-footer.hidden {
+	display: none;
+}
+
+.interactive-session .interactive-input-part .chipos-streaming-footer .chipos-spinner-ring {
+	flex-shrink: 0;
+	margin-right: 4px;
+}
+
+.interactive-session .interactive-input-part .chipos-streaming-footer .chipos-streaming-footer-text {
+	/* text inherits color/size from parent */
+}
+
 .interactive-session .interactive-input-part {
+	/* [ChipOS] Note: the visual gap between chat content and the input box is
+	 * achieved by padding-bottom:48px on .chat-most-recent-response (row-internal)
+	 * — NOT by margin-top here. Margin-top doesn't work because chat list
+	 * internal scrolling lets content scroll past it, while row-internal
+	 * padding grows the row height itself so monaco-list scrolls properly. */
 	margin: 0px 12px;
 	padding: 4px 0 4px 0px;
 	display: flex;
