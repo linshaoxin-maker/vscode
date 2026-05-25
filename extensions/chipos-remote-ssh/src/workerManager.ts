@@ -438,7 +438,13 @@ export class WorkerManager {
 			`setsid ${binaryPath}`,
 			`start --server "${grpcTarget}"`,
 			`--workspace "${workspace}"`,
-			`--http-port ${this._workerHttpPort}`,
+			// 2026-05-25: dropped --http-port. Worker now uses kernel-assigned
+			// port (no two workers can race for the same port) and writes the
+			// actually-bound port into instance.json. We read it back below
+			// via _waitForWorkerInstanceJson and use it for the SSH tunnel.
+			// Back-compat: older workers that still default to 8081 will
+			// just bind 8081 and write http_port=8081 to instance.json, which
+			// the polling logic accepts identically.
 			`--instance-dir ${this._instanceDir}`,
 			// NEW-1: pin --mcp-config so the worker doesn't fall through to
 			// `cwd/mcp_servers.json` (cwd here is wherever ssh.exec landed —
@@ -454,17 +460,24 @@ export class WorkerManager {
 		this._log(`[WorkerManager] _startBinaryWorker (workerToken=${this._workerToken ? 'set' : 'unset'}, apiKey=${this._workerApiKey ? 'set' : 'unset'}, tls=${this._tlsEnabled})`);
 		await this._ssh.exec(fullCmd);
 
-		await delay(1500);
-
-		const meta = await this._readInstanceJson();
+		// 2026-05-25: was `delay(1500); _readInstanceJson()` — 1.5s is too
+		// short when EDA self-check or MCP load takes longer, and we only
+		// extracted pid (not http_port) so the SSH tunnel later went to the
+		// stale `_workerHttpPort = 8081` default. Now polls up to 15s for a
+		// valid http_port, then refreshes _workerHttpPort so forwardPort
+		// tunnels to the right place. See _waitForWorkerInstanceJson docs.
+		const meta = await this._waitForWorkerInstanceJson(15000);
 		if (meta) {
 			this._workerPid = meta.pid;
+			if (meta.http_port && meta.http_port > 0) {
+				this._workerHttpPort = meta.http_port;
+			}
 			this._isSharedInstance = true;
-			this._log(`[WorkerManager] Binary Worker started (PID=${meta.pid})`);
+			this._log(`[WorkerManager] Binary Worker started (PID=${meta.pid}, http_port=${this._workerHttpPort})`);
 		} else {
 			const pid = await this._findWorkerPid(binaryPath);
 			this._workerPid = pid;
-			this._log(`[WorkerManager] Binary Worker started (PID=${pid}, no instance.json yet)`);
+			this._log(`[WorkerManager] Binary Worker started (PID=${pid}, no instance.json after 15s — tunnel will use default ${this._workerHttpPort})`);
 		}
 	}
 
@@ -507,7 +520,7 @@ export class WorkerManager {
 			`setsid bash -c "exec ${venvPython} -m execution.server.cli start`,
 			`--server \\"${grpcTarget}\\"`,
 			`--workspace \\"${workspace}\\"`,
-			`--http-port ${this._workerHttpPort}`,
+			// 2026-05-25: dropped --http-port (kernel-assigned, see binary path comment).
 			`--instance-dir ${this._instanceDir}`,
 			// NEW-1: same default-pin as the binary path. Note the escaped
 			// double quotes — we're already two `bash -c` levels deep.
@@ -517,19 +530,57 @@ export class WorkerManager {
 		].join(' ');
 
 		await this._ssh.exec(startCmd);
-		await delay(1500);
 
-		const meta = await this._readInstanceJson();
+		// 2026-05-25: poll for valid http_port (was delay(1500) + pid-only read).
+		const meta = await this._waitForWorkerInstanceJson(15000);
 		if (meta) {
 			this._workerPid = meta.pid;
+			if (meta.http_port && meta.http_port > 0) {
+				this._workerHttpPort = meta.http_port;
+			}
 			this._isSharedInstance = true;
 		} else {
 			this._workerPid = await this._findWorkerPid('execution.server.cli');
 		}
-		this._log(`[WorkerManager] Python Worker started (PID=${this._workerPid})`);
+		this._log(`[WorkerManager] Python Worker started (PID=${this._workerPid}, http_port=${this._workerHttpPort})`);
 	}
 
 	// ── instance.json lifecycle (R48) ────────────────────────────────────
+
+	/**
+	 * Poll the remote instance.json until it has a usable http_port.
+	 *
+	 * 2026-05-25: the worker writes instance.json in two phases:
+	 *   Phase 1 (cli.py:_write_pid_file, ~1-2s after spawn) creates the file
+	 *     with pid + http_port set to whatever was requested (default 0 in
+	 *     the new always-kernel-assigned world, or 8081 in legacy workers).
+	 *   Phase 2 (execution_server.py, after aiohttp.TCPSite.start(), ~3-10s
+	 *     after spawn — slower when EDA self-check or MCP load runs first)
+	 *     overwrites http_port with the actually-bound kernel-assigned port.
+	 *
+	 * The previous code did `await delay(1500); _readInstanceJson()`, which
+	 * sometimes caught Phase 1 (stale port=0 or 8081) and missed Phase 2.
+	 * Then forwardPort tunneled to the wrong remote port and IDE saw
+	 * "Worker: Reconnect" forever even though the worker was healthy.
+	 *
+	 * Strategy: poll every 200ms, accept only when pid > 0 AND http_port > 0
+	 * (Phase 2 has landed). 15s default budget covers cold-start with EDA
+	 * pack download. Caller falls back to `_findWorkerPid` if timeout fires
+	 * (rare; usually means the worker crashed early).
+	 */
+	private async _waitForWorkerInstanceJson(timeoutMs: number): Promise<InstanceMeta | null> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			await delay(200);
+			const meta = await this._readInstanceJson();
+			if (meta
+				&& typeof meta.pid === 'number' && meta.pid > 0
+				&& typeof meta.http_port === 'number' && meta.http_port > 0) {
+				return meta;
+			}
+		}
+		return null;
+	}
 
 	private async _readInstanceJson(): Promise<InstanceMeta | null> {
 		if (!this._instanceDir) { return null; }
