@@ -289,6 +289,7 @@ export class ConnectionTab extends Disposable {
 				this._renderWorkerApiKeyInput(container);
 				this._renderTlsEnabled(container);
 				this._renderWorkerHttpPortInput(container);
+				this._renderWorkerHttpPortRangeInput(container);
 				this._renderWorkerHttpUrlInput(container);
 				break;
 
@@ -299,6 +300,7 @@ export class ConnectionTab extends Disposable {
 				this._renderTokenInput(container);
 				this._renderWorkerApiKeyInput(container);
 				this._renderTlsEnabled(container);
+				this._renderWorkerHttpPortRangeInput(container);
 				this._renderWorkerHttpUrlInput(container);
 				dom.append(container, dom.$('.chipos-setting-hint', undefined,
 					localize('chipos.mode.manual.hint', 'Worker is managed externally. Deploy it separately and point it to the Reasoning gRPC address.')
@@ -505,6 +507,65 @@ export class ConnectionTab extends Disposable {
 			const n = parseInt(value);
 			if (!isNaN(n) && n >= 1024 && n <= 65535) {
 				this._configurationService.updateValue('chipos.backend.workerHttpPort', n, ConfigurationTarget.USER);
+			}
+		}));
+	}
+
+	// ── v2: Worker HTTP Port Range (ops firewall whitelist) ─────────────
+
+	private _renderWorkerHttpPortRangeInput(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined,
+			localize('chipos.settings.workerHttpPortRange', 'Worker HTTP Port Range')
+		));
+		dom.append(row, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.settings.workerHttpPortRange.desc',
+				'Bind worker HTTP in a specific port range (e.g. "50000-50099"). Use this when firewall rules require worker port to be in a whitelisted range. Empty → kernel-assigned random port (recommended). Format: LOW-HIGH (both inclusive, 1024-65535).')
+		));
+
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
+		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+			placeholder: localize('chipos.settings.workerHttpPortRange.placeholder', 'e.g. 50000-50099 (empty = kernel-assigned)'),
+			inputBoxStyles: defaultInputBoxStyles,
+			validationOptions: {
+				validation: (value) => {
+					const trimmed = (value || '').trim();
+					if (!trimmed) { return null; } // empty is valid (= kernel-assigned)
+					const m = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+					if (!m) {
+						return { content: localize('chipos.settings.workerHttpPortRange.invalidFormat', 'Format must be LOW-HIGH (e.g. 50000-50099)'), type: 2 };
+					}
+					const low = parseInt(m[1]);
+					const high = parseInt(m[2]);
+					if (low < 1024 || high > 65535) {
+						return { content: localize('chipos.settings.workerHttpPortRange.outOfRange', 'Ports must be 1024-65535'), type: 2 };
+					}
+					if (low > high) {
+						return { content: localize('chipos.settings.workerHttpPortRange.lowGtHigh', 'LOW must be <= HIGH'), type: 2 };
+					}
+					if (high - low < 1) {
+						return { content: localize('chipos.settings.workerHttpPortRange.tooNarrow', 'Range too narrow; need at least 2 ports for headroom'), type: 1 };
+					}
+					return null;
+				}
+			}
+		}));
+		inputBox.value = this._configurationService.getValue<string>('chipos.backend.workerHttpPortRange') || '';
+
+		this._disposables.add(inputBox.onDidChange(value => {
+			const trimmed = (value || '').trim();
+			// Only persist when format is valid OR explicitly empty (clear it).
+			if (!trimmed) {
+				this._configurationService.updateValue('chipos.backend.workerHttpPortRange', '', ConfigurationTarget.USER);
+				return;
+			}
+			const m = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+			if (m) {
+				const low = parseInt(m[1]);
+				const high = parseInt(m[2]);
+				if (low >= 1024 && high <= 65535 && low <= high) {
+					this._configurationService.updateValue('chipos.backend.workerHttpPortRange', `${low}-${high}`, ConfigurationTarget.USER);
+				}
 			}
 		}));
 	}
