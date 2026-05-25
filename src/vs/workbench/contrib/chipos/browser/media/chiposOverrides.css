@@ -1594,12 +1594,12 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	display: none !important;
 }
 
-/* Trim the top padding/margin of the merged response row so it visually
- * butts up against the card row instead of leaving the original between-
- * turn gap. */
+/* Trim the top padding of the merged response row so it visually sits
+ * close to the card row (without the original between-turn gap), but
+ * DO NOT use a negative margin — that pulled the response up into the
+ * card's footer/toolbar row and overlapped the first line of text. */
 .interactive-session .monaco-list-row:has(.interactive-item-container.confirmation-message) + .monaco-list-row .interactive-item-container.interactive-response {
 	padding-top: 0 !important;
-	margin-top: -8px !important;
 }
 
 
