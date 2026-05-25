@@ -51,6 +51,17 @@ export class SidecarManagerBrowser extends Disposable implements ISidecarManager
 		if (explicit) {
 			return explicit.replace(/\/$/, '');
 		}
+		// 2026-05-25: this fallback is INTENTIONALLY different from the
+		// Electron version's instance.json-aware cache. Web IDE runs in
+		// "manual" backend mode — it does NOT spawn workers, only probes
+		// pre-existing ones. The user is expected to set chipos.backend.
+		// workerHttpUrl explicitly when worker port isn't 8081. The 8081
+		// derivation below is just "user didn't tell me where worker is,
+		// try the historical default" — same as not setting any URL at all.
+		// Don't try to read instance.json here: the browser has no fs
+		// access, and even if it did, this code path is for manual mode
+		// (user-managed worker), not for IDE-spawned workers where
+		// instance.json is canonical.
 		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
 		try {
 			const url = new URL(this.reasoningUrl);

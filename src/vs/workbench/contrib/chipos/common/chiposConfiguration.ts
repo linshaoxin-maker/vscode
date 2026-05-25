@@ -316,6 +316,12 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.backend.workerHttpPort.desc', 'DEPRECATED (2026-05-23): worker now uses a kernel-assigned random port written to ~/.chipos/instances/*/instance.json. Setting kept only as fallback during the brief startup window before the first health probe lands. To see the real port: `cat ~/.chipos/instances/*/instance.json | jq .http_port`.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+		'chipos.backend.workerHttpPortRange': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.backend.workerHttpPortRange.desc', 'Bind worker HTTP server in a specific port range "LOW-HIGH" (e.g. "50000-50099"). Use this when your environment requires worker port to be in a firewall whitelist or audited range. Worker tries each port in order; fails loudly if all taken. Empty (default) → kernel-assigned ephemeral port (recommended). Mutually exclusive with chipos.backend.workerHttpPort.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 		'chipos.backend.workerHttpUrl': {
 			type: 'string',
 			default: '',

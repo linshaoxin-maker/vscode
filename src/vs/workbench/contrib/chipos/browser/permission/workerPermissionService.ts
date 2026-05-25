@@ -9,8 +9,9 @@
  *
  * Architectural background
  * ────────────────────────
- * Worker (Nuitka binary on localhost:8081, or SSH-forwarded to localhost on a
- * remote workspace) evaluates each tool call against a 5-layer permission
+ * Worker (Nuitka binary on localhost:<kernel-assigned port — see
+ * ~/.chipos/instances/<hash>/instance.json — or SSH-forwarded to localhost
+ * on a remote workspace) evaluates each tool call against a 5-layer permission
  * rules engine. When a rule resolves to ASK, the worker needs to surface a
  * dialog to the user. Before this service existed, there was no channel from
  * worker → IDE for that ask, so every ASK degraded to deny ("ask_no_transport"

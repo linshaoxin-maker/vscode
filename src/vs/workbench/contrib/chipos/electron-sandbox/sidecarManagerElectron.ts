@@ -1219,20 +1219,24 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			'start',
 			'--server', grpcTarget,
 			'--workspace', workspaceRoot,
-			// 2026-05-23: no --http-port. Worker always uses kernel-assigned
-			// port (http_server.py:start_http_server passes port=0 to
-			// aiohttp). The actual bound port is written to instance.json by
-			// execution_server.py after bind; we read it via
-			// _probeWorkerHealth's readInstanceMeta and cache into
-			// _cachedActualWorkerHttpPort, which workerHttpUrl returns.
-			// The legacy `workerHttpPort` config value is kept for back-
-			// compat fallback in the getter (covers the first ~1s before
-			// the first probe lands) but is no longer passed to the
-			// worker as it would just be ignored.
+			// 2026-05-23: no --http-port by default. Worker uses kernel-
+			// assigned port; instance.json is the truth.
+			//   Exception below: when user sets chipos.backend.workerHttpPortRange
+			//   we pass --http-port-range so the worker binds in the
+			//   ops-required range (firewall whitelist scenario).
 			// Worker side does its own Path(...).expanduser(); shell expansion
 			// not strictly needed here. Pass through verbatim.
 			'--mcp-config', mcpConfigPath,
 		];
+
+		// 2026-05-25: ops/firewall scenario — let user pin the worker
+		// to a port range. Worker validates format + fails loudly if
+		// all ports in range are taken (much better failure mode than
+		// silent zombie that the old hybrid had).
+		const portRange = this._configurationService.getValue<string>('chipos.backend.workerHttpPortRange') || '';
+		if (portRange.trim()) {
+			args.push('--http-port-range', portRange.trim());
+		}
 
 		this._logService.info(`[ChipOS Local] spawning worker (token=${workerToken ? 'set' : 'unset'}, apiKey=${workerApiKey ? 'set' : 'unset'}, tls=${tlsEnabled})`);
 		const result = await this._invokeIpc<{ pid?: number; alreadyRunning?: boolean }>('vscode:chipos:spawnProcess', {
