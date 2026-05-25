@@ -520,7 +520,7 @@ export class ConnectionTab extends Disposable {
 		));
 		dom.append(row, dom.$('.chipos-setting-description', undefined,
 			localize('chipos.settings.workerHttpPortRange.desc',
-				'Bind worker HTTP in a specific port range (e.g. "50000-50099"). Use this when firewall rules require worker port to be in a whitelisted range. Empty → kernel-assigned random port (recommended). Format: LOW-HIGH (both inclusive, 1024-65535).')
+				'Bind worker HTTP in a specific port range (e.g. "50000-50099"). Use this when firewall rules require worker port to be in a whitelisted range. Empty → kernel-assigned random port (recommended for most users). Format: LOW-HIGH (both inclusive, 1024-65535).')
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
@@ -550,13 +550,92 @@ export class ConnectionTab extends Disposable {
 				}
 			}
 		}));
-		inputBox.value = this._configurationService.getValue<string>('chipos.backend.workerHttpPortRange') || '';
+		// "调整这些参数带来的影响" — 三块提示，常驻不占空间，状态变化时切换
+		// 显示什么取决于：(a) 当前 config 值是不是空，(b) 用户刚改完
+		const impactBox = dom.append(row, dom.$('.chipos-setting-impact-box'));
+		impactBox.style.marginTop = '6px';
+		impactBox.style.fontSize = '12px';
+		impactBox.style.lineHeight = '1.5';
+		impactBox.style.padding = '8px 10px';
+		impactBox.style.borderRadius = '4px';
+		impactBox.style.borderLeft = '3px solid var(--vscode-textBlockQuote-border, #888)';
+		impactBox.style.background = 'var(--vscode-textBlockQuote-background, rgba(127,127,127,0.07))';
+
+		const initialValue = this._configurationService.getValue<string>('chipos.backend.workerHttpPortRange') || '';
+		inputBox.value = initialValue;
+
+		const renderImpact = (currentValue: string, justChanged: boolean): void => {
+			dom.clearNode(impactBox);
+			const trimmed = (currentValue || '').trim();
+			if (!trimmed) {
+				// 空值 — 走默认 kernel-assigned，告诉用户这是常态 + 怎么诊断
+				dom.append(impactBox, dom.$('div', undefined,
+					'✓ ', dom.$('strong', undefined, localize('chipos.settings.workerHttpPortRange.impact.default.title', 'Default: kernel-assigned')),
+					' — ', localize('chipos.settings.workerHttpPortRange.impact.default.body', 'Worker uses any free port from the OS ephemeral range. No port conflict between multiple workers. To see what port is in use right now:')
+				));
+				const codeBox = dom.append(impactBox, dom.$('code', undefined,
+					'cat ~/.chipos/instances/*/instance.json | jq .http_port'
+				));
+				codeBox.style.display = 'block';
+				codeBox.style.marginTop = '4px';
+				codeBox.style.padding = '4px 6px';
+				codeBox.style.background = 'var(--vscode-textCodeBlock-background, rgba(127,127,127,0.15))';
+				codeBox.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+				return;
+			}
+			// 有值 — 解析、估算后果
+			const m = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+			const low = m ? parseInt(m[1]) : 0;
+			const high = m ? parseInt(m[2]) : 0;
+			const count = (m && low <= high) ? (high - low + 1) : 0;
+
+			const headerDiv = dom.append(impactBox, dom.$('div'));
+			dom.append(headerDiv, dom.$('strong', undefined, localize(
+				'chipos.settings.workerHttpPortRange.impact.set.title',
+				'⚠ Override active: worker will bind in {0}',
+				trimmed
+			)));
+
+			if (count > 0) {
+				const lines: { icon: string; text: string }[] = [
+					{ icon: '•', text: localize('chipos.settings.workerHttpPortRange.impact.set.scope', 'Range size: {0} port(s). If all are busy, worker startup fails loudly (not silent).', String(count)) },
+					{ icon: '•', text: localize('chipos.settings.workerHttpPortRange.impact.set.firewall', 'Only useful if your firewall whitelist or audit logs require ports in this range.') },
+				];
+				if (count < 5) {
+					lines.push({ icon: '⚠', text: localize('chipos.settings.workerHttpPortRange.impact.set.narrow', 'Range is narrow (<5 ports). Two IDE windows opening different workspaces at the same time may exhaust it. Consider widening.') });
+				}
+				for (const line of lines) {
+					const lineDiv = dom.append(impactBox, dom.$('div'));
+					lineDiv.style.marginTop = '3px';
+					dom.append(lineDiv, dom.$('span', undefined, `${line.icon} ${line.text}`));
+				}
+			}
+
+			// 重启提示 — 仅在用户刚改完时高亮（不是每次重渲都显示）
+			if (justChanged) {
+				const restartHint = dom.append(impactBox, dom.$('div'));
+				restartHint.style.marginTop = '6px';
+				restartHint.style.padding = '4px 6px';
+				restartHint.style.background = 'var(--vscode-inputValidation-warningBackground, rgba(255,160,0,0.15))';
+				restartHint.style.borderRadius = '3px';
+				dom.append(restartHint, dom.$('span', undefined,
+					'🔄 ',
+					dom.$('strong', undefined, localize('chipos.settings.workerHttpPortRange.impact.restart.title', 'Restart worker to apply:')),
+					' ',
+					localize('chipos.settings.workerHttpPortRange.impact.restart.body', 'Command Palette → "ChipOS: Restart Worker" (the running worker keeps its current port until restart).')
+				));
+			}
+		};
+
+		// 首次渲染
+		renderImpact(initialValue, false);
 
 		this._disposables.add(inputBox.onDidChange(value => {
 			const trimmed = (value || '').trim();
 			// Only persist when format is valid OR explicitly empty (clear it).
 			if (!trimmed) {
 				this._configurationService.updateValue('chipos.backend.workerHttpPortRange', '', ConfigurationTarget.USER);
+				renderImpact('', true);
 				return;
 			}
 			const m = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
@@ -565,8 +644,12 @@ export class ConnectionTab extends Disposable {
 				const high = parseInt(m[2]);
 				if (low >= 1024 && high <= 65535 && low <= high) {
 					this._configurationService.updateValue('chipos.backend.workerHttpPortRange', `${low}-${high}`, ConfigurationTarget.USER);
+					renderImpact(`${low}-${high}`, true);
+					return;
 				}
 			}
+			// 格式不对就只刷影响说明（不持久化），等用户改对
+			renderImpact(trimmed, false);
 		}));
 	}
 
