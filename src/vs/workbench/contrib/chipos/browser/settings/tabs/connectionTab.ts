@@ -67,8 +67,10 @@ export class ConnectionTab extends Disposable {
 			this._modeSpecificContainer = dom.append(configSection, dom.$('.chipos-mode-specific'));
 			this._renderModeSpecificSettings();
 
-			// ── Sub-section: Legacy / v1 fallback (developer build only) ──
-			this._renderLegacySettings(this._container);
+			// 2026-05-25: removed _renderLegacySettings call (v1 sidecar UI section).
+			// v2 backend has fully superseded the WebSocket sidecar — the chipos.sidecar.*
+			// schema is preserved with deprecationMessage for backward compat, but the
+			// editable UI rows were dead settings that did nothing in v2.
 		}
 	}
 
@@ -266,13 +268,15 @@ export class ConnectionTab extends Disposable {
 
 		switch (mode) {
 			case 'auto':
-				// In auto mode we don't render an editable form — settings used at
-				// runtime are derived from the resolved mode and the URL fields
-				// below (which are still useful for power users).
+				// Auto mode derives the resolved mode (Local / Cloud / Manual) at
+				// runtime from workspace remoteness + existing processes. The three
+				// fields below act as fallback overrides — leave them empty to let
+				// auto-detection do its job.
 				dom.append(container, dom.$('.chipos-setting-hint', undefined,
-					localize('chipos.mode.auto.hint', 'Auto mode picks Local / Cloud Reasoning / Manual based on workspace remoteness and existing processes. Switch to a specific mode above to edit endpoint URLs directly.')
+					localize('chipos.mode.auto.hint', 'Auto mode picks Local / Cloud Reasoning / Manual based on workspace remoteness and existing processes. The fields below are optional overrides — leave them empty unless auto-detection picks the wrong endpoint.')
 				));
 				this._renderReasoningUrlInput(container);
+				this._renderWorkerHttpPortRangeInput(container);
 				this._renderWorkerHttpUrlInput(container);
 				break;
 
@@ -288,7 +292,8 @@ export class ConnectionTab extends Disposable {
 				this._renderTokenInput(container);
 				this._renderWorkerApiKeyInput(container);
 				this._renderTlsEnabled(container);
-				this._renderWorkerHttpPortInput(container);
+				// 2026-05-25: dropped _renderWorkerHttpPortInput (single deprecated port).
+				// Port Range supersedes it; schema kept only as startup-window fallback.
 				this._renderWorkerHttpPortRangeInput(container);
 				this._renderWorkerHttpUrlInput(container);
 				break;
@@ -477,39 +482,12 @@ export class ConnectionTab extends Disposable {
 		}));
 	}
 
-	// ── v2: Worker HTTP Port ─────────────────────────────────────────────
-
-	private _renderWorkerHttpPortInput(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.workerHttpPort', 'Worker HTTP Port (Deprecated)')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.workerHttpPort.desc', 'DEPRECATED — worker uses a kernel-assigned random port. This setting is kept as a startup-window fallback only. To see the real worker port: cat ~/.chipos/instances/*/instance.json | jq .http_port')
-		));
-
-		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
-			placeholder: '8081',
-			type: 'number',
-			inputBoxStyles: defaultInputBoxStyles,
-			validationOptions: {
-				validation: (value) => {
-					const n = parseInt(value);
-					if (isNaN(n) || n < 1024 || n > 65535) {
-						return { content: localize('chipos.settings.port.invalid', 'Port must be between 1024 and 65535'), type: 2 };
-					}
-					return null;
-				}
-			}
-		}));
-		inputBox.value = String(this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081);
-
-		this._disposables.add(inputBox.onDidChange(value => {
-			const n = parseInt(value);
-			if (!isNaN(n) && n >= 1024 && n <= 65535) {
-				this._configurationService.updateValue('chipos.backend.workerHttpPort', n, ConfigurationTarget.USER);
-			}
-		}));
-	}
+	// 2026-05-25: removed _renderWorkerHttpPortInput.
+	// `chipos.backend.workerHttpPort` is DEPRECATED — worker uses kernel-assigned
+	// ports written to instance.json. Schema is kept (with deprecationMessage in
+	// chiposConfiguration.ts) so legacy settings.json values are still tolerated
+	// as a one-shot startup fallback, but the editable UI row is gone — it only
+	// invited misconfiguration that conflicts with Port Range / kernel assignment.
 
 	// ── v2: Worker HTTP Port Range (ops firewall whitelist) ─────────────
 
@@ -659,7 +637,7 @@ export class ConnectionTab extends Disposable {
 		const row = dom.append(parent, dom.$('.chipos-setting-row'));
 		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.workerHttpUrl', 'Worker HTTP URL (override)')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.workerHttpUrl.desc', 'Explicit Worker HTTP URL. Leave empty to auto-derive from port.')
+			localize('chipos.settings.workerHttpUrl.desc', 'Hard-coded Worker HTTP URL. Leave empty in 99% of cases — only set this if Worker is behind a reverse proxy or runs on a host the IDE cannot derive automatically.')
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
@@ -683,7 +661,34 @@ export class ConnectionTab extends Disposable {
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.backend.workerHttpUrl') || '';
 
+		// Impact box — explains the precedence between override / Port Range /
+		// instance.json. Without this, users who fill override silently bypass
+		// every other port-related setting and wonder why Port Range "doesn't work".
+		const impactBox = dom.append(row, dom.$('.chipos-setting-impact-box'));
+		const renderImpact = (currentValue: string) => {
+			dom.clearNode(impactBox);
+			if (!currentValue) {
+				dom.append(impactBox,
+					dom.$('span', undefined,
+						'✓ ', dom.$('strong', undefined, localize('chipos.settings.workerHttpUrl.impact.empty.title', 'Empty (recommended)')),
+						' — ', localize('chipos.settings.workerHttpUrl.impact.empty.body',
+							'IDE auto-derives the Worker URL from instance.json (port chosen by Port Range or the kernel). Multi-worker, port-roll, and REH all work correctly.')
+					)
+				);
+			} else {
+				dom.append(impactBox,
+					dom.$('span.chipos-setting-impact-warn', undefined,
+						'⚠ ', dom.$('strong', undefined, localize('chipos.settings.workerHttpUrl.impact.set.title', 'Override is active')),
+						' — ', localize('chipos.settings.workerHttpUrl.impact.set.body',
+							'IDE will hit THIS URL and ignore both Worker HTTP Port Range and instance.json. If Worker rolls to a different port, IDE will not follow — Worker pill will flap. Only use this if Worker is reachable on a fixed URL you control (e.g. behind nginx).')
+					)
+				);
+			}
+		};
+		renderImpact(inputBox.value);
+
 		this._disposables.add(inputBox.onDidChange(value => {
+			renderImpact(value);
 			if (!value) {
 				this._configurationService.updateValue('chipos.backend.workerHttpUrl', value, ConfigurationTarget.USER);
 				return;
@@ -725,96 +730,12 @@ export class ConnectionTab extends Disposable {
 		}));
 	}
 
-	// ── v1 兼容配置（折叠区域）──────────────────────────────────────────
-
-	private _renderLegacySettings(parent: HTMLElement): void {
-		const details = dom.append(parent, dom.$('details.chipos-legacy-settings'));
-		dom.append(details, dom.$('summary', undefined,
-			localize('chipos.settings.legacy', 'Legacy Settings (v1 Sidecar)')
-		));
-
-		const content = dom.append(details, dom.$('.chipos-legacy-content'));
-		this._renderManualUrl(content);
-		this._renderSidecarPort(content);
-		this._renderAutoStart(content);
-		this._renderAutoRestart(content);
-	}
-
-	private _renderManualUrl(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.manualUrl', 'Manual Backend URL')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.manualUrl.desc', 'Set a manual WebSocket URL for development mode. When set, Sidecar auto-start is bypassed. Example: ws://127.0.0.1:8000/ws/agent')));
-
-		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
-			placeholder: 'ws://127.0.0.1:8000/ws/agent',
-			inputBoxStyles: defaultInputBoxStyles,
-		}));
-		inputBox.value = this._configurationService.getValue<string>('chipos.sidecar.manualUrl') || '';
-
-		this._disposables.add(inputBox.onDidChange(value => {
-			this._configurationService.updateValue('chipos.sidecar.manualUrl', value, ConfigurationTarget.USER);
-		}));
-
-		this._disposables.add(this._configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('chipos.sidecar.manualUrl')) {
-				inputBox.value = this._configurationService.getValue<string>('chipos.sidecar.manualUrl') || '';
-			}
-		}));
-	}
-
-	private _renderSidecarPort(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.sidecarPort', 'Sidecar Port')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.sidecarPort.desc', 'Starting port for the Sidecar backend (auto-increments if occupied).')));
-
-		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
-			placeholder: '8765',
-			type: 'number',
-			inputBoxStyles: defaultInputBoxStyles,
-		}));
-		inputBox.value = String(this._configurationService.getValue<number>('chipos.sidecar.port') ?? 8765);
-
-		this._disposables.add(inputBox.onDidChange(value => {
-			const val = Math.max(1024, Math.min(65535, parseInt(value) || 8765));
-			this._configurationService.updateValue('chipos.sidecar.port', val, ConfigurationTarget.USER);
-		}));
-	}
-
-	private _renderAutoStart(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
-
-		const checkbox = this._disposables.add(new Checkbox(
-			localize('chipos.settings.autoStart', 'Auto-Start Sidecar'),
-			this._configurationService.getValue<boolean>('chipos.sidecar.autoStart') ?? false,
-			defaultCheckboxStyles,
-		));
-		dom.append(row, checkbox.domNode);
-
-		const textContainer = dom.append(row, dom.$('div'));
-		dom.append(textContainer, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.autoStart.desc', 'Automatically start the Sidecar backend when the IDE launches.')));
-
-		this._disposables.add(checkbox.onChange(() => {
-			this._configurationService.updateValue('chipos.sidecar.autoStart', checkbox.checked, ConfigurationTarget.USER);
-		}));
-	}
-
-	private _renderAutoRestart(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
-
-		const checkbox = this._disposables.add(new Checkbox(
-			localize('chipos.settings.autoRestart', 'Auto-Restart on Crash'),
-			this._configurationService.getValue<boolean>('chipos.sidecar.autoRestart') ?? true,
-			defaultCheckboxStyles,
-		));
-		dom.append(row, checkbox.domNode);
-
-		const textContainer = dom.append(row, dom.$('div'));
-		dom.append(textContainer, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.autoRestart.desc', 'Automatically restart the Sidecar backend if it crashes (up to 3 attempts).')));
-
-		this._disposables.add(checkbox.onChange(() => {
-			this._configurationService.updateValue('chipos.sidecar.autoRestart', checkbox.checked, ConfigurationTarget.USER);
-		}));
-	}
+	// 2026-05-25: removed _renderLegacySettings + _renderManualUrl +
+	// _renderSidecarPort + _renderAutoStart + _renderAutoRestart.
+	// These edited chipos.sidecar.* keys which control the v1 WebSocket sidecar,
+	// a component that no longer exists in v2 (Worker HTTP + Reasoner gRPC has
+	// fully superseded it). The schema entries are kept in chiposConfiguration.ts
+	// with deprecationMessage so a legacy settings.json doesn't error, but the
+	// editable UI rows were misleading — they implied the values still affected
+	// runtime behavior, which is false in v2.
 }
