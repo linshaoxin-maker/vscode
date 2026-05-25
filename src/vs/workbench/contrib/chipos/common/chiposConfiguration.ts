@@ -313,13 +313,13 @@ configurationRegistry.registerConfiguration({
 		'chipos.backend.workerHttpPort': {
 			type: 'number',
 			default: 8081,
-			description: localize('chipos.backend.workerHttpPort.desc', 'Local Worker HTTP API port (used by the Worker Tools panel). Defaults to the worker sidecar port.'),
+			description: localize('chipos.backend.workerHttpPort.desc', 'DEPRECATED (2026-05-23): worker now uses a kernel-assigned random port written to ~/.chipos/instances/*/instance.json. Setting kept only as fallback during the brief startup window before the first health probe lands. To see the real port: `cat ~/.chipos/instances/*/instance.json | jq .http_port`.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 		'chipos.backend.workerHttpUrl': {
 			type: 'string',
 			default: '',
-			description: localize('chipos.backend.workerHttpUrl.desc', 'Override Worker HTTP URL (e.g. http://127.0.0.1:8081). Empty derives from workerHttpPort.'),
+			description: localize('chipos.backend.workerHttpUrl.desc', 'Override Worker HTTP URL (e.g. http://127.0.0.1:51234). Empty derives from instance.json (preferred — worker port is kernel-assigned).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 		'chipos.logLevel': {

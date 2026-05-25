@@ -1063,7 +1063,9 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		}
 
 		const grpcTarget = resolveReasonerGrpcAddress(this._configurationService, this._productService);
-		const workerHttpPort = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		// 2026-05-23: chipos.backend.workerHttpPort no longer passed at spawn —
+		// worker always kernel-assigns. Kept as readable-only config so users
+		// who set it via legacy settings don't get errors; ignored at spawn.
 		const tlsEnabled = this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false;
 		const workerApiKey = resolveWorkerApiKey(this._configurationService, this._productService);
 		const mcpConfigPath = resolveWorkerMcpConfigPath(this._configurationService);
@@ -1217,7 +1219,16 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			'start',
 			'--server', grpcTarget,
 			'--workspace', workspaceRoot,
-			'--http-port', String(workerHttpPort),
+			// 2026-05-23: no --http-port. Worker always uses kernel-assigned
+			// port (http_server.py:start_http_server passes port=0 to
+			// aiohttp). The actual bound port is written to instance.json by
+			// execution_server.py after bind; we read it via
+			// _probeWorkerHealth's readInstanceMeta and cache into
+			// _cachedActualWorkerHttpPort, which workerHttpUrl returns.
+			// The legacy `workerHttpPort` config value is kept for back-
+			// compat fallback in the getter (covers the first ~1s before
+			// the first probe lands) but is no longer passed to the
+			// worker as it would just be ignored.
 			// Worker side does its own Path(...).expanduser(); shell expansion
 			// not strictly needed here. Pass through verbatim.
 			'--mcp-config', mcpConfigPath,

@@ -479,9 +479,9 @@ export class ConnectionTab extends Disposable {
 
 	private _renderWorkerHttpPortInput(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.workerHttpPort', 'Worker HTTP Port')));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.workerHttpPort', 'Worker HTTP Port (Deprecated)')));
 		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.settings.workerHttpPort.desc', 'HTTP port for the Worker process (default: 8081).')
+			localize('chipos.settings.workerHttpPort.desc', 'DEPRECATED — worker uses a kernel-assigned random port. This setting is kept as a startup-window fallback only. To see the real worker port: cat ~/.chipos/instances/*/instance.json | jq .http_port')
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));

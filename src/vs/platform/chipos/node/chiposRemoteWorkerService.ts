@@ -172,9 +172,13 @@ export class ChiposRemoteWorkerService extends Disposable implements IChiposRemo
 	async ensureWorker(args: IEnsureRemoteWorkerArgs): Promise<IEnsureRemoteWorkerResult> {
 		const t0 = Date.now();
 		const { reasonerGrpcTarget, workspaceRoot, preferredVersion } = args;
-		const workerHttpPort = args.workerHttpPort ?? 8081;
+		// 2026-05-23: workerHttpPort arg is now ignored by the worker (which
+		// always lets the kernel assign a port). We still accept the arg for
+		// back-compat but ignore it; the truth lives in instance.json after
+		// the worker writes it. See _waitForWorkerInstanceJson below.
+		const requestedPortHint = args.workerHttpPort ?? 0;
 
-		this._logService.info(`${LOG_PREFIX} ensureWorker target=${reasonerGrpcTarget} ws=${workspaceRoot} preferredVer=${preferredVersion ?? '(any)'} httpPort=${workerHttpPort}`);
+		this._logService.info(`${LOG_PREFIX} ensureWorker target=${reasonerGrpcTarget} ws=${workspaceRoot} preferredVer=${preferredVersion ?? '(any)'} portHint=${requestedPortHint} (ignored, kernel-assigned)`);
 
 		// (1) Reuse existing instance if alive.
 		const existing = readInstanceJson(workspaceRoot);
@@ -209,7 +213,9 @@ export class ChiposRemoteWorkerService extends Disposable implements IChiposRemo
 		const env: NodeJS.ProcessEnv = {
 			...process.env,
 			CHIPOS_REASONING_SERVER: reasonerGrpcTarget,
-			CHIPOS_WORKER_HTTP_PORT: String(workerHttpPort),
+			// 2026-05-23: CHIPOS_WORKER_HTTP_PORT removed — worker reads
+			// nothing and always uses kernel-assigned port. Leftover env
+			// var would just be misleading.
 			CHIPOS_WORKSPACE_ROOT: workspaceRoot,
 		};
 
@@ -262,7 +268,8 @@ export class ChiposRemoteWorkerService extends Disposable implements IChiposRemo
 					'start',
 					'--server', reasonerGrpcTarget,
 					'--workspace', workspaceRoot,
-					'--http-port', String(workerHttpPort),
+					// 2026-05-23: no --http-port. Worker uses kernel-assigned
+					// port and writes the actual value into instance.json.
 					'--instance-dir', dir,
 					'--mcp-config', mcpConfigPath,
 				],
@@ -301,33 +308,96 @@ export class ChiposRemoteWorkerService extends Disposable implements IChiposRemo
 		this._spawnedPid = proc.pid;
 		this._refs.set(workspaceRoot, (this._refs.get(workspaceRoot) ?? 0) + 1);
 
-		// Persist instance metadata (Worker may also write its own; first-write wins
-		// and we update ref_count on subsequent ensureWorker calls).
-		const meta: InstanceMeta = {
-			pid: proc.pid,
-			workspace: workspaceRoot,
-			http_port: workerHttpPort,
-			ref_count: 1,
-			refs: ['reh-self'],
-			started_at: new Date().toISOString(),
-			version: cached.version,
-		};
-		try {
-			writeInstanceJson(workspaceRoot, meta);
-		} catch (writeErr) {
-			this._logService.warn(`${LOG_PREFIX} could not write instance.json: ${writeErr}`);
+		// 2026-05-23: was writing instance.json here with `workerHttpPort`
+		// from request (the LIE — worker's actual bound port may differ
+		// since http_server.py now always uses kernel-assigned). Removed
+		// the pre-write entirely; worker's _write_pid_file is now the
+		// sole writer. Then we poll for it below to learn the real port.
+		//
+		// Worker startup writes instance.json ~1-2s after spawn (between
+		// permission-bootstrap and EDA-pack-fetch). 8s timeout gives EDA
+		// pack a generous slack in case it has to download the toolchain
+		// on first boot.
+		const actualPort = await this._waitForWorkerInstanceJson(workspaceRoot, 8000);
+		if (actualPort === undefined) {
+			this._logService.warn(
+				`${LOG_PREFIX} worker pid=${proc.pid} spawned but instance.json never had http_port within 8s — returning error so IDE can re-spawn or fall back`,
+			);
+			return {
+				ok: false,
+				error: 'Worker spawned but did not write instance.json.http_port within 8s',
+				elapsedMs: Date.now() - t0,
+			};
 		}
 
 		const elapsed = Date.now() - t0;
-		this._logService.info(`${LOG_PREFIX} strategy=spawned-binary pid=${proc.pid} httpPort=${workerHttpPort} elapsed=${elapsed}ms`);
+		this._logService.info(`${LOG_PREFIX} strategy=spawned-binary pid=${proc.pid} httpPort=${actualPort} (kernel-assigned, polled from instance.json) elapsed=${elapsed}ms`);
 
 		return {
 			ok: true,
 			pid: proc.pid,
-			httpPort: workerHttpPort,
+			httpPort: actualPort,
 			strategy: 'spawned-binary',
 			elapsedMs: elapsed,
 		};
+	}
+
+	/**
+	 * Poll worker-written instance.json for the actually-bound http_port.
+	 *
+	 * 2026-05-23: with kernel-assigned ports, the IDE-passed --http-port
+	 * is no longer the truth — only instance.json (written by the worker
+	 * after aiohttp's TCPSite.start()) reflects reality. The worker
+	 * writes instance.json mid-startup, ~1-2s after spawn:
+	 *   1. (0-200ms)   load Python runtime + std lib
+	 *   2. (200-400ms) sandbox + permission bootstrap
+	 *   3. (400-1500ms) _write_pid_file → instance.json EXISTS with pid
+	 *                     but http_port is the requested value, not actual
+	 *   4. (1500-3000ms) EDA self-check + MCP load
+	 *   5. (3000ms+)   aiohttp bind → execution_server.py REWRITES
+	 *                     instance.json.http_port to the actual bound port
+	 *
+	 * So `http_port` field passes through two values:
+	 *   - First write: stale (whatever cli.py thought)
+	 *   - Second write: real
+	 *
+	 * Polling can't just check "does instance.json exist" — that lands
+	 * on step 3 (stale). Must specifically wait for the http_port to be
+	 * the truthful kernel-assigned value, OR (simpler+safer) wait for
+	 * /health on the value to actually respond.
+	 *
+	 * Pragmatic approach: read instance.json every 200ms; once http_port
+	 * is present AND > 0, try a localhost HTTP /health probe. If the
+	 * probe succeeds the port is real. If it fails (e.g. step 3 stale
+	 * value), keep polling until either a different port is written (step
+	 * 5 happened) OR timeout.
+	 */
+	private async _waitForWorkerInstanceJson(workspaceRoot: string, timeoutMs: number): Promise<number | undefined> {
+		const deadline = Date.now() + timeoutMs;
+		let lastSeenPort: number | undefined;
+		while (Date.now() < deadline) {
+			const meta = readInstanceJson(workspaceRoot);
+			const port = meta?.http_port;
+			if (typeof port === 'number' && port > 0) {
+				if (lastSeenPort !== port) {
+					// Port changed (or first sighting). Try to confirm it's live.
+					try {
+						const controller = new AbortController();
+						const timer = setTimeout(() => controller.abort(), 800);
+						const resp = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+						clearTimeout(timer);
+						if (resp.ok) {
+							return port;
+						}
+					} catch {
+						// Not live yet (step 3 stale or socket not yet bound)
+					}
+					lastSeenPort = port;
+				}
+			}
+			await new Promise(r => setTimeout(r, 200));
+		}
+		return undefined;
 	}
 
 	async releaseWorker(args: IReleaseRemoteWorkerArgs): Promise<void> {
