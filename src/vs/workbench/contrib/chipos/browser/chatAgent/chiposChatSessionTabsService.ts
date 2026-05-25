@@ -80,6 +80,14 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 		// new sessionResource, promote it to head of the open-tabs list
 		// (LRU semantics) so the tab strip mirrors "what the user is
 		// actually working in".
+		//
+		// Empty-session guard: every IDE restart spawns ≥1 fresh untitled
+		// chat session that briefly gets focus during workbench restore.
+		// Pinning those would accumulate duplicate "New Chat" tabs on
+		// every restart (one per startup focus shuffle). Only pin sessions
+		// that already have ≥1 submitted request — fresh empty ones earn
+		// their tab slot via the `onDidSubmitRequest` hook below the
+		// moment the user actually uses them.
 		this._register(this._chatWidgetService.onDidChangeFocusedSession(() => {
 			const widget = this._chatWidgetService.lastFocusedWidget;
 			if (!widget || widget.location !== ChatAgentLocation.Chat) {
@@ -88,7 +96,8 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 			}
 			const session = widget.viewModel?.sessionResource;
 			this._activeUri = session;
-			if (session) {
+			const requestCount = widget.viewModel?.model?.getRequests().length ?? 0;
+			if (session && requestCount > 0) {
 				this._addTab(session);
 			}
 			this._scanAndRender();
@@ -101,7 +110,19 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 		// Chat session titles are generated from the first user message —
 		// re-render on submit so the tab label flips from "New Chat"
 		// to the actual title without the user having to switch tabs.
-		this._register(this._chatService.onDidSubmitRequest(() => this._renderAll()));
+		//
+		// Also pin the focused session as a tab here — the empty-session
+		// guard in `onDidChangeFocusedSession` above intentionally drops
+		// pre-submit untitled sessions, so this is where a session earns
+		// its tab slot the instant the user submits.
+		this._register(this._chatService.onDidSubmitRequest(() => {
+			const w = this._chatWidgetService.lastFocusedWidget;
+			const s = w?.viewModel?.sessionResource;
+			if (s) {
+				this._addTab(s);
+			}
+			this._renderAll();
+		}));
 		this._register(this._chatService.onDidCreateModel(() => this._renderAll()));
 
 		// MutationObserver: react to slot lifecycle transitions the
