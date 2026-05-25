@@ -65,7 +65,6 @@ export class ModelsTab extends Disposable {
 		this._renderProviderRow(section);
 		this._renderApiKeyRow(section);
 		this._renderBaseUrlRow(section);
-		this._renderVerifyRow(section);
 		this._renderModelRow(section);
 	}
 
@@ -141,28 +140,25 @@ export class ModelsTab extends Disposable {
 		this._updateBaseUrlVisibility();
 	}
 
-	private _renderVerifyRow(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-verify-row'));
+	private _renderModelRow(parent: HTMLElement): void {
+		const row = dom.append(parent, dom.$('.chipos-setting-row.chipos-model-row'));
+		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.model', 'Model')));
+		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.model.desc', 'Select the model to use. Click Refresh to update the list.')));
 
-		this._verifyButton = dom.append(row, dom.$<HTMLButtonElement>('button.chipos-verify-button', undefined, localize('chipos.settings.verify', 'Verify & Fetch Models')));
+		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container.chipos-model-controls'));
+		const selectWrapper = dom.append(inputContainer, dom.$('.chipos-model-select-wrapper'));
+		const currentModel = this._configurationService.getValue<string>('chipos.model') || '';
+		const initialOptions: ISelectOptionItem[] = currentModel ? [{ text: currentModel }] : [{ text: '—' }];
+
+		this._modelSelect = this._disposables.add(new SelectBox(initialOptions, 0, this._contextViewProvider!, defaultSelectBoxStyles));
+		this._modelSelect.render(selectWrapper);
+
+		this._verifyButton = dom.append(inputContainer, dom.$<HTMLButtonElement>('button.chipos-verify-button.chipos-verify-button-inline', undefined, localize('chipos.settings.verify', 'Refresh Models')));
 		this._verifyStatus = dom.append(row, dom.$('.chipos-verify-status'));
 
 		this._disposables.add(dom.addDisposableListener(this._verifyButton, 'click', () => {
 			this._doVerify();
 		}));
-	}
-
-	private _renderModelRow(parent: HTMLElement): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.settings.model', 'Model')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined, localize('chipos.settings.model.desc', 'Select the model to use. Click "Verify & Fetch Models" to refresh the list.')));
-
-		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const currentModel = this._configurationService.getValue<string>('chipos.model') || '';
-		const initialOptions: ISelectOptionItem[] = currentModel ? [{ text: currentModel }] : [{ text: '—' }];
-
-		this._modelSelect = this._disposables.add(new SelectBox(initialOptions, 0, this._contextViewProvider!, defaultSelectBoxStyles));
-		this._modelSelect.render(selectContainer);
 
 		this._disposables.add(this._modelSelect.onDidSelect(e => {
 			if (this._models.length > 0 && e.index < this._models.length) {

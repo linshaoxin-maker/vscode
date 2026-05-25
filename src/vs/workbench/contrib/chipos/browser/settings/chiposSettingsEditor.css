@@ -831,32 +831,32 @@
 	transform: translateX(16px);
 }
 
-/* ── Verify row (button + status) ─────────────────────────────────────── */
+/* ── Model row: SelectBox + inline Refresh button + status line ────────── */
 
-/* Acts as an inline action bar between two card groups. Transparent, with
- * a small vertical gap above and below to visually separate the groups. */
-.chipos-settings-section > .chipos-verify-row,
-.chipos-settings-section > .chipos-mode-specific > .chipos-verify-row {
-	background: transparent;
-	border: none;
-	padding: 10px 4px 6px;
-	margin: 0;
+.chipos-model-row > .chipos-setting-input-container.chipos-model-controls {
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: 6px;
 }
 
-/* When verify-row interrupts the joined list, round the corners of the
- * setting-row above it, and the setting-row right after it. */
-.chipos-settings-section > .chipos-setting-row:has(+ .chipos-verify-row) {
-	border-bottom-left-radius: var(--chipos-radius-lg);
-	border-bottom-right-radius: var(--chipos-radius-lg);
+.chipos-model-select-wrapper {
+	flex: 1 1 auto;
+	min-width: 0;
 }
 
-.chipos-settings-section > .chipos-verify-row + .chipos-setting-row {
-	border-top-width: 1px;
-	border-top-left-radius: var(--chipos-radius-lg);
-	border-top-right-radius: var(--chipos-radius-lg);
+.chipos-model-select-wrapper .monaco-select-box {
+	width: 100%;
+}
+
+.chipos-model-row > .chipos-verify-status {
+	grid-column: 1 / -1;
+	grid-row: 3;
+	margin: 4px 0 0;
+	min-height: 14px;
+}
+
+.chipos-model-row > .chipos-verify-status:empty {
+	display: none;
 }
 
 /* ── Buttons ──────────────────────────────────────────────────────────── */
@@ -890,9 +890,15 @@
 	cursor: not-allowed;
 }
 
+/* Inline variant: lives inside Model row, sits next to the SelectBox. */
+.chipos-verify-button-inline {
+	padding: 4px 10px;
+	flex-shrink: 0;
+	white-space: nowrap;
+}
+
 .chipos-verify-status {
 	font-size: 12px;
-	margin-left: 10px;
 }
 
 .chipos-verify-status.success {
