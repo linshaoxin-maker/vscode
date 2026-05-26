@@ -2807,8 +2807,43 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			case 'agent_ask': {
+				// 2026-05-26: previously only read data.context, silently dropping
+				// data.questions[] which reasoner agent_core.analyze_requirement_
+				// completeness sends as a list of {question_id, prompt, options}
+				// items (e.g. AXI data width, FIFO depth, protocol scope). Users
+				// saw only the bare "在开始之前，我需要确认几个设计参数:" label
+				// with no idea what was actually being asked. Now render the
+				// questions as a numbered list with their options as bullets so
+				// the user can see the inquiry surface even when they only have
+				// "确认 / 跳过" coarse-grained buttons.
 				const context = (data.context as string) ?? '';
-				return context || 'Please select an option.';
+				const questions = Array.isArray((data as { questions?: unknown }).questions)
+					? (data as { questions: Array<{ prompt?: string; options?: Array<{ label?: string; action_id?: string }> }> }).questions
+					: undefined;
+
+				if (!questions || questions.length === 0) {
+					return context || 'Please select an option.';
+				}
+
+				const lines: string[] = [];
+				if (context) {
+					lines.push(context);
+					lines.push('');
+				}
+				questions.forEach((q, idx) => {
+					const prompt = (q.prompt ?? '').trim() || `问题 ${idx + 1}`;
+					lines.push(`${idx + 1}. **${prompt}**`);
+					if (Array.isArray(q.options) && q.options.length > 0) {
+						for (const opt of q.options) {
+							const label = (opt.label ?? opt.action_id ?? '').trim();
+							if (label) {
+								lines.push(`   - ${label}`);
+							}
+						}
+					}
+					lines.push('');
+				});
+				return lines.join('\n').trimEnd();
 			}
 
 			// FEAT-X.1.3 — verification_pipeline group review (H14/H15/H16/H17).
