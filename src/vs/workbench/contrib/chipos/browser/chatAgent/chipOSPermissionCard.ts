@@ -743,10 +743,22 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		const wrap = dom.$('.chipos-permission-preview.chipos-agent-ask-form');
 		card.appendChild(wrap);
 
+		// Render the context paragraph ONLY when it differs from the header's
+		// specifier slot — for agent_ask, chipOSChatAgent._cardSpecifier picks
+		// firstLine('context') so a single-line context (e.g. "在开始之前，我
+		// 需要确认几个设计参数:") ends up displayed twice (header + body
+		// paragraph). Multi-line contexts only have their first line in the
+		// header, so keeping the body paragraph for those preserves the rest.
 		if (data.context && data.context.trim().length > 0) {
-			const ctxEl = dom.$('.chipos-agent-ask-context');
-			ctxEl.textContent = data.context;
-			wrap.appendChild(ctxEl);
+			const contextTrim = data.context.trim();
+			const firstLine = contextTrim.split('\n')[0]?.trim() ?? '';
+			const headerSpecifier = data.specifier?.trim() ?? '';
+			const isDuplicate = firstLine === headerSpecifier && !contextTrim.includes('\n');
+			if (!isDuplicate) {
+				const ctxEl = dom.$('.chipos-agent-ask-context');
+				ctxEl.textContent = contextTrim;
+				wrap.appendChild(ctxEl);
+			}
 		}
 
 		// Stable per-card prefix so radio `name` groups don't collide across
