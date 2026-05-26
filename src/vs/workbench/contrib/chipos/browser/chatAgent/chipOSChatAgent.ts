@@ -1511,7 +1511,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// data.__chiposAgentAskAnswers field. When the user clicks 提交,
 				// the accepted-confirmation handler (L714 area) reads this field
 				// and sends JSON-encoded answers as the comment field.
-				const richMessage = this._renderConfirmMessage(p);
+				const richMessage = ChipOSChatAgent._renderConfirmMessage(p);
 				// Extract buttons from p.options or card_data.options
 				const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
 				const rawButtons = p.options?.map(o => o.label).filter((l): l is string => !!l)
@@ -2852,8 +2852,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	// ── FEAT-29: Render rich confirm message based on card_type ──
-
-	private _renderConfirmMessage(p: IConfirmRequestPayload): string {
+	//
+	// 2026-05-26: dropped `private` → `static` so unit tests in
+	// test/browser/ can call it without instantiating the full
+	// ChipOSChatAgent (which needs IChatService / IConfigurationService /
+	// a dozen DI deps). The function is pure (no `this.*` references),
+	// so the static switch is a no-op for runtime behavior.
+	//
+	// Header chip de-duplication invariants enforced inside (verified by
+	// tests/browser/confirmMessageDedup.test.ts):
+	//   - file_edit: body skips `**File:** ${file_path}` line (header chip
+	//     already shows file_path via _cardSpecifier)
+	//   - VERIFICATION_HUMAN_CHECK: body skips `**Stage:** ${stage}` line
+	//     (header chip already shows stage)
+	static _renderConfirmMessage(p: IConfirmRequestPayload): string {
 		const data = p.card_data;
 		switch (p.card_type) {
 			case 'spec_confirm': {
