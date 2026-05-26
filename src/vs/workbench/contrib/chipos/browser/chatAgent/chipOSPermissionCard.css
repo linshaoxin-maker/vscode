@@ -388,3 +388,108 @@
 	border-color: color-mix(in srgb, var(--chipos-btn-danger-fg) 45%, transparent);
 	background: color-mix(in srgb, var(--chipos-btn-danger-fg) 8%, transparent);
 }
+
+/* ── 2026-05-26: agent_ask multi-question inline radio form ────────────────── */
+/* Rendered inside `.chipos-permission-preview.chipos-agent-ask-form` slot when
+ * card_type === 'agent_ask' and questions[] is non-empty. Each question is a
+ * radio group; user picks one answer per question, then clicks the bottom
+ * "提交" button to submit all selections atomically. See
+ * chipOSPermissionCard.ts:_renderAgentAskForm for the render logic. */
+.chipos-agent-ask-form {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 10px 12px;
+	background: transparent;
+	border: none;
+	/* Override the 160px / overflow-y:auto from `.chipos-permission-preview`
+	 * — that cap was for 8-line code previews; for a multi-question form
+	 * it (a) hides Q3/Q4 below the fold and (b) traps wheel events,
+	 * making the user wheel over the card scroll the chat list first
+	 * and only reach the inner form scroll after chat list hits its end
+	 * (the "scroll bleed-through" 2026-05-26 user report). Letting the
+	 * form grow naturally so the chat list owns ALL scrolling avoids
+	 * both bugs. */
+	max-height: none;
+	overflow: visible;
+}
+
+.chipos-agent-ask-context {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.45;
+	margin-bottom: 2px;
+	white-space: pre-wrap;
+}
+
+.chipos-agent-ask-question {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.chipos-agent-ask-q-header {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+	line-height: 1.4;
+}
+
+.chipos-agent-ask-q-num {
+	color: var(--vscode-descriptionForeground);
+	font-weight: 600;
+	flex-shrink: 0;
+	min-width: 14px;
+}
+
+.chipos-agent-ask-q-prompt {
+	flex: 1 1 auto;
+}
+
+.chipos-agent-ask-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 8px;
+	padding-left: 20px;
+}
+
+.chipos-agent-ask-option {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	padding: 4px 10px 4px 8px;
+	border-radius: 12px;
+	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.3));
+	background: color-mix(in srgb, var(--vscode-foreground) 3%, transparent);
+	cursor: pointer;
+	user-select: none;
+	transition: background 0.08s ease-out, border-color 0.08s ease-out;
+}
+
+.chipos-agent-ask-option:hover {
+	background: color-mix(in srgb, var(--chipos-btn-primary-bg) 8%, transparent);
+	border-color: color-mix(in srgb, var(--chipos-btn-primary-bg) 35%, transparent);
+}
+
+.chipos-agent-ask-option:has(.chipos-agent-ask-radio:checked) {
+	background: color-mix(in srgb, var(--chipos-btn-primary-bg) 14%, transparent);
+	border-color: var(--chipos-btn-primary-bg);
+	color: var(--chipos-btn-primary-bg);
+	font-weight: 500;
+}
+
+.chipos-agent-ask-radio {
+	margin: 0;
+	accent-color: var(--chipos-btn-primary-bg);
+	cursor: pointer;
+}
+
+.chipos-agent-ask-option-label {
+	line-height: 1.3;
+}
+

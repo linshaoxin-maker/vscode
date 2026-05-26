@@ -715,8 +715,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			// Use the sessionId stored in the confirmation data, NOT a new one
 			const confirmSessionId = data.sessionId ?? runtime.backendSessionId;
-			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'session:', confirmSessionId);
-			streamClient.sendConfirmResponse(data.requestId, action, undefined, confirmSessionId);
+			// P0-60 (2026-05-26): agent_ask radio-form cards carry user's
+			// per-question picks on `data.selections` (mutated in place by
+			// the radio change handlers, see chipOSPermissionCard.ts:
+			// _renderAgentAskForm). On Submit, JSON-encode them into the
+			// `comment` field so reasoner agent_core.py (commit 96135978)
+			// can parse them into augmented_prompt. On Skip (action != submit
+			// → typically "skip"), drop the partial selections and send the
+			// action alone — reasoner treats that as "user declined to refine".
+			let confirmComment: string | undefined;
+			const agentAskMarker = (data as { __chiposAgentAskCard?: boolean }).__chiposAgentAskCard === true;
+			if (agentAskMarker) {
+				const selections = (data as { selections?: Record<string, string> }).selections ?? {};
+				const isSubmitAction = action === 'submit' || action === 'approve' || action === 'confirm';
+				if (isSubmitAction && Object.keys(selections).length > 0) {
+					try {
+						confirmComment = JSON.stringify(selections);
+					} catch (err) {
+						this._logService.warn('[ChipOS Agent] agent_ask: failed to JSON.stringify selections:', String(err));
+					}
+				}
+			}
+			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'session:', confirmSessionId, 'comment:', confirmComment ?? '<none>');
+			streamClient.sendConfirmResponse(data.requestId, action, confirmComment, confirmSessionId);
 			progress([this._progress('$(check) Confirmed')]);
 			return this._listenForContinuation(streamClient, progress, token, request);
 		}
@@ -1505,27 +1526,76 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// terminal-command approval:
 				//   - `hook_confirm` → plain-text preview (description /
 				//     impact / command from card_data)
-				//   - everything else (spec/arch/code/agent/file_edit/
+				//   - `agent_ask` (with `questions[]`) → inline radio FORM
+				//     (one radio group per question, single Submit button).
+				//     The card mutates `data.selections` in place via the
+				//     radio change handlers (see chipOSPermissionCard.ts:
+				//     _renderAgentAskForm). When the user clicks "提交",
+				//     the accepted-confirmation branch (this method's L660
+				//     area) reads back `data.selections` and JSON-encodes
+				//     it into the `comment` field of sendConfirmResponse.
+				//     Reasoner agent_core.py (commit 96135978) already
+				//     parses comment-as-JSON into augmented_prompt.
+				//   - everything else (spec/arch/code/file_edit/
 				//     verification etc.) → opts into markdown rendering of
 				//     the rich `confirmation.message` via the
 				//     `renderMessageAsMarkdown: true` flag (the chipos card
 				//     uses IMarkdownRendererService for that branch).
 				const baseData = { requestId: p.request_id, sessionId: ctx.sessionId, options };
-				const data: Record<string, unknown> = p.card_type === 'hook_confirm'
-					? {
+				const askQuestionsRaw = (p.card_data && Array.isArray((p.card_data as { questions?: unknown }).questions))
+					? ((p.card_data as { questions: Array<{ question_id?: string; prompt?: string; options?: Array<{ action_id?: string; label?: string }> }> }).questions)
+					: undefined;
+				// Only fire the interactive-radio form path if every question
+				// carries at least one option AND a question_id we can key on.
+				// Mal-shaped questions (no options / no id) fall back to the
+				// generic markdown render so the user still sees them as text.
+				const askQuestions = askQuestionsRaw?.filter(q =>
+					typeof q.question_id === 'string'
+					&& q.question_id.length > 0
+					&& Array.isArray(q.options)
+					&& q.options.length > 0
+				).map(q => ({
+					question_id: q.question_id as string,
+					prompt: (q.prompt ?? '').trim() || (q.question_id as string),
+					options: (q.options as Array<{ action_id?: string; label?: string }>)
+						.filter(o => typeof o.action_id === 'string' && o.action_id.length > 0)
+						.map(o => ({ action_id: o.action_id as string, label: (o.label ?? o.action_id as string) })),
+				})).filter(q => q.options.length > 0);
+
+				const isInteractiveAgentAsk = p.card_type === 'agent_ask' && !!askQuestions && askQuestions.length > 0;
+
+				let data: Record<string, unknown>;
+				if (p.card_type === 'hook_confirm') {
+					data = {
 						...baseData,
 						__chiposHookConfirmCard: true,
 						tool: 'Bash',
 						specifier: ChipOSChatAgent._hookSpecifier(p.card_data, title),
 						contentPreview: ChipOSChatAgent._hookContentPreview(p.card_data),
-					}
-					: {
+					};
+				} else if (isInteractiveAgentAsk) {
+					data = {
+						...baseData,
+						__chiposAgentAskCard: true,
+						tool: ChipOSChatAgent._cardTypeToTool(p.card_type),
+						specifier: ChipOSChatAgent._cardSpecifier(p.card_type, p.card_data, title),
+						questions: askQuestions,
+						// Mutable record — radio change handlers in the card
+						// renderer write { question_id: action_id } here.
+						selections: {} as Record<string, string>,
+						context: typeof (p.card_data as { context?: unknown })?.context === 'string'
+							? (p.card_data as { context: string }).context
+							: undefined,
+					};
+				} else {
+					data = {
 						...baseData,
 						__chiposGenericConfirmCard: true,
 						tool: ChipOSChatAgent._cardTypeToTool(p.card_type),
 						specifier: ChipOSChatAgent._cardSpecifier(p.card_type, p.card_data, title),
 						renderMessageAsMarkdown: true,
 					};
+				}
 
 				const confirmation: IChatConfirmation = {
 					kind: 'confirmation',

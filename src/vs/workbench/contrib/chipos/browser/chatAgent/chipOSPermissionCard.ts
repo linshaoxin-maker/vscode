@@ -190,14 +190,60 @@ export function isChipOSGenericConfirmCardData(data: unknown): data is IChipOSGe
 }
 
 /**
+ * 2026-05-26: multi-question `agent_ask` (Read card) with concrete options
+ * per question. Renders as a radio-form inline in the chat flow: each
+ * question becomes its own radio group; user picks one answer per
+ * question, then clicks the single "提交" button at the bottom to send
+ * all answers atomically.
+ *
+ * Wire protocol:
+ *   - `questions[]` carries the reasoner-side question definitions
+ *   - `selections` is a MUTABLE record the radio handlers write into;
+ *     when "提交" is clicked, the chipOSChatAgent acceptedConfirmation
+ *     handler reads this back, JSON-stringifies it as the `comment`
+ *     field of sendConfirmResponse. Reasoner agent_core.py (commit
+ *     96135978) already parses comment-as-JSON into augmented_prompt.
+ *
+ * The card stays IChatConfirmation (not IChatQuestionCarousel) so it
+ * renders INLINE in the chat conversation flow via this content part,
+ * matching the user's "之前卡片里面" requirement. IChatQuestionCarousel
+ * hardcodes itself to the input-bar area (chatListRenderer.ts:2280),
+ * which the user explicitly rejected.
+ */
+export interface IChipOSAgentAskCardData {
+	readonly __chiposAgentAskCard: true;
+	readonly tool: string;
+	readonly specifier: string;
+	readonly questions: ReadonlyArray<{
+		readonly question_id: string;
+		readonly prompt: string;
+		readonly options: ReadonlyArray<{ readonly action_id: string; readonly label: string }>;
+	}>;
+	/** Mutable: radio change handlers write { question_id: chosen_action_id } here. */
+	readonly selections: Record<string, string>;
+	readonly options: ReadonlyArray<{ readonly label: string; readonly action_id?: string; readonly action?: string }>;
+	readonly requestId: string;
+	readonly sessionId?: string;
+	readonly context?: string;
+}
+
+export function isChipOSAgentAskCardData(data: unknown): data is IChipOSAgentAskCardData {
+	return (
+		!!data &&
+		typeof data === 'object' &&
+		(data as IChipOSAgentAskCardData).__chiposAgentAskCard === true
+	);
+}
+
+/**
  * Umbrella check: any chipos confirmation card data shape. Used by the
  * chatListRenderer / chatListWidget dispatch so worker permission asks,
  * terminal command approvals, hook confirms, AND generic ConfirmRequest
  * cards (spec/arch/code/agent/file_edit/verification) all route to
  * `ChipOSPermissionCardContentPart` for one unified visual.
  */
-export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData | IChipOSGenericConfirmCardData | IChipOSGenericConfirmCardData {
-	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data) || isChipOSHookConfirmCardData(data) || isChipOSGenericConfirmCardData(data);
+export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData | IChipOSGenericConfirmCardData | IChipOSAgentAskCardData {
+	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data) || isChipOSHookConfirmCardData(data) || isChipOSGenericConfirmCardData(data) || isChipOSAgentAskCardData(data);
 }
 
 // ── Content part ──────────────────────────────────────────────────────────────
@@ -349,7 +395,15 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		//       monospace block — matches the design-spec for showing a
 		//       command / file snippet inline.
 		const renderAsMarkdown = (data as IChipOSGenericConfirmCardData).renderMessageAsMarkdown === true;
-		if (renderAsMarkdown) {
+		// 2026-05-26: agent_ask multi-question card → render an inline radio
+		// form. Detected via __chiposAgentAskCard marker; rendering replaces
+		// the markdown preview path. The form mutates data.selections in place
+		// so the click handler in _buildButtons → sendAction picks it up via
+		// acceptedConfirmationData[0].data (the same data reference flows
+		// through the chat framework's accept path).
+		if (isChipOSAgentAskCardData(data)) {
+			this._renderAgentAskForm(card, data);
+		} else if (renderAsMarkdown) {
 			const previewWrap = dom.$('.chipos-permission-preview.chipos-permission-preview-markdown');
 			card.appendChild(previewWrap);
 			const md = isMarkdownString(confirmation.message)
@@ -652,6 +706,100 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			case 'allow_always': return localize('chipos.card.aria.allowAlways', 'Always allow globally for {0}', specifier);
 			case 'deny': return localize('chipos.card.aria.deny', 'Deny this tool call for {0}', specifier);
 			default: return actionId;
+		}
+	}
+
+	/**
+	 * 2026-05-26 — render a multi-question inline form for an `agent_ask` card
+	 * (Read tool, e.g. AXI4-Lite "data_width? addr_width? reg_count? reset?").
+	 *
+	 * Layout:
+	 *   ┌──────────────────────────────────────────────────────┐
+	 *   │ context (optional, e.g. "Detected: AXI4-Lite slave") │
+	 *   │                                                      │
+	 *   │ 1. <prompt question 1>                               │
+	 *   │    ( ) opt A   ( ) opt B   ( ) opt C                 │
+	 *   │                                                      │
+	 *   │ 2. <prompt question 2>                               │
+	 *   │    ( ) opt A   ( ) opt B                             │
+	 *   │  ...                                                 │
+	 *   └──────────────────────────────────────────────────────┘
+	 *
+	 * Each radio's change handler writes
+	 *   `data.selections[question.question_id] = option.action_id`
+	 * The Submit button in _buildButtons reads back data.selections via
+	 * acceptedConfirmationData (same data reference flows through), and
+	 * chipOSChatAgent.invoke()'s accept branch JSON.stringifies it into
+	 * the `comment` field of sendConfirmResponse. The reasoner
+	 * agent_core.py (commit 96135978) already parses comment-as-JSON
+	 * into augmented_prompt.
+	 *
+	 * Note: NO submit/skip wiring here — the bottom action row built by
+	 * `_buildButtons` (called below) carries the "提交" / "跳过" buttons
+	 * passed via `data.options`. This method only builds the radio
+	 * groups.
+	 */
+	private _renderAgentAskForm(card: HTMLElement, data: IChipOSAgentAskCardData): void {
+		const wrap = dom.$('.chipos-permission-preview.chipos-agent-ask-form');
+		card.appendChild(wrap);
+
+		if (data.context && data.context.trim().length > 0) {
+			const ctxEl = dom.$('.chipos-agent-ask-context');
+			ctxEl.textContent = data.context;
+			wrap.appendChild(ctxEl);
+		}
+
+		// Stable per-card prefix so radio `name` groups don't collide across
+		// multiple cards in the same chat session.
+		const cardKey = `cak-${data.requestId || Math.random().toString(36).slice(2, 10)}`;
+
+		for (let qi = 0; qi < data.questions.length; qi++) {
+			const q = data.questions[qi];
+			const qWrap = dom.$('.chipos-agent-ask-question');
+			wrap.appendChild(qWrap);
+
+			const qHeader = dom.$('.chipos-agent-ask-q-header');
+			const qNum = dom.$('span.chipos-agent-ask-q-num');
+			qNum.textContent = `${qi + 1}.`;
+			qHeader.appendChild(qNum);
+			const qPrompt = dom.$('span.chipos-agent-ask-q-prompt');
+			qPrompt.textContent = q.prompt;
+			qHeader.appendChild(qPrompt);
+			qWrap.appendChild(qHeader);
+
+			const optsWrap = dom.$('.chipos-agent-ask-options');
+			qWrap.appendChild(optsWrap);
+
+			const groupName = `${cardKey}-${q.question_id}`;
+			for (let oi = 0; oi < q.options.length; oi++) {
+				const opt = q.options[oi];
+				const optLabel = document.createElement('label');
+				optLabel.className = 'chipos-agent-ask-option';
+
+				const radio = document.createElement('input');
+				radio.type = 'radio';
+				radio.name = groupName;
+				radio.value = opt.action_id;
+				radio.className = 'chipos-agent-ask-radio';
+				// Pre-select if reasoner pre-filled a selection (or the user
+				// previously committed and re-renders the card).
+				if (data.selections[q.question_id] === opt.action_id) {
+					radio.checked = true;
+				}
+				optLabel.appendChild(radio);
+
+				const labelTxt = dom.$('span.chipos-agent-ask-option-label');
+				labelTxt.textContent = opt.label;
+				optLabel.appendChild(labelTxt);
+
+				this._register(dom.addDisposableListener(radio, 'change', () => {
+					if (radio.checked) {
+						data.selections[q.question_id] = opt.action_id;
+					}
+				}));
+
+				optsWrap.appendChild(optLabel);
+			}
 		}
 	}
 
