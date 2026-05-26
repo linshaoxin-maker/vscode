@@ -2807,6 +2807,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case 'arch_confirm': subject = firstLine('arch_result'); break;
 			// agent_core.py:1204 + flow_tools.py:48 ship {context, options}
 			case 'agent_ask': subject = firstLine('context'); break;
+			// 2026-05-26 — file_edit ships {file_path, description, diff}.
+			// Without this case the chip fell back to the title "File Edit"
+			// which is just the card type, not the file. Showing the path
+			// makes the header chip actually informative.
+			case 'file_edit': subject = pick('file_path'); break;
 			// verification_pipeline.py:{530,1213}
 			case 'VERIFICATION_GROUP_REVIEW': subject = pick('stage_group'); break;
 			case 'VERIFICATION_HUMAN_CHECK': subject = pick('stage'); break;
@@ -2881,8 +2886,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			case 'file_edit': {
+				// 2026-05-26: don't repeat file_path in the body — the header
+				// chip already shows it (via _cardSpecifier picking
+				// `file_path`). Body shows the description + diff only.
 				const sections: string[] = [];
-				if (data.file_path) { sections.push(`**File:** \`${data.file_path}\``); }
 				if (data.description) { sections.push(`${data.description}`); }
 				if (data.diff && typeof data.diff === 'string') {
 					const diffPreview = (data.diff as string).slice(0, 300);
@@ -2967,9 +2974,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// Renders a compact one-row-per-checker summary so reviewers can
 			// see at a glance which checker(s) escalated to human.
 			case 'VERIFICATION_HUMAN_CHECK': {
+				// 2026-05-26: don't repeat the stage name in the body — the
+				// header chip already shows it (via _cardSpecifier picking
+				// `stage`). Body just lists the checker results.
 				const sections: string[] = [];
-				const stage = data['stage'] as string | undefined;
-				if (stage) { sections.push(`**Stage:** \`${stage}\``); }
 				const results = Array.isArray(data['results']) ? data['results'] as Array<Record<string, unknown>> : [];
 				if (results.length > 0) {
 					sections.push('', '| Checker | Status | Message |', '|---|---|---|');
