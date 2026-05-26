@@ -53,7 +53,10 @@ import {
 	IChatTextEdit,
 	IChatRoundProgress,
 	IChatAgentError,
+	IChatQuestionCarousel,
+	IChatQuestion,
 } from '../../../../contrib/chat/common/chatService/chatService.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
 import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/common/tools/languageModelToolsService.js';
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
 import { IChatEditingService, type IChatEditingSession } from '../../../../contrib/chat/common/editing/chatEditingService.js';
@@ -369,6 +372,44 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// flushed on the next invoke. The actual subscription is per-session
 		// and opened in `_setSessionBackendId` once we know the sessionId.
 		this._register(this._workerPermissionService.onAsk(ask => this._onWorkerPermissionAsk(ask)));
+
+		// P0-60 (2026-05-26): subscribe to VSCode chat framework's question
+		// carousel submit/skip events. The framework fires this when the user
+		// clicks Submit (or Skip) on any IChatQuestionCarousel we pushed via
+		// progress(). We look up our pending entry by resolveId and dispatch
+		// the answers back to the originating reasoner stream as a
+		// ConfirmResponse with JSON-encoded answers in the comment field.
+		this._register(this._chatService.onDidReceiveQuestionCarouselAnswer(evt => {
+			const entry = this._pendingCarousels.get(evt.resolveId);
+			if (!entry) {
+				return;
+			}
+			this._pendingCarousels.delete(evt.resolveId);
+
+			// answers === undefined → user clicked Skip; mirror reasoner's
+			// "skip" sentinel so agent_core.py:1216 keeps prompt unaugmented.
+			// answers === {} → submitted with nothing filled; treat as skip.
+			const hasAnswers = evt.answers && Object.keys(evt.answers).length > 0;
+			const action = hasAnswers ? 'confirm' : 'skip';
+			const comment = hasAnswers ? JSON.stringify(evt.answers) : '';
+
+			this._logService.info(
+				'[ChipOS Agent] Carousel submitted: requestId=%s resolveId=%s action=%s answers=%s',
+				entry.requestId, evt.resolveId, action,
+				hasAnswers ? JSON.stringify(evt.answers) : '(skipped)',
+			);
+
+			try {
+				entry.streamClient.sendConfirmResponse(
+					entry.requestId, action, comment, entry.sessionId,
+				);
+			} catch (err) {
+				this._logService.warn(
+					'[ChipOS Agent] Carousel sendConfirmResponse failed: requestId=%s err=%s',
+					entry.requestId, String(err),
+				);
+			}
+		}));
 	}
 
 	// ── R62: MCP 工具变更通知 ──────────────────────────────────────────────
@@ -1475,6 +1516,57 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case AgentEventType.ConfirmRequest: {
 				const p = event.payload as IConfirmRequestPayload;
 				const title = ChipOSChatAgent._confirmTitle(p.card_type, p.card_data, p.title);
+
+				// P0-60 (2026-05-26): for agent_ask with concrete questions[],
+				// emit VSCode-native IChatQuestionCarousel form (radio / checkbox
+				// / text-input + Submit/Skip) instead of a flat IChatConfirmation
+				// with coarse 确认/跳过 buttons. Matches Cursor / Claude Code
+				// pattern. Reasoner-side agent_core.py parses the resulting JSON
+				// comment back into per-question augmented_prompt.
+				if (p.card_type === 'agent_ask') {
+					const rawQuestions = Array.isArray((p.card_data as { questions?: unknown })?.questions)
+						? (p.card_data as { questions: Array<{ question_id?: string; prompt?: string; options?: Array<{ action_id?: string; label?: string }> }> }).questions
+						: undefined;
+					if (rawQuestions && rawQuestions.length > 0) {
+						const carouselQuestions: IChatQuestion[] = rawQuestions.map((q, idx) => ({
+							id: q.question_id || `q${idx + 1}`,
+							type: 'singleSelect' as const,
+							title: q.prompt || `问题 ${idx + 1}`,
+							options: (q.options || [])
+								.map(o => ({
+									id: o.action_id || '',
+									label: o.label || o.action_id || '',
+									value: o.action_id || '',
+								}))
+								.filter(o => o.id),
+							required: false,  // user can skip; we'll send `skip` action upstream
+						}));
+						const resolveId = generateUuid();
+						const carousel: IChatQuestionCarousel = {
+							kind: 'questionCarousel',
+							questions: carouselQuestions,
+							allowSkip: true,
+							resolveId,
+							isUsed: false,
+							message: (p.card_data as { context?: string })?.context
+								|| '在开始之前，我需要确认几个设计参数:',
+						};
+						this._pendingCarousels.set(resolveId, {
+							requestId: p.request_id,
+							sessionId: ctx.sessionId,
+							streamClient: ctx.streamClient,
+						});
+						ctx.progress([carousel]);
+						// Finish the current invoke so chat framework can accept the
+						// next request (the carousel submit becomes a new invoke
+						// internally via notifyQuestionCarouselAnswer).
+						ctx.finish({}, 'Awaiting question carousel');
+						break;
+					}
+					// Fallthrough: no questions[] → fall back to plain confirmation
+					// path below so the user at least sees the context label.
+				}
+
 				const richMessage = this._renderConfirmMessage(p);
 				// Extract buttons from p.options or card_data.options
 				const cardOpts = Array.isArray(p.card_data?.options) ? (p.card_data.options as Array<{ label?: string; action_id?: string }>) : undefined;
@@ -3637,6 +3729,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * already moved on with a default action.
 	 */
 	private readonly _pendingConfirmations = new Map<string, IChatConfirmation>();
+
+	/**
+	 * 2026-05-26 (P0-60 carousel): in-flight QuestionCarousel asks indexed by
+	 * resolveId. When the user submits / skips the carousel, VSCode chat
+	 * framework fires `chatService.onDidReceiveQuestionCarouselAnswer({
+	 * requestId, resolveId, answers })`; we look up the matching entry here,
+	 * stringify answers as JSON into the `comment` field, and dispatch a
+	 * `ConfirmResponse` back through the original reasoner stream so
+	 * agent_core.py:permission_pre_check sees the form answers and can
+	 * augment_prompt with the user's actual selections.
+	 *
+	 * Lifecycle:
+	 *   - emit time: ConfirmRequest case for card_type='agent_ask' with
+	 *     non-empty questions[] inserts an entry.
+	 *   - resolve time: carousel-answer event handler pops the entry and
+	 *     sends a `sendConfirmResponse(requestId, action, JSON.stringify(
+	 *     answers), sessionId)` over the stream client.
+	 *   - cleanup: the same handler removes the entry. If the stream closes
+	 *     before submit, the entry leaks until ChipOSChatAgent disposes
+	 *     (acceptable — Map is small, sessions short-lived).
+	 */
+	private readonly _pendingCarousels = new Map<string /* resolveId */, {
+		requestId: string;
+		sessionId: string | undefined;
+		streamClient: IEventStreamClient;
+	}>();
 
 	/**
 	 * run_in_terminal inline-approval bridge.
