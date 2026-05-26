@@ -13,6 +13,7 @@ import { InputBox } from '../../../../../../base/browser/ui/inputbox/inputBox.js
 import { defaultSelectBoxStyles, defaultInputBoxStyles } from '../../../../../../platform/theme/browser/defaultStyles.js';
 import { IContextViewService } from '../../../../../../platform/contextview/browser/contextView.js';
 import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
+import { renderLabelWithIcons } from '../../../../../../base/browser/ui/iconLabel/iconLabels.js';
 
 const PROVIDER_OPTIONS: { value: string; label: string }[] = [
 	{ value: 'zhipu', label: 'ZhiPu (智谱)' },
@@ -179,24 +180,24 @@ export class ModelsTab extends Disposable {
 
 		this._verifyButton.disabled = true;
 		this._verifyStatus.className = 'chipos-verify-status loading';
-		this._verifyStatus.textContent = localize('chipos.settings.verifying', '$(sync~spin) Verifying...');
+		dom.reset(this._verifyStatus, ...renderLabelWithIcons(localize('chipos.settings.verifying', '$(sync~spin) Verifying...')));
 
 		try {
 			const result = await this._modelDiscoveryService.verifyApiKey(provider, apiKey, baseUrl);
 
 			if (result.valid) {
 				this._verifyStatus.className = 'chipos-verify-status success';
-				this._verifyStatus.textContent = `$(pass) ${localize('chipos.settings.verified', 'Valid')} — ${result.models?.length ?? 0} models`;
+				dom.reset(this._verifyStatus, ...renderLabelWithIcons(`$(pass) ${localize('chipos.settings.verified', 'Valid')} — ${result.models?.length ?? 0} models`));
 				if (result.models) {
 					this._updateModelList(result.models);
 				}
 			} else {
 				this._verifyStatus.className = 'chipos-verify-status error';
-				this._verifyStatus.textContent = `$(error) ${result.error || 'Invalid API key'}`;
+				dom.reset(this._verifyStatus, ...renderLabelWithIcons(`$(error) ${result.error || 'Invalid API key'}`));
 			}
 		} catch (err) {
 			this._verifyStatus.className = 'chipos-verify-status error';
-			this._verifyStatus.textContent = `$(error) ${err instanceof Error ? err.message : 'Unknown error'}`;
+			dom.reset(this._verifyStatus, ...renderLabelWithIcons(`$(error) ${err instanceof Error ? err.message : 'Unknown error'}`));
 		} finally {
 			this._verifyButton.disabled = false;
 		}
