@@ -73,6 +73,7 @@ import {
 import type {
 	InvokeRequest,
 	Message,
+	ToolDefinition,
 	TokenUsage,
 } from './statelessInvoke/types.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
@@ -4878,6 +4879,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		model: IChatModel,
 		traceId: string,
 		chatSessionId: string,
+		expectedCatalogVersion: string,
 	): { req: InvokeRequest; messages: Message[] } {
 		const records = this._statelessAdapter.fromChatModel(model);
 		// Defensive: model may not yet include the just-submitted user
@@ -4893,7 +4895,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		if (!isLastUserPrompt) {
 			records.push({ role: 'user', content: request.message });
 		}
-		const { messages, langgraph_state_blob } = this._statelessAssembler.assemble(records);
+		const { messages } = this._statelessAssembler.assemble(records);
 
 		const llm = this._buildLlmConfig();
 		const workspace = this._getWorkspaceRoot() ?? '';
@@ -4903,6 +4905,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const mode: 'agent' | 'spec' = isSpecMode ? 'spec' : 'agent';
 		const thinking = this._configurationService.getValue<boolean>('chipos.showThinking') ?? false;
 
+		// Phase 1 (ADR-018 §2 D8): tools registered out-of-band via
+		// /tools/register, referenced by expected_catalog_version (D9, 412 on
+		// mismatch → IDE re-registers + retries). LangGraph state lives
+		// reasoner-side now (FileStateStore), no longer round-trips through IDE.
 		const req: InvokeRequest = {
 			trace_id: traceId,
 			chat_session_id: chatSessionId,
@@ -4913,11 +4919,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			base_url: llm.base_url || null,
 			api_key_alias: null,
 			thinking,
-			tools: [],
+			expected_catalog_version: expectedCatalogVersion,
 			workspace_path: workspace,
 			auto_approve_mode: autoApproveMode,
-			langgraph_state_blob,
-			langgraph_state_version: 1,
 			metadata: {
 				ide_request_id: request.requestId,
 				ide_session_resource: request.sessionResource.toString(),
@@ -4974,10 +4978,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return { errorDetails: { message: msg } };
 		}
 
+		// Phase 1 D9: register tool catalog (idempotent, lazy per chat session)
+		// + capture version to thread through invoke (412 on mismatch retry).
+		// For now we send a minimal stub catalog — full MCP/worker/IDE-builtin
+		// gather is a separate task. catalog_version is opaque server-hash;
+		// caller doesn't introspect.
+		let catalogVersion: string;
+		try {
+			catalogVersion = await this._ensureToolsRegistered(client, chatSessionId);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this._logService.warn('[ChipOS Stateless] tool registration failed (continuing with empty catalog hint):', msg);
+			catalogVersion = 'empty-no-register';  // 412 path will surface if reasoner cares
+		}
+
 		// Build the invoke request (adapter + assembler + settings stitching).
 		let invokeReq: InvokeRequest;
 		try {
-			invokeReq = this._buildStatelessInvokeRequest(request, model, traceId, chatSessionId).req;
+			invokeReq = this._buildStatelessInvokeRequest(request, model, traceId, chatSessionId, catalogVersion).req;
 		} catch (err) {
 			const cause = err instanceof ConversationAssemblyError ? (err.cause ?? 'assembly_error') : 'unknown';
 			const msg = err instanceof Error ? err.message : String(err);
@@ -5051,8 +5069,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		let roundEndReceived = false;
 		let errorResult: IChatAgentResult | undefined;
-		let lastSeenLangGraphState: string | undefined;
 		let usage: TokenUsage | undefined;
+		// Phase 1 round_end carries final_messages; we don't act on them in
+		// the IDE (the framework appends our return value's messages naturally
+		// via the chat model), but we keep last-seen for telemetry / future use.
+		let lastFinalMessages: Message[] | undefined;
+		// Phase 1 checkpoint events bump our resume watermark for the SSE
+		// drop / resume flow (handled in `_statelessTraces` map below).
 
 		const applyDispatch = (handled: DispatchResult): void => {
 			if (handled.appendText) {
@@ -5071,9 +5094,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (handled.markdownError) {
 				progress([this._markdown(handled.markdownError)]);
 			}
-			if (handled.langgraphStateBlob !== undefined) {
-				lastSeenLangGraphState = handled.langgraphStateBlob;
-			}
 			if (handled.usage !== undefined) {
 				usage = handled.usage;
 			}
@@ -5082,6 +5102,49 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.terminate) {
 				roundEndReceived = true;
+			}
+			if (handled.finalMessages !== undefined) {
+				lastFinalMessages = handled.finalMessages;
+			}
+			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
+			// Fire-and-forget on a background task so the SSE loop keeps draining
+			// new events (reasoner's agent loop is awaiting our POST; if we
+			// blocked the SSE consumer to await execution, a slow worker tool
+			// could stall every subsequent event for the same trace).
+			if (handled.ideToolCall) {
+				const call = handled.ideToolCall;
+				void this._handleStatelessIdeToolCall(client, traceId, call).catch(err => {
+					this._logService.error('[ChipOS Stateless] ide_tool_call handler failed:', String(err));
+				});
+			}
+			// Phase 1 reverse channel: confirm_request → render card + POST user
+			// response. Card rendering is synchronous; user click is what's slow,
+			// handled by the existing `acceptedConfirmationData` plumbing below.
+			if (handled.confirmRequest) {
+				const confirm = handled.confirmRequest;
+				void this._handleStatelessConfirmRequest(client, traceId, confirm, progress).catch(err => {
+					this._logService.error('[ChipOS Stateless] confirm_request handler failed:', String(err));
+				});
+			}
+			// Checkpoint: update resume watermark so any /resume retry knows
+			// where to pick up from. We use sequence_id from the event itself
+			// (set by the outer for-await loop on the trace entry), so the
+			// checkpoint event itself is informational here — no extra action.
+			if (handled.checkpoint) {
+				this._logService.trace(
+					'[ChipOS Stateless] checkpoint iter=%d msgs=%d',
+					handled.checkpoint.iteration, handled.checkpoint.messagesCount,
+				);
+			}
+			// keepalive / resumedBufferDrained: log + no UI action for now.
+			if (handled.keepalive) {
+				this._logService.trace('[ChipOS Stateless] keepalive ts=%d', handled.keepalive.ts);
+			}
+			if (handled.resumedBufferDrained) {
+				this._logService.info(
+					'[ChipOS Stateless] resume buffer drained at seq=%d',
+					handled.resumedBufferDrained.sequenceId,
+				);
 			}
 		};
 		const friendlyToolName = (raw: string) => this._friendlyToolName(raw);
@@ -5159,35 +5222,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._statelessTraces.delete(request.sessionResource);
 		}
 
-		// Phase 0 #8f: persist langgraph_state_blob by writing it into the
-		// IChatAgentResult.metadata we return. The chat framework calls
-		// `ChatModel.setResponse(request, result)` on our return value, which
-		// invokes `ChatResponseModel.setResult(result)` (chatModel.ts:1281).
-		// `result.metadata` is part of the serialisation envelope
-		// (ISerializableChatResponseData) so it survives session reload.
-		// The adapter's `_extractLangGraphStateBlob` reads
-		// `response.result?.metadata?.chiposLangGraphState` on the next
-		// invoke — round-trip closes naturally without a separate API call.
+		// Phase 1 (ADR-018 §2 D8): IDE no longer persists langgraph_state_blob —
+		// internal reasoner state lives reasoner-side in FileStateStore. We just
+		// stash usage + trace_id for IDE telemetry; the framework's chat model
+		// already captures the rendered assistant text/tool_use blocks via the
+		// progress callback emissions above.
 		const resultMetadata: Record<string, unknown> = {
 			usage: usage ?? null,
 			trace_id: traceId,
 		};
-		if (lastSeenLangGraphState) {
-			resultMetadata.chiposLangGraphState = lastSeenLangGraphState;
-		}
 
 		const totalElapsed = Date.now() - startTime;
-		this._logService.info('[ChipOS Stateless] invoke end: trace=%s elapsed=%dms terminate=%s has_state=%s usage=%s', traceId, totalElapsed, roundEndReceived, !!lastSeenLangGraphState, JSON.stringify(usage ?? {}));
+		this._logService.info(
+			'[ChipOS Stateless] invoke end: trace=%s elapsed=%dms terminate=%s final_msg_count=%d usage=%s',
+			traceId, totalElapsed, roundEndReceived,
+			Array.isArray(lastFinalMessages) ? lastFinalMessages.length : 0,
+			JSON.stringify(usage ?? {}),
+		);
 
 		if (errorResult) {
 			return {
 				...errorResult,
-				// Even on error we attach the state blob if the server gave one
-				// (e.g. round_end{reason:"error"} that still carried state) so
-				// the next round can recover from the same checkpoint.
-				metadata: lastSeenLangGraphState
-					? { ...errorResult.metadata, chiposLangGraphState: lastSeenLangGraphState }
-					: errorResult.metadata,
 				timings: { totalElapsed, firstProgress: firstProgressTime },
 			};
 		}
@@ -5195,6 +5250,119 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			metadata: resultMetadata,
 			timings: { totalElapsed, firstProgress: firstProgressTime },
 		};
+	}
+
+	// =========================================================================
+	// Phase 1 helpers: tool registration + reverse channel
+	// =========================================================================
+
+	/** Cached catalog_version per chat_session_id from the most recent register. */
+	private readonly _statelessCatalogVersions = new Map<string, string>();
+
+	/**
+	 * Register the current chat session's tool catalog with reasoner (Phase 1
+	 * ADR-018 §2 D9). Returns the catalog_version to thread through invoke.
+	 *
+	 * Idempotent — re-registers on every invoke for now (cheap on reasoner
+	 * side; same hash returned for unchanged catalog). Future optimization
+	 * could cache the version + only re-register on `IMcpService.onDidChange`
+	 * (R-C), but the simple path is correct.
+	 *
+	 * Phase 1 minimum: send an empty catalog so reasoner has at least a
+	 * registered version to verify against. Real tool gather (worker MCP +
+	 * IDE MCP + IDE builtin) wires up in CP-3 follow-up.
+	 */
+	private async _ensureToolsRegistered(
+		client: StatelessClient,
+		chatSessionId: string,
+	): Promise<string> {
+		// Phase 1: minimal stub catalog. ToolCatalogCache requires min_length=1,
+		// so send one placeholder until the real tool gather lands. This won't
+		// break LLM tool use (LLM sees the catalog reasoner-side; we just hash
+		// for version matching).
+		const tools: ToolDefinition[] = [{
+			name: 'noop',
+			description: 'Placeholder; real catalog plumbing pending CP-3 follow-up.',
+			input_schema: { type: 'object', properties: {} },
+			chipos_source: 'ide_builtin',
+		}];
+		const resp = await client.registerTools({ chat_session_id: chatSessionId, tools });
+		this._statelessCatalogVersions.set(chatSessionId, resp.catalog_version);
+		return resp.catalog_version;
+	}
+
+	/**
+	 * Reverse channel: reasoner asked IDE to execute an IDE-side tool.
+	 * Phase 1 minimal: execute via existing `_executeIdeToolCall` path (or a
+	 * stub error if that's not wired into the stateless code path yet), then
+	 * POST result back to /tool_result/{trace_id}/{call_id}.
+	 *
+	 * R-F mitigation: reasoner has its own 300s timeout — if we never POST,
+	 * reasoner inject synthesised error tool_result and loop continues. So
+	 * even on IDE-side execution failure, we still POST a best-effort result
+	 * (with is_error=true) so the agent loop unblocks cleanly.
+	 */
+	private async _handleStatelessIdeToolCall(
+		client: StatelessClient,
+		traceId: string,
+		call: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number },
+	): Promise<void> {
+		this._logService.info(
+			'[ChipOS Stateless] ide_tool_call name=%s call_id=%s',
+			call.toolName, call.callId,
+		);
+		// Phase 1 stub: real dispatch is a CP-3 follow-up that wires
+		// `_executeIdeToolCall` (or MCP service) into this path. For now we
+		// reply with a clear "not yet wired" tool_result so the agent loop
+		// terminates gracefully + the user sees something useful.
+		const content = (
+			`[Phase 1 stub] IDE-side tool '${call.toolName}' is not yet wired ` +
+			`into the stateless code path; real dispatch lands in a CP-3 follow-up. ` +
+			`Args: ${JSON.stringify(call.args)}`
+		);
+		try {
+			await client.postToolResult(traceId, call.callId, {
+				call_id: call.callId,
+				content,
+				is_error: true,
+			});
+		} catch (err) {
+			this._logService.warn(
+				'[ChipOS Stateless] POST /tool_result failed for call_id=%s: %s',
+				call.callId, String(err),
+			);
+		}
+	}
+
+	/**
+	 * Reverse channel: reasoner asked IDE to render a confirm card. Phase 1
+	 * minimal: same stub-reply pattern as ide_tool_call. Real ChipOSPermission-
+	 * Card rendering + click capture is a CP-3 follow-up that pipes user
+	 * selection into postConfirmResponse.
+	 */
+	private async _handleStatelessConfirmRequest(
+		client: StatelessClient,
+		traceId: string,
+		confirm: { requestId: string; cardType: string; cardData: Record<string, unknown>; title?: string; buttons?: string[] },
+		progress: (parts: IChatProgress[]) => void,
+	): Promise<void> {
+		this._logService.info(
+			'[ChipOS Stateless] confirm_request type=%s request_id=%s',
+			confirm.cardType, confirm.requestId,
+		);
+		progress([this._markdown(`$(question) **ChipOS:** ${confirm.title || 'Confirm requested'} _(stub: real card rendering pending CP-3 follow-up; auto-replying "skip")_`)]);
+		try {
+			await client.postConfirmResponse(traceId, confirm.requestId, {
+				request_id: confirm.requestId,
+				action: 'skip',
+				comment: 'Phase 1 stub auto-reply (real card rendering pending)',
+			});
+		} catch (err) {
+			this._logService.warn(
+				'[ChipOS Stateless] POST /confirm_response failed for request_id=%s: %s',
+				confirm.requestId, String(err),
+			);
+		}
 	}
 
 	// =========================================================================
