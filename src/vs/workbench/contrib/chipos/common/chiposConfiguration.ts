@@ -389,6 +389,24 @@ configurationRegistry.registerConfiguration({
 				},
 			},
 		},
+		// ── Experiments (gated, opt-in only) ──────────────────────────────
+		// Phase 0 #8e (ADR-017, PHASE-0-PROTOCOL-SPEC §1.3): when enabled,
+		// chat requests bypass the legacy stateful `/api/v1/task` reasoner
+		// path and use the new stateless `/api/v1/invoke` endpoint that
+		// requires CHIPOS_STATELESS=1 on the reasoner side. Per request:
+		// IDE assembles the full conversation from the chat session model,
+		// optionally compacts via `/api/v1/compact`, and posts the
+		// resulting Anthropic-Messages-shaped payload as a self-contained
+		// invoke. The reasoner holds no per-session state.
+		//
+		// Default off — Phase 1 灰度 will flip per-user / per-org. Old
+		// chat path remains the production code path until Phase 4 cleanup.
+		'chipos.experiments.statelessReasoner': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.experiments.statelessReasoner.desc', 'Experimental: use Phase 0 stateless reasoner code path (ADR-017 C 档). Requires the reasoner deployment to have CHIPOS_STATELESS=1 set. Default off — leaving the legacy stateful path active.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 	},
 });
 

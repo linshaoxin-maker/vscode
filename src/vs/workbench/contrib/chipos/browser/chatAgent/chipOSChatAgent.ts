@@ -8,6 +8,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
 import { stripIcons } from '../../../../../base/common/iconLabels.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
 import { localize } from '../../../../../nls.js';
@@ -60,8 +61,22 @@ import { IChatEditingService, type IChatEditingSession } from '../../../../contr
 import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
 import { IChatWidgetService } from '../../../../contrib/chat/browser/chat.js';
 import { ConnectionBannerHandler } from './connectionBannerHandler.js';
-import type { IChatResponseModel } from '../../../../contrib/chat/common/model/chatModel.js';
+import type { IChatResponseModel, IChatModel } from '../../../../contrib/chat/common/model/chatModel.js';
 import { SseEventStreamClient } from '../eventStream/grpcSseEventStreamClient.js';
+import { ChatModelToRecordsAdapter } from './statelessInvoke/chatModelAdapter.js';
+import { ConversationAssembler, ConversationAssemblyError } from './statelessInvoke/conversationAssembler.js';
+import { ConversationCompactor } from './statelessInvoke/conversationCompactor.js';
+import {
+	StatelessClient,
+	StatelessHttpError,
+	StatelessReplayExpiredError,
+} from './statelessInvoke/statelessClient.js';
+import type {
+	InvokeRequest,
+	Message,
+	TokenUsage,
+} from './statelessInvoke/types.js';
+import { dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
 import { FullTracer } from '../eventStream/fullTracer.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
@@ -471,6 +486,21 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		_history: IChatAgentHistoryEntry[],
 		token: CancellationToken,
 	): Promise<IChatAgentResult> {
+		// ── Phase 0 #8e: C 档 stateless reasoner dispatch ──
+		// `chipos.experiments.statelessReasoner` (off by default) flips the
+		// invoke path to talk to the new `/api/v1/invoke` SSE endpoint that
+		// owns no per-session state. Everything below this branch is the
+		// legacy stateful path (long-lived `IEventStreamClient` + reasoner
+		// stream_manager session). When the flag is on we never touch any of
+		// it — the stateless path manages its own client + records + state
+		// per-invoke. See ADR-017 + PHASE-0-8EFG-INTEGRATION-PLAN.md.
+		const useStateless = this._configurationService.getValue<boolean>(
+			'chipos.experiments.statelessReasoner',
+		) ?? false;
+		if (useStateless) {
+			return this._invokeStateless(request, progress, _history, token);
+		}
+
 		// ── [ChipOS] FEAT-32 superseded by sticky streaming footer ──
 		// The "Connecting to backend..." progress message used to be the
 		// only feedback that the request had started. Now the sticky
@@ -4453,6 +4483,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.activeFinish = undefined;
 		this._ensureEditorEffects().clearSessionState(sessionResource);
 		this._sessionRuntimes.delete(sessionResource);
+		// Phase 0 #8e: also tear down stateless-path bookkeeping. The chat
+		// thread is closing so any in-flight trace should abort (the SSE
+		// iterator will throw AbortError → benign cancelled-result return).
+		const trace = this._statelessTraces.get(sessionResource);
+		if (trace) {
+			trace.abortController.abort();
+			this._statelessTraces.delete(sessionResource);
+			// Fire-and-forget server-side cancel; reasoner stops billing for
+			// the in-flight LLM call. 404 (race) silently OK.
+			void this._statelessClient?.cancel(trace.traceId, 'session_disposed').catch(() => { /* swallow */ });
+		}
+		this._statelessChatSessionIds.delete(sessionResource);
 		// Clean up any connection banner for this session
 		this._hideConnectionBanner(sessionResource);
 		this._connectionBanners.delete(sessionResource);
@@ -4758,6 +4800,420 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		return runtime.streamClient;
 	}
+
+	// =========================================================================
+	// Phase 0 #8e — Stateless reasoner invoke path (ADR-017 C 档)
+	// =========================================================================
+	//
+	// All state below is scoped to the stateless path: legacy invoke never reads
+	// or writes these fields. Lifetimes:
+	//   - `_statelessClient`: lazy + reused across invokes (host + token stable
+	//     for the lifetime of the agent). Recreated only when baseUrl changes.
+	//   - `_statelessChatSessionIds`: stable per-chat-thread id minted on first
+	//     invoke (analogue of the legacy `backendSessionId` reuse). Reset when
+	//     the chat session is disposed (`_disposeRuntime`).
+	//   - `_statelessTraces`: per-session in-flight trace meta — used by #8g
+	//     (cancel + replay) to know which trace_id to address.
+
+	private _statelessClient: StatelessClient | undefined;
+	private _statelessClientBaseUrl: string | undefined;
+	private readonly _statelessChatSessionIds = new ResourceMap<string>();
+	private readonly _statelessTraces = new ResourceMap<{
+		traceId: string;
+		lastSequenceId: number;
+		abortController: AbortController;
+	}>();
+	private readonly _statelessAdapter = new ChatModelToRecordsAdapter();
+	private readonly _statelessAssembler = new ConversationAssembler();
+
+	/**
+	 * Lazy / reused StatelessClient. Recreated when the configured baseUrl
+	 * changes (mode switch, user override edit). Token is read at request time
+	 * via the bearer header inside the client — but the StatelessClient API
+	 * takes a static token in its options, so we re-mint when the token
+	 * rotates as well (cheap — instance is option bag + fetch wrapper).
+	 */
+	private async _ensureStatelessClient(): Promise<StatelessClient> {
+		const baseUrl = resolveReasoningUrl(this._configurationService, this._productService);
+		let authToken: string | undefined;
+		try {
+			authToken = await this._tokenManager?.getAccessToken();
+		} catch (err) {
+			// Cloud reasoner with auth disabled is a valid dev mode — fall
+			// through with no token. A 401 will surface at first request.
+			this._logService.warn('[ChipOS Stateless] getAccessToken failed (continuing tokenless):', String(err));
+		}
+		if (!this._statelessClient || this._statelessClientBaseUrl !== baseUrl) {
+			this._statelessClient = new StatelessClient({ baseUrl, authToken });
+			this._statelessClientBaseUrl = baseUrl;
+			this._logService.info('[ChipOS Stateless] Client initialised, baseUrl=%s, auth=%s', baseUrl, authToken ? 'bearer' : 'none');
+		} else if (authToken) {
+			// Token may have rotated — rebuild so subsequent invokes pick it up.
+			this._statelessClient = new StatelessClient({ baseUrl, authToken });
+		}
+		return this._statelessClient;
+	}
+
+	/** Stable per-chat-thread id. Minted on first stateless invoke. */
+	private _statelessChatSessionIdFor(sessionResource: URI): string {
+		let id = this._statelessChatSessionIds.get(sessionResource);
+		if (!id) {
+			id = `stateless_chat_${++this._sessionCounter}_${Date.now()}`;
+			this._statelessChatSessionIds.set(sessionResource, id);
+			this._logService.info('[ChipOS Stateless] New chat_session_id:', id);
+		}
+		return id;
+	}
+
+	/**
+	 * Build an `InvokeRequest` from the live `IChatModel` + user settings.
+	 *
+	 * Returns the request + the records the adapter produced (kept for
+	 * debugging / e2e assertions) + the extracted langgraph_state_blob.
+	 *
+	 * Throws `ConversationAssemblyError` when the model is malformed (e.g.
+	 * empty after walking) — caller surfaces as inline error.
+	 */
+	private _buildStatelessInvokeRequest(
+		request: IChatAgentRequest,
+		model: IChatModel,
+		traceId: string,
+		chatSessionId: string,
+	): { req: InvokeRequest; messages: Message[] } {
+		const records = this._statelessAdapter.fromChatModel(model);
+		// Defensive: model may not yet include the just-submitted user
+		// request (timing-dependent on how VS Code flushes the model). If
+		// the last record isn't the user's current prompt, append it so
+		// the reasoner sees what the user just sent. Idempotent: when the
+		// model already has it, we don't double-append.
+		const lastRecord = records[records.length - 1];
+		const isLastUserPrompt = lastRecord
+			&& lastRecord.role === 'user'
+			&& typeof lastRecord.content === 'string'
+			&& lastRecord.content === request.message;
+		if (!isLastUserPrompt) {
+			records.push({ role: 'user', content: request.message });
+		}
+		const { messages, langgraph_state_blob } = this._statelessAssembler.assemble(records);
+
+		const llm = this._buildLlmConfig();
+		const workspace = this._getWorkspaceRoot() ?? '';
+		const autoApproveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
+		const modeFromInstructions = request.modeInstructions?.name;
+		const isSpecMode = modeFromInstructions === 'spec' || this._configurationService.getValue<string>('chipos.chatMode') === 'spec';
+		const mode: 'agent' | 'spec' = isSpecMode ? 'spec' : 'agent';
+		const thinking = this._configurationService.getValue<boolean>('chipos.showThinking') ?? false;
+
+		const req: InvokeRequest = {
+			trace_id: traceId,
+			chat_session_id: chatSessionId,
+			messages,
+			mode,
+			model: llm.model,
+			provider: llm.provider || 'auto',
+			base_url: llm.base_url || null,
+			api_key_alias: null,
+			thinking,
+			tools: [],
+			workspace_path: workspace,
+			auto_approve_mode: autoApproveMode,
+			langgraph_state_blob,
+			langgraph_state_version: 1,
+			metadata: {
+				ide_request_id: request.requestId,
+				ide_session_resource: request.sessionResource.toString(),
+			},
+			protocol_version: 1,
+		};
+		return { req, messages };
+	}
+
+	/**
+	 * Phase 0 #8e — stateless invoke path entry point.
+	 *
+	 * Replaces the legacy `_ensureClient` + `streamClient.sendTask` flow with:
+	 *   1. Walk live `IChatModel` → ChatSessionRecord[] (adapter)
+	 *   2. Assemble + extract latest langgraph_state_blob (assembler)
+	 *   3. shouldCompact? compact() → swap messages (compactor)  — wired but
+	 *      only fires past the trigger threshold; first turn is a no-op
+	 *   4. POST /api/v1/invoke + iterate SSE events → progress callbacks
+	 *   5. On round_end, persist langgraph_state_blob (#8f wiring — deferred)
+	 *
+	 * Cancel + replay (#8g) hooks into `_statelessTraces[sessionResource]` —
+	 * a future Stop button handler reads the traceId and calls
+	 * `client.cancel(traceId)`. Network-interrupt replay is handled inline.
+	 */
+	private async _invokeStateless(
+		request: IChatAgentRequest,
+		progress: (parts: IChatProgress[]) => void,
+		_history: IChatAgentHistoryEntry[],
+		token: CancellationToken,
+	): Promise<IChatAgentResult> {
+		const startTime = Date.now();
+		const traceId = generateUuid();
+		const chatSessionId = this._statelessChatSessionIdFor(request.sessionResource);
+		this._logService.info('[ChipOS Stateless] invoke start: trace=%s chat_session=%s msg_len=%d', traceId, chatSessionId, request.message.length);
+
+		// Resolve client up front so config / token errors surface before we
+		// burn cycles walking the chat model.
+		let client: StatelessClient;
+		try {
+			client = await this._ensureStatelessClient();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this._logService.error('[ChipOS Stateless] client init failed:', msg);
+			progress([this._markdown(`$(error) **ChipOS:** unable to initialise stateless client — ${msg}`)]);
+			return { errorDetails: { message: msg } };
+		}
+
+		// Pull the live model. Without it we have no history to assemble.
+		const model = this._chatService.getSession(request.sessionResource);
+		if (!model) {
+			const msg = `chat session ${request.sessionResource.toString()} not found in IChatService`;
+			this._logService.error('[ChipOS Stateless]', msg);
+			progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+			return { errorDetails: { message: msg } };
+		}
+
+		// Build the invoke request (adapter + assembler + settings stitching).
+		let invokeReq: InvokeRequest;
+		try {
+			invokeReq = this._buildStatelessInvokeRequest(request, model, traceId, chatSessionId).req;
+		} catch (err) {
+			const cause = err instanceof ConversationAssemblyError ? (err.cause ?? 'assembly_error') : 'unknown';
+			const msg = err instanceof Error ? err.message : String(err);
+			this._logService.error('[ChipOS Stateless] assemble failed: %s (cause=%s)', msg, cause);
+			progress([this._markdown(`$(error) **ChipOS:** conversation could not be assembled — ${msg}`)]);
+			return { errorDetails: { message: msg } };
+		}
+
+		// Optional compaction. Plan B from ADR-017 Q3: client owns the trigger;
+		// when over budget we POST /api/v1/compact, swap messages, retry assemble
+		// would be ideal but compact returns a single summary we just prepend.
+		try {
+			// Pass user's chosen model to the compactor so the summary call
+			// goes through the same provider/key the rest of the conversation
+			// uses; user is paying for it either way.
+			const compactor = new ConversationCompactor(
+				{ compact: req => client.compact(req) },
+				{ summaryModel: invokeReq.model },
+			);
+			if (compactor.shouldCompact(invokeReq.messages)) {
+				this._logService.info('[ChipOS Stateless] compact triggered (est tokens=%d)', compactor.estimateTokens(invokeReq.messages));
+				progress([this._progress('$(history) Conversation too long — summarising older turns…', true)]);
+				const compacted = await compactor.compact(
+					invokeReq.messages,
+					chatSessionId,
+					generateUuid(),
+				);
+				invokeReq.messages = compacted;
+			}
+		} catch (err) {
+			// Compaction is best-effort: failure means we just send the long
+			// conversation as-is and let the server / model fall back to its
+			// own context-window handling. Log + continue.
+			this._logService.warn('[ChipOS Stateless] compaction failed (continuing uncompacted):', String(err));
+		}
+
+		// Track trace for #8g cancel + replay.
+		const abortController = new AbortController();
+		this._statelessTraces.set(request.sessionResource, {
+			traceId,
+			lastSequenceId: 0,
+			abortController,
+		});
+		// Bridge the framework CancellationToken → AbortSignal so user clicks
+		// on the Stop button drop our SSE iterator.
+		const cancelListener = token.onCancellationRequested(() => {
+			this._logService.info('[ChipOS Stateless] token cancellation — aborting + posting /cancel');
+			abortController.abort();
+			// Fire-and-forget server-side cancel so the reasoner can stop the
+			// in-flight LLM call + bill less. 404 (race) is silently OK.
+			void client.cancel(traceId, 'user_cancelled').catch(err => {
+				this._logService.warn('[ChipOS Stateless] /cancel POST failed (likely race):', String(err));
+			});
+		});
+
+		// Stream + dispatch.
+		let firstProgressTime: number | undefined;
+		const trackFirstProgress = () => {
+			if (firstProgressTime === undefined) {
+				firstProgressTime = Date.now() - startTime;
+			}
+		};
+		let assistantTextBuf = '';
+		const flushAssistantText = () => {
+			if (assistantTextBuf.length === 0) {
+				return;
+			}
+			progress([this._markdown(assistantTextBuf)]);
+			assistantTextBuf = '';
+		};
+
+		let roundEndReceived = false;
+		let errorResult: IChatAgentResult | undefined;
+		let lastSeenLangGraphState: string | undefined;
+		let usage: TokenUsage | undefined;
+
+		const applyDispatch = (handled: DispatchResult): void => {
+			if (handled.appendText) {
+				assistantTextBuf += handled.appendText;
+				trackFirstProgress();
+			}
+			if (handled.flushText) {
+				flushAssistantText();
+			}
+			if (handled.progressMessage) {
+				progress([this._progress(handled.progressMessage.content, handled.progressMessage.shimmer)]);
+			}
+			if (handled.thinkingText) {
+				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
+			}
+			if (handled.markdownError) {
+				progress([this._markdown(handled.markdownError)]);
+			}
+			if (handled.langgraphStateBlob !== undefined) {
+				lastSeenLangGraphState = handled.langgraphStateBlob;
+			}
+			if (handled.usage !== undefined) {
+				usage = handled.usage;
+			}
+			if (handled.errorMessage !== undefined) {
+				errorResult = { errorDetails: { message: handled.errorMessage } };
+			}
+			if (handled.terminate) {
+				roundEndReceived = true;
+			}
+		};
+		const friendlyToolName = (raw: string) => this._friendlyToolName(raw);
+
+		try {
+			for await (const event of client.invoke(invokeReq, abortController.signal)) {
+				const trace = this._statelessTraces.get(request.sessionResource);
+				if (trace && event.sequence_id > trace.lastSequenceId) {
+					trace.lastSequenceId = event.sequence_id;
+				}
+				applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+			}
+		} catch (err) {
+			// AbortError from user cancel is benign — treat as cancelled result.
+			if (abortController.signal.aborted) {
+				this._logService.info('[ChipOS Stateless] aborted by user cancel');
+				flushAssistantText();
+				cancelListener.dispose();
+				this._statelessTraces.delete(request.sessionResource);
+				return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
+			}
+			// Replay on transient network errors (HTTP-level errors propagate
+			// here as plain Error from the fetch reader). HttpError 5xx ⇒
+			// retry by re-invoke from scratch (no partial state to recover).
+			// For the rest, attempt /replay first.
+			const isHttpError = err instanceof StatelessHttpError;
+			if (!isHttpError) {
+				try {
+					const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? 0;
+					this._logService.warn('[ChipOS Stateless] SSE failed (%s) — attempting /replay from seq %d', String(err), lastSeq);
+					progress([this._progress('$(sync) Connection interrupted — reconnecting…', true)]);
+					for await (const event of client.replay(traceId, lastSeq)) {
+						applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+					}
+				} catch (replayErr) {
+					if (replayErr instanceof StatelessReplayExpiredError) {
+						this._logService.warn('[ChipOS Stateless] /replay window expired — surfacing error to user');
+						progress([this._markdown('$(warning) **ChipOS:** connection lost and reconnect window expired. Please send your last message again.')]);
+						errorResult = { errorDetails: { message: 'replay window expired' } };
+					} else {
+						const msg = replayErr instanceof Error ? replayErr.message : String(replayErr);
+						this._logService.error('[ChipOS Stateless] replay failed:', msg);
+						progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+						errorResult = { errorDetails: { message: msg } };
+					}
+				}
+			} else {
+				const httpErr = err as StatelessHttpError;
+				const msg = `reasoner returned HTTP ${httpErr.status}`;
+				this._logService.error('[ChipOS Stateless] %s body=%s', msg, JSON.stringify(httpErr.body));
+				progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+				errorResult = { errorDetails: { message: msg } };
+			}
+		} finally {
+			flushAssistantText();
+			cancelListener.dispose();
+			this._statelessTraces.delete(request.sessionResource);
+		}
+
+		// Phase 0 #8f wiring (deferred): persist langgraph_state_blob into the
+		// chat response model's metadata so the next invoke's adapter pass
+		// surfaces it. For now we attach it on the active response model best-
+		// effort; the adapter already knows where to read it from. Owner: #8f.
+		if (lastSeenLangGraphState) {
+			this._persistLangGraphState(request, lastSeenLangGraphState);
+		}
+
+		const totalElapsed = Date.now() - startTime;
+		this._logService.info('[ChipOS Stateless] invoke end: trace=%s elapsed=%dms terminate=%s usage=%s', traceId, totalElapsed, roundEndReceived, JSON.stringify(usage ?? {}));
+
+		if (errorResult) {
+			return {
+				...errorResult,
+				timings: { totalElapsed, firstProgress: firstProgressTime },
+			};
+		}
+		return {
+			metadata: { usage: usage ?? null, trace_id: traceId },
+			timings: { totalElapsed, firstProgress: firstProgressTime },
+		};
+	}
+
+	/**
+	 * Persist `langgraph_state_blob` onto the chat response model's metadata
+	 * so the adapter pass on the *next* invoke surfaces it.
+	 *
+	 * #8f deferred work: the proper path is to update the IChatResponseModel
+	 * via a public IChatService API. For now we set the field on whatever
+	 * response object the chat session exposes — the adapter reads
+	 * `response.result?.metadata?.chiposLangGraphState` (see chatModelAdapter.ts
+	 * `_extractLangGraphStateBlob`), so writing to that location now buys us
+	 * the round-trip without a deeper IChatService refactor.
+	 */
+	private _persistLangGraphState(request: IChatAgentRequest, blob: string): void {
+		try {
+			const model = this._chatService.getSession(request.sessionResource);
+			if (!model) {
+				return;
+			}
+			// Find the in-flight response for this request and stash on its
+			// result.metadata. Best-effort — chat session may already have
+			// rolled to the next request.
+			const requests = model.getRequests();
+			const target = requests.find(r => r.id === request.requestId);
+			const response = target?.response;
+			if (!response) {
+				return;
+			}
+			// `response.result` is the metadata bag the framework keeps for
+			// completion. Mutate in place — the adapter reads it on next read.
+			const existing = (response.result?.metadata ?? {}) as Record<string, unknown>;
+			const next = { ...existing, chiposLangGraphState: blob };
+			// IChatResponseModel exposes a `setMetadata` setter in some
+			// builds; structural-cast to avoid an import churn until #8f
+			// audits the proper API.
+			const writer = response as unknown as { setMetadata?: (md: Record<string, unknown>) => void; result?: { metadata?: Record<string, unknown> } };
+			if (typeof writer.setMetadata === 'function') {
+				writer.setMetadata(next);
+			} else if (writer.result) {
+				writer.result.metadata = next;
+			} else {
+				this._logService.warn('[ChipOS Stateless] response has neither setMetadata nor result.metadata — langgraph_state_blob dropped (will recover on next round)');
+			}
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] _persistLangGraphState failed:', String(err));
+		}
+	}
+
+	// =========================================================================
+	// End Phase 0 #8e
+	// =========================================================================
 
 	override dispose(): void {
 		// R62: 清理 debounce timer
