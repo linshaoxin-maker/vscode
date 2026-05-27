@@ -27,6 +27,7 @@
  * `round_end`.
  */
 
+import { StatelessHttpError, StatelessReplayExpiredError } from './statelessClient.js';
 import type { InvokeEvent, TokenUsage } from './types.js';
 
 /**
@@ -151,3 +152,45 @@ export function dispatchStatelessEvent(
 			return {};
 	}
 }
+
+// ── SSE-failure classifier (used by _invokeStateless's catch block) ────────
+
+/**
+ * Classify what went wrong with a stateless SSE iteration so the caller can
+ * decide between:
+ *   - `'cancelled'`: user clicked Stop → return a cancelled result (don't
+ *     re-render the error to chat).
+ *   - `'replay'`: transient network drop → try `client.replay(traceId, seq)`.
+ *   - `'surface-http'`: server responded non-2xx (4xx / 5xx) → render the
+ *     status to user, do NOT attempt replay (re-issuing won't help).
+ *   - `'surface-replay-expired'`: a previous `replay()` call returned 410 →
+ *     surface "reconnect window expired" guidance.
+ *   - `'surface-other'`: anything else (unknown shape) → render best-effort
+ *     error message.
+ *
+ * Pure function — no DI, no I/O. Caller owns the actual progress + cleanup.
+ *
+ * @param err the thrown value from a `for await ... of client.invoke(...)` block
+ * @param abortSignal the controller signal we passed into the iterator;
+ *                    `aborted` distinguishes user cancel from anything else
+ */
+export function classifySseFailure(
+	err: unknown,
+	abortSignal: AbortSignal,
+): 'cancelled' | 'replay' | 'surface-http' | 'surface-replay-expired' | 'surface-other' {
+	if (abortSignal.aborted) {
+		return 'cancelled';
+	}
+	if (err instanceof StatelessReplayExpiredError) {
+		return 'surface-replay-expired';
+	}
+	if (err instanceof StatelessHttpError) {
+		// 4xx and 5xx that surfaced as HttpError are not transient — re-
+		// issuing the SAME bytes won't help; surface and let user decide.
+		return 'surface-http';
+	}
+	// Anything else (TypeError from a half-closed socket, AbortError that
+	// wasn't ours, generic network error) → attempt replay before giving up.
+	return 'replay';
+}
+

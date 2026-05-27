@@ -69,14 +69,13 @@ import { ConversationCompactor } from './statelessInvoke/conversationCompactor.j
 import {
 	StatelessClient,
 	StatelessHttpError,
-	StatelessReplayExpiredError,
 } from './statelessInvoke/statelessClient.js';
 import type {
 	InvokeRequest,
 	Message,
 	TokenUsage,
 } from './statelessInvoke/types.js';
-import { dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
+import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
 import { FullTracer } from '../eventStream/fullTracer.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
@@ -5096,45 +5095,63 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
 			}
 		} catch (err) {
-			// AbortError from user cancel is benign — treat as cancelled result.
-			if (abortController.signal.aborted) {
-				this._logService.info('[ChipOS Stateless] aborted by user cancel');
-				flushAssistantText();
-				cancelListener.dispose();
-				this._statelessTraces.delete(request.sessionResource);
-				return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
-			}
-			// Replay on transient network errors (HTTP-level errors propagate
-			// here as plain Error from the fetch reader). HttpError 5xx ⇒
-			// retry by re-invoke from scratch (no partial state to recover).
-			// For the rest, attempt /replay first.
-			const isHttpError = err instanceof StatelessHttpError;
-			if (!isHttpError) {
-				try {
+			const verdict = classifySseFailure(err, abortController.signal);
+			switch (verdict) {
+				case 'cancelled':
+					this._logService.info('[ChipOS Stateless] aborted by user cancel');
+					flushAssistantText();
+					cancelListener.dispose();
+					this._statelessTraces.delete(request.sessionResource);
+					return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
+				case 'surface-http': {
+					const httpErr = err as StatelessHttpError;
+					const msg = `reasoner returned HTTP ${httpErr.status}`;
+					this._logService.error('[ChipOS Stateless] %s body=%s', msg, JSON.stringify(httpErr.body));
+					progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+					errorResult = { errorDetails: { message: msg } };
+					break;
+				}
+				case 'surface-replay-expired':
+					this._logService.warn('[ChipOS Stateless] /replay window expired — surfacing error to user');
+					progress([this._markdown('$(warning) **ChipOS:** connection lost and reconnect window expired. Please send your last message again.')]);
+					errorResult = { errorDetails: { message: 'replay window expired' } };
+					break;
+				case 'surface-other': {
+					const msg = err instanceof Error ? err.message : String(err);
+					this._logService.error('[ChipOS Stateless] unexpected failure:', msg);
+					progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+					errorResult = { errorDetails: { message: msg } };
+					break;
+				}
+				case 'replay': {
 					const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? 0;
 					this._logService.warn('[ChipOS Stateless] SSE failed (%s) — attempting /replay from seq %d', String(err), lastSeq);
 					progress([this._progress('$(sync) Connection interrupted — reconnecting…', true)]);
-					for await (const event of client.replay(traceId, lastSeq)) {
-						applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+					try {
+						for await (const event of client.replay(traceId, lastSeq)) {
+							applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+						}
+					} catch (replayErr) {
+						const replayVerdict = classifySseFailure(replayErr, abortController.signal);
+						if (replayVerdict === 'cancelled') {
+							flushAssistantText();
+							cancelListener.dispose();
+							this._statelessTraces.delete(request.sessionResource);
+							return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
+						}
+						if (replayVerdict === 'surface-replay-expired') {
+							this._logService.warn('[ChipOS Stateless] replay 410 — surfacing expired window');
+							progress([this._markdown('$(warning) **ChipOS:** reconnect window expired. Please send your last message again.')]);
+							errorResult = { errorDetails: { message: 'replay window expired' } };
+						} else {
+							const msg = replayErr instanceof Error ? replayErr.message : String(replayErr);
+							this._logService.error('[ChipOS Stateless] replay failed:', msg);
+							progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+							errorResult = { errorDetails: { message: msg } };
+						}
 					}
-				} catch (replayErr) {
-					if (replayErr instanceof StatelessReplayExpiredError) {
-						this._logService.warn('[ChipOS Stateless] /replay window expired — surfacing error to user');
-						progress([this._markdown('$(warning) **ChipOS:** connection lost and reconnect window expired. Please send your last message again.')]);
-						errorResult = { errorDetails: { message: 'replay window expired' } };
-					} else {
-						const msg = replayErr instanceof Error ? replayErr.message : String(replayErr);
-						this._logService.error('[ChipOS Stateless] replay failed:', msg);
-						progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
-						errorResult = { errorDetails: { message: msg } };
-					}
+					break;
 				}
-			} else {
-				const httpErr = err as StatelessHttpError;
-				const msg = `reasoner returned HTTP ${httpErr.status}`;
-				this._logService.error('[ChipOS Stateless] %s body=%s', msg, JSON.stringify(httpErr.body));
-				progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
-				errorResult = { errorDetails: { message: msg } };
 			}
 		} finally {
 			flushAssistantText();
@@ -5142,77 +5159,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._statelessTraces.delete(request.sessionResource);
 		}
 
-		// Phase 0 #8f wiring (deferred): persist langgraph_state_blob into the
-		// chat response model's metadata so the next invoke's adapter pass
-		// surfaces it. For now we attach it on the active response model best-
-		// effort; the adapter already knows where to read it from. Owner: #8f.
+		// Phase 0 #8f: persist langgraph_state_blob by writing it into the
+		// IChatAgentResult.metadata we return. The chat framework calls
+		// `ChatModel.setResponse(request, result)` on our return value, which
+		// invokes `ChatResponseModel.setResult(result)` (chatModel.ts:1281).
+		// `result.metadata` is part of the serialisation envelope
+		// (ISerializableChatResponseData) so it survives session reload.
+		// The adapter's `_extractLangGraphStateBlob` reads
+		// `response.result?.metadata?.chiposLangGraphState` on the next
+		// invoke — round-trip closes naturally without a separate API call.
+		const resultMetadata: Record<string, unknown> = {
+			usage: usage ?? null,
+			trace_id: traceId,
+		};
 		if (lastSeenLangGraphState) {
-			this._persistLangGraphState(request, lastSeenLangGraphState);
+			resultMetadata.chiposLangGraphState = lastSeenLangGraphState;
 		}
 
 		const totalElapsed = Date.now() - startTime;
-		this._logService.info('[ChipOS Stateless] invoke end: trace=%s elapsed=%dms terminate=%s usage=%s', traceId, totalElapsed, roundEndReceived, JSON.stringify(usage ?? {}));
+		this._logService.info('[ChipOS Stateless] invoke end: trace=%s elapsed=%dms terminate=%s has_state=%s usage=%s', traceId, totalElapsed, roundEndReceived, !!lastSeenLangGraphState, JSON.stringify(usage ?? {}));
 
 		if (errorResult) {
 			return {
 				...errorResult,
+				// Even on error we attach the state blob if the server gave one
+				// (e.g. round_end{reason:"error"} that still carried state) so
+				// the next round can recover from the same checkpoint.
+				metadata: lastSeenLangGraphState
+					? { ...errorResult.metadata, chiposLangGraphState: lastSeenLangGraphState }
+					: errorResult.metadata,
 				timings: { totalElapsed, firstProgress: firstProgressTime },
 			};
 		}
 		return {
-			metadata: { usage: usage ?? null, trace_id: traceId },
+			metadata: resultMetadata,
 			timings: { totalElapsed, firstProgress: firstProgressTime },
 		};
 	}
 
-	/**
-	 * Persist `langgraph_state_blob` onto the chat response model's metadata
-	 * so the adapter pass on the *next* invoke surfaces it.
-	 *
-	 * #8f deferred work: the proper path is to update the IChatResponseModel
-	 * via a public IChatService API. For now we set the field on whatever
-	 * response object the chat session exposes — the adapter reads
-	 * `response.result?.metadata?.chiposLangGraphState` (see chatModelAdapter.ts
-	 * `_extractLangGraphStateBlob`), so writing to that location now buys us
-	 * the round-trip without a deeper IChatService refactor.
-	 */
-	private _persistLangGraphState(request: IChatAgentRequest, blob: string): void {
-		try {
-			const model = this._chatService.getSession(request.sessionResource);
-			if (!model) {
-				return;
-			}
-			// Find the in-flight response for this request and stash on its
-			// result.metadata. Best-effort — chat session may already have
-			// rolled to the next request.
-			const requests = model.getRequests();
-			const target = requests.find(r => r.id === request.requestId);
-			const response = target?.response;
-			if (!response) {
-				return;
-			}
-			// `response.result` is the metadata bag the framework keeps for
-			// completion. Mutate in place — the adapter reads it on next read.
-			const existing = (response.result?.metadata ?? {}) as Record<string, unknown>;
-			const next = { ...existing, chiposLangGraphState: blob };
-			// IChatResponseModel exposes a `setMetadata` setter in some
-			// builds; structural-cast to avoid an import churn until #8f
-			// audits the proper API.
-			const writer = response as unknown as { setMetadata?: (md: Record<string, unknown>) => void; result?: { metadata?: Record<string, unknown> } };
-			if (typeof writer.setMetadata === 'function') {
-				writer.setMetadata(next);
-			} else if (writer.result) {
-				writer.result.metadata = next;
-			} else {
-				this._logService.warn('[ChipOS Stateless] response has neither setMetadata nor result.metadata — langgraph_state_blob dropped (will recover on next round)');
-			}
-		} catch (err) {
-			this._logService.warn('[ChipOS Stateless] _persistLangGraphState failed:', String(err));
-		}
-	}
-
 	// =========================================================================
-	// End Phase 0 #8e
+	// End Phase 0 #8e / #8f
 	// =========================================================================
 
 	override dispose(): void {

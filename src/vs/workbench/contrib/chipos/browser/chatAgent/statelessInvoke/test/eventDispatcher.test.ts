@@ -18,7 +18,8 @@
  */
 
 import assert from 'assert';
-import { dispatchStatelessEvent } from '../eventDispatcher.js';
+import { classifySseFailure, dispatchStatelessEvent } from '../eventDispatcher.js';
+import { StatelessHttpError, StatelessReplayExpiredError } from '../statelessClient.js';
 import type { InvokeEvent, TokenUsage } from '../types.js';
 
 function ev(type: InvokeEvent['type'], data: Record<string, unknown> = {}, sequence_id = 1): InvokeEvent {
@@ -160,5 +161,40 @@ suite('dispatchStatelessEvent', () => {
 	test('default friendlyToolName is identity', () => {
 		const r = dispatchStatelessEvent(ev('tool_call_emitted', { name: 'raw_tool' }));
 		assert.strictEqual(r.progressMessage?.content, '$(tools) raw_tool');
+	});
+});
+
+suite('classifySseFailure', () => {
+
+	const liveSignal = (): AbortSignal => new AbortController().signal;
+	const abortedSignal = (): AbortSignal => {
+		const c = new AbortController();
+		c.abort();
+		return c.signal;
+	};
+
+	test('aborted signal → cancelled (regardless of error type)', () => {
+		assert.strictEqual(classifySseFailure(new Error('whatever'), abortedSignal()), 'cancelled');
+		assert.strictEqual(classifySseFailure(new StatelessHttpError(500, null), abortedSignal()), 'cancelled');
+		assert.strictEqual(classifySseFailure(new StatelessReplayExpiredError('abc'), abortedSignal()), 'cancelled');
+	});
+
+	test('StatelessReplayExpiredError → surface-replay-expired', () => {
+		assert.strictEqual(
+			classifySseFailure(new StatelessReplayExpiredError('trace-1'), liveSignal()),
+			'surface-replay-expired',
+		);
+	});
+
+	test('StatelessHttpError → surface-http (4xx + 5xx both, replay would not help)', () => {
+		assert.strictEqual(classifySseFailure(new StatelessHttpError(400, { detail: 'bad' }), liveSignal()), 'surface-http');
+		assert.strictEqual(classifySseFailure(new StatelessHttpError(503, null), liveSignal()), 'surface-http');
+		assert.strictEqual(classifySseFailure(new StatelessHttpError(409, null), liveSignal()), 'surface-http');
+	});
+
+	test('generic network errors → replay (transient, attempt /replay)', () => {
+		assert.strictEqual(classifySseFailure(new TypeError('fetch failed'), liveSignal()), 'replay');
+		assert.strictEqual(classifySseFailure(new Error('socket hang up'), liveSignal()), 'replay');
+		assert.strictEqual(classifySseFailure('string-thrown', liveSignal()), 'replay');
 	});
 });
