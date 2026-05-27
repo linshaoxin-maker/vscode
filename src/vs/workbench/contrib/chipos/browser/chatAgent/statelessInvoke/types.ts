@@ -4,31 +4,36 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Phase 0 #8a — TS schema types for C 档 stateless reasoner.
+ * Phase 1 — TS schema types for the reasoner-driven mixed-state architecture.
  *
- * 这是 `backend_v2/packages/shared/src/shared/contracts/invoke.py`（pydantic v2）的
- * TypeScript 等价镜像。IDE 端用本模块构造类型化 invoke / compact / cancel 请求体,
- * 解析 reasoner 回传的 SSE 事件 payload。**字段名 / 默认值 / 可空性必须与 python
- * 端逐字对齐**, 任何漂移都会立即破坏 wire 契约。
+ * Mirror of `backend_v2/packages/shared/src/shared/contracts/invoke.py` (pydantic v2).
+ * Field names / defaults / nullability must align literally with the python side or
+ * the wire contract breaks. See ADR-018 + PHASE-1-PROTOCOL-SPEC.md §2.
  *
- * 设计目标（与 python 端共享）:
- *   - 与 **Anthropic Messages API** 100% 对齐（ADR-017 §11.3），让 ChipOS reasoner
- *     成为 Anthropic API 的"增强代理"
- *   - IDE 端 conversation 数组结构 = Claude Code 同款, 迁移成本低
- *   - 未来接入 multi-provider (OpenAI / Claude / Zhipu / DeepSeek) trivial 适配
- *   - reasoner 服务端完全无状态: 每次 invoke 由 IDE 自带 messages + state_blob
+ * Phase 1 schema changes from Phase 0 (ADR-017 → ADR-018):
+ *   - InvokeRequest: dropped `tools: dict[]` and `langgraph_state_blob: string`
+ *     (tools registered out-of-band via RegisterToolsRequest at IDE startup;
+ *     internal LangGraph state lives reasoner-side in FileStateStore)
+ *   - InvokeRequest: added `expected_catalog_version: string` (required, 412
+ *     on mismatch) and `workspace_meta: dict | null` (open editor context)
+ *   - New schemas: ToolDefinition, RegisterToolsRequest/Response, ToolResultRequest,
+ *     ConfirmResponseRequest, ResumeRequest, InFlightTrace, TurnStateResponse
+ *   - SSE event types: added `ide_tool_call`, `confirm_request`, `keepalive`,
+ *     `checkpoint`, `resumed_buffer_drained`
  *
- * 关联设计文档:
- *   - ADR-016 (conversation state 决策)
- *   - ADR-017 §11.3 (Anthropic 兼容 schema 调研)
- *   - PHASE-0-PROTOCOL-SPEC.md §2 (Message schema), §12 (AUDIT P0 resolutions)
+ * Design goals:
+ *   - Anthropic Messages API alignment (ADR-018 §2 D13) → multi-provider trivial
+ *   - IDE chatSessions/*.jsonl is the user-data truth; reasoner FileStateStore
+ *     is the reasoner-internal-state truth (D8 mixed-state)
+ *   - Reasoner-driven agent loop (one /invoke = one user turn, internal LLM ↔
+ *     tool loop on reasoner side) per D2
  *
- * 兼容性注意（与 pydantic 端一致）:
- *   - python 端所有类启用 `extra="allow"`; TS 这边对应的语义是 "interface 字段是最小子集,
- *     未列出的字段可能由上游 Anthropic 引入, 不要 strict-reject"。下游消费方对未知 key
- *     应保持 forward-compat (不要 `Object.keys()` 做完备性 switch)
- *   - `ContentBlock` 是 discriminated union, 按 `type` 字段 narrow
- *   - `Message.content` 接受 `string` 或 `ContentBlock[]`, 覆盖 Anthropic 两种 shape
+ * Forward-compat conventions (mirroring python `extra="allow"`):
+ *   - Listed fields are the minimum subset; unknown fields may appear from future
+ *     reasoner versions — downstream consumers MUST NOT exhaustively switch
+ *     `Object.keys()` and MUST tolerate unknown keys silently.
+ *   - `ContentBlock` is a discriminated union — narrow via `type` field.
+ *   - `Message.content` accepts `string` or `ContentBlock[]` (both Anthropic shapes).
  */
 
 // =============================================================================
@@ -155,45 +160,49 @@ export interface TokenUsage {
 }
 
 /**
- * C 档 stateless invoke request — IDE → reasoner.
+ * Phase 1 invoke request — IDE → reasoner (per-turn long-lived SSE).
  *
- * 每次完整携带: messages 数组 + LangGraph state opaque + workspace 上下文。
- * 服务端不存任何东西, 本请求 self-contained。
+ * Per ADR-018 §2 D2: one /invoke = one user turn. Reasoner runs an internal
+ * agent loop (LLM ↔ tool ↔ LLM ... → end_turn) until natural termination,
+ * streaming events back via SSE. State within a turn lives in reasoner-side
+ * FileStateStore; conversation messages between turns live in IDE chatSessions/*.jsonl.
+ *
+ * Schema-level changes from Phase 0 (ADR-017 → ADR-018):
+ *   - DROPPED `tools: dict[]` — now registered out-of-band via
+ *     `RegisterToolsRequest`, referenced by `expected_catalog_version`
+ *   - DROPPED `langgraph_state_blob` — internal reasoner state, no longer
+ *     round-trips through IDE (ADR-018 §2 D8 mixed-state)
+ *   - DROPPED `langgraph_state_version` — same reason
+ *   - ADDED `expected_catalog_version` — 412 retry on mismatch (D9 + R-S)
+ *   - ADDED `workspace_meta` — open structural metadata for system prompt
  *
  * Field reference (matches `invoke.py::InvokeRequest`):
- *   - `trace_id`: 本 invoke 的 UUID, IDE 生成
- *   - `chat_session_id`: IDE 端 chatSessions/*.jsonl 的 uuid; 多个 trace_id 共享同一
- *     chat_session_id
- *   - `messages`: 完整对话历史（含 tool_use / tool_result）。**IDE side must enforce
- *     at least 1 message** — server returns 400 on empty (PHASE-0-SPEC-AUDIT P0-2)
- *   - `system`: 可选系统提示
- *   - `mode`: Agent 工作模式 "agent" / "spec", 默认 "agent"
- *   - `model`: LLM 模型标识 (zhipu/glm-5.1, claude-3.5-sonnet, ...)
- *   - `provider`: provider 标识, 默认 "auto"
- *   - `base_url`: 可选 base URL
- *   - `api_key_alias`: IDE 端别名, reasoner 端从 vault 解
- *   - `temperature`: 采样温度
- *   - `max_tokens`: 输出 token 上限
- *   - `thinking`: 是否启用 thinking; 默认 false
- *   - `tools`: per-request 工具定义列表（替代 session-level 注册）; 默认 []
- *   - `workspace_path`: 工作区绝对路径（worker affinity 用）
- *   - `auto_approve_mode`: Auto-Approve 模式, 默认 "standard"
- *   - `langgraph_state_blob`: base64-encoded pydantic 序列化 state; 新 trace 首次
- *     invoke 为 null
- *   - `langgraph_state_version`: state schema 版本, 默认 1
- *   - `user`: 用户/组织 telemetry, opaque dict
- *   - `metadata`: IDE 端 opaque metadata
- *   - `protocol_version`: wire-protocol version; reasoner rejects with 409 if not
- *     in SUPPORTED_PROTOCOL_VERSIONS. Bump only when the schema breaks backwards
- *     compatibility. 默认 1
+ *   - `trace_id`: per-turn UUID, IDE-generated
+ *   - `chat_session_id`: stable per-chat-thread id; reasoner uses for sticky
+ *     routing in Phase 2 and for tool catalog cache lookup
+ *   - `messages`: full user-visible conversation, min 1 (P0-2)
+ *   - `system`: optional user-level addendum; reasoner prepends its own
+ *     mode-specific system prompt (Issue-1 in PHASE-1-DOC-AUDIT)
+ *   - `mode`: Agent mode
+ *   - `model/provider/base_url/api_key_alias/temperature/max_tokens/thinking`:
+ *     standard LLM routing config from user settings
+ *   - `expected_catalog_version`: opaque hash from prior `RegisterToolsResponse`.
+ *     Reasoner returns 412 if cache mismatch.
+ *   - `workspace_path`: absolute workspace root (worker affinity uses it)
+ *   - `auto_approve_mode`: "standard" / "autopilot"
+ *   - `workspace_meta`: free-form structural metadata for current edit context
+ *     (current_file, selection, git_branch, open_files, etc.)
+ *   - `user/metadata`: opaque telemetry
+ *   - `protocol_version`: wire-protocol version (409 if unsupported)
  */
 export interface InvokeRequest {
 	// 标识
 	trace_id: string;
 	chat_session_id: string;
-	// Conversation — min 1 (PHASE-0-SPEC-AUDIT P0-2)
+	// Conversation — min 1 (PHASE-0-SPEC-AUDIT P0-2 still applies)
 	messages: Message[];
-	// System prompt / mode
+	// System prompt / mode (Phase 1: user-supplied system is OPTIONAL ADDENDUM,
+	// reasoner has its own mode-specific system prompt that comes first)
 	system?: string | null;
 	mode?: 'agent' | 'spec';
 	// LLM config
@@ -204,14 +213,15 @@ export interface InvokeRequest {
 	temperature?: number | null;
 	max_tokens?: number | null;
 	thinking?: boolean;
-	// Tools — IDE 注册的 MCP tools + reasoner 内置 + worker tools
-	tools?: Record<string, unknown>[];
+	// Tool catalog reference (must register first via /tools/register)
+	// 412 on mismatch → IDE re-registers and retries (ADR-018 §2 D9 / R-S).
+	expected_catalog_version: string;
 	// Workspace + EXECUTION binding
 	workspace_path: string;
 	auto_approve_mode?: string;
-	// State persistence (ADR-017 Q1)
-	langgraph_state_blob?: string | null;
-	langgraph_state_version?: number;
+	// Open structural editor context for reasoner system prompt
+	// Common keys (all optional): current_file, selection, git_branch, open_files
+	workspace_meta?: Record<string, unknown> | null;
 	// Telemetry
 	user?: Record<string, unknown> | null;
 	metadata?: Record<string, unknown> | null;
@@ -231,18 +241,32 @@ export interface InvokeRequest {
  *     `content_block_stop` / `message_delta` / `message_stop`
  *
  * Tool / control:
- *   - `tool_call_emitted`   — assistant decided to call a tool (also encoded in messages)
- *   - `tool_result_observed` — tool result accepted by reasoner (for worker tools)
+ *   - `tool_call_emitted`    — display-purpose: LLM decided to call a tool (all tools)
+ *   - `tool_result_observed` — display-purpose: tool result observed by reasoner
+ *   - `ide_tool_call`        — Phase 1: reverse-channel call to IDE for IDE-side tool
+ *                              execution. IDE responds via POST /tool_result/{trace_id}/{call_id}.
+ *                              Reasoner blocks awaiting that POST.
+ *   - `confirm_request`      — Phase 1: reverse-channel call for chipos_user_confirm.
+ *                              IDE renders confirm card, user clicks, IDE POSTs to
+ *                              /confirm_response/{trace_id}/{request_id}.
  *
  * ChipOS specific:
  *   - `thinking_delta`
- *   - `round_progress`  — {round_idx, phase, progress_pct}
- *   - `trace_link`      — {trace_id} for IDE chat bubble pill
+ *   - `round_progress`   — {round_idx, phase, progress_pct}
+ *   - `trace_link`       — {trace_id} for chat bubble pill
+ *   - `keepalive`        — Phase 1: every 25s anti-proxy-timeout heartbeat {ts}
+ *   - `checkpoint`       — Phase 1: agent loop iteration completed + state persisted
+ *                          {iteration, messages_count} — IDE can use as resume watermark
+ *   - `resumed_buffer_drained` — emitted by /resume endpoint after replay catches up
+ *                                {sequence_id} — Phase 1 buffer-drain-only handoff marker
  *
  * Termination:
- *   - `round_end` — {reason: "end_turn"|"tool_use"|"max_tokens"|"error"|"cancelled",
- *                    langgraph_state_blob?: string  -> 给 IDE 持久化}
- *   - `error`
+ *   - `round_end` — {reason: "end_turn"|"max_iterations"|"max_tokens"|"error"|"cancelled"|"interrupted",
+ *                    final_messages: Message[]  — IDE appends to chatSessions/*.jsonl}
+ *   - `error`     — {category, error_code, message, retryable} followed by round_end{error}
+ *
+ * **Phase 1 removed**: `round_end.data.reason === "tool_use"` (tool_use is a
+ * mid-turn step, not a terminal state — agent loop continues internally).
  */
 export type InvokeEventType =
 	| 'message_start'
@@ -253,9 +277,14 @@ export type InvokeEventType =
 	| 'message_stop'
 	| 'tool_call_emitted'
 	| 'tool_result_observed'
+	| 'ide_tool_call'
+	| 'confirm_request'
 	| 'thinking_delta'
 	| 'round_progress'
 	| 'trace_link'
+	| 'keepalive'
+	| 'checkpoint'
+	| 'resumed_buffer_drained'
 	| 'round_end'
 	| 'error';
 
@@ -399,13 +428,21 @@ export function isImageBlock(b: ContentBlock): b is ImageBlock {
 /**
  * Typed view of `InvokeEvent.data` for `type === 'round_end'`.
  *
- * - `reason`: one of the spec-defined termination reasons, or an unknown string
- *   (forward-compat — server may add new reasons in future protocol_version)
- * - `langgraph_state_blob`: opaque base64 state to persist for the next invoke
+ * Phase 1 changes (ADR-018):
+ *   - Removed `tool_use` reason (tool_use is a mid-turn step, agent loop continues)
+ *   - Added `max_iterations` reason (loop hit MAX_ITERATIONS cap)
+ *   - Added `interrupted` reason (reasoner-side unrecoverable failure)
+ *   - Removed `langgraph_state_blob` field (state lives reasoner-side now)
+ *   - Added `final_messages` field — Message[] the IDE should append to
+ *     chatSessions/*.jsonl on this turn's completion
+ *
+ * - `reason`: spec-defined termination reason or unknown string (forward-compat)
+ * - `final_messages`: assistant + tool_result messages added during this turn
+ *                     (NOT including the original input messages — IDE already has those)
  */
 export interface RoundEndData {
-	reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'error' | 'cancelled' | string;
-	langgraph_state_blob?: string;
+	reason: 'end_turn' | 'max_iterations' | 'max_tokens' | 'error' | 'cancelled' | 'interrupted' | string;
+	final_messages?: Message[];
 }
 
 /** Predicate: is this event a `round_end` terminator? */
@@ -421,7 +458,228 @@ export function roundEndReason(e: InvokeEvent): string | undefined {
 	// Cast through `unknown` because `Record<string, unknown>` and `RoundEndData`
 	// (which has a required `reason: string` field) don't structurally overlap
 	// in tsgo's view. The reasoner contract guarantees `reason` is present on
-	// every `round_end` payload (PHASE-0-PROTOCOL-SPEC §2).
+	// every `round_end` payload (PHASE-1-PROTOCOL-SPEC §2.3).
 	const data = e.data as unknown as RoundEndData;
 	return data.reason;
+}
+
+// =============================================================================
+// Phase 1 — Tool catalog registration (ADR-018 §2 D9)
+// =============================================================================
+
+/**
+ * Single tool descriptor — Anthropic Messages API tool format + ChipOS routing meta.
+ *
+ * Mirror of python `invoke.py::ToolDefinition`. The `chipos_source` field is
+ * server-internal routing metadata (NOT shown to LLM) that tells reasoner
+ * where this tool's execution lives:
+ *   - "worker_mcp"  → reasoner dispatches via gRPC to worker
+ *   - "ide_mcp"     → reasoner emits ide_tool_call SSE event for IDE to execute
+ *   - "ide_builtin" → same channel as ide_mcp (read_file / run_in_terminal / etc.)
+ */
+export interface ToolDefinition {
+	name: string;
+	description: string;
+	input_schema: Record<string, unknown>;
+	chipos_source: 'worker_mcp' | 'ide_mcp' | 'ide_builtin';
+}
+
+/**
+ * IDE → reasoner: long-lived tool catalog registration.
+ *
+ * Endpoint: `POST /api/v1/tools/register`.
+ *
+ * Called by IDE on startup and again whenever the live MCP server set changes
+ * (user installs/removes an MCP server, or worker tools update). Replaces the
+ * per-invoke `tools[]` field that Phase 0 had — InvokeRequest now references
+ * the catalog by `expected_catalog_version`, reasoner returns 412 on mismatch.
+ *
+ * - `chat_session_id`: catalog scoped per chat session (different chats may
+ *   have different MCP sets enabled)
+ * - `tools`: 1..500 definitions
+ */
+export interface RegisterToolsRequest {
+	chat_session_id: string;
+	tools: ToolDefinition[];
+	ide_version?: string;
+	workspace_path?: string;
+}
+
+/**
+ * Reasoner → IDE: catalog accepted, opaque version handle for later InvokeRequest.
+ *
+ * - `catalog_version`: sha256[:16] hex of canonicalised tools JSON. IDE caches
+ *   and sends as `expected_catalog_version` on every subsequent invoke.
+ * - `accepted_tool_count`: == tools.length on full success
+ * - `rejected`: list of {name, reason} for any tool the reasoner couldn't accept
+ */
+export interface RegisterToolsResponse {
+	catalog_version: string;
+	accepted_tool_count: number;
+	rejected: { name: string; reason: string }[];
+}
+
+// =============================================================================
+// Phase 1 — Reverse-channel callbacks (ADR-018 §2 D7 + D14)
+// =============================================================================
+
+/**
+ * IDE → reasoner: IDE finished executing an `ide_tool_call` event.
+ *
+ * Endpoint: `POST /api/v1/tool_result/{trace_id}/{call_id}`.
+ *
+ * Reasoner's agent loop awaits the corresponding `asyncio.Future`; the POST
+ * resolves it and the loop continues. Default timeout on the reasoner side
+ * is 300s — after that the loop synthesises an error tool_result and
+ * continues (R-F in PHASE-1-DOC-AUDIT).
+ *
+ * - `call_id`: must match the SSE `ide_tool_call.data.call_id` (reasoner
+ *   uses it to look up the pending Future)
+ * - `content`: tool output (short = string; long output caller may truncate)
+ * - `output_type`: "text" default; "image"/"binary_ref" reserved for future
+ * - `metadata`: optional structured output (e.g. {file_modified, exit_code})
+ */
+export interface ToolResultRequest {
+	call_id: string;
+	content: string;
+	is_error?: boolean;
+	output_type?: 'text' | 'image' | 'binary_ref';
+	metadata?: Record<string, unknown> | null;
+}
+
+/**
+ * IDE → reasoner: user clicked a button on a confirm card.
+ *
+ * Endpoint: `POST /api/v1/confirm_response/{trace_id}/{request_id}`.
+ *
+ * Reasoner converts this into a `tool_result` content (JSON serialised) for
+ * the `chipos_user_confirm` tool_use (ADR-018 §2 D13).
+ *
+ * - `request_id`: must match the SSE `confirm_request.data.request_id`
+ *   (typically equal to the tool_use.id, "toolu_xxx" or "chipos_confirm_xxx")
+ * - `action`: clicked button's action_id, e.g. "approve" / "reject" / "submit" / "skip"
+ * - `selections`: agent_ask radio form picks (key=question_id, value=option_id)
+ * - `comment`: optional extra text (e.g. user note on submit)
+ */
+export interface ConfirmResponseRequest {
+	request_id: string;
+	action: string;
+	selections?: Record<string, string> | null;
+	comment?: string | null;
+}
+
+// =============================================================================
+// Phase 1 — Resume + turn state (ADR-018 §2 D10 + R-D)
+// =============================================================================
+
+/**
+ * IDE → reasoner: SSE drop → reconnect + continue in-flight turn.
+ *
+ * Endpoint: `POST /api/v1/resume/{chat_session_id}`.
+ *
+ * Reasoner behaviour:
+ *   - in-flight trace_id not found → 404 (turn done or never existed)
+ *   - SSE buffer evicted (24h GC) → 410 (IDE shows "session expired")
+ *   - Otherwise: SSE 200 + replays events > last_sequence_id from FileStateStore,
+ *     then emits `resumed_buffer_drained` marker and closes (Phase 1 buffer-
+ *     drain-only; live event handoff is integrated later in CP-2)
+ *
+ * - `trace_id`: which turn to resume
+ * - `last_sequence_id`: client's last received seq (use -1 for "everything from start")
+ * - `disconnect_reason`: optional telemetry ("network" / "ide_restart" / "user_action")
+ */
+export interface ResumeRequest {
+	trace_id: string;
+	last_sequence_id: number;
+	disconnect_reason?: string;
+}
+
+/**
+ * One in-flight turn's metadata, included in TurnStateResponse.
+ *
+ * - `state`: "running" if last activity within 5 min, "stale" otherwise
+ *   (reasoner instance may have died — IDE should ask user before resuming)
+ * - `last_user_message_preview`: first ~100 chars of the user prompt that
+ *   started this turn (for UI "you asked: ...")
+ */
+export interface InFlightTrace {
+	trace_id: string;
+	started_at: number;
+	last_checkpoint_seq?: number;
+	state: 'running' | 'stale';
+	last_user_message_preview?: string;
+}
+
+/**
+ * Reasoner → IDE: list of in-flight turns for a chat session.
+ *
+ * Endpoint response: `GET /api/v1/turn_state/{chat_session_id}`.
+ *
+ * IDE calls this on startup to check whether to auto-resume any unfinished
+ * turn (e.g. user closed IDE mid-LLM-call → reasoner finished the turn in
+ * background → next IDE open should fetch the result).
+ */
+export interface TurnStateResponse {
+	chat_session_id: string;
+	in_flight_traces: InFlightTrace[];
+}
+
+// =============================================================================
+// Phase 1 — Typed payload helpers for new SSE events (most-used shapes)
+// =============================================================================
+
+/**
+ * Payload of `ide_tool_call` SSE event (reverse channel — IDE-side tool exec).
+ *
+ * IDE handler: execute the tool by `tool_name`, then POST result to
+ * `/api/v1/tool_result/{trace_id}/{call_id}` (call_id from this payload).
+ */
+export interface IdeToolCallData {
+	call_id: string;
+	tool_name: string;
+	args: Record<string, unknown>;
+	timeout_ms?: number;
+}
+
+/**
+ * Payload of `confirm_request` SSE event (reverse channel — render a card).
+ *
+ * IDE handler: render ChipOSPermissionCard with this shape, capture user's
+ * click, POST result to `/api/v1/confirm_response/{trace_id}/{request_id}`.
+ */
+export interface ConfirmRequestData {
+	request_id: string;
+	card_type: string;  // "agent_ask" / "generic" / etc.
+	card_data: Record<string, unknown>;
+	title?: string;
+	buttons?: string[];
+}
+
+/**
+ * Payload of `checkpoint` event — emitted by reasoner after each LLM call
+ * within a turn. IDE can use this as a "safe to resume from here" watermark.
+ *
+ * - `iteration`: 1-indexed counter within the turn
+ * - `messages_count`: total messages accumulated so far in the turn
+ */
+export interface CheckpointData {
+	iteration: number;
+	messages_count: number;
+}
+
+/**
+ * Payload of `keepalive` event — every ~25s heartbeat to prevent proxy timeout.
+ */
+export interface KeepaliveData {
+	ts: number;  // ms epoch
+}
+
+/**
+ * Payload of `resumed_buffer_drained` event — Phase 1 buffer-drain-only handoff
+ * marker emitted by /resume endpoint after replay completes. Tells IDE: from
+ * this seq forward, you'll either see live emissions (when live handoff is
+ * wired in a future increment) or the stream closes here.
+ */
+export interface ResumedBufferDrainedData {
+	sequence_id: number;
 }
