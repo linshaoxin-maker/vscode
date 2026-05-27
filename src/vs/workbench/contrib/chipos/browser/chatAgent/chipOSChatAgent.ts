@@ -69,6 +69,7 @@ import { ConversationCompactor } from './statelessInvoke/conversationCompactor.j
 import {
 	StatelessClient,
 	StatelessHttpError,
+	StatelessResumeNotFoundError,
 } from './statelessInvoke/statelessClient.js';
 import type {
 	InvokeRequest,
@@ -497,6 +498,70 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const useStateless = this._configurationService.getValue<boolean>(
 			'chipos.experiments.statelessReasoner',
 		) ?? false;
+
+		// Phase 1 reverse-channel confirm-click detector: when a user clicks a
+		// confirm card emitted by an in-flight stateless turn, the framework
+		// re-invokes invoke() with `acceptedConfirmationData` carrying our
+		// `__chiposStatelessConfirmTraceId` marker. Route the click to the
+		// parked Promise (in `_pendingStatelessConfirms`) WITHOUT starting a
+		// new turn — the original invoke's SSE iteration is still draining
+		// events on the original trace, and will surface the LLM's continued
+		// reasoning naturally. This runs regardless of the feature flag (a
+		// stale Phase 1 confirm card from a session where the flag was on
+		// should still resolve cleanly even after the user toggles it off).
+		const accepted = request.acceptedConfirmationData?.[0] as
+			{ __chiposStatelessConfirmRequestId?: string; __chiposStatelessConfirmTraceId?: string;
+			  options?: Array<{ label: string; action_id: string }>; selections?: Record<string, string> }
+			| undefined;
+		const rejected = request.rejectedConfirmationData?.[0] as
+			{ __chiposStatelessConfirmRequestId?: string; __chiposStatelessConfirmTraceId?: string;
+			  options?: Array<{ label: string; action_id: string }> }
+			| undefined;
+		const statelessConfirmData = accepted?.__chiposStatelessConfirmRequestId
+			? accepted
+			: rejected?.__chiposStatelessConfirmRequestId
+				? rejected
+				: undefined;
+		if (statelessConfirmData) {
+			const requestId = statelessConfirmData.__chiposStatelessConfirmRequestId!;
+			const pending = this._pendingStatelessConfirms.get(requestId);
+			if (pending) {
+				// Derive action from clicked button label vs options.
+				let action = accepted ? 'approve' : 'reject';
+				const opts = statelessConfirmData.options;
+				if (opts && opts.length > 0) {
+					const msgLabel = request.message.split(':')[0]?.trim();
+					const matched = opts.find(o => o.label === msgLabel);
+					if (matched) {
+						action = matched.action_id;
+					}
+				}
+				this._logService.info(
+					'[ChipOS Stateless] confirm response: trace=%s request_id=%s action=%s',
+					pending.traceId, requestId, action,
+				);
+				pending.resolve({
+					action,
+					selections: (statelessConfirmData as { selections?: Record<string, string> }).selections,
+					comment: undefined,
+				});
+				this._pendingStatelessConfirms.delete(requestId);
+				// Return an empty result; the original invoke is still in
+				// flight + will deliver the final assistant message via its
+				// own progress callback.
+				return {};
+			}
+			// No matching pending Promise — stale click (e.g. user clicked
+			// after timeout fired auto-skip). Log + fall through to legacy
+			// behaviour so the framework gets a clean result rather than
+			// hanging.
+			this._logService.warn(
+				'[ChipOS Stateless] stale confirm click (no pending Promise): request_id=%s',
+				requestId,
+			);
+			return { errorDetails: { message: 'confirm card already responded' } };
+		}
+
 		if (useStateless) {
 			return this._invokeStateless(request, progress, _history, token);
 		}
@@ -3819,90 +3884,124 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 
 		const { call_id, name, args_json } = payload;
-		let content: string;
-		let isError = false;
-
+		let args: Record<string, unknown>;
 		try {
-			const args = JSON.parse(args_json);
-
-			switch (name) {
-			case 'run_in_terminal': {
-				const termKey = call_id || name;
-				let termSession = runtime.terminalSessionMap.get(termKey);
-
-				// T-09: IdeToolCall call_id (LLM's tool_call.id) differs from
-				// ToolCall key (ExecutionHandler's run_id). Fall back to
-				// command matching, then single-entry heuristic.
-				if (!termSession) {
-					const cmdFromArgs = typeof args.command === 'string' ? args.command : '';
-					if (cmdFromArgs) {
-						for (const [k, cmd] of runtime.terminalCommandLines) {
-							if (cmd === cmdFromArgs && runtime.terminalSessionMap.has(k)) {
-								termSession = runtime.terminalSessionMap.get(k);
-								this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (cmd match): %s → %s', termKey, k);
-								break;
-							}
-						}
-					}
-				}
-				if (!termSession && runtime.terminalSessionMap.size === 1) {
-					const entry = runtime.terminalSessionMap.entries().next();
-					if (!entry.done) {
-						termSession = entry.value[1];
-						this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (single entry): %s → %s', termKey, entry.value[0]);
-					}
-				}
-
-				// Approval gate: inline IChatConfirmation (instead of the old
-				// modal `_dialogService.confirm`). Renders as a
-				// `.chat-confirmation-widget*` inline in the chat — same
-				// visual family as the chipos permission card and hook
-				// confirm card — and resolves via `_pendingTerminalApprovals`
-				// when the user clicks Run / Reject on the inline card. See
-				// the field's JSDoc for the full handshake.
-				const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
-				const cmd = typeof args.command === 'string' ? args.command : '';
-				this._logService.info('[ChipOS Agent] run_in_terminal approval: mode=%s, cmd=%s', approveMode, cmd);
-				if (approveMode !== 'full_auto') {
-					const confirmed = await this._awaitTerminalApproval(call_id, cmd, runtime);
-					if (!confirmed) {
-						content = 'User rejected the terminal command.';
-						isError = true;
-						break;
-					}
-				}
-
-				content = await this._runInTerminal(args, termSession?.sessionId, termSession?.commandId, termKey, runtime);
-				break;
-			}
-				case 'get_terminal_output': {
-					content = this._getTerminalOutput(args);
-					break;
-				}
-			default: {
-				// R56: 尝试路由到 MCP 工具
-				const mcpResult = await this._tryCallMcpTool(name, args);
-				if (mcpResult !== null) {
-					content = mcpResult.content;
-					isError = mcpResult.isError;
-				} else {
-					content = `Unknown IDE tool: ${name}`;
-					isError = true;
-				}
-			}
-			}
-		} catch (err: any) {
-			content = `IDE tool '${name}' failed: ${err.message || String(err)}`;
-			isError = true;
+			args = JSON.parse(args_json) as Record<string, unknown>;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			const sessionId = runtime.backendSessionId ?? '';
+			streamClient.sendIdeToolResult(sessionId, call_id, `IDE tool '${name}' failed parsing args: ${msg}`, true);
+			return;
 		}
 
-		// 回传结果给 Reasoner
+		const { content, isError } = await this._dispatchIdeTool(name, args, runtime, call_id);
+
+		// 回传结果给 Reasoner (legacy stateful path)
 		const sessionId = runtime.backendSessionId ?? '';
 		this._logService.info(
 			'[ChipOS Agent] IDE tool result: call_id=%s, is_error=%s, content_len=%d',
 			call_id, isError, content.length,
 		);
 		streamClient.sendIdeToolResult(sessionId, call_id, content, isError);
+	}
+
+	/**
+	 * Pure tool dispatch helper — shared by legacy `_executeIdeToolCall`
+	 * (Phase 0 stateful path) and Phase 1 stateless `_handleStatelessIdeToolCall`
+	 * (reverse channel). Routes by tool name:
+	 *   - run_in_terminal     → approval gate + `_runInTerminal`
+	 *   - get_terminal_output → `_getTerminalOutput`
+	 *   - else                → MCP via `_tryCallMcpTool` (R56), or "unknown tool"
+	 *
+	 * Returns `{content, isError}` for the caller to ship back via the
+	 * transport it owns (sendIdeToolResult on streamClient for legacy,
+	 * POST /tool_result on StatelessClient for Phase 1). Never throws —
+	 * exceptions are caught and surfaced as `isError: true` content so the
+	 * agent loop on the server side can decide what to do next.
+	 */
+	private async _dispatchIdeTool(
+		name: string,
+		args: Record<string, unknown>,
+		runtime: IChatSessionRuntime,
+		callId: string,
+	): Promise<{ content: string; isError: boolean }> {
+		if (runtime.disposeController.signal.aborted) {
+			return {
+				content: `IDE tool '${name}' skipped (session disposed)`,
+				isError: true,
+			};
+		}
+		let content: string;
+		let isError = false;
+
+		try {
+			switch (name) {
+				case 'run_in_terminal': {
+					const termKey = callId || name;
+					let termSession = runtime.terminalSessionMap.get(termKey);
+
+					// T-09: IdeToolCall call_id (LLM's tool_call.id) differs from
+					// ToolCall key (ExecutionHandler's run_id). Fall back to
+					// command matching, then single-entry heuristic.
+					if (!termSession) {
+						const cmdFromArgs = typeof args.command === 'string' ? args.command : '';
+						if (cmdFromArgs) {
+							for (const [k, cmd] of runtime.terminalCommandLines) {
+								if (cmd === cmdFromArgs && runtime.terminalSessionMap.has(k)) {
+									termSession = runtime.terminalSessionMap.get(k);
+									this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (cmd match): %s → %s', termKey, k);
+									break;
+								}
+							}
+						}
+					}
+					if (!termSession && runtime.terminalSessionMap.size === 1) {
+						const entry = runtime.terminalSessionMap.entries().next();
+						if (!entry.done) {
+							termSession = entry.value[1];
+							this._logService.info('[ChipOS Agent] IdeToolCall T-09 fallback (single entry): %s → %s', termKey, entry.value[0]);
+						}
+					}
+
+					// Approval gate: inline IChatConfirmation — see legacy comment.
+					const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
+					const cmd = typeof args.command === 'string' ? args.command : '';
+					this._logService.info('[ChipOS Agent] run_in_terminal approval: mode=%s, cmd=%s', approveMode, cmd);
+					if (approveMode !== 'full_auto') {
+						const confirmed = await this._awaitTerminalApproval(callId, cmd, runtime);
+						if (!confirmed) {
+							content = 'User rejected the terminal command.';
+							isError = true;
+							break;
+						}
+					}
+
+					content = await this._runInTerminal(args as { command: string; explanation?: string; isBackground?: boolean }, termSession?.sessionId, termSession?.commandId, termKey, runtime);
+					break;
+				}
+				case 'get_terminal_output': {
+					content = this._getTerminalOutput(args as { terminal_id: string });
+					break;
+				}
+				default: {
+					// R56: route to MCP service if no IDE-builtin handler matched.
+					const mcpResult = await this._tryCallMcpTool(name, args);
+					if (mcpResult !== null) {
+						content = mcpResult.content;
+						isError = mcpResult.isError;
+					} else {
+						content = `Unknown IDE tool: ${name}`;
+						isError = true;
+					}
+				}
+			}
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : String(err);
+			content = `IDE tool '${name}' failed: ${msg}`;
+			isError = true;
+		}
+
+		return { content, isError };
 	}
 
 	/**
@@ -5113,7 +5212,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// could stall every subsequent event for the same trace).
 			if (handled.ideToolCall) {
 				const call = handled.ideToolCall;
-				void this._handleStatelessIdeToolCall(client, traceId, call).catch(err => {
+				void this._handleStatelessIdeToolCall(client, traceId, request.sessionResource, call).catch(err => {
 					this._logService.error('[ChipOS Stateless] ide_tool_call handler failed:', String(err));
 				});
 			}
@@ -5187,11 +5286,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					break;
 				}
 				case 'replay': {
-					const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? 0;
-					this._logService.warn('[ChipOS Stateless] SSE failed (%s) — attempting /replay from seq %d', String(err), lastSeq);
+					// Phase 1 (ADR-018 §2 D10 + R-D): swap legacy replay() →
+					// resume() — replays SSE buffer then closes (buffer-drain
+					// model); future increment plumbs live event handoff
+					// (PHASE-1-SEQUENCE-DIAGRAMS §7).
+					const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? -1;
+					this._logService.warn('[ChipOS Stateless] SSE failed (%s) — attempting /resume from seq %d', String(err), lastSeq);
 					progress([this._progress('$(sync) Connection interrupted — reconnecting…', true)]);
 					try {
-						for await (const event of client.replay(traceId, lastSeq)) {
+						for await (const event of client.resume(chatSessionId, {
+							trace_id: traceId,
+							last_sequence_id: lastSeq,
+							disconnect_reason: 'network',
+						}, abortController.signal)) {
 							applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
 						}
 					} catch (replayErr) {
@@ -5202,13 +5309,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							this._statelessTraces.delete(request.sessionResource);
 							return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
 						}
-						if (replayVerdict === 'surface-replay-expired') {
-							this._logService.warn('[ChipOS Stateless] replay 410 — surfacing expired window');
+						// Phase 1: distinct error classes for 404 vs 410 paths.
+						if (replayErr instanceof StatelessResumeNotFoundError) {
+							this._logService.warn('[ChipOS Stateless] /resume 404 — turn already completed or never existed');
+							progress([this._markdown('$(info) **ChipOS:** the previous turn already finished. Please send your message again to start a new one.')]);
+							errorResult = { errorDetails: { message: 'resume target not found' } };
+						} else if (replayVerdict === 'surface-replay-expired') {
+							this._logService.warn('[ChipOS Stateless] /resume 410 — SSE buffer evicted');
 							progress([this._markdown('$(warning) **ChipOS:** reconnect window expired. Please send your last message again.')]);
 							errorResult = { errorDetails: { message: 'replay window expired' } };
 						} else {
 							const msg = replayErr instanceof Error ? replayErr.message : String(replayErr);
-							this._logService.error('[ChipOS Stateless] replay failed:', msg);
+							this._logService.error('[ChipOS Stateless] resume failed:', msg);
 							progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
 							errorResult = { errorDetails: { message: msg } };
 						}
@@ -5263,68 +5375,156 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * Register the current chat session's tool catalog with reasoner (Phase 1
 	 * ADR-018 §2 D9). Returns the catalog_version to thread through invoke.
 	 *
-	 * Idempotent — re-registers on every invoke for now (cheap on reasoner
-	 * side; same hash returned for unchanged catalog). Future optimization
-	 * could cache the version + only re-register on `IMcpService.onDidChange`
-	 * (R-C), but the simple path is correct.
+	 * Gathers IDE-side tools (D12):
+	 *   - IDE builtins (run_in_terminal, get_terminal_output) — same advertise
+	 *     gate as legacy `_collectAndReportMcpTools` (run_in_terminal can be
+	 *     disabled via `chipos.terminal.disableRunInTerminalTool`)
+	 *   - User-installed MCP server tools (from VS Code IMcpService)
 	 *
-	 * Phase 1 minimum: send an empty catalog so reasoner has at least a
-	 * registered version to verify against. Real tool gather (worker MCP +
-	 * IDE MCP + IDE builtin) wires up in CP-3 follow-up.
+	 * Worker MCP tools (yosys / iverilog / openroad / ...) are NOT included
+	 * here — they're advertised reasoner-side via the worker's own gRPC
+	 * registration (D12 "各跑各的"). LLM sees the union of both.
+	 *
+	 * Idempotent — re-registers on every invoke (cheap; deterministic hash
+	 * means unchanged catalog returns same version). Future optimisation
+	 * (R-C): cache + only re-register on `IMcpService.onDidChangeServers`.
 	 */
 	private async _ensureToolsRegistered(
 		client: StatelessClient,
 		chatSessionId: string,
 	): Promise<string> {
-		// Phase 1: minimal stub catalog. ToolCatalogCache requires min_length=1,
-		// so send one placeholder until the real tool gather lands. This won't
-		// break LLM tool use (LLM sees the catalog reasoner-side; we just hash
-		// for version matching).
-		const tools: ToolDefinition[] = [{
+		const tools = this._gatherIdeToolCatalog();
+		// Reasoner requires min_length=1 on register; if for some reason all
+		// IDE tools are disabled (rare config) inject a noop sentinel so the
+		// catalog handshake still completes — agent loop will just rely on
+		// worker MCP catalog for any tool calls.
+		const safeTools: ToolDefinition[] = tools.length > 0 ? tools : [{
 			name: 'noop',
-			description: 'Placeholder; real catalog plumbing pending CP-3 follow-up.',
+			description: 'No IDE-callable tools enabled in this session.',
 			input_schema: { type: 'object', properties: {} },
 			chipos_source: 'ide_builtin',
 		}];
-		const resp = await client.registerTools({ chat_session_id: chatSessionId, tools });
+		const resp = await client.registerTools({
+			chat_session_id: chatSessionId,
+			tools: safeTools,
+			workspace_path: this._getWorkspaceRoot(),
+		});
 		this._statelessCatalogVersions.set(chatSessionId, resp.catalog_version);
+		this._logService.info(
+			'[ChipOS Stateless] tools registered: %d total (%d builtin + %d MCP), catalog_version=%s',
+			safeTools.length,
+			safeTools.filter(t => t.chipos_source === 'ide_builtin').length,
+			safeTools.filter(t => t.chipos_source === 'ide_mcp').length,
+			resp.catalog_version,
+		);
 		return resp.catalog_version;
 	}
 
 	/**
-	 * Reverse channel: reasoner asked IDE to execute an IDE-side tool.
-	 * Phase 1 minimal: execute via existing `_executeIdeToolCall` path (or a
-	 * stub error if that's not wired into the stateless code path yet), then
-	 * POST result back to /tool_result/{trace_id}/{call_id}.
+	 * Enumerate IDE-side tools for the Phase 1 catalog. Mirrors the legacy
+	 * `_collectAndReportMcpTools` builder (run_in_terminal gate +
+	 * IMcpService MCP server enumeration), but emits the Phase 1
+	 * `ToolDefinition` shape (input_schema as object, chipos_source enum).
+	 */
+	private _gatherIdeToolCatalog(): ToolDefinition[] {
+		const tools: ToolDefinition[] = [];
+
+		// IDE builtin — run_in_terminal (advertise gate, same as legacy)
+		const disableRunInTerminal = this._configurationService.getValue<boolean>('chipos.terminal.disableRunInTerminalTool');
+		if (!(disableRunInTerminal === true)) {
+			tools.push({
+				name: 'run_in_terminal',
+				description:
+					"Execute a shell command in the user's IDE terminal with sandbox protection. " +
+					'The command runs in a sandboxed environment that restricts file system and network access. ' +
+					'Use this for: running scripts (python, node, bash), installing packages (pip, npm), ' +
+					'building / testing / linting code, executing EDA tools (yosys, verilator, iverilog), ' +
+					'or any other shell command the user explicitly requested. ' +
+					'Returns the command stdout/stderr and a `terminal_id` that can be passed to ' +
+					'`get_terminal_output` to read further output of long-running commands.',
+				input_schema: {
+					type: 'object',
+					properties: {
+						command: { type: 'string', description: 'The shell command to run.' },
+						explanation: { type: 'string', description: 'Brief explanation of why this command is being run (shown to user in approval dialog).' },
+						isBackground: { type: 'boolean', description: 'Whether the command should be started as a background task (default false).' },
+					},
+					required: ['command'],
+				},
+				chipos_source: 'ide_builtin',
+			});
+		}
+
+		// IDE builtin — get_terminal_output
+		tools.push({
+			name: 'get_terminal_output',
+			description:
+				'Get the output from a previously started terminal. ' +
+				'Use after `run_in_terminal` to check on background tasks or get additional output ' +
+				'when the initial response was truncated or the task is still running.',
+			input_schema: {
+				type: 'object',
+				properties: {
+					terminal_id: { type: 'string', description: 'The terminal ID returned by run_in_terminal.' },
+				},
+				required: ['terminal_id'],
+			},
+			chipos_source: 'ide_builtin',
+		});
+
+		// User-installed MCP servers (VS Code IMcpService)
+		try {
+			const servers = this._mcpService.servers.get();
+			for (const server of servers) {
+				const serverTools = server.tools.get();
+				if (!serverTools) { continue; }
+				for (const tool of serverTools) {
+					tools.push({
+						name: tool.definition.name,
+						description: tool.definition.description || '',
+						// IMcpService delivers parsed JSON Schema dict already
+						input_schema: (tool.definition.inputSchema as Record<string, unknown>) || { type: 'object', properties: {} },
+						chipos_source: 'ide_mcp',
+					});
+				}
+			}
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] failed enumerating IDE MCP servers:', String(err));
+		}
+
+		return tools;
+	}
+
+	/**
+	 * Phase 1 reverse channel: reasoner asked IDE to execute an IDE-side tool.
+	 * Routes through `_dispatchIdeTool` (shared with the legacy stateful
+	 * path's `_executeIdeToolCall`), then POSTs result back to
+	 * `/api/v1/tool_result/{trace_id}/{call_id}`.
 	 *
 	 * R-F mitigation: reasoner has its own 300s timeout — if we never POST,
-	 * reasoner inject synthesised error tool_result and loop continues. So
-	 * even on IDE-side execution failure, we still POST a best-effort result
-	 * (with is_error=true) so the agent loop unblocks cleanly.
+	 * it injects a synthesised error tool_result and the agent loop continues.
+	 * On IDE-side execution failure we ALWAYS POST a best-effort result (with
+	 * is_error=true) so the agent loop unblocks cleanly even on local errors.
 	 */
 	private async _handleStatelessIdeToolCall(
 		client: StatelessClient,
 		traceId: string,
+		sessionResource: URI,
 		call: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number },
 	): Promise<void> {
 		this._logService.info(
 			'[ChipOS Stateless] ide_tool_call name=%s call_id=%s',
 			call.toolName, call.callId,
 		);
-		// Phase 1 stub: real dispatch is a CP-3 follow-up that wires
-		// `_executeIdeToolCall` (or MCP service) into this path. For now we
-		// reply with a clear "not yet wired" tool_result so the agent loop
-		// terminates gracefully + the user sees something useful.
-		const content = (
-			`[Phase 1 stub] IDE-side tool '${call.toolName}' is not yet wired ` +
-			`into the stateless code path; real dispatch lands in a CP-3 follow-up. ` +
-			`Args: ${JSON.stringify(call.args)}`
+		const runtime = this._getOrCreateRuntime(sessionResource);
+		const { content, isError } = await this._dispatchIdeTool(
+			call.toolName, call.args, runtime, call.callId,
 		);
 		try {
 			await client.postToolResult(traceId, call.callId, {
 				call_id: call.callId,
 				content,
-				is_error: true,
+				is_error: isError,
 			});
 		} catch (err) {
 			this._logService.warn(
@@ -5335,10 +5535,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
-	 * Reverse channel: reasoner asked IDE to render a confirm card. Phase 1
-	 * minimal: same stub-reply pattern as ide_tool_call. Real ChipOSPermission-
-	 * Card rendering + click capture is a CP-3 follow-up that pipes user
-	 * selection into postConfirmResponse.
+	 * Phase 1 reverse channel: render confirm card + capture user click +
+	 * POST to /confirm_response.
+	 *
+	 * Bridge between two async worlds:
+	 *   - The reasoner-side agent loop awaits its `asyncio.Future`
+	 *   - The IDE-side framework delivers user clicks via a SEPARATE invoke()
+	 *     call (with `acceptedConfirmationData` populated)
+	 *
+	 * Mechanism:
+	 *   1. Emit `IChatConfirmation` progress part marked with
+	 *      `__chiposStatelessConfirmTraceId` + `__chiposStatelessConfirmRequestId`
+	 *      so the next invoke() entry can route the click here
+	 *   2. Park a Promise in `_pendingStatelessConfirms[requestId]`
+	 *   3. Await Promise (with 600s timeout matching reasoner-side default)
+	 *   4. When user clicks, invoke() top-level detector resolves the
+	 *      Promise with `{action, selections, comment}`
+	 *   5. POST /confirm_response — agent loop on reasoner unblocks
+	 *
+	 * Renders agent_ask radio form (with selections={}) when card_type is
+	 * 'agent_ask' + has questions; otherwise renders generic confirm card.
+	 * Card rendering is delegated to ChipOSPermissionCardContentPart via
+	 * the `__chiposAgentAskCard` / `__chiposGenericConfirmCard` markers
+	 * (same as legacy path so we get the existing UX for free).
 	 */
 	private async _handleStatelessConfirmRequest(
 		client: StatelessClient,
@@ -5350,12 +5569,82 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			'[ChipOS Stateless] confirm_request type=%s request_id=%s',
 			confirm.cardType, confirm.requestId,
 		);
-		progress([this._markdown(`$(question) **ChipOS:** ${confirm.title || 'Confirm requested'} _(stub: real card rendering pending CP-3 follow-up; auto-replying "skip")_`)]);
+
+		// Build the IChatConfirmation data shape mirroring legacy ConfirmRequest
+		// handler so ChipOSPermissionCardContentPart renders without changes.
+		const title = confirm.title || 'Confirm requested';
+		const buttons = confirm.buttons && confirm.buttons.length > 0 ? confirm.buttons : ['Approve', 'Reject'];
+		const cardData = confirm.cardData;
+		const askQuestions = Array.isArray((cardData as { questions?: unknown }).questions)
+			? (cardData as { questions: unknown[] }).questions
+			: undefined;
+		const isInteractiveAgentAsk = confirm.cardType === 'agent_ask' && askQuestions && askQuestions.length > 0;
+		const baseData: Record<string, unknown> = {
+			requestId: confirm.requestId,
+			card_type: confirm.cardType,
+			card_data: cardData,
+			// Phase 1 markers (read by invoke() top-level detector below)
+			__chiposStatelessConfirmTraceId: traceId,
+			__chiposStatelessConfirmRequestId: confirm.requestId,
+			options: buttons.map(label => ({ label, action_id: label.toLowerCase() })),
+		};
+		const data: Record<string, unknown> = isInteractiveAgentAsk
+			? {
+				...baseData,
+				__chiposAgentAskCard: true,
+				questions: askQuestions,
+				selections: {} as Record<string, string>,
+			}
+			: {
+				...baseData,
+				__chiposGenericConfirmCard: true,
+			};
+
+		// Park a Promise — resolved by the next invoke() with this requestId.
+		const responsePromise = new Promise<{ action: string; selections?: Record<string, string>; comment?: string }>((resolve, reject) => {
+			this._pendingStatelessConfirms.set(confirm.requestId, { resolve, reject, traceId });
+		});
+
+		// Emit the inline confirmation card.
+		const message = typeof (cardData as { message?: unknown }).message === 'string'
+			? (cardData as { message: string }).message
+			: title;
+		const confirmation: IChatConfirmation = {
+			kind: 'confirmation',
+			title,
+			message: new MarkdownString(message, { supportThemeIcons: true, isTrusted: true }),
+			data,
+			buttons,
+		};
+		progress([confirmation]);
+
+		// Await user click or timeout. 600s matches reasoner-side default
+		// confirm timeout (PHASE-1-PROTOCOL-SPEC §4.1).
+		const TIMEOUT_MS = 600_000;
+		let result: { action: string; selections?: Record<string, string>; comment?: string };
+		try {
+			result = await Promise.race([
+				responsePromise,
+				new Promise<{ action: string; comment: string }>((_resolve, reject) =>
+					setTimeout(() => reject(new Error('confirm timeout')), TIMEOUT_MS),
+				),
+			]) as { action: string; selections?: Record<string, string>; comment?: string };
+		} catch (err) {
+			this._logService.warn(
+				'[ChipOS Stateless] confirm_request timeout request_id=%s — sending action=skip',
+				confirm.requestId,
+			);
+			result = { action: 'skip', comment: `client-side timeout after ${TIMEOUT_MS}ms` };
+		} finally {
+			this._pendingStatelessConfirms.delete(confirm.requestId);
+		}
+
 		try {
 			await client.postConfirmResponse(traceId, confirm.requestId, {
 				request_id: confirm.requestId,
-				action: 'skip',
-				comment: 'Phase 1 stub auto-reply (real card rendering pending)',
+				action: result.action,
+				selections: result.selections ?? null,
+				comment: result.comment ?? null,
 			});
 		} catch (err) {
 			this._logService.warn(
@@ -5364,6 +5653,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			);
 		}
 	}
+
+	/**
+	 * Phase 1: pending confirm-card Promises waiting for the next invoke() call
+	 * to deliver the user's click. Keyed by request_id (the `chipos_user_confirm`
+	 * tool_use id from the LLM). Resolved by the invoke() entry's stateless-
+	 * confirm detector branch; rejected on session disposal.
+	 */
+	private readonly _pendingStatelessConfirms = new Map<string, {
+		resolve: (r: { action: string; selections?: Record<string, string>; comment?: string }) => void;
+		reject: (err: Error) => void;
+		traceId: string;
+	}>();
 
 	// =========================================================================
 	// End Phase 0 #8e / #8f
