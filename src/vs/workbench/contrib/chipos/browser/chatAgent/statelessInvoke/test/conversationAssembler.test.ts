@@ -4,16 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Phase 0 #8c — ConversationAssembler unit tests.
+ * ConversationAssembler unit tests — Phase 0 #8c, updated for Phase 1 (ADR-018).
  *
- * Covers all Anthropic-shape invariants the assembler enforces (PHASE-0-
- * PROTOCOL-SPEC §2 + ADR-017 §11.2):
+ * Covers all Anthropic-shape invariants the assembler enforces (PHASE-1-
+ * PROTOCOL-SPEC §2 + ADR-018 §2 D8):
  *   - empty input rejection (mirrors P0-2)
  *   - role=user leading turn requirement
  *   - tool_use/tool_result pairing (immediate-next + id match)
  *   - compact summary marker preservation
- *   - chiposLangGraphState most-recent extraction
  *   - JSONL defensive parsing (bad lines skipped, not thrown)
+ *
+ * Phase 1 removed: `chiposLangGraphState` / `langgraph_state_blob` extraction
+ * tests — reasoner-internal state lives reasoner-side now (ADR-018 §2 D8).
  */
 
 import assert from 'assert';
@@ -63,7 +65,6 @@ suite('ConversationAssembler', () => {
 		const result = assembler.assemble([{ role: 'user', content: 'hi' }]);
 		assert.deepStrictEqual(result, {
 			messages: [{ role: 'user', content: 'hi' }],
-			langgraph_state_blob: null,
 		});
 	});
 
@@ -83,7 +84,6 @@ suite('ConversationAssembler', () => {
 				{ role: 'user', content: 'q2' },
 				{ role: 'assistant', content: 'a2' },
 			],
-			langgraph_state_blob: null,
 		});
 	});
 
@@ -169,27 +169,6 @@ suite('ConversationAssembler', () => {
 
 	// ─── 8 ──────────────────────────────────────────────────────────────────
 
-	test('langgraph_state_blob picks the most recent value across records', () => {
-		const result = assembler.assemble([
-			{ role: 'user', content: 'q1', chiposLangGraphState: 'BLOB_v1' },
-			{ role: 'assistant', content: 'a1', chiposLangGraphState: 'BLOB_v2' },
-			{ role: 'user', content: 'q2', chiposLangGraphState: 'BLOB_v3_latest' },
-		]);
-		assert.strictEqual(result.langgraph_state_blob, 'BLOB_v3_latest');
-	});
-
-	// ─── 9 ──────────────────────────────────────────────────────────────────
-
-	test('langgraph_state_blob is null when no record carries one', () => {
-		const result = assembler.assemble([
-			{ role: 'user', content: 'q' },
-			{ role: 'assistant', content: 'a' },
-		]);
-		assert.strictEqual(result.langgraph_state_blob, null);
-	});
-
-	// ─── 10 ─────────────────────────────────────────────────────────────────
-
 	test('assembleFromJsonl parses line by line', () => {
 		const jsonl = [
 			JSON.stringify({ role: 'user', content: 'hi' }),
@@ -202,7 +181,6 @@ suite('ConversationAssembler', () => {
 			{ role: 'assistant', content: 'hello' },
 			{ role: 'user', content: 'bye' },
 		]);
-		assert.strictEqual(result.langgraph_state_blob, null);
 	});
 
 	// ─── 11 ─────────────────────────────────────────────────────────────────
@@ -279,22 +257,7 @@ suite('ConversationAssembler', () => {
 		assert.strictEqual(block.is_error, true);
 	});
 
-	// ─── Bonus 14: meta-only record (just langgraph state) is skipped from messages but contributes blob ──
-
-	test('meta-only record carrying only chiposLangGraphState is skipped from messages but its blob is captured', () => {
-		const result = assembler.assemble([
-			{ role: 'user', content: 'q' },
-			{ chiposLangGraphState: 'BLOB_META' }, // no role, no content → meta
-			{ role: 'assistant', content: 'a' },
-		]);
-		assert.deepStrictEqual(result.messages, [
-			{ role: 'user', content: 'q' },
-			{ role: 'assistant', content: 'a' },
-		]);
-		assert.strictEqual(result.langgraph_state_blob, 'BLOB_META');
-	});
-
-	// ─── Bonus 15: tool_use_id mismatch in following tool_result throws ───
+	// ─── Bonus 14: tool_use_id mismatch in following tool_result throws ───
 
 	test('tool_use_id mismatched with following tool_result throws', () => {
 		assert.throws(

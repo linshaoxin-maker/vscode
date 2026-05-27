@@ -4,20 +4,31 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Phase 0 #8d — `ConversationCompactor`.
+ * `ConversationCompactor` — Phase 0 #8d, scope-narrowed for Phase 1 (ADR-018).
  *
- * IDE-owned conversation compaction (C 档 stateless reasoner, ADR-017 §11.1 + Q3
- * decision = Plan B: client owns trigger, server owns the LLM summarize call).
+ * IDE-owned conversation compaction. **Phase 1 scope (ADR-018 §6 R-I)**: this
+ * module is used ONLY for the user-initiated `/compact` slash command. The
+ * turn-internal *auto*-compact (triggered automatically when accumulated turn
+ * messages cross a token threshold) is now reasoner-side, executed within the
+ * agent loop on the server. The IDE no longer calls `shouldCompact()` before
+ * each invoke — that decision has migrated server-side.
  *
- * Pipeline
- * ---------
- * 1. IDE-side chat agent calls `shouldCompact(messages)` before each invoke
- *    (or the user types `/compact`).
- * 2. When true (or manual trigger), the agent calls `compact(messages, sid, tid)`.
- * 3. We split the conversation into [old turns, recent N turns], POST the old
+ * What the IDE still owns
+ * -----------------------
+ *  - The slash-command handler watches user input for `/compact` (or surfaces
+ *    a manual button) and calls `compact(messages, sid, tid)` directly.
+ *  - Idempotency + recent-turn slicing logic stays here because the IDE owns
+ *    `chatSessions/*.jsonl` and is the one writing the replacement messages
+ *    back to disk.
+ *
+ * Pipeline (manual `/compact` path)
+ * ---------------------------------
+ * 1. User types `/compact` (or clicks compact button) → IDE handler invokes
+ *    `compact(messages, chat_session_id, trace_id)` on this class.
+ * 2. We split the conversation into [old turns, recent N turns], POST the old
  *    turns to `POST /api/v1/compact` via `StatelessClient.compact()`, take the
  *    returned `summary_message`, and return `[summary_message, ...recent_turns]`.
- * 4. Caller writes the new array back to `chatSessions/<id>.jsonl` and uses it
+ * 3. Caller writes the new array back to `chatSessions/<id>.jsonl` and uses it
  *    for the next invoke.
  *
  * Idempotency (algorithm decision #6)
@@ -45,13 +56,16 @@
  * (string content; TextBlock.text; ToolUseBlock.name + serialized input;
  * ToolResultBlock.content). NOT a real tokenizer — accurate to ~2× across
  * Chinese / English / code mixes, plenty good enough as a trigger heuristic.
+ * `shouldCompact()` remains exported for completeness (e.g. surfacing a "you
+ * might want to /compact" hint in the UI), but it is NO LONGER called as the
+ * auto-compact gate before each invoke.
  * Anything that needs LLM-grade accuracy should use the server's `tokens_in`
  * reported on `CompactResponse`.
  *
  * Related
  * -------
- * - Spec   : `PHASE-0-PROTOCOL-SPEC.md` §6 — endpoint contract
- * - ADR    : `ADR-017-c-stateless-reasoner-design.md` §11.1 — Claude Code reference
+ * - ADR    : `ADR-018-reasoner-driven-mixed-state-architecture.md` §2 + §6 R-I
+ * - Spec   : `PHASE-1-PROTOCOL-SPEC.md` §2.8 — manual `/compact` endpoint
  * - Server : `backend_v2/packages/reasoning/src/reasoning/server/stateless_compact.py`
  */
 

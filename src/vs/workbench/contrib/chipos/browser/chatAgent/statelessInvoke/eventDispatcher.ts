@@ -14,12 +14,17 @@
  * The caller (`ChipOSChatAgent._invokeStateless`) owns:
  *   - text accumulation buffer (so consecutive `content_block_delta` events
  *     fold into one chat bubble),
- *   - latest `langgraph_state_blob` (the most-recent `round_end` blob is
- *     what gets persisted),
+ *   - the `final_messages` list from the terminal `round_end` event (Phase 1
+ *     replaces the Phase 0 `langgraph_state_blob` — IDE appends these
+ *     directly to chatSessions/*.jsonl per ADR-018 §2 D8 mixed-state),
  *   - latest token usage,
  *   - termination flag,
  *   - flushing the text buffer on `content_block_stop` / `message_stop` /
- *     `round_end` / `error`.
+ *     `round_end` / `error`,
+ *   - reverse-channel dispatch for `ide_tool_call` (POST /tool_result) and
+ *     `confirm_request` (POST /confirm_response),
+ *   - bookkeeping for `checkpoint` (resume watermark) / `keepalive` (idle
+ *     timer reset) / `resumed_buffer_drained` (live-stream handoff marker).
  *
  * Forward-compat: unknown event types are ignored (return `{}`). New
  * reasoner-side events should be additive — clients on older protocol
@@ -28,7 +33,16 @@
  */
 
 import { StatelessHttpError, StatelessReplayExpiredError } from './statelessClient.js';
-import type { InvokeEvent, TokenUsage } from './types.js';
+import type {
+	CheckpointData,
+	ConfirmRequestData,
+	IdeToolCallData,
+	InvokeEvent,
+	KeepaliveData,
+	Message,
+	ResumedBufferDrainedData,
+	TokenUsage,
+} from './types.js';
 
 /**
  * What the dispatcher's caller should do after processing one event.
@@ -42,11 +56,25 @@ import type { InvokeEvent, TokenUsage } from './types.js';
  *   - `thinkingText`: emit as `IChatThinkingPart` (reasoning panel).
  *   - `markdownError`: emit as `IChatMarkdownContent` then mark error
  *     in the final result (see `errorMessage`).
- *   - `langgraphStateBlob`: stash for persistence (most-recent wins).
  *   - `usage`: stash for the final result's metadata.
  *   - `errorMessage`: when set, caller terminates with errorDetails.
  *   - `terminate`: when true, the SSE round is over; caller breaks
  *     the for-await loop after flushing.
+ *
+ * Phase 1 (ADR-018) additions — reverse-channel + heartbeat plumbing:
+ *   - `ideToolCall`: reasoner asked IDE to execute a tool. Caller must
+ *     run the tool and POST result to `/api/v1/tool_result/{trace_id}/{call_id}`.
+ *   - `confirmRequest`: reasoner asked IDE to render a confirm card. Caller
+ *     renders, captures user click, POSTs to
+ *     `/api/v1/confirm_response/{trace_id}/{request_id}`.
+ *   - `keepalive`: heartbeat — caller may reset its idle-disconnect timer.
+ *   - `checkpoint`: safe-to-resume watermark — caller may stash for later
+ *     `/api/v1/resume/{chat_session_id}` calls (`last_sequence_id`).
+ *   - `resumedBufferDrained`: emitted by `/resume` after replay catches up;
+ *     caller knows it's now on the live stream (or stream closes here).
+ *   - `finalMessages`: from the terminal `round_end.data.final_messages` —
+ *     caller appends these to chatSessions/*.jsonl. Replaces the Phase 0
+ *     `langgraphStateBlob` field which is gone from the wire.
  */
 export interface DispatchResult {
 	appendText?: string;
@@ -54,10 +82,22 @@ export interface DispatchResult {
 	progressMessage?: { content: string; shimmer?: boolean };
 	thinkingText?: string;
 	markdownError?: string;
-	langgraphStateBlob?: string;
 	usage?: TokenUsage;
 	errorMessage?: string;
 	terminate?: boolean;
+	// Phase 1 additions (ADR-018 §2 D7 + D8 + D10 + D14):
+	/** Reverse channel: IDE must execute this tool + POST result back. */
+	ideToolCall?: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number };
+	/** Reverse channel: IDE must render confirm card + POST user choice back. */
+	confirmRequest?: { requestId: string; cardType: string; cardData: Record<string, unknown>; title?: string; buttons?: string[] };
+	/** Keepalive heartbeat — reset client-side idle timer; usually no-op render. */
+	keepalive?: { ts: number };
+	/** Checkpoint watermark — IDE may store as "safe-to-resume seq" marker. */
+	checkpoint?: { iteration: number; messagesCount: number };
+	/** Resume buffer-drain done marker (from /resume endpoint stream). */
+	resumedBufferDrained?: { sequenceId: number };
+	/** When `terminate: true`, the final_messages list to append to chatSessions/*.jsonl. */
+	finalMessages?: Message[];
 }
 
 /**
@@ -113,6 +153,68 @@ export function dispatchStatelessEvent(
 			// Internal bookkeeping — not surfaced to user.
 			return {};
 
+		case 'ide_tool_call': {
+			// Phase 1 reverse channel — IDE-side tool execution. Reasoner blocks
+			// awaiting POST /tool_result/{trace_id}/{call_id}. flushText so any
+			// pending assistant text renders before we kick off tool exec.
+			const data = event.data as unknown as IdeToolCallData;
+			return {
+				flushText: true,
+				ideToolCall: {
+					callId: data.call_id,
+					toolName: data.tool_name,
+					args: data.args,
+					timeoutMs: typeof data.timeout_ms === 'number' ? data.timeout_ms : undefined,
+				},
+			};
+		}
+
+		case 'confirm_request': {
+			// Phase 1 reverse channel — render ChipOSPermissionCard, capture
+			// click, POST /confirm_response/{trace_id}/{request_id}.
+			const data = event.data as unknown as ConfirmRequestData;
+			return {
+				flushText: true,
+				confirmRequest: {
+					requestId: data.request_id,
+					cardType: data.card_type,
+					cardData: data.card_data,
+					title: typeof data.title === 'string' ? data.title : undefined,
+					buttons: Array.isArray(data.buttons) ? data.buttons : undefined,
+				},
+			};
+		}
+
+		case 'keepalive': {
+			// Phase 1 anti-proxy-timeout heartbeat (every ~25s). Caller may
+			// use it to reset its idle timer or render a subtle alive indicator.
+			const data = event.data as unknown as KeepaliveData;
+			return { keepalive: { ts: typeof data.ts === 'number' ? data.ts : 0 } };
+		}
+
+		case 'checkpoint': {
+			// Phase 1 safe-to-resume watermark. Caller stashes for a future
+			// /resume call's `last_sequence_id` semantics.
+			const data = event.data as unknown as CheckpointData;
+			return {
+				checkpoint: {
+					iteration: typeof data.iteration === 'number' ? data.iteration : 0,
+					messagesCount: typeof data.messages_count === 'number' ? data.messages_count : 0,
+				},
+			};
+		}
+
+		case 'resumed_buffer_drained': {
+			// Phase 1 /resume endpoint handoff marker — replay caught up,
+			// from this seq forward we're on the live stream (or stream closes).
+			const data = event.data as unknown as ResumedBufferDrainedData;
+			return {
+				resumedBufferDrained: {
+					sequenceId: typeof data.sequence_id === 'number' ? data.sequence_id : 0,
+				},
+			};
+		}
+
 		case 'thinking_delta': {
 			const data = event.data as { delta?: { text?: string } };
 			const text = typeof data.delta?.text === 'string' ? data.delta.text : '';
@@ -125,13 +227,15 @@ export function dispatchStatelessEvent(
 			return {};
 
 		case 'round_end': {
-			const data = event.data as { reason?: string; langgraph_state_blob?: string };
+			// Phase 1 (ADR-018): `reason` literal now excludes "tool_use" and
+			// adds "max_iterations" / "interrupted". `langgraph_state_blob` is
+			// gone — IDE owns the conversation log via `final_messages` which
+			// it appends to chatSessions/*.jsonl (D8 mixed-state).
+			const data = event.data as { reason?: string; final_messages?: Message[] };
 			return {
 				terminate: true,
 				flushText: true,
-				langgraphStateBlob: typeof data.langgraph_state_blob === 'string'
-					? data.langgraph_state_blob
-					: undefined,
+				finalMessages: Array.isArray(data.final_messages) ? data.final_messages : undefined,
 			};
 		}
 

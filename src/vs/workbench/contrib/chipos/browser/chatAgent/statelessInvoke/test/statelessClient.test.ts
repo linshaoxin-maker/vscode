@@ -25,8 +25,18 @@ import {
 	StatelessClient,
 	StatelessHttpError,
 	StatelessReplayExpiredError,
+	StatelessResumeNotFoundError,
 } from '../statelessClient.js';
-import type { InvokeEvent, InvokeRequest } from '../types.js';
+import type {
+	ConfirmResponseRequest,
+	InvokeEvent,
+	InvokeRequest,
+	RegisterToolsRequest,
+	RegisterToolsResponse,
+	ResumeRequest,
+	ToolResultRequest,
+	TurnStateResponse,
+} from '../types.js';
 
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -85,6 +95,9 @@ function makeReq(traceId = 'trace-test-001'): InvokeRequest {
 		chat_session_id: 'sess-test',
 		messages: [{ role: 'user', content: 'hello' }],
 		model: 'zhipu/glm-5.1',
+		// Phase 1: required (ADR-018 §2 D9). Opaque hash returned by an
+		// earlier /tools/register; tests can use any literal here.
+		expected_catalog_version: 'cat-v-test',
 		workspace_path: '/tmp/ws',
 	};
 }
@@ -316,5 +329,312 @@ suite('StatelessClient — Phase 0 #8b', () => {
 		assert.strictEqual(got.cost_usd, 0.0042);
 		assert.strictEqual(got.summary_message.is_compact_summary, true);
 		assert.strictEqual(calls.length, 1);
+	});
+});
+
+
+// ── Phase 1 Tests (ADR-018 reverse-channel + resume) ─────────────────────
+
+suite('StatelessClient — Phase 1 (ADR-018)', () => {
+
+	const baseUrl = 'http://test.local:8080';
+
+	// registerTools ─────────────────────────────────────────────────────────
+
+	test('registerTools_returns_catalog_version', async () => {
+		const respBody: RegisterToolsResponse = {
+			catalog_version: 'abc1234567890def',
+			accepted_tool_count: 2,
+			rejected: [],
+		};
+		const { fn, calls } = makeFetchSpy((url, init) => {
+			assert.strictEqual(url, `${baseUrl}/api/v1/tools/register`);
+			assert.strictEqual(init?.method, 'POST');
+			const headers = init?.headers as Record<string, string>;
+			assert.strictEqual(headers['Content-Type'], 'application/json');
+			return makeJsonResponse(200, respBody);
+		});
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const req: RegisterToolsRequest = {
+			chat_session_id: 'sess-1',
+			tools: [
+				{ name: 'read_file', description: 'read', input_schema: {}, chipos_source: 'ide_builtin' },
+				{ name: 'bash', description: 'shell', input_schema: {}, chipos_source: 'worker_mcp' },
+			],
+		};
+		const got = await client.registerTools(req);
+
+		assert.deepStrictEqual(got, respBody);
+		assert.strictEqual(calls.length, 1);
+	});
+
+	test('registerTools_throws_StatelessHttpError_on_5xx', async () => {
+		const { fn } = makeFetchSpy(() =>
+			makeJsonResponse(500, { error: 'internal_error', message: 'cache write failed' }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await assert.rejects(
+			() => client.registerTools({ chat_session_id: 's', tools: [] }),
+			(err: unknown) => {
+				assert.ok(err instanceof StatelessHttpError);
+				assert.strictEqual((err as StatelessHttpError).status, 500);
+				return true;
+			},
+		);
+	});
+
+	// postToolResult ────────────────────────────────────────────────────────
+
+	test('postToolResult_returns_accepted_on_202', async () => {
+		const { fn, calls } = makeFetchSpy((url, init) => {
+			assert.strictEqual(url, `${baseUrl}/api/v1/tool_result/t1/call-abc`);
+			assert.strictEqual(init?.method, 'POST');
+			// 202 success — backend may return empty body
+			return new Response(null, { status: 202 });
+		});
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const req: ToolResultRequest = { call_id: 'call-abc', content: 'tool output' };
+		const got = await client.postToolResult('t1', 'call-abc', req);
+
+		assert.deepStrictEqual(got, { accepted: true });
+		assert.strictEqual(calls.length, 1);
+	});
+
+	test('postToolResult_returns_error_body_on_404_stale_call', async () => {
+		const body = { error: 'call_not_found', call_id: 'call-stale' };
+		const { fn } = makeFetchSpy(() => makeJsonResponse(404, body));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		// 404 = benign stale POST per PHASE-1-PROTOCOL-SPEC §4.2 — must NOT throw.
+		const got = await client.postToolResult('t1', 'call-stale', { call_id: 'call-stale', content: '' });
+
+		assert.deepStrictEqual(got, body);
+	});
+
+	test('postToolResult_throws_StatelessHttpError_on_5xx', async () => {
+		const { fn } = makeFetchSpy(() =>
+			makeJsonResponse(500, { error: 'internal_error' }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await assert.rejects(
+			() => client.postToolResult('t1', 'call-x', { call_id: 'call-x', content: '' }),
+			(err: unknown) => {
+				assert.ok(err instanceof StatelessHttpError);
+				assert.strictEqual((err as StatelessHttpError).status, 500);
+				return true;
+			},
+		);
+	});
+
+	test('postToolResult_url_encodes_path_params', async () => {
+		// Defense in depth — even though trace_id / call_id are normally UUIDs,
+		// any future change to id format must not produce broken URLs.
+		const { fn, calls } = makeFetchSpy(() => new Response(null, { status: 202 }));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await client.postToolResult('trace with space', 'call/slash', { call_id: 'call/slash', content: '' });
+
+		assert.strictEqual(
+			calls[0].url,
+			`${baseUrl}/api/v1/tool_result/trace%20with%20space/call%2Fslash`,
+		);
+	});
+
+	// postConfirmResponse ───────────────────────────────────────────────────
+
+	test('postConfirmResponse_returns_accepted_on_202', async () => {
+		const { fn, calls } = makeFetchSpy((url) => {
+			assert.strictEqual(url, `${baseUrl}/api/v1/confirm_response/t1/req-xyz`);
+			return new Response(null, { status: 202 });
+		});
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const req: ConfirmResponseRequest = { request_id: 'req-xyz', action: 'approve' };
+		const got = await client.postConfirmResponse('t1', 'req-xyz', req);
+
+		assert.deepStrictEqual(got, { accepted: true });
+		assert.strictEqual(calls.length, 1);
+	});
+
+	test('postConfirmResponse_returns_error_body_on_404', async () => {
+		const body = { error: 'request_not_found', request_id: 'req-stale' };
+		const { fn } = makeFetchSpy(() => makeJsonResponse(404, body));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const got = await client.postConfirmResponse('t1', 'req-stale', {
+			request_id: 'req-stale',
+			action: 'approve',
+		});
+
+		assert.deepStrictEqual(got, body);
+	});
+
+	test('postConfirmResponse_throws_on_400_invalid_action', async () => {
+		const { fn } = makeFetchSpy(() =>
+			makeJsonResponse(400, { error: 'invalid_format', message: 'unknown action_id' }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await assert.rejects(
+			() => client.postConfirmResponse('t1', 'r1', { request_id: 'r1', action: 'bogus' }),
+			(err: unknown) => {
+				assert.ok(err instanceof StatelessHttpError);
+				assert.strictEqual((err as StatelessHttpError).status, 400);
+				return true;
+			},
+		);
+	});
+
+	// resume ────────────────────────────────────────────────────────────────
+
+	test('resume_yields_events_from_sse_like_invoke', async () => {
+		const events: InvokeEvent[] = [
+			{ type: 'content_block_delta', sequence_id: 5, data: { delta: 'continued' } },
+			{ type: 'resumed_buffer_drained', sequence_id: 6, data: { sequence_id: 6 } },
+		];
+		const body = events.map(sseFrame).join('');
+		const { fn, calls } = makeFetchSpy((url, init) => {
+			assert.strictEqual(url, `${baseUrl}/api/v1/resume/sess-1`);
+			assert.strictEqual(init?.method, 'POST');
+			const headers = init?.headers as Record<string, string>;
+			assert.strictEqual(headers['Content-Type'], 'application/json');
+			return makeSseResponse(200, [body]);
+		});
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const req: ResumeRequest = { trace_id: 't-live', last_sequence_id: 4 };
+		const got = await collect(client.resume('sess-1', req));
+
+		assert.deepStrictEqual(got, events);
+		assert.strictEqual(calls.length, 1);
+	});
+
+	test('resume_throws_StatelessResumeNotFoundError_on_404', async () => {
+		const { fn } = makeFetchSpy(() =>
+			makeJsonResponse(404, { error: 'trace_not_found', trace_id: 't-done' }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await assert.rejects(
+			() => collect(client.resume('sess-1', { trace_id: 't-done', last_sequence_id: 0 })),
+			(err: unknown) => {
+				assert.ok(
+					err instanceof StatelessResumeNotFoundError,
+					`expected StatelessResumeNotFoundError, got ${err}`,
+				);
+				assert.strictEqual((err as StatelessResumeNotFoundError).traceId, 't-done');
+				return true;
+			},
+		);
+	});
+
+	test('resume_throws_StatelessReplayExpiredError_on_410', async () => {
+		const { fn } = makeFetchSpy(() =>
+			makeJsonResponse(410, { error: 'replay_window_expired', trace_id: 't-old' }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await assert.rejects(
+			() => collect(client.resume('sess-1', { trace_id: 't-old', last_sequence_id: 0 })),
+			(err: unknown) => {
+				assert.ok(
+					err instanceof StatelessReplayExpiredError,
+					`expected StatelessReplayExpiredError, got ${err}`,
+				);
+				assert.strictEqual((err as StatelessReplayExpiredError).traceId, 't-old');
+				return true;
+			},
+		);
+	});
+
+	// getTurnState ──────────────────────────────────────────────────────────
+
+	test('getTurnState_returns_typed_response', async () => {
+		const body: TurnStateResponse = {
+			chat_session_id: 'sess-1',
+			in_flight_traces: [
+				{
+					trace_id: 't-running',
+					started_at: 1716800000000,
+					last_checkpoint_seq: 7,
+					state: 'running',
+					last_user_message_preview: 'refactor this file...',
+				},
+			],
+		};
+		const { fn, calls } = makeFetchSpy((url, init) => {
+			assert.strictEqual(url, `${baseUrl}/api/v1/turn_state/sess-1`);
+			assert.strictEqual(init?.method, 'GET');
+			return makeJsonResponse(200, body);
+		});
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const got = await client.getTurnState('sess-1');
+
+		assert.deepStrictEqual(got, body);
+		assert.strictEqual(calls.length, 1);
+	});
+
+	test('getTurnState_returns_empty_on_404_unknown_session', async () => {
+		const { fn } = makeFetchSpy(() =>
+			makeJsonResponse(404, { error: 'chat_session_not_found' }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		// Unknown chat_session_id is functionally equivalent to "no in-flight
+		// traces" — synthesise empty result rather than throw.
+		const got = await client.getTurnState('sess-unknown');
+
+		assert.deepStrictEqual(got, {
+			chat_session_id: 'sess-unknown',
+			in_flight_traces: [],
+		});
+	});
+
+	test('getTurnState_throws_StatelessHttpError_on_5xx', async () => {
+		const { fn } = makeFetchSpy(() =>
+			makeJsonResponse(503, { error: 'stateless_disabled' }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await assert.rejects(
+			() => client.getTurnState('sess-1'),
+			(err: unknown) => {
+				assert.ok(err instanceof StatelessHttpError);
+				assert.strictEqual((err as StatelessHttpError).status, 503);
+				return true;
+			},
+		);
+	});
+
+	test('getTurnState_url_encodes_chat_session_id', async () => {
+		const { fn, calls } = makeFetchSpy(() => makeJsonResponse(200, {
+			chat_session_id: 'with space',
+			in_flight_traces: [],
+		}));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		await client.getTurnState('with space');
+
+		assert.strictEqual(calls[0].url, `${baseUrl}/api/v1/turn_state/with%20space`);
+	});
+
+	test('registerTools_sets_bearer_token_when_configured', async () => {
+		// Spot-check auth header propagation for the new endpoints — uses
+		// registerTools as a representative non-SSE method (resume / SSE auth
+		// is covered by the existing invoke tests + shared _sseRequest path).
+		const { fn, calls } = makeFetchSpy(() =>
+			makeJsonResponse(200, { catalog_version: 'v1', accepted_tool_count: 0, rejected: [] }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn, authToken: 'secret-token' });
+
+		await client.registerTools({ chat_session_id: 's', tools: [] });
+
+		const headers = calls[0].init?.headers as Record<string, string>;
+		assert.strictEqual(headers['Authorization'], 'Bearer secret-token');
 	});
 });

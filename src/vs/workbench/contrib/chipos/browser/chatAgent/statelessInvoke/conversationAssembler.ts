@@ -4,11 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Phase 0 #8c — ConversationAssembler.
+ * ConversationAssembler — Phase 0 #8c, updated for Phase 1 (ADR-018).
  *
  * Take a list of *normalized* ChipOS chat session records and transform them
  * into the stateless `InvokeRequest.messages[]` shape (Anthropic Messages API
- * format per ADR-017 §11.2 + PHASE-0-PROTOCOL-SPEC §2).
+ * format per ADR-018 §2 D8 + PHASE-1-PROTOCOL-SPEC §2).
  *
  * Why a "normalized" record (not the raw VSCode chat session JSONL):
  *   The on-disk VSCode chat storage (`~/Library/Application Support/ChipOS/User/
@@ -41,16 +41,19 @@
  *     same `tool_use_id`)
  *   - `is_compact_summary` entries — preserved with the marker fields so
  *     downstream UI can render them differently (sticky / grey / collapsed)
- *   - `chiposLangGraphState` extraction (returns the most-recent blob across
- *     the records — that's what the IDE persisted at the last `round_end`)
+ *
+ * NOT handled (intentionally removed in Phase 1 — see ADR-018 §2 D8):
+ *   - `chiposLangGraphState` / `langgraph_state_blob`: reasoner internal state
+ *     (LangGraph node, partial responses, replay buffer) now lives reasoner-side
+ *     in FileStateStore. The IDE no longer round-trips this blob through the
+ *     conversation. Only user-visible messages live in `chatSessions/*.jsonl`.
  *
  * Pure-data: no VSCode-specific imports (IFileService, URI, etc.) — the
  * integration phase wires fs/IFileService. Tests live in `./test/`.
  *
  * Related:
- *   - ADR-017 §11.2 (Anthropic conversation shape; tool_use/tool_result pairing)
- *   - PHASE-0-PROTOCOL-SPEC.md §2 (Message schema)
- *   - PHASE-0-SEQUENCE-DIAGRAMS.md §3 (confirm flow), §4 (state persistence)
+ *   - ADR-018 §2 D8 (state truth bifurcation: messages → IDE, internal → reasoner)
+ *   - PHASE-1-PROTOCOL-SPEC.md §2 (Message schema)
  *   - `./types.ts` (TS mirror of the python pydantic contracts)
  */
 
@@ -83,19 +86,20 @@ import type {
  *     (the integration phase may already have assembled tool_use blocks).
  *     If both `content` and `toolUse`/`toolResult` are set, the explicit
  *     `content` wins (callers should pick one form).
- *   - `chiposLangGraphState`: optional opaque base64 blob the IDE persisted
- *     at a prior `round_end`. The *most recent* non-null value wins (latest
- *     LangGraph state across the chat session).
  *   - `isCompactSummary`: when true, marks the record as the inserted compact
- *     summary message (ADR-017 §11.1 / Claude Code semantics). Forces
- *     `role='user'` if `role` is unset, and emits both
- *     `is_compact_summary=true` AND `is_visible_in_transcript_only=true`
- *     on the produced `Message`.
+ *     summary message (Claude Code semantics; manual `/compact` only in
+ *     Phase 1 — see ADR-018 §6 R-I). Forces `role='user'` if `role` is unset,
+ *     and emits both `is_compact_summary=true` AND
+ *     `is_visible_in_transcript_only=true` on the produced `Message`.
  *   - `isVisibleInTranscriptOnly`: optional override for the same-named
  *     `Message` flag (defaults to whatever `isCompactSummary` implies).
  *   - `toolUse`: shorthand for an assistant `tool_use` block — the assembler
  *     wraps it in a single-element `ContentBlock[]` for the `Message.content`.
  *   - `toolResult`: shorthand for a user `tool_result` block — same wrapping.
+ *
+ * Note: Phase 0's `chiposLangGraphState` field has been removed per ADR-018
+ * §2 D8 — reasoner-internal state lives reasoner-side in FileStateStore now,
+ * the IDE no longer carries it through the conversation.
  *
  * Forward-compat: unknown fields are ignored. Add fields here only when the
  * integration phase needs them; the wire-side `Message` is the source of truth
@@ -104,8 +108,6 @@ import type {
 export interface ChatSessionRecord {
 	role?: 'user' | 'assistant' | 'system';
 	content?: string | ContentBlock[];
-	/** Opaque base64 blob persisted at the prior round_end (latest one wins). */
-	chiposLangGraphState?: string;
 	/** Marks this as an inserted compact summary; forces user-role + visibility flag. */
 	isCompactSummary?: boolean;
 	/** Override for the `is_visible_in_transcript_only` Message flag. */
@@ -121,12 +123,11 @@ export interface ChatSessionRecord {
  *
  * - `messages`: ready-to-send `InvokeRequest.messages` array (already
  *   validated for tool_use/tool_result pairing and minimum-length).
- * - `langgraph_state_blob`: most-recent `chiposLangGraphState` value across
- *   the input records, or `null` if no record carried one.
+ *
+ * Note: Phase 0's `langgraph_state_blob` field is gone — see ADR-018 §2 D8.
  */
 export interface AssembleResult {
 	messages: Message[];
-	langgraph_state_blob: string | null;
 }
 
 /**
@@ -161,12 +162,12 @@ export class ConversationAssembler {
 
 	/**
 	 * Transform a list of normalised chat session records into the stateless
-	 * `InvokeRequest` payload (messages + extracted LangGraph state).
+	 * `InvokeRequest` payload (messages only — see ADR-018 §2 D8).
 	 *
 	 * Invariants enforced (throw `ConversationAssemblyError`):
 	 *   1. `records` must be non-empty — IDE side must always compose at least
 	 *      one user message (use `{role:'user', content:''}` placeholder if the
-	 *      user hit send with empty input). Mirrors PHASE-0-PROTOCOL-SPEC
+	 *      user hit send with empty input). Mirrors PHASE-1-PROTOCOL-SPEC
 	 *      §2.2 AUDIT P0-2 (server rejects empty messages[] with 400).
 	 *   2. First emitted message must have role='user'. Anthropic API requires
 	 *      a leading user turn; compact-summary entries also normalise to
@@ -177,37 +178,26 @@ export class ConversationAssembler {
 	 *      allowed between a tool_use and its matching tool_result.
 	 *
 	 * Records without a `role` AND without compact-summary marker are treated
-	 * as meta-only (e.g. a record carrying nothing but `chiposLangGraphState`)
-	 * and skipped from the emitted messages — but their `chiposLangGraphState`
-	 * is still considered for the most-recent extraction.
+	 * as meta-only and skipped from the emitted messages.
 	 *
 	 * @param records normalised chat session records (input order = chronological)
-	 * @returns the assembled messages + latest LangGraph state blob (or null)
+	 * @returns the assembled messages
 	 * @throws ConversationAssemblyError on any of the invariants above
 	 */
 	assemble(records: ChatSessionRecord[]): AssembleResult {
 		if (records.length === 0) {
 			throw new ConversationAssemblyError(
-				'assemble() requires at least one ChatSessionRecord; IDE must compose a placeholder user message (see PHASE-0-PROTOCOL-SPEC P0-2)',
+				'assemble() requires at least one ChatSessionRecord; IDE must compose a placeholder user message (see PHASE-1-PROTOCOL-SPEC P0-2)',
 				'empty_records',
 			);
 		}
 
-		// Pass 1: extract latest LangGraph state blob across the full input.
-		// Most-recent (highest index) non-null wins.
-		let latestStateBlob: string | null = null;
-		for (const r of records) {
-			if (typeof r.chiposLangGraphState === 'string' && r.chiposLangGraphState.length > 0) {
-				latestStateBlob = r.chiposLangGraphState;
-			}
-		}
-
-		// Pass 2: build messages, validating tool_use/tool_result pairing.
+		// Build messages, validating tool_use/tool_result pairing.
 		const messages: Message[] = [];
 		for (let i = 0; i < records.length; i++) {
 			const built = this._buildMessage(records[i], i);
 			if (built === null) {
-				continue; // meta-only record (e.g. carries only state blob)
+				continue; // meta-only record (no role + no compact marker)
 			}
 			messages.push(built);
 
@@ -261,7 +251,7 @@ export class ConversationAssembler {
 			);
 		}
 
-		return { messages, langgraph_state_blob: latestStateBlob };
+		return { messages };
 	}
 
 	/**
@@ -361,7 +351,7 @@ export class ConversationAssembler {
 
 		const content = this._extractContent(record);
 		if (content === null) {
-			// Meta-only record — typically just carrying chiposLangGraphState.
+			// Meta-only record — no role/content/toolUse/toolResult. Skipped.
 			return null;
 		}
 

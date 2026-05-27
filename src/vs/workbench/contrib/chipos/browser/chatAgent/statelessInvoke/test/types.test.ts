@@ -83,20 +83,27 @@ suite('statelessInvoke/types — Phase 0 #8a schema contract', () => {
 	test('invoke_request_minimum', () => {
 		// Only required fields populated — everything else uses spec defaults at
 		// the reasoner side (we don't set them here on purpose to pin the
-		// minimum surface).
+		// minimum surface). Phase 1 (ADR-018 §2 D9) adds `expected_catalog_version`
+		// as required — IDE must register tools first and reference the version.
 		const req: InvokeRequest = {
 			trace_id: 'trace-001',
 			chat_session_id: 'sess-abc',
 			messages: [{ role: 'user', content: 'hello' }],
 			model: 'zhipu/glm-5.1',
 			workspace_path: '/Users/me/proj',
+			expected_catalog_version: 'test',
 		};
 		assert.strictEqual(req.messages.length, 1);
 		assert.strictEqual(req.model, 'zhipu/glm-5.1');
 	});
 
 	test('invoke_request_full', () => {
-		// All fields populated — pins every field name and accepted value type.
+		// All fields populated — pins every field name and accepted value type
+		// for the Phase 1 (ADR-018) schema. Phase 0's `tools[]`,
+		// `langgraph_state_blob`, and `langgraph_state_version` are gone:
+		// tools live in the long-lived catalog registered via
+		// `RegisterToolsRequest`, and reasoner internal state lives reasoner-side
+		// in FileStateStore (ADR-018 §2 D8 + D9).
 		const req: InvokeRequest = {
 			protocol_version: 1,
 			trace_id: 'trace-002',
@@ -127,18 +134,17 @@ suite('statelessInvoke/types — Phase 0 #8a schema contract', () => {
 			temperature: 0.2,
 			max_tokens: 4096,
 			thinking: false,
-			tools: [{ name: 'read_file', description: 'Reads', input_schema: {} }],
+			expected_catalog_version: 'sha256-abc123',
 			workspace_path: '/abs/path',
 			auto_approve_mode: 'standard',
-			langgraph_state_blob: 'base64-blob',
-			langgraph_state_version: 1,
+			workspace_meta: { current_file: '/abs/path/src/main.ts', git_branch: 'main' },
 			user: { user_id: 'u1', org_id: 'o1' },
 			metadata: { ide_version: '1.0.0' },
 		};
 		assert.strictEqual(req.messages.length, 4);
 		assert.strictEqual(req.mode, 'agent');
-		assert.strictEqual(req.tools?.length, 1);
-		assert.strictEqual(req.langgraph_state_version, 1);
+		assert.strictEqual(req.expected_catalog_version, 'sha256-abc123');
+		assert.strictEqual(req.workspace_meta?.current_file, '/abs/path/src/main.ts');
 	});
 
 	test('round_end_helper', () => {

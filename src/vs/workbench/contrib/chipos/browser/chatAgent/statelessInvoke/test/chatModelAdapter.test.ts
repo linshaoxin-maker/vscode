@@ -27,13 +27,12 @@ import { ChatSessionRecord } from '../conversationAssembler.js';
 function fakeReq(opts: {
 	message?: string;
 	confirmation?: string;
-	response?: { parts: unknown[]; resultMeta?: Record<string, unknown> };
+	response?: { parts: unknown[] };
 }): unknown {
 	const resp = opts.response
 		? {
 			id: 'r' + Math.random().toString(36).slice(2, 8),
 			entireResponse: { value: opts.response.parts },
-			result: opts.response.resultMeta ? { metadata: opts.response.resultMeta } : undefined,
 		}
 		: undefined;
 	return {
@@ -225,35 +224,6 @@ suite('ChatModelToRecordsAdapter', () => {
 		assert.strictEqual(out[1].role, 'assistant');
 		const id = out[1].toolUse?.id;
 		assert.ok(typeof id === 'string' && id.startsWith('confirm-'));
-	});
-
-	test('chiposLangGraphState from response.result.metadata is attached to last assistant record', () => {
-		const out = adapter.fromChatModel(fakeModel([
-			fakeReq({
-				message: 'q',
-				response: {
-					parts: [{ kind: 'markdownContent', content: { value: 'reply' } }],
-					resultMeta: { chiposLangGraphState: 'base64BLOB' },
-				},
-			}),
-		]) as FakeModel);
-
-		// Last assistant record should have chiposLangGraphState attached
-		const lastAssistant = [...out].reverse().find(r => r.role === 'assistant');
-		assert.ok(lastAssistant);
-		assert.strictEqual(lastAssistant!.chiposLangGraphState, 'base64BLOB');
-	});
-
-	test('chiposLangGraphState absent → no field attached', () => {
-		const out = adapter.fromChatModel(fakeModel([
-			fakeReq({
-				message: 'q',
-				response: { parts: [{ kind: 'markdownContent', content: { value: 'r' } }] },
-			}),
-		]) as FakeModel);
-		const lastAssistant = [...out].reverse().find(r => r.role === 'assistant');
-		assert.ok(lastAssistant);
-		assert.strictEqual(lastAssistant!.chiposLangGraphState, undefined);
 	});
 
 	test('empty user message (whitespace only) is skipped', () => {

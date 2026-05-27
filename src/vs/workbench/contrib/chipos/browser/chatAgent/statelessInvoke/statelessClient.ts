@@ -6,18 +6,26 @@
 /**
  * StatelessClient — IDE-side gateway to ChipOS C 档 reasoner endpoints.
  *
- * Phase 0 #8b. See:
- *   - ADR-017 (C 档 stateless reasoner)
- *   - document/backend-v2-migration/04-decisions/PHASE-0-PROTOCOL-SPEC.md §1.3 (endpoints),
- *     §2.2 (schema), §8 (cancellation + replay + error handling)
- *   - document/backend-v2-migration/04-decisions/PHASE-0-SEQUENCE-DIAGRAMS.md
- *     §1 (single round), §7 (cancel), §8 (replay)
+ * Phase 0 #8b + Phase 1 (ADR-018 reverse-channel + resume). See:
+ *   - ADR-017 (C 档 stateless reasoner) + ADR-018 (mixed-state)
+ *   - document/backend-v2-migration/04-decisions/PHASE-1-PROTOCOL-SPEC.md §1
+ *     (endpoint table), §2.2 / §2.4 / §2.5 / §2.6 / §2.9 (request/response
+ *     shapes), §3 (error codes), §4.2 (idempotency — 404 on stale call_id is
+ *     OK, 412 on catalog mismatch).
  *
  * Responsibilities:
  *   - POST /api/v1/invoke and stream back ``InvokeEvent``s parsed from SSE
  *   - POST /api/v1/invoke/{trace_id}/cancel — server-side cancellation side door
  *   - POST /api/v1/replay/{trace_id}?last_sequence_id=N — short-buffer SSE replay
+ *     (Phase 0; Phase 1 replaces with /resume/{chat_session_id})
  *   - POST /api/v1/compact — single-JSON conversation summarization
+ *   - POST /api/v1/tools/register — out-of-band tool catalog upload (Phase 1)
+ *   - POST /api/v1/tool_result/{trace_id}/{call_id} — IDE→reasoner reverse-channel
+ *     completion for an ``ide_tool_call`` SSE event (Phase 1)
+ *   - POST /api/v1/confirm_response/{trace_id}/{request_id} — IDE→reasoner
+ *     reverse-channel completion for a ``confirm_request`` SSE event (Phase 1)
+ *   - POST /api/v1/resume/{chat_session_id} — SSE drop reconnect (Phase 1)
+ *   - GET  /api/v1/turn_state/{chat_session_id} — IDE startup in-flight probe (Phase 1)
  *
  * Wire format mirrors the existing reasoner SSE (``data: <json>\n\n``) so this
  * follows the same conventions as ``grpcSseEventStreamClient.ts``. We don't
@@ -29,8 +37,14 @@
 import {
 	type CompactRequest,
 	type CompactResponse,
+	type ConfirmResponseRequest,
 	type InvokeEvent,
 	type InvokeRequest,
+	type RegisterToolsRequest,
+	type RegisterToolsResponse,
+	type ResumeRequest,
+	type ToolResultRequest,
+	type TurnStateResponse,
 } from './types.js';
 
 
@@ -54,10 +68,28 @@ export class StatelessReplayExpiredError extends Error {
 }
 
 /**
- * Thrown by ``invoke()`` / ``replay()`` / ``compact()`` when the server
- * returns a non-2xx HTTP status (other than the 410 case handled above).
- * The ``status`` + best-effort parsed ``body`` are surfaced so callers can
- * decide whether to retry / surface to user.
+ * Thrown by ``resume()`` when the reasoner returns HTTP 404 — there is no
+ * in-flight turn for ``traceId`` (turn completed naturally between SSE drop
+ * and the resume POST, or the trace_id was wrong). PROTOCOL-SPEC §2.6:
+ * IDE remediation is benign — the turn likely finished; fetch latest state
+ * via ``getTurnState()`` if necessary.
+ */
+export class StatelessResumeNotFoundError extends Error {
+	readonly traceId: string;
+
+	constructor(traceId: string) {
+		super(`no in-flight turn for trace_id=${traceId}`);
+		this.name = 'StatelessResumeNotFoundError';
+		this.traceId = traceId;
+	}
+}
+
+/**
+ * Thrown by ``invoke()`` / ``replay()`` / ``compact()`` and the Phase 1
+ * methods when the server returns a non-2xx HTTP status (other than the
+ * specially-handled 410 / 404 cases above). The ``status`` + best-effort
+ * parsed ``body`` are surfaced so callers can decide whether to retry /
+ * surface to user.
  */
 export class StatelessHttpError extends Error {
 	readonly status: number;
@@ -203,7 +235,9 @@ export class StatelessClient {
 		// Returned AsyncIterable lazily fires the fetch on first next() so
 		// 410 surfaces as the first thrown error rather than an unhandled
 		// promise rejection.
-		return this._sseRequest(url, undefined, undefined, traceId);
+		return this._sseRequest(url, undefined, undefined, [
+			{ onStatus: 410, throw: () => new StatelessReplayExpiredError(traceId) },
+		]);
 	}
 
 	/**
@@ -230,6 +264,201 @@ export class StatelessClient {
 				throw new StatelessHttpError(resp.status, parsed);
 			}
 			return (await this._parseJson(resp)) as CompactResponse;
+		} finally {
+			clear();
+		}
+	}
+
+	// ── Phase 1 endpoints (ADR-018 reverse-channel + resume) ──────────────
+
+	/**
+	 * POST /api/v1/tools/register — long-lived out-of-band tool catalog upload
+	 * (PHASE-1-PROTOCOL-SPEC §2.2). Called at IDE startup and whenever the
+	 * live MCP server set changes. Reasoner returns an opaque
+	 * ``catalog_version`` that the IDE caches and sends back as
+	 * ``InvokeRequest.expected_catalog_version`` on every subsequent invoke
+	 * (412 on mismatch → re-register + retry, per ADR-018 §2 D9 / R-S).
+	 *
+	 * Throws ``StatelessHttpError`` on non-2xx.
+	 */
+	async registerTools(req: RegisterToolsRequest): Promise<RegisterToolsResponse> {
+		const url = `${this._baseUrl}/api/v1/tools/register`;
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (this._authToken) {
+			headers['Authorization'] = `Bearer ${this._authToken}`;
+		}
+		const { controller, clear } = this._timeoutSignal(undefined);
+		try {
+			const resp = await this._fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(req),
+				signal: controller.signal,
+			});
+			if (!resp.ok) {
+				const parsed = await this._parseJsonSafe(resp);
+				throw new StatelessHttpError(resp.status, parsed);
+			}
+			return (await this._parseJson(resp)) as RegisterToolsResponse;
+		} finally {
+			clear();
+		}
+	}
+
+	/**
+	 * POST /api/v1/tool_result/{trace_id}/{call_id} — reverse-channel reply
+	 * to an ``ide_tool_call`` SSE event (PHASE-1-PROTOCOL-SPEC §2.4).
+	 *
+	 *   - 202 → ``{accepted: true}`` (reasoner resolved the pending future)
+	 *   - 404 → ``{error: 'call_not_found', ...}`` — benign: the reasoner's
+	 *     callback already timed out or this is a duplicate POST after the
+	 *     loop moved on (PHASE-1-PROTOCOL-SPEC §4.2 idempotency). IDE
+	 *     should silently drop.
+	 *   - 400 / 5xx → throws ``StatelessHttpError``.
+	 */
+	async postToolResult(
+		traceId: string,
+		callId: string,
+		req: ToolResultRequest,
+	): Promise<{ accepted: boolean } | { error: string;[k: string]: unknown }> {
+		const url = `${this._baseUrl}/api/v1/tool_result/${encodeURIComponent(traceId)}/${encodeURIComponent(callId)}`;
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (this._authToken) {
+			headers['Authorization'] = `Bearer ${this._authToken}`;
+		}
+		const { controller, clear } = this._timeoutSignal(undefined);
+		try {
+			const resp = await this._fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(req),
+				signal: controller.signal,
+			});
+			if (resp.status === 202 || resp.status === 200) {
+				// 202 success: reasoner may return empty body or a small JSON
+				// envelope. Normalize either case to {accepted: true}.
+				try { await resp.text(); } catch { /* best-effort */ }
+				return { accepted: true };
+			}
+			if (resp.status === 404) {
+				const parsed = await this._parseJsonSafe(resp);
+				if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+					return parsed as { error: string;[k: string]: unknown };
+				}
+				return { error: 'call_not_found' };
+			}
+			const parsed = await this._parseJsonSafe(resp);
+			throw new StatelessHttpError(resp.status, parsed);
+		} finally {
+			clear();
+		}
+	}
+
+	/**
+	 * POST /api/v1/confirm_response/{trace_id}/{request_id} — reverse-channel
+	 * reply to a ``confirm_request`` SSE event (PHASE-1-PROTOCOL-SPEC §2.5).
+	 *
+	 * Status semantics mirror ``postToolResult`` (the underlying reasoner
+	 * uses the same future-resolution machinery — §2.5 final paragraph).
+	 *   - 202 → ``{accepted: true}``
+	 *   - 404 → ``{error: 'request_not_found', ...}`` (stale POST — benign)
+	 *   - 400 / 5xx → throws ``StatelessHttpError``.
+	 */
+	async postConfirmResponse(
+		traceId: string,
+		requestId: string,
+		req: ConfirmResponseRequest,
+	): Promise<{ accepted: boolean } | { error: string;[k: string]: unknown }> {
+		const url = `${this._baseUrl}/api/v1/confirm_response/${encodeURIComponent(traceId)}/${encodeURIComponent(requestId)}`;
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (this._authToken) {
+			headers['Authorization'] = `Bearer ${this._authToken}`;
+		}
+		const { controller, clear } = this._timeoutSignal(undefined);
+		try {
+			const resp = await this._fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(req),
+				signal: controller.signal,
+			});
+			if (resp.status === 202 || resp.status === 200) {
+				try { await resp.text(); } catch { /* best-effort */ }
+				return { accepted: true };
+			}
+			if (resp.status === 404) {
+				const parsed = await this._parseJsonSafe(resp);
+				if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+					return parsed as { error: string;[k: string]: unknown };
+				}
+				return { error: 'request_not_found' };
+			}
+			const parsed = await this._parseJsonSafe(resp);
+			throw new StatelessHttpError(resp.status, parsed);
+		} finally {
+			clear();
+		}
+	}
+
+	/**
+	 * POST /api/v1/resume/{chat_session_id} — SSE drop reconnect, continuing
+	 * the in-flight turn referenced by ``req.trace_id`` from
+	 * ``req.last_sequence_id`` forward (PHASE-1-PROTOCOL-SPEC §2.6).
+	 *
+	 * Throws:
+	 *   - ``StatelessResumeNotFoundError`` on HTTP 404 (no in-flight turn for
+	 *     this trace_id; likely finished naturally between drop + reconnect)
+	 *   - ``StatelessReplayExpiredError`` on HTTP 410 (SSE buffer evicted —
+	 *     IDE shows "session expired, resend original prompt")
+	 *   - ``StatelessHttpError`` on other non-2xx
+	 *
+	 * The returned AsyncIterable yields events in the same shape as
+	 * ``invoke()``; the stream concludes with a ``resumed_buffer_drained``
+	 * marker per §2.6 (Phase 1 buffer-drain-only handoff).
+	 */
+	resume(chatSessionId: string, req: ResumeRequest, signal?: AbortSignal): AsyncIterable<InvokeEvent> {
+		const url = `${this._baseUrl}/api/v1/resume/${encodeURIComponent(chatSessionId)}`;
+		return this._sseRequest(url, req, signal, [
+			{ onStatus: 404, throw: () => new StatelessResumeNotFoundError(req.trace_id) },
+			{ onStatus: 410, throw: () => new StatelessReplayExpiredError(req.trace_id) },
+		]);
+	}
+
+	/**
+	 * GET /api/v1/turn_state/{chat_session_id} — IDE startup probe for
+	 * in-flight turns belonging to this chat session
+	 * (PHASE-1-PROTOCOL-SPEC §2.9).
+	 *
+	 * Per §2.9 IDE behaviour: caller iterates ``in_flight_traces`` and
+	 * either auto-resumes (state="running") or prompts the user
+	 * (state="stale"). HTTP 404 is treated as an empty result (unknown
+	 * chat_session_id is functionally equivalent to "no in-flight traces").
+	 * Other non-2xx throws ``StatelessHttpError``.
+	 */
+	async getTurnState(chatSessionId: string): Promise<TurnStateResponse> {
+		const url = `${this._baseUrl}/api/v1/turn_state/${encodeURIComponent(chatSessionId)}`;
+		const headers: Record<string, string> = { 'Accept': 'application/json' };
+		if (this._authToken) {
+			headers['Authorization'] = `Bearer ${this._authToken}`;
+		}
+		const { controller, clear } = this._timeoutSignal(undefined);
+		try {
+			const resp = await this._fetch(url, {
+				method: 'GET',
+				headers,
+				signal: controller.signal,
+			});
+			if (resp.status === 404) {
+				// Drain body for connection reuse, then synthesise an empty
+				// result so callers don't need a separate 404 code path.
+				try { await resp.text(); } catch { /* best-effort */ }
+				return { chat_session_id: chatSessionId, in_flight_traces: [] };
+			}
+			if (!resp.ok) {
+				const parsed = await this._parseJsonSafe(resp);
+				throw new StatelessHttpError(resp.status, parsed);
+			}
+			return (await this._parseJson(resp)) as TurnStateResponse;
 		} finally {
 			clear();
 		}
@@ -280,18 +509,23 @@ export class StatelessClient {
 	/**
 	 * Drive an SSE request → AsyncIterable<InvokeEvent> conversion.
 	 *
-	 * Shared between ``invoke()`` (POST + JSON body) and ``replay()`` (POST
-	 * without body). If ``body`` is undefined, sends no Content-Type and no
-	 * body — matches the replay endpoint contract (query string only).
+	 * Shared between ``invoke()`` (POST + JSON body), ``replay()`` (POST without
+	 * body), and ``resume()`` (POST + JSON body). If ``body`` is undefined,
+	 * sends no Content-Type and no body — matches the replay endpoint contract
+	 * (query string only). If ``body`` is defined (object), it's JSON-encoded
+	 * with ``Content-Type: application/json``.
 	 *
-	 * If ``replayTraceId`` is provided, HTTP 410 is translated to
-	 * ``StatelessReplayExpiredError`` (replay-specific contract).
+	 * Per-endpoint status overrides (passed via ``statusOverrides``) translate
+	 * specific HTTP statuses to typed errors before generic ``StatelessHttpError``
+	 * kicks in:
+	 *   - replay: 410 → ``StatelessReplayExpiredError``
+	 *   - resume: 404 → ``StatelessResumeNotFoundError``, 410 → ``StatelessReplayExpiredError``
 	 */
 	private _sseRequest(
 		url: string,
 		body: unknown,
 		signal: AbortSignal | undefined,
-		replayTraceId?: string,
+		statusOverrides?: { onStatus: number; throw: () => Error }[],
 	): AsyncIterable<InvokeEvent> {
 		// Capture instance state into local consts so the async generator
 		// doesn't capture ``this`` (lint-friendly + makes the closure shape
@@ -326,11 +560,15 @@ export class StatelessClient {
 						body: body !== undefined ? JSON.stringify(body) : undefined,
 						signal: controller.signal,
 					});
-					if (replayTraceId !== undefined && resp.status === 410) {
-						// Drain body so the connection can be reused, but
-						// the body content is irrelevant to the error.
-						try { await resp.text(); } catch { /* best-effort */ }
-						throw new StatelessReplayExpiredError(replayTraceId);
+					if (statusOverrides) {
+						for (const ov of statusOverrides) {
+							if (resp.status === ov.onStatus) {
+								// Drain body so the connection can be reused, but
+								// the body content is irrelevant to the error.
+								try { await resp.text(); } catch { /* best-effort */ }
+								throw ov.throw();
+							}
+						}
 					}
 					if (!resp.ok) {
 						let parsed: unknown;

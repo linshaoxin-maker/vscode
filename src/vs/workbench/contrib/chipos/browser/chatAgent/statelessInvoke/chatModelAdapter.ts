@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Phase 0 #8e Step 0.5 — ChatModelToRecordsAdapter
+ * ChatModelToRecordsAdapter — Phase 0 #8e Step 0.5, updated for Phase 1 (ADR-018).
  *
  * Bridges VS Code's live `IChatModel` (rich nested `requests[N].response[]`
  * tree of typed `IChatProgressResponseContent` parts) into the simpler
@@ -33,17 +33,16 @@
  *           is_error:<from resultDetails.isError>}}` (only if isComplete)
  *     - `kind:'confirmation'` → ChipOS user-confirm specialisation, name
  *       fixed to `'chipos_user_confirm'`; next request's `confirmation`
- *       string field provides the tool_result content. See ADR-017 §11.2.
+ *       string field provides the tool_result content. See ADR-018 §2 D13.
  *     - `kind:'thinking'` / `kind:'progressMessage'` /
  *       `kind:'mcpServersStarting'` / `kind:'undoStop'` → drop (UI hints,
  *       not part of conversation history sent to LLM)
- *   - `chiposLangGraphState`: not yet written by IDE (Phase 0 #8f task);
- *     when wired, lives on `response.result?.metadata?.chiposLangGraphState`
- *     and the adapter surfaces the most-recent one on the corresponding
- *     assistant record.
  *
- * See PHASE-0-PROTOCOL-SPEC.md §2, ADR-017 §11.2, and
- * PHASE-0-8EFG-INTEGRATION-PLAN.md Step 0.5 for cross-refs.
+ * Phase 1 change (ADR-018 §2 D8): the Phase 0 `chiposLangGraphState`
+ * extraction is gone — reasoner internal state lives reasoner-side in
+ * FileStateStore now; IDE no longer round-trips it through the conversation.
+ *
+ * See PHASE-1-PROTOCOL-SPEC.md §2 and ADR-018 §2 D8/D13 for cross-refs.
  */
 
 import { IChatModel, IChatRequestModel, IChatResponseModel } from '../../../../chat/common/model/chatModel.js';
@@ -265,28 +264,9 @@ export class ChatModelToRecordsAdapter {
 		// Flush any trailing text.
 		flushText();
 
-		// ── chiposLangGraphState (Phase 0 #8f wiring) ───────────────
-		// When #8f lands, the IDE will stash the state blob on the
-		// response result's metadata. The most-recent assistant record
-		// from this response should carry it so the assembler can pick
-		// the latest one across the conversation.
-		const blob = this._extractLangGraphStateBlob(response);
-		if (blob !== null) {
-			// Find last assistant record we emitted from this response
-			// and attach. If we only emitted user/tool_result records
-			// (unusual but possible), attach to a fresh marker record.
-			let attached = false;
-			for (let i = out.length - 1; i >= 0; i--) {
-				if (out[i].role === 'assistant') {
-					out[i].chiposLangGraphState = blob;
-					attached = true;
-					break;
-				}
-			}
-			if (!attached) {
-				out.push({ role: 'assistant', content: '', chiposLangGraphState: blob });
-			}
-		}
+		// Phase 1 (ADR-018 §2 D8): no chiposLangGraphState attach — the
+		// reasoner owns its internal state via FileStateStore. The IDE-side
+		// conversation carries only user-visible messages.
 
 		return out;
 	}
@@ -353,22 +333,6 @@ export class ChatModelToRecordsAdapter {
 		}
 		const flag = (details as { isError?: unknown }).isError;
 		return flag === true;
-	}
-
-	/**
-	 * Pull the chiposLangGraphState blob from a completed response, if
-	 * the IDE round_end handler (Phase 0 #8f) wrote it. Returns null
-	 * when not present.
-	 *
-	 * Storage shape (locked at #8f time): `response.result?.metadata?.chiposLangGraphState`
-	 * — opaque base64 string per PHASE-0-PROTOCOL-SPEC §3.
-	 */
-	private _extractLangGraphStateBlob(response: IChatResponseModel): string | null {
-		const md = (response.result?.metadata ?? null) as { chiposLangGraphState?: unknown } | null;
-		if (md && typeof md.chiposLangGraphState === 'string' && md.chiposLangGraphState.length > 0) {
-			return md.chiposLangGraphState;
-		}
-		return null;
 	}
 }
 

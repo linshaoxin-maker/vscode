@@ -20,7 +20,7 @@
 import assert from 'assert';
 import { classifySseFailure, dispatchStatelessEvent } from '../eventDispatcher.js';
 import { StatelessHttpError, StatelessReplayExpiredError } from '../statelessClient.js';
-import type { InvokeEvent, TokenUsage } from '../types.js';
+import type { InvokeEvent, Message, TokenUsage } from '../types.js';
 
 function ev(type: InvokeEvent['type'], data: Record<string, unknown> = {}, sequence_id = 1): InvokeEvent {
 	return { type, sequence_id, data };
@@ -102,24 +102,132 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('trace_link', { trace_id: 'abc' })), {});
 	});
 
-	test('round_end with blob → terminate + flush + langgraph blob', () => {
+	test('round_end with final_messages → terminate + flush + finalMessages (Phase 1 ADR-018)', () => {
+		const finalMessages: Message[] = [
+			{ role: 'assistant', content: 'Done.' },
+			{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'ok' }] },
+		];
 		const r = dispatchStatelessEvent(
-			ev('round_end', { reason: 'end_turn', langgraph_state_blob: 'base64stuff==' }),
+			ev('round_end', { reason: 'end_turn', final_messages: finalMessages }),
 		);
 		assert.deepStrictEqual(r, {
 			terminate: true,
 			flushText: true,
-			langgraphStateBlob: 'base64stuff==',
+			finalMessages,
 		});
 	});
 
-	test('round_end without blob → terminate + flush, blob undefined', () => {
+	test('round_end without final_messages → terminate + flush, finalMessages undefined', () => {
+		// Covers the "cancelled" and "interrupted" reasons where reasoner may
+		// have nothing useful to append (Phase 1 reason literals).
 		const r = dispatchStatelessEvent(ev('round_end', { reason: 'cancelled' }));
 		assert.deepStrictEqual(r, {
 			terminate: true,
 			flushText: true,
-			langgraphStateBlob: undefined,
+			finalMessages: undefined,
 		});
+	});
+
+	test('round_end with non-array final_messages → defensively dropped', () => {
+		// Forward-compat: bad/old payload shouldn't crash; we just drop the field.
+		const r = dispatchStatelessEvent(ev('round_end', { reason: 'max_iterations', final_messages: 'not-an-array' as unknown as Message[] }));
+		assert.deepStrictEqual(r, {
+			terminate: true,
+			flushText: true,
+			finalMessages: undefined,
+		});
+	});
+
+	test('ide_tool_call → flushText + ideToolCall (camelCased payload)', () => {
+		const r = dispatchStatelessEvent(
+			ev('ide_tool_call', {
+				call_id: 'call_xyz',
+				tool_name: 'read_file',
+				args: { path: '/tmp/foo.ts' },
+				timeout_ms: 60000,
+			}),
+		);
+		assert.deepStrictEqual(r, {
+			flushText: true,
+			ideToolCall: {
+				callId: 'call_xyz',
+				toolName: 'read_file',
+				args: { path: '/tmp/foo.ts' },
+				timeoutMs: 60000,
+			},
+		});
+	});
+
+	test('ide_tool_call without timeout_ms → timeoutMs undefined', () => {
+		const r = dispatchStatelessEvent(
+			ev('ide_tool_call', { call_id: 'c1', tool_name: 't1', args: {} }),
+		);
+		assert.deepStrictEqual(r, {
+			flushText: true,
+			ideToolCall: { callId: 'c1', toolName: 't1', args: {}, timeoutMs: undefined },
+		});
+	});
+
+	test('confirm_request → flushText + confirmRequest (camelCased payload)', () => {
+		const r = dispatchStatelessEvent(
+			ev('confirm_request', {
+				request_id: 'chipos_confirm_abc',
+				card_type: 'agent_ask',
+				card_data: { question: 'Proceed?' },
+				title: 'Permission needed',
+				buttons: ['approve', 'reject'],
+			}),
+		);
+		assert.deepStrictEqual(r, {
+			flushText: true,
+			confirmRequest: {
+				requestId: 'chipos_confirm_abc',
+				cardType: 'agent_ask',
+				cardData: { question: 'Proceed?' },
+				title: 'Permission needed',
+				buttons: ['approve', 'reject'],
+			},
+		});
+	});
+
+	test('confirm_request without title/buttons → those fields undefined', () => {
+		const r = dispatchStatelessEvent(
+			ev('confirm_request', {
+				request_id: 'r1',
+				card_type: 'generic',
+				card_data: {},
+			}),
+		);
+		assert.deepStrictEqual(r, {
+			flushText: true,
+			confirmRequest: {
+				requestId: 'r1',
+				cardType: 'generic',
+				cardData: {},
+				title: undefined,
+				buttons: undefined,
+			},
+		});
+	});
+
+	test('keepalive → keepalive only (no flush, no terminate)', () => {
+		const r = dispatchStatelessEvent(ev('keepalive', { ts: 1716800000000 }));
+		assert.deepStrictEqual(r, { keepalive: { ts: 1716800000000 } });
+	});
+
+	test('keepalive missing ts → defaults to 0 (defensive)', () => {
+		const r = dispatchStatelessEvent(ev('keepalive', {}));
+		assert.deepStrictEqual(r, { keepalive: { ts: 0 } });
+	});
+
+	test('checkpoint → checkpoint only (resume watermark)', () => {
+		const r = dispatchStatelessEvent(ev('checkpoint', { iteration: 3, messages_count: 7 }));
+		assert.deepStrictEqual(r, { checkpoint: { iteration: 3, messagesCount: 7 } });
+	});
+
+	test('resumed_buffer_drained → resumedBufferDrained only', () => {
+		const r = dispatchStatelessEvent(ev('resumed_buffer_drained', { sequence_id: 42 }));
+		assert.deepStrictEqual(r, { resumedBufferDrained: { sequenceId: 42 } });
 	});
 
 	test('error with message → flush + markdownError + errorMessage', () => {
