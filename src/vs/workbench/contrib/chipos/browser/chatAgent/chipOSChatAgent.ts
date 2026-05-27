@@ -5017,6 +5017,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			provider: llm.provider || 'auto',
 			base_url: llm.base_url || null,
 			api_key_alias: null,
+			// F6 fix (PHASE-1-IMPLEMENTATION-AUDIT post-deploy): ship the actual
+			// provider key in-band, mirroring the legacy stateful invoke path.
+			// Without this every Phase 1 LLM call 401s because the reasoner
+			// deploy doesn't have CHIPOS_API_KEY_<ALIAS> envs provisioned and
+			// `api_key_alias=null` resolves to empty server-side. ADR-018 §1.1
+			// proper vault is Phase 2 work.
+			api_key: llm.api_key || null,
 			thinking,
 			expected_catalog_version: expectedCatalogVersion,
 			workspace_path: workspace,

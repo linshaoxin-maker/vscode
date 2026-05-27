@@ -210,6 +210,11 @@ export interface InvokeRequest {
 	provider?: string;
 	base_url?: string | null;
 	api_key_alias?: string | null;
+	// F6 fix (PHASE-1-IMPLEMENTATION-AUDIT post-deploy): IDE may ship the
+	// actual LLM provider key in-band as legacy stateful path does, until
+	// reasoner-side vault is wired (ADR-018 §1.1). When both `api_key` and
+	// `api_key_alias` are present, reasoner uses `api_key`.
+	api_key?: string | null;
 	temperature?: number | null;
 	max_tokens?: number | null;
 	thinking?: boolean;
