@@ -112,8 +112,15 @@ export class ChipOSChatSessionTabs extends Disposable {
 		this._rowListeners.clear();
 		dom.clearNode(this._tabsContainer);
 
-		this._domNode.classList.toggle('chipos-session-tabs-empty', openTabs.length === 0);
-		if (openTabs.length === 0) {
+		// Only show a tab once its conversation has actually started — i.e.
+		// the session has a real title (derived from the first submitted
+		// message). A fresh untitled session shows NO tab, so startup / the
+		// `+` button never leaves an empty "New Chat" placeholder tab. (Per
+		// product intent: 只有对话开始了才有 tab 标签.)
+		const visibleTabs = openTabs.filter(uri => this._hasRealTitle(uri));
+
+		this._domNode.classList.toggle('chipos-session-tabs-empty', visibleTabs.length === 0);
+		if (visibleTabs.length === 0) {
 			return;
 		}
 
@@ -124,7 +131,7 @@ export class ChipOSChatSessionTabs extends Disposable {
 			sessionsByResource.set(s.resource.toString(), s);
 		}
 
-		for (const uri of openTabs) {
+		for (const uri of visibleTabs) {
 			const session = sessionsByResource.get(uri.toString());
 			const isActive = !!activeUri && isEqual(activeUri, uri);
 			if (session) {
@@ -149,6 +156,22 @@ export class ChipOSChatSessionTabs extends Disposable {
 	 *      so a session that hasn't had a first message yet still gets a
 	 *      friendly label instead of a base64 UUID.
 	 */
+	/**
+	 * True when a session has a real, conversation-derived title (so it's
+	 * earned a tab). Mirrors `_labelForUri`'s accept logic: a non-empty title
+	 * that isn't just the URI's base64 segment. A fresh untitled session
+	 * returns false → no tab until the user actually starts chatting.
+	 */
+	private _hasRealTitle(uri: URI): boolean {
+		const title = this._chatService.getSessionTitle(uri);
+		if (!title || !title.trim()) {
+			return false;
+		}
+		const segments = uri.path.split('/').filter(Boolean);
+		const lastSeg = segments[segments.length - 1];
+		return !lastSeg || !title.includes(lastSeg.slice(0, 16));
+	}
+
 	private _labelForUri(uri: URI): string {
 		const title = this._chatService.getSessionTitle(uri);
 		if (title && title.trim()) {
