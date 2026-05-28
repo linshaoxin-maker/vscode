@@ -4968,7 +4968,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private _statelessChatSessionIdFor(sessionResource: URI): string {
 		let id = this._statelessChatSessionIds.get(sessionResource);
 		if (!id) {
-			id = `stateless_chat_${++this._sessionCounter}_${Date.now()}`;
+			// PROD-READINESS P0-B: use an unguessable UUID, not a
+			// counter+timestamp. Combined with the reasoner-side owner check
+			// (claim_or_verify_owner), this prevents another authed user from
+			// enumerating / hijacking someone else's chat_session_id.
+			id = `stateless_chat_${generateUuid()}`;
 			this._statelessChatSessionIds.set(sessionResource, id);
 			this._logService.info('[ChipOS Stateless] New chat_session_id:', id);
 		}
