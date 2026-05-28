@@ -215,6 +215,14 @@ export function dispatchStatelessEvent(
 			};
 		}
 
+		case 'resumed_live':
+			// D10 (ADR-018 §2 D10 / R-D) marker: the reasoner restarted mid-turn
+			// and rehydrated the agent loop from its checkpoint. Decorative — the
+			// continuation content_block_delta / round_end events that follow
+			// drive the actual rendering. We swallow it explicitly (rather than
+			// via the forward-compat default) so the protocol stays documented.
+			return {};
+
 		case 'thinking_delta': {
 			const data = event.data as { delta?: { text?: string } };
 			const text = typeof data.delta?.text === 'string' ? data.delta.text : '';

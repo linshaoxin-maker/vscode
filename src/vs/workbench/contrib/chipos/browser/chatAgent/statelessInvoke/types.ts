@@ -290,6 +290,7 @@ export type InvokeEventType =
 	| 'keepalive'
 	| 'checkpoint'
 	| 'resumed_buffer_drained'
+	| 'resumed_live'
 	| 'round_end'
 	| 'error';
 
@@ -680,11 +681,26 @@ export interface KeepaliveData {
 }
 
 /**
- * Payload of `resumed_buffer_drained` event — Phase 1 buffer-drain-only handoff
- * marker emitted by /resume endpoint after replay completes. Tells IDE: from
- * this seq forward, you'll either see live emissions (when live handoff is
- * wired in a future increment) or the stream closes here.
+ * Payload of `resumed_buffer_drained` event — handoff marker emitted by the
+ * /resume endpoint after the SSE replay buffer is drained. Tells the IDE:
+ * everything ≤ this seq has been replayed; from here forward you'll see live
+ * emissions (F4 live-tail when the loop is still running, or D10 rehydrate
+ * continuation after a reasoner restart) or the stream closes here.
  */
 export interface ResumedBufferDrainedData {
 	sequence_id: number;
+}
+
+/**
+ * Payload of `resumed_live` event — emitted by /resume (D10, ADR-018 §2 D10 /
+ * R-D) right after the drained marker when the reasoner restarted mid-turn and
+ * rehydrated the agent loop from its persisted checkpoint. Distinct from
+ * `resumed_buffer_drained`: this signals the loop itself resumed (no second
+ * `message_start`), so the events that follow are freshly-generated
+ * continuation, not buffer replay. Decorative for now — the continuation
+ * `content_block_delta` / `round_end` events drive the actual rendering.
+ */
+export interface ResumedLiveData {
+	trace_id: string;
+	resumed_from_iteration: number;
 }

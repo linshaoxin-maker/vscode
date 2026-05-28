@@ -230,6 +230,13 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(r, { resumedBufferDrained: { sequenceId: 42 } });
 	});
 
+	test('resumed_live → decorative no-op (D10 rehydrate marker)', () => {
+		const r = dispatchStatelessEvent(
+			ev('resumed_live', { trace_id: 't-1', resumed_from_iteration: 3 }),
+		);
+		assert.deepStrictEqual(r, {});
+	});
+
 	test('error with message → flush + markdownError + errorMessage', () => {
 		const r = dispatchStatelessEvent(
 			ev('error', { message: 'upstream LLM 429', error_code: 'rate_limit', category: 'transient' }),
