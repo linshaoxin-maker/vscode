@@ -396,6 +396,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private _mcpToolsReportDebounce: ReturnType<typeof setTimeout> | undefined;
 
 	private _onMcpToolsChanged(): void {
+		// R-C (PHASE-1-IMPLEMENTATION-AUDIT §13.3): invalidate the Phase 1
+		// catalog fingerprint cache so the NEXT _ensureToolsRegistered call
+		// re-computes the tool list and re-POSTs /tools/register. Without
+		// this the optimisation cache would short-circuit even after the
+		// user installed a new MCP server, and the LLM wouldn't see the
+		// new tools until the IDE restarted.
+		// Done synchronously (not behind the 1s debounce) so a chat fired
+		// immediately after an MCP install never sees a stale fingerprint.
+		this._statelessCatalogFingerprints.clear();
+		this._statelessCatalogVersions.clear();
+
 		// 防抖 1s — 避免启动时大量 server 连接导致频繁上报
 		if (this._mcpToolsReportDebounce) {
 			clearTimeout(this._mcpToolsReportDebounce);
@@ -5255,17 +5266,60 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		};
 		const friendlyToolName = (raw: string) => this._friendlyToolName(raw);
 
-		try {
-			for await (const event of client.invoke(invokeReq, abortController.signal)) {
-				const trace = this._statelessTraces.get(request.sessionResource);
-				if (trace && event.sequence_id > trace.lastSequenceId) {
-					trace.lastSequenceId = event.sequence_id;
+		// D9 (ADR-018 §2 D9 / R-S): one-shot 412 catalog_version_mismatch
+		// retry. If the reasoner rejects /invoke with 412 (its cached
+		// catalog hash differs from what we sent, e.g. another IDE window
+		// re-registered or the reasoner restarted) we invalidate our
+		// fingerprint cache, re-register fresh, and retry once. Second 412
+		// would be a deterministic mismatch (catalog computation diverging
+		// between IDE and reasoner) so we surface it like any other HTTP
+		// error rather than looping.
+		let attempt412Retried = false;
+		retryLoop: while (true) {
+			try {
+				for await (const event of client.invoke(invokeReq, abortController.signal)) {
+					const trace = this._statelessTraces.get(request.sessionResource);
+					if (trace && event.sequence_id > trace.lastSequenceId) {
+						trace.lastSequenceId = event.sequence_id;
+					}
+					applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
 				}
-				applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
-			}
-		} catch (err) {
-			const verdict = classifySseFailure(err, abortController.signal);
-			switch (verdict) {
+				break retryLoop;  // success — no retry needed
+			} catch (err) {
+				const verdict = classifySseFailure(err, abortController.signal);
+				// D9 412 retry — check BEFORE the switch so we can `continue`.
+				if (verdict === 'surface-http'
+					&& (err as StatelessHttpError).status === 412
+					&& !attempt412Retried) {
+					attempt412Retried = true;
+					this._logService.warn(
+						'[ChipOS Stateless] /invoke 412 catalog_version_mismatch — '
+						+ 're-registering tool catalog and retrying once'
+					);
+					// Clear fingerprint cache so _ensureToolsRegistered
+					// actually POSTs (otherwise the R-C optimisation would
+					// short-circuit with the same stale version).
+					this._statelessCatalogFingerprints.delete(chatSessionId);
+					this._statelessCatalogVersions.delete(chatSessionId);
+					try {
+						const newVersion = await this._ensureToolsRegistered(client, chatSessionId);
+						invokeReq.expected_catalog_version = newVersion;
+					} catch (regErr) {
+						this._logService.error(
+							'[ChipOS Stateless] re-register after 412 failed: %s',
+							String(regErr),
+						);
+						progress([this._markdown(
+							'$(error) **ChipOS:** tool catalog out of sync with reasoner '
+							+ 'and re-register failed — please reload the window'
+						)]);
+						errorResult = { errorDetails: { message: 'catalog re-register failed' } };
+						break retryLoop;
+					}
+					continue retryLoop;  // retry /invoke with new version
+				}
+				// Fall through to existing error-handling switch.
+				switch (verdict) {
 				case 'cancelled':
 					this._logService.info('[ChipOS Stateless] aborted by user cancel');
 					flushAssistantText();
@@ -5334,12 +5388,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 					break;
 				}
+				}
+				// D9: any switch branch other than the 412-retry continue above is
+				// terminal — exit the retry loop.
+				break retryLoop;
 			}
-		} finally {
-			flushAssistantText();
-			cancelListener.dispose();
-			this._statelessTraces.delete(request.sessionResource);
 		}
+		flushAssistantText();
+		cancelListener.dispose();
+		this._statelessTraces.delete(request.sessionResource);
 
 		// Phase 1 (ADR-018 §2 D8): IDE no longer persists langgraph_state_blob —
 		// internal reasoner state lives reasoner-side in FileStateStore. We just
@@ -5378,6 +5435,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	/** Cached catalog_version per chat_session_id from the most recent register. */
 	private readonly _statelessCatalogVersions = new Map<string, string>();
 
+	/** R-C: catalog fingerprint per chat session — if the LLM-visible
+	 * tool list hasn't changed, _ensureToolsRegistered short-circuits
+	 * and reuses the cached catalog_version (no POST). Cleared on every
+	 * MCP server / tool list change via the autorun in initialise(). */
+	private readonly _statelessCatalogFingerprints = new Map<string, string>();
+
 	/**
 	 * Register the current chat session's tool catalog with reasoner (Phase 1
 	 * ADR-018 §2 D9). Returns the catalog_version to thread through invoke.
@@ -5411,12 +5474,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			input_schema: { type: 'object', properties: {} },
 			chipos_source: 'ide_builtin',
 		}];
+		// R-C optimisation (PHASE-1-IMPLEMENTATION-AUDIT §13.3): skip the
+		// POST when the catalog fingerprint hasn't changed since the last
+		// register for this chat session. The MCP-change watcher in
+		// `initialize()` clears the fingerprint cache whenever
+		// `IMcpService.servers` (or any server's tools list) changes, so
+		// users installing/removing MCPs mid-session pick up immediately
+		// without an IDE restart.
+		const fingerprint = this._computeCatalogFingerprint(safeTools);
+		const cachedFingerprint = this._statelessCatalogFingerprints.get(chatSessionId);
+		const cachedVersion = this._statelessCatalogVersions.get(chatSessionId);
+		if (cachedFingerprint === fingerprint && cachedVersion !== undefined) {
+			return cachedVersion;
+		}
 		const resp = await client.registerTools({
 			chat_session_id: chatSessionId,
 			tools: safeTools,
 			workspace_path: this._getWorkspaceRoot(),
 		});
 		this._statelessCatalogVersions.set(chatSessionId, resp.catalog_version);
+		this._statelessCatalogFingerprints.set(chatSessionId, fingerprint);
 		this._logService.info(
 			'[ChipOS Stateless] tools registered: %d total (%d builtin + %d MCP), catalog_version=%s',
 			safeTools.length,
@@ -5425,6 +5502,30 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			resp.catalog_version,
 		);
 		return resp.catalog_version;
+	}
+
+	/** Stable fingerprint of a tool list. Only depends on the LLM-visible
+	 * shape (name + description + input_schema + chipos_source) so two
+	 * lists with identical wire content produce the same hash. */
+	private _computeCatalogFingerprint(tools: ToolDefinition[]): string {
+		// JSON.stringify is stable enough for our use (object key order
+		// is insertion order in V8; tools come from the same builder).
+		// Sort by name to make the order deterministic across re-gathers.
+		const sorted = [...tools].sort((a, b) => a.name.localeCompare(b.name));
+		const canon = sorted.map(t => ({
+			n: t.name,
+			d: t.description,
+			s: t.input_schema,
+			c: t.chipos_source,
+		}));
+		// djb2-ish simple hash — we don't need crypto strength here, just
+		// "different inputs ≠ same fingerprint" with high probability.
+		const text = JSON.stringify(canon);
+		let h = 5381;
+		for (let i = 0; i < text.length; i++) {
+			h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+		}
+		return (h >>> 0).toString(16);
 	}
 
 	/**
