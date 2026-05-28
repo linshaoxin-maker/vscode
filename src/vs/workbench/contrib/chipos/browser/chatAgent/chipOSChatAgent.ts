@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { DeferredPromise } from '../../../../../base/common/async.js';
+import { DeferredPromise, raceCancellation } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
@@ -15,7 +15,7 @@ import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
-import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -389,6 +389,42 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// 2026-05-26: carousel subscription removed (see _pendingCarousels
 		// removal comment above). agent_ask now uses option-as-buttons via
 		// reasoner ed5cd46b + standard sendConfirmResponse handler.
+
+		// PERMISSION-DECOUPLE: a stateless permission card cannot resolve via the
+		// chat re-entry (sendRequest) path while its originating invoke() is
+		// still in-flight — the chat session is busy, so the click's sendRequest
+		// is rejected and the parked confirm Promise never resolves (verified:
+		// renderer.log shows no "confirm response" on click; only the 600s
+		// timeout POSTs). So the card resolves DIRECTLY through this command,
+		// which fulfils the parked Promise in-process; _handleStatelessConfirm-
+		// Request then POSTs /confirm_response (the proven timeout path).
+		this._register(CommandsRegistry.registerCommand(
+			'_chipos.resolveStatelessConfirm',
+			(_accessor, requestId: string, action: string, selections?: Record<string, string>) =>
+				this._resolveStatelessConfirm(requestId, action, selections),
+		));
+	}
+
+	/**
+	 * Resolve a parked stateless confirm Promise (see
+	 * `_handleStatelessConfirmRequest`). Called by the `_chipos.resolveStateless-
+	 * Confirm` command when the user clicks a permission-card button, bypassing
+	 * the chat re-entry path that deadlocks while the originating turn is
+	 * in-flight. Returns true if a pending confirm matched.
+	 */
+	private _resolveStatelessConfirm(requestId: string, action: string, selections?: Record<string, string>): boolean {
+		const pending = this._pendingStatelessConfirms.get(requestId);
+		if (!pending) {
+			this._logService.warn('[ChipOS Stateless] resolve: no pending confirm for request_id=%s', requestId);
+			return false;
+		}
+		this._logService.info(
+			'[ChipOS Stateless] confirm resolved via card click: trace=%s request_id=%s action=%s',
+			pending.traceId, requestId, action,
+		);
+		pending.resolve({ action, selections, comment: undefined });
+		this._pendingStatelessConfirms.delete(requestId);
+		return true;
 	}
 
 	// ── R62: MCP 工具变更通知 ──────────────────────────────────────────────
@@ -5243,7 +5279,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// handled by the existing `acceptedConfirmationData` plumbing below.
 			if (handled.confirmRequest) {
 				const confirm = handled.confirmRequest;
-				void this._handleStatelessConfirmRequest(client, traceId, confirm, progress).catch(err => {
+				void this._handleStatelessConfirmRequest(client, traceId, confirm, progress, token).catch(err => {
 					this._logService.error('[ChipOS Stateless] confirm_request handler failed:', String(err));
 				});
 			}
@@ -5676,6 +5712,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		traceId: string,
 		confirm: { requestId: string; cardType: string; cardData: Record<string, unknown>; title?: string; buttons?: string[] },
 		progress: (parts: IChatProgress[]) => void,
+		token: CancellationToken,
 	): Promise<void> {
 		this._logService.info(
 			'[ChipOS Stateless] confirm_request type=%s request_id=%s',
@@ -5691,14 +5728,48 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			? (cardData as { questions: unknown[] }).questions
 			: undefined;
 		const isInteractiveAgentAsk = confirm.cardType === 'agent_ask' && askQuestions && askQuestions.length > 0;
+		// Prefer explicit {label, action_id} options from card_data (worker
+		// permission_ask cards send these so a localized label like "允许一次"
+		// still maps to the canonical action_id "allow_once"). Fall back to the
+		// label.toLowerCase() derivation for cards that only carry button labels.
+		const explicitOptions = Array.isArray((cardData as { options?: unknown }).options)
+			? (cardData as { options: Array<{ label?: string; action_id?: string }> }).options
+				.filter(o => o && typeof o.action_id === 'string' && o.action_id.length > 0)
+				.map(o => ({ label: (o.label ?? o.action_id) as string, action_id: o.action_id as string }))
+			: undefined;
+		// The permission-card renderer reads `data.tool` (for the header label +
+		// icon). Carry it from card_data.tool (worker permission_ask sends the
+		// tool name) and fall back to the card type so the card never renders an
+		// undefined tool.
+		const toolName = typeof (cardData as { tool?: unknown }).tool === 'string' && (cardData as { tool: string }).tool
+			? (cardData as { tool: string }).tool
+			: (confirm.cardType || 'Confirm');
+		// Surface the permission-card fields the renderer reads (path/preview/
+		// rule/badge) from card_data so the body isn't blank. Worker
+		// permission_ask cards carry payload/matched_rule/content_preview/etc.
+		const cd = cardData as {
+			payload?: unknown; matched_rule?: unknown; matched_layer?: unknown;
+			content_preview?: unknown; target_exists?: unknown; target_size_bytes?: unknown;
+		};
+		const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 		const baseData: Record<string, unknown> = {
 			requestId: confirm.requestId,
 			card_type: confirm.cardType,
 			card_data: cardData,
+			tool: toolName,
+			specifier: str(cd.payload) ?? '',
+			matchedRule: str(cd.matched_rule),
+			matchedLayer: str(cd.matched_layer),
+			contentPreview: str(cd.content_preview),
+			targetExists: typeof cd.target_exists === 'boolean' ? cd.target_exists : undefined,
+			targetSizeBytes: typeof cd.target_size_bytes === 'number' ? cd.target_size_bytes : undefined,
+			sessionId: traceId,
 			// Phase 1 markers (read by invoke() top-level detector below)
 			__chiposStatelessConfirmTraceId: traceId,
 			__chiposStatelessConfirmRequestId: confirm.requestId,
-			options: buttons.map(label => ({ label, action_id: label.toLowerCase() })),
+			options: explicitOptions && explicitOptions.length > 0
+				? explicitOptions
+				: buttons.map(label => ({ label, action_id: label.toLowerCase() })),
 		};
 		const data: Record<string, unknown> = isInteractiveAgentAsk
 			? {
@@ -5710,6 +5781,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			: {
 				...baseData,
 				__chiposGenericConfirmCard: true,
+				// permission_ask renders via structured fields (header/path/meta/
+				// contentPreview); every OTHER generic stateless confirm card
+				// (chipos_user_confirm, hook_confirm, spec/arch/code/...) has its
+				// content ONLY in `message`, so it must opt into markdown
+				// rendering or the card body shows up blank.
+				renderMessageAsMarkdown: confirm.cardType !== 'permission_ask',
 			};
 
 		// Park a Promise — resolved by the next invoke() with this requestId.
@@ -5730,23 +5807,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		};
 		progress([confirmation]);
 
-		// Await user click or timeout. 600s matches reasoner-side default
-		// confirm timeout (PHASE-1-PROTOCOL-SPEC §4.1).
-		const TIMEOUT_MS = 600_000;
+		// 永等 (P0-2): NO client-side timeout — a permission card waits for the
+		// user's click and never auto-denies on a timer. The only escape is turn
+		// cancellation (user Stop / session dispose → `token` fires); we then
+		// POST action=skip so the reasoner side doesn't leak an in-flight turn.
 		let result: { action: string; selections?: Record<string, string>; comment?: string };
 		try {
-			result = await Promise.race([
-				responsePromise,
-				new Promise<{ action: string; comment: string }>((_resolve, reject) =>
-					setTimeout(() => reject(new Error('confirm timeout')), TIMEOUT_MS),
-				),
-			]) as { action: string; selections?: Record<string, string>; comment?: string };
+			const resolved = await raceCancellation(responsePromise, token);
+			if (resolved) {
+				result = resolved;
+			} else {
+				this._logService.info(
+					'[ChipOS Stateless] confirm_request cancelled (Stop/dispose) request_id=%s — sending action=skip',
+					confirm.requestId,
+				);
+				result = { action: 'skip', comment: 'cancelled before user responded' };
+			}
 		} catch (err) {
-			this._logService.warn(
-				'[ChipOS Stateless] confirm_request timeout request_id=%s — sending action=skip',
-				confirm.requestId,
-			);
-			result = { action: 'skip', comment: `client-side timeout after ${TIMEOUT_MS}ms` };
+			result = { action: 'skip', comment: `confirm wait error: ${String(err)}` };
 		} finally {
 			this._pendingStatelessConfirms.delete(confirm.requestId);
 		}

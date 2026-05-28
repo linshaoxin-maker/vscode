@@ -278,19 +278,23 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			: undefined;
 
 		// ── Root card ─────────────────────────────────────────────────────────
+		// Defensive: some confirm cards (stateless generic / permission_ask)
+		// may not carry a `tool` field. Coerce to a safe default so we never
+		// throw `Cannot read properties of undefined (reading 'toLowerCase')`.
+		const toolName = (typeof data.tool === 'string' && data.tool) ? data.tool : 'Confirm';
 		const card = dom.$('.chipos-permission-card');
-		card.classList.add(`tool-${data.tool.toLowerCase()}`);
+		card.classList.add(`tool-${toolName.toLowerCase()}`);
 
 		// ── Header: [icon] [Tool] [path] [badge] ──────────────────────────────
 		const header = dom.$('.chipos-permission-header');
 		card.appendChild(header);
 
 		const iconSpan = dom.$('span');
-		iconSpan.className = `chipos-tool-icon codicon ${this._toolCodicon(data.tool)}`;
+		iconSpan.className = `chipos-tool-icon codicon ${this._toolCodicon(toolName)}`;
 		header.appendChild(iconSpan);
 
 		const toolLabel = dom.$('span.chipos-tool-label');
-		toolLabel.textContent = data.tool;
+		toolLabel.textContent = toolName;
 		header.appendChild(toolLabel);
 
 		// #3 — Path becomes clickable. For paths inside the workspace, open as
@@ -531,6 +535,32 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			}
 			inFlight = true;
 			setDisabled(true);
+
+			// PERMISSION-DECOUPLE: stateless confirm cards can't resolve through
+			// the chat re-entry (sendRequest) path — the originating turn is
+			// still in-flight, so the chat session is busy and sendRequest is
+			// rejected (the parked Promise never resolves). Resolve DIRECTLY via
+			// the command the agent registers; it fulfils the parked Promise
+			// in-process and the agent POSTs /confirm_response.
+			const statelessReqId = (this.confirmation.data as { __chiposStatelessConfirmRequestId?: string })?.__chiposStatelessConfirmRequestId;
+			if (statelessReqId) {
+				try {
+					const selections = (this.confirmation.data as { selections?: Record<string, string> })?.selections;
+					await this.commandService.executeCommand(
+						'_chipos.resolveStatelessConfirm',
+						statelessReqId,
+						opt.action_id ?? opt.label,
+						selections,
+					);
+					this.confirmation.isUsed = true;
+					swapToRespondedPill(opt);
+				} catch {
+					inFlight = false;
+					setDisabled(false);
+				}
+				return;
+			}
+
 			const prompt = `${opt.label}: "${this.confirmation.title}"`;
 			const opts: IChatSendRequestOptions = {
 				acceptedConfirmationData: [this.confirmation.data],
