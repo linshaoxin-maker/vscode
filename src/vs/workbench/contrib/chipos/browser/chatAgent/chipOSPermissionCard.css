@@ -389,6 +389,19 @@
 	background: color-mix(in srgb, var(--chipos-btn-danger-fg) 8%, transparent);
 }
 
+/* Superseded pill — the confirm was re-issued after a reasoner restart (D10
+ * rehydrate), so this card was retired in favor of a fresh one. Muted + dashed
+ * + italic so the user reads it as "replaced", distinct from a choice they
+ * actively made. */
+.chipos-used-pill.chipos-superseded-pill {
+	color: var(--vscode-descriptionForeground);
+	border-style: dashed;
+	border-color: var(--vscode-input-border, rgba(127, 127, 127, 0.3));
+	background: color-mix(in srgb, var(--vscode-foreground) 3%, transparent);
+	opacity: 0.75;
+	font-style: italic;
+}
+
 /* ── 2026-05-26: agent_ask multi-question inline radio form ────────────────── */
 /* Rendered inside `.chipos-permission-preview.chipos-agent-ask-form` slot when
  * card_type === 'agent_ask' and questions[] is non-empty. Each question is a

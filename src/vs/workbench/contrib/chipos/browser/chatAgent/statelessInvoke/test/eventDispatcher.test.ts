@@ -230,11 +230,11 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(r, { resumedBufferDrained: { sequenceId: 42 } });
 	});
 
-	test('resumed_live → decorative no-op (D10 rehydrate marker)', () => {
+	test('resumed_live → resumedLive marker (D10 rehydrate, retires stale confirm)', () => {
 		const r = dispatchStatelessEvent(
 			ev('resumed_live', { trace_id: 't-1', resumed_from_iteration: 3 }),
 		);
-		assert.deepStrictEqual(r, {});
+		assert.deepStrictEqual(r, { resumedLive: true });
 	});
 
 	test('error with message → flush + markdownError + errorMessage', () => {

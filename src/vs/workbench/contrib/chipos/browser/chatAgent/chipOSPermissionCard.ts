@@ -31,6 +31,7 @@ import { ChatSendResult, IChatConfirmation, IChatSendRequestOptions, IChatServic
 import { IChatContentPart, IChatContentPartRenderContext } from '../../../../contrib/chat/browser/widget/chatContentParts/chatContentParts.js';
 import { IChatRendererContent, IChatResponseViewModel, isResponseVM } from '../../../../contrib/chat/common/model/chatViewModel.js';
 import { ChatTreeItem, IChatWidget, IChatWidgetService } from '../../../../contrib/chat/browser/chat.js';
+import { IChipOSConfirmRetireService } from './chiposConfirmRetireService.js';
 import './chipOSPermissionCard.css';
 
 // ── Data shape stored in confirmation.data ────────────────────────────────────
@@ -251,6 +252,15 @@ export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardDa
 export class ChipOSPermissionCardContentPart extends Disposable implements IChatContentPart {
 	public readonly domNode: HTMLElement;
 
+	/**
+	 * Set by `_buildButtons` while this card has LIVE buttons. Invoked by the
+	 * retire channel (`IChipOSConfirmRetireService`) when a reasoner-restart
+	 * rehydrate supersedes this confirm — swaps the buttons to a "superseded"
+	 * pill so only the freshly re-emitted card stays actionable. Undefined once
+	 * the card is already responded/used (retire is then a no-op).
+	 */
+	private _retireToSupersededPill?: () => void;
+
 	constructor(
 		private readonly confirmation: IChatConfirmation,
 		context: IChatContentPartRenderContext,
@@ -259,6 +269,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		@ICommandService private readonly commandService: ICommandService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
+		@IChipOSConfirmRetireService private readonly confirmRetireService: IChipOSConfirmRetireService,
 	) {
 		super();
 
@@ -472,6 +483,19 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			buttonsRow.appendChild(usedPill);
 		}
 
+		// D10 rehydrate retire channel: when a reasoner restart re-emits this
+		// confirm with a fresh request_id, the agent fires `retire(requestId)`
+		// so this now-orphaned card swaps its live buttons to a "superseded"
+		// pill (a no-op if the card already responded). Stateless cards only.
+		const statelessRetireId = (confirmation.data as { __chiposStatelessConfirmRequestId?: string })?.__chiposStatelessConfirmRequestId;
+		if (statelessRetireId) {
+			this._register(this.confirmRetireService.onRetire(retiredId => {
+				if (retiredId === statelessRetireId) {
+					this._retireToSupersededPill?.();
+				}
+			}));
+		}
+
 		this.domNode = card;
 	}
 
@@ -505,16 +529,23 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		// When called WITHOUT an option arg (historical re-render of a card
 		// that landed but we no longer have button context), falls back to
 		// the generic "Responded" label.
-		const swapToRespondedPill = (chosen?: { label: string; action_id?: string }) => {
+		const swapToRespondedPill = (
+			chosen?: { label: string; action_id?: string },
+			opts?: { iconClass?: string; pillClass?: string },
+		) => {
 			while (buttonsRow.firstChild) {
 				buttonsRow.removeChild(buttonsRow.firstChild);
 			}
 			const pill = dom.$('span.chipos-used-pill');
+			if (opts?.pillClass) {
+				pill.classList.add(opts.pillClass);
+			}
 			if (chosen) {
 				if (chosen.action_id) {
 					pill.classList.add(`chipos-btn-${chosen.action_id.replace(/_/g, '-')}`);
 				}
-				const icon = dom.$('span.codicon.codicon-check.chipos-used-pill-icon');
+				const icon = dom.$('span.codicon.chipos-used-pill-icon');
+				icon.classList.add(opts?.iconClass ?? 'codicon-check');
 				pill.appendChild(icon);
 				const labelEl = dom.$('span.chipos-used-pill-label');
 				labelEl.textContent = chosen.label;
@@ -523,6 +554,22 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 				pill.textContent = localize('chipos.card.used', 'Responded');
 			}
 			buttonsRow.appendChild(pill);
+		};
+
+		// D10 rehydrate: let the agent retire THIS card when a reasoner restart
+		// re-emitted the confirm with a fresh request_id (the new card follows).
+		// Swap the live buttons to a dimmed "superseded" pill and mark isUsed so
+		// the keyboard path is a no-op. Guarded so it never clobbers a card the
+		// user already responded to.
+		this._retireToSupersededPill = () => {
+			if (inFlight || this.confirmation.isUsed) {
+				return;
+			}
+			this.confirmation.isUsed = true;
+			swapToRespondedPill(
+				{ label: localize('chipos.card.superseded', '已重新请求') },
+				{ iconClass: 'codicon-history', pillClass: 'chipos-superseded-pill' },
+			);
 		};
 
 		const sendAction = async (opt: { label: string; action_id?: string }) => {

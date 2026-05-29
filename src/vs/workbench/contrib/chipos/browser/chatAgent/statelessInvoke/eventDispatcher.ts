@@ -96,6 +96,14 @@ export interface DispatchResult {
 	checkpoint?: { iteration: number; messagesCount: number };
 	/** Resume buffer-drain done marker (from /resume endpoint stream). */
 	resumedBufferDrained?: { sequenceId: number };
+	/**
+	 * D10 rehydrate marker: the reasoner restarted mid-turn and re-drove the
+	 * agent loop from its checkpoint. The caller uses this to retire any confirm
+	 * card that was live on the old reasoner — the rehydrated loop re-emits a
+	 * FRESH `confirm_request` (new request_id), so the original card would
+	 * otherwise linger as a dead duplicate.
+	 */
+	resumedLive?: boolean;
 	/** When `terminate: true`, the final_messages list to append to chatSessions/*.jsonl. */
 	finalMessages?: Message[];
 }
@@ -217,11 +225,13 @@ export function dispatchStatelessEvent(
 
 		case 'resumed_live':
 			// D10 (ADR-018 §2 D10 / R-D) marker: the reasoner restarted mid-turn
-			// and rehydrated the agent loop from its checkpoint. Decorative — the
-			// continuation content_block_delta / round_end events that follow
-			// drive the actual rendering. We swallow it explicitly (rather than
-			// via the forward-compat default) so the protocol stays documented.
-			return {};
+			// and rehydrated the agent loop from its checkpoint. The continuation
+			// content_block_delta / round_end events that follow drive the actual
+			// rendering — but the rehydrated loop also re-emits any pending
+			// confirm_request with a FRESH request_id, so the caller must retire
+			// the now-orphaned card from the dead reasoner (else two cards show
+			// for one logical confirm).
+			return { resumedLive: true };
 
 		case 'thinking_delta': {
 			const data = event.data as { delta?: { text?: string } };

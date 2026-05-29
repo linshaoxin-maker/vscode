@@ -86,6 +86,7 @@ import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
 import { IChipOSWorkerPermissionService, IWorkerPermissionAsk } from '../permission/workerPermissionService.js';
+import { IChipOSConfirmRetireService } from './chiposConfirmRetireService.js';
 import { ChatAgentLocation, ChatPermissionLevel, isAutoApproveLevel } from '../../../chat/common/constants.js';
 import {
 	AgentEventType,
@@ -356,6 +357,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IFileService private readonly _fileService: IFileService,
+		@IChipOSConfirmRetireService private readonly _confirmRetireService: IChipOSConfirmRetireService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -5308,6 +5310,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					handled.resumedBufferDrained.sequenceId,
 				);
 			}
+			// D10 rehydrate: the reasoner restarted mid-turn and re-drove the agent
+			// loop. The rehydrated loop re-emits any pending confirm with a FRESH
+			// request_id (a new card follows), so retire the card(s) that were live
+			// on the now-dead reasoner — otherwise two cards show for one confirm.
+			if (handled.resumedLive) {
+				this._retireStatelessConfirmsForTrace(traceId);
+			}
 		};
 		const friendlyToolName = (raw: string) => this._friendlyToolName(raw);
 
@@ -5823,7 +5832,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			};
 
 		// Park a Promise — resolved by the next invoke() with this requestId.
-		const responsePromise = new Promise<{ action: string; selections?: Record<string, string>; comment?: string }>((resolve, reject) => {
+		const responsePromise = new Promise<{ action: string; selections?: Record<string, string>; comment?: string; superseded?: boolean }>((resolve, reject) => {
 			this._pendingStatelessConfirms.set(confirm.requestId, { resolve, reject, traceId });
 		});
 
@@ -5844,7 +5853,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// user's click and never auto-denies on a timer. The only escape is turn
 		// cancellation (user Stop / session dispose → `token` fires); we then
 		// POST action=skip so the reasoner side doesn't leak an in-flight turn.
-		let result: { action: string; selections?: Record<string, string>; comment?: string };
+		let result: { action: string; selections?: Record<string, string>; comment?: string; superseded?: boolean };
 		try {
 			const resolved = await raceCancellation(responsePromise, token);
 			if (resolved) {
@@ -5860,6 +5869,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			result = { action: 'skip', comment: `confirm wait error: ${String(err)}` };
 		} finally {
 			this._pendingStatelessConfirms.delete(confirm.requestId);
+		}
+
+		// D10 rehydrate: this confirm was superseded by a reasoner-restart that
+		// re-emitted the confirm with a fresh request_id. The OLD request_id no
+		// longer exists on the restarted reasoner, so a POST would 404 and burn
+		// the whole retry budget for nothing — skip it. The user responds on the
+		// new card; this stale one has already swapped to a "superseded" pill.
+		if (result.superseded) {
+			this._logService.info(
+				'[ChipOS Stateless] confirm request_id=%s superseded by rehydrate — skipping POST (old reasoner gone)',
+				confirm.requestId,
+			);
+			return;
 		}
 
 		// P1: the user's confirm decision is precious — a single POST that fails
@@ -5908,10 +5930,36 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * confirm detector branch; rejected on session disposal.
 	 */
 	private readonly _pendingStatelessConfirms = new Map<string, {
-		resolve: (r: { action: string; selections?: Record<string, string>; comment?: string }) => void;
+		resolve: (r: { action: string; selections?: Record<string, string>; comment?: string; superseded?: boolean }) => void;
 		reject: (err: Error) => void;
 		traceId: string;
 	}>();
+
+	/**
+	 * D10 rehydrate (ADR-018 §2 D10 / R-D): the reasoner restarted mid-turn and
+	 * re-drove the agent loop, which re-emits any pending confirm with a FRESH
+	 * request_id. Retire every confirm still parked for this trace so we don't
+	 * leave a dead duplicate card alongside the new one:
+	 *   1. fire the retire channel → the OLD card swaps to a "superseded" pill
+	 *      (clicks become no-ops via `isUsed`)
+	 *   2. resolve its parked Promise with `superseded:true` → the original
+	 *      `_handleStatelessConfirmRequest` unblocks and skips its POST (the old
+	 *      request_id is gone on the restarted reasoner)
+	 */
+	private _retireStatelessConfirmsForTrace(traceId: string): void {
+		for (const [requestId, pending] of [...this._pendingStatelessConfirms]) {
+			if (pending.traceId !== traceId) {
+				continue;
+			}
+			this._logService.info(
+				'[ChipOS Stateless] retiring superseded confirm request_id=%s (trace=%s rehydrated)',
+				requestId, traceId,
+			);
+			this._confirmRetireService.retire(requestId);
+			pending.resolve({ action: 'skip', comment: 'superseded by reasoner-restart rehydrate', superseded: true });
+			this._pendingStatelessConfirms.delete(requestId);
+		}
+	}
 
 	// =========================================================================
 	// End Phase 0 #8e / #8f
