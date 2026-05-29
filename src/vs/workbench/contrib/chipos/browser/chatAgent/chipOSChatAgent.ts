@@ -6561,6 +6561,33 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			confirm.cardType, confirm.requestId,
 		);
 
+		// Double-card guard: a reasoner rehydrate re-emits the confirm with a NEW
+		// request_id. Retire ANY card previously rendered for THIS trace before
+		// rendering the new one, so the user never sees two stacked permission
+		// cards. The `resumed_live` retire (_retireStatelessConfirmsForTrace) only
+		// covers cards still in `_pendingStatelessConfirms`; this also catches the
+		// manual "继续 (从中断处)" path, where the failed turn's card already left
+		// the pending map. If the prior is still pending, resolve it superseded so
+		// its detached handler exits cleanly.
+		let renderedForTrace = this._renderedConfirmsByTrace.get(traceId);
+		if (!renderedForTrace) {
+			renderedForTrace = new Set<string>();
+			this._renderedConfirmsByTrace.set(traceId, renderedForTrace);
+		}
+		for (const priorReqId of renderedForTrace) {
+			if (priorReqId === confirm.requestId) {
+				continue;
+			}
+			this._confirmRetireService.retire(priorReqId);
+			const stillPending = this._pendingStatelessConfirms.get(priorReqId);
+			if (stillPending) {
+				stillPending.resolve({ action: 'skip', comment: 'superseded by reasoner-restart rehydrate', superseded: true });
+				this._pendingStatelessConfirms.delete(priorReqId);
+			}
+		}
+		renderedForTrace.clear();
+		renderedForTrace.add(confirm.requestId);
+
 		// Build the IChatConfirmation data shape mirroring legacy ConfirmRequest
 		// handler so ChipOSPermissionCardContentPart renders without changes.
 		const title = confirm.title || 'Confirm requested';
@@ -6728,6 +6755,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * request_ids that have rendered a confirm card, per trace — kept INDEPENDENT
+	 * of the `_pendingStatelessConfirms` promise lifecycle (which is deleted on
+	 * resolve / skip / turn-end). On a reasoner rehydrate the turn re-emits a
+	 * confirm with a NEW request_id; the OLD card may already be out of
+	 * `_pendingStatelessConfirms` (e.g. the failed turn's card after the manual
+	 * "继续 (从中断处)" resume), so the `resumed_live` retire (which iterates
+	 * pending) can't find it. We use this to retire ANY prior card rendered for
+	 * the same trace when a new one renders — covering both the in-invoke
+	 * auto-resume AND the manual continue path. Cleared on dispose.
+	 */
+	private readonly _renderedConfirmsByTrace = new Map<string, Set<string>>();
+
+	/**
 	 * Phase 1: pending confirm-card Promises waiting for the next invoke() call
 	 * to deliver the user's click. Keyed by request_id (the `chipos_user_confirm`
 	 * tool_use id from the LLM). Resolved by the invoke() entry's stateless-
@@ -6782,6 +6822,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			banner.dispose();
 		}
 		this._connectionBanners.clear();
+		this._renderedConfirmsByTrace.clear();
 		super.dispose();
 	}
 }
