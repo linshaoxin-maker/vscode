@@ -598,6 +598,15 @@ export interface ResumeRequest {
 	trace_id: string;
 	last_sequence_id: number;
 	disconnect_reason?: string;
+	/**
+	 * P2 (reasoner-restart-during-confirm): re-supply the LLM key on resume,
+	 * mirroring InvokeRequest.api_key (F6). A reasoner restart rehydrates the
+	 * turn from a checkpoint that does NOT persist the raw key (security), so
+	 * the re-driven LLM call would otherwise 401 at the provider. Sending it
+	 * here keeps per-user keys working without writing them to disk.
+	 */
+	api_key?: string | null;
+	api_key_alias?: string | null;
 }
 
 /**

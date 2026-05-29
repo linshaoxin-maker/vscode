@@ -111,6 +111,15 @@ export interface StatelessClientOptions {
 	readonly baseUrl: string;
 	/** Optional bearer token. Omit for auth-disabled local dev. */
 	readonly authToken?: string;
+	/**
+	 * Per-request bearer token provider. Preferred over the static `authToken`:
+	 * resolved immediately before EVERY request, so a token nearing expiry gets
+	 * refreshed (chiposTokenManager.getAccessToken auto-refreshes). Fixes 401s
+	 * on long-lived turns — `/resume`, `/confirm_response`, `/tool_result` that
+	 * fire minutes after invoke-start, past the JWT TTL. When both are set, the
+	 * provider wins; `authToken` stays as a static fallback for tests.
+	 */
+	readonly authTokenProvider?: () => Promise<string | undefined>;
 	/** Inject for tests; defaults to global ``fetch``. */
 	readonly fetchFn?: typeof fetch;
 	/**
@@ -138,6 +147,7 @@ export class StatelessClient {
 
 	private readonly _baseUrl: string;
 	private readonly _authToken: string | undefined;
+	private readonly _authTokenProvider?: () => Promise<string | undefined>;
 	private readonly _fetch: typeof fetch;
 	private readonly _timeoutMs: number;
 
@@ -145,10 +155,25 @@ export class StatelessClient {
 		// Normalize: strip trailing slash so callers can pass either form.
 		this._baseUrl = opts.baseUrl.replace(/\/+$/, '');
 		this._authToken = opts.authToken;
+		this._authTokenProvider = opts.authTokenProvider;
 		// Bind through a wrapper so the default isn't ripped off the ``fetch``
 		// identifier if a caller monkeypatches ``globalThis.fetch`` later.
 		this._fetch = opts.fetchFn ?? ((input, init) => fetch(input, init));
 		this._timeoutMs = opts.requestTimeoutMs ?? 600_000;
+	}
+
+	/**
+	 * Resolve the Authorization header FRESH per request. Prefers the token
+	 * provider (which auto-refreshes a near-expiry token) over the static
+	 * `authToken`. Returns `{}` when tokenless (auth-disabled dev). This is the
+	 * P0.5 fix: capturing the token once at construction let a long-lived turn's
+	 * late `/resume` / `/confirm_response` fire with an expired JWT → 401.
+	 */
+	private async _authHeaders(): Promise<Record<string, string>> {
+		const token = this._authTokenProvider
+			? await this._authTokenProvider()
+			: this._authToken;
+		return token ? { 'Authorization': `Bearer ${token}` } : {};
 	}
 
 	/**
@@ -191,9 +216,7 @@ export class StatelessClient {
 			body.reason = reason;
 		}
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		if (this._authToken) {
-			headers['Authorization'] = `Bearer ${this._authToken}`;
-		}
+		Object.assign(headers, await this._authHeaders());
 		const { controller, clear } = this._timeoutSignal(undefined);
 		try {
 			const resp = await this._fetch(url, {
@@ -248,9 +271,7 @@ export class StatelessClient {
 	async compact(req: CompactRequest): Promise<CompactResponse> {
 		const url = `${this._baseUrl}/api/v1/compact`;
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		if (this._authToken) {
-			headers['Authorization'] = `Bearer ${this._authToken}`;
-		}
+		Object.assign(headers, await this._authHeaders());
 		const { controller, clear } = this._timeoutSignal(undefined);
 		try {
 			const resp = await this._fetch(url, {
@@ -284,9 +305,7 @@ export class StatelessClient {
 	async registerTools(req: RegisterToolsRequest): Promise<RegisterToolsResponse> {
 		const url = `${this._baseUrl}/api/v1/tools/register`;
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		if (this._authToken) {
-			headers['Authorization'] = `Bearer ${this._authToken}`;
-		}
+		Object.assign(headers, await this._authHeaders());
 		const { controller, clear } = this._timeoutSignal(undefined);
 		try {
 			const resp = await this._fetch(url, {
@@ -323,9 +342,7 @@ export class StatelessClient {
 	): Promise<{ accepted: boolean } | { error: string;[k: string]: unknown }> {
 		const url = `${this._baseUrl}/api/v1/tool_result/${encodeURIComponent(traceId)}/${encodeURIComponent(callId)}`;
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		if (this._authToken) {
-			headers['Authorization'] = `Bearer ${this._authToken}`;
-		}
+		Object.assign(headers, await this._authHeaders());
 		const { controller, clear } = this._timeoutSignal(undefined);
 		try {
 			const resp = await this._fetch(url, {
@@ -371,9 +388,7 @@ export class StatelessClient {
 	): Promise<{ accepted: boolean } | { error: string;[k: string]: unknown }> {
 		const url = `${this._baseUrl}/api/v1/confirm_response/${encodeURIComponent(traceId)}/${encodeURIComponent(requestId)}`;
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		if (this._authToken) {
-			headers['Authorization'] = `Bearer ${this._authToken}`;
-		}
+		Object.assign(headers, await this._authHeaders());
 		const { controller, clear } = this._timeoutSignal(undefined);
 		try {
 			const resp = await this._fetch(url, {
@@ -438,9 +453,7 @@ export class StatelessClient {
 	async getTurnState(chatSessionId: string): Promise<TurnStateResponse> {
 		const url = `${this._baseUrl}/api/v1/turn_state/${encodeURIComponent(chatSessionId)}`;
 		const headers: Record<string, string> = { 'Accept': 'application/json' };
-		if (this._authToken) {
-			headers['Authorization'] = `Bearer ${this._authToken}`;
-		}
+		Object.assign(headers, await this._authHeaders());
 		const { controller, clear } = this._timeoutSignal(undefined);
 		try {
 			const resp = await this._fetch(url, {
@@ -531,7 +544,9 @@ export class StatelessClient {
 		// doesn't capture ``this`` (lint-friendly + makes the closure shape
 		// explicit for review).
 		const fetchFn = this._fetch;
-		const authToken = this._authToken;
+		// P0.5: resolve the auth header per request (fresh/refreshed token), not
+		// once at construction — long-lived turns (resume) outlive the JWT TTL.
+		const authHeaders = () => this._authHeaders();
 		const timeoutCtor = (s: AbortSignal | undefined) => this._timeoutSignal(s);
 
 		return {
@@ -549,9 +564,7 @@ export class StatelessClient {
 					if (body !== undefined) {
 						headers['Content-Type'] = 'application/json';
 					}
-					if (authToken) {
-						headers['Authorization'] = `Bearer ${authToken}`;
-					}
+					Object.assign(headers, await authHeaders());
 					const { controller, clear } = timeoutCtor(signal);
 					clearTimer = clear;
 					const resp = await fetchFn(url, {

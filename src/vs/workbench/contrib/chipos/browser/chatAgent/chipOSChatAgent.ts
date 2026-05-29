@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { DeferredPromise, raceCancellation } from '../../../../../base/common/async.js';
+import { DeferredPromise, raceCancellation, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
@@ -4981,21 +4981,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 */
 	private async _ensureStatelessClient(): Promise<StatelessClient> {
 		const baseUrl = resolveReasoningUrl(this._configurationService, this._productService);
-		let authToken: string | undefined;
-		try {
-			authToken = await this._tokenManager?.getAccessToken();
-		} catch (err) {
-			// Cloud reasoner with auth disabled is a valid dev mode — fall
-			// through with no token. A 401 will surface at first request.
-			this._logService.warn('[ChipOS Stateless] getAccessToken failed (continuing tokenless):', String(err));
-		}
+		// P0.5: hand the client a per-request token PROVIDER instead of a token
+		// captured once here. The client resolves it before EVERY request, so
+		// `getAccessToken`'s near-expiry auto-refresh keeps long-lived turns
+		// (resume / late confirm_response / tool_result that fire minutes after
+		// invoke-start) from sending an expired JWT → was 401 at the ~10-min
+		// mark. No more re-minting on rotation — the provider always sees fresh.
+		const authTokenProvider = async (): Promise<string | undefined> => {
+			try {
+				return await this._tokenManager?.getAccessToken();
+			} catch (err) {
+				// Cloud reasoner with auth disabled is a valid dev mode — fall
+				// through tokenless. A 401 would surface at request time.
+				this._logService.warn('[ChipOS Stateless] getAccessToken failed (continuing tokenless):', String(err));
+				return undefined;
+			}
+		};
 		if (!this._statelessClient || this._statelessClientBaseUrl !== baseUrl) {
-			this._statelessClient = new StatelessClient({ baseUrl, authToken });
+			this._statelessClient = new StatelessClient({ baseUrl, authTokenProvider });
 			this._statelessClientBaseUrl = baseUrl;
-			this._logService.info('[ChipOS Stateless] Client initialised, baseUrl=%s, auth=%s', baseUrl, authToken ? 'bearer' : 'none');
-		} else if (authToken) {
-			// Token may have rotated — rebuild so subsequent invokes pick it up.
-			this._statelessClient = new StatelessClient({ baseUrl, authToken });
+			this._logService.info('[ChipOS Stateless] Client initialised, baseUrl=%s (per-request token)', baseUrl);
 		}
 		return this._statelessClient;
 	}
@@ -5387,43 +5392,71 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					break;
 				}
 				case 'replay': {
-					// Phase 1 (ADR-018 §2 D10 + R-D): swap legacy replay() →
-					// resume() — replays SSE buffer then closes (buffer-drain
-					// model); future increment plumbs live event handoff
-					// (PHASE-1-SEQUENCE-DIAGRAMS §7).
-					const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? -1;
-					this._logService.warn('[ChipOS Stateless] SSE failed (%s) — attempting /resume from seq %d', String(err), lastSeq);
-					progress([this._progress('$(sync) Connection interrupted — reconnecting…', true)]);
-					try {
-						for await (const event of client.resume(chatSessionId, {
-							trace_id: traceId,
-							last_sequence_id: lastSeq,
-							disconnect_reason: 'network',
-						}, abortController.signal)) {
-							applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
-						}
-					} catch (replayErr) {
-						const replayVerdict = classifySseFailure(replayErr, abortController.signal);
-						if (replayVerdict === 'cancelled') {
-							flushAssistantText();
-							cancelListener.dispose();
-							this._statelessTraces.delete(request.sessionResource);
-							return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
-						}
-						// Phase 1: distinct error classes for 404 vs 410 paths.
-						if (replayErr instanceof StatelessResumeNotFoundError) {
-							this._logService.warn('[ChipOS Stateless] /resume 404 — turn already completed or never existed');
-							progress([this._markdown('$(info) **ChipOS:** the previous turn already finished. Please send your message again to start a new one.')]);
-							errorResult = { errorDetails: { message: 'resume target not found' } };
-						} else if (replayVerdict === 'surface-replay-expired') {
-							this._logService.warn('[ChipOS Stateless] /resume 410 — SSE buffer evicted');
-							progress([this._markdown('$(warning) **ChipOS:** reconnect window expired. Please send your last message again.')]);
-							errorResult = { errorDetails: { message: 'replay window expired' } };
-						} else {
-							const msg = replayErr instanceof Error ? replayErr.message : String(replayErr);
-							this._logService.error('[ChipOS Stateless] resume failed:', msg);
-							progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
-							errorResult = { errorDetails: { message: msg } };
+					// Phase 1 (ADR-018 §2 D10 + R-D): SSE dropped → /resume. The reasoner
+					// live-tails the in-flight writer, or (after a reasoner RESTART) rehydrates
+					// the agent loop from checkpoint and CONTINUES — including re-emitting a
+					// pending confirm card. P2: retry /resume with backoff, because a reasoner
+					// restart leaves a window where /resume gets 'Failed to fetch' until it is
+					// healthy again; the old single shot gave up and lost the turn. Terminal
+					// verdicts (404 turn-gone / 410 buffer-evicted / cancel) break immediately;
+					// only transient network errors retry. Each attempt re-resolves the token
+					// (P0.5), so an expired JWT refreshes between attempts.
+					const maxResumeAttempts = 8;
+					for (let resumeAttempt = 1; resumeAttempt <= maxResumeAttempts && !abortController.signal.aborted; resumeAttempt++) {
+						const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? -1;
+						this._logService.warn('[ChipOS Stateless] SSE failed (%s) — /resume attempt %d/%d from seq %d', String(err), resumeAttempt, maxResumeAttempts, lastSeq);
+						progress([this._progress('$(sync) Connection interrupted — reconnecting…', true)]);
+						try {
+							for await (const event of client.resume(chatSessionId, {
+								trace_id: traceId,
+								last_sequence_id: lastSeq,
+								disconnect_reason: 'network',
+								// P2: re-supply the LLM key (F6) so a reasoner restart can rehydrate +
+								// re-drive the loop — the checkpoint does not persist the raw key, so
+								// without this the re-driven LLM call 401s at the provider.
+								api_key: invokeReq.api_key,
+								api_key_alias: invokeReq.api_key_alias,
+							}, abortController.signal)) {
+								// Advance the watermark during resume too, so a retry resumes from
+								// where we got to (avoids duplicate replay of already-rendered events).
+								const trace = this._statelessTraces.get(request.sessionResource);
+								if (trace && event.sequence_id > trace.lastSequenceId) {
+									trace.lastSequenceId = event.sequence_id;
+								}
+								applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+							}
+							break;  // resume stream completed cleanly
+						} catch (replayErr) {
+							const replayVerdict = classifySseFailure(replayErr, abortController.signal);
+							if (replayVerdict === 'cancelled') {
+								flushAssistantText();
+								cancelListener.dispose();
+								this._statelessTraces.delete(request.sessionResource);
+								return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
+							}
+							if (replayErr instanceof StatelessResumeNotFoundError) {
+								this._logService.warn('[ChipOS Stateless] /resume 404 — turn already completed or never existed');
+								progress([this._markdown('$(info) **ChipOS:** the previous turn already finished. Please send your message again to start a new one.')]);
+								errorResult = { errorDetails: { message: 'resume target not found' } };
+								break;
+							}
+							if (replayVerdict === 'surface-replay-expired') {
+								this._logService.warn('[ChipOS Stateless] /resume 410 — SSE buffer evicted');
+								progress([this._markdown('$(warning) **ChipOS:** reconnect window expired. Please send your last message again.')]);
+								errorResult = { errorDetails: { message: 'replay window expired' } };
+								break;
+							}
+							// Transient (network error / reasoner still restarting) — backoff + retry.
+							if (resumeAttempt < maxResumeAttempts) {
+								const backoffMs = Math.min(1000 * 2 ** (resumeAttempt - 1), 8000);
+								this._logService.warn('[ChipOS Stateless] /resume attempt %d transient-failed (%s) — retry in %dms', resumeAttempt, String(replayErr), backoffMs);
+								await raceCancellation(timeout(backoffMs), token);
+							} else {
+								const msg = replayErr instanceof Error ? replayErr.message : String(replayErr);
+								this._logService.error('[ChipOS Stateless] /resume gave up after %d attempts: %s', maxResumeAttempts, msg);
+								progress([this._markdown(`$(error) **ChipOS:** reconnect failed after ${maxResumeAttempts} attempts — please send your message again.`)]);
+								errorResult = { errorDetails: { message: msg } };
+							}
 						}
 					}
 					break;
@@ -5829,17 +5862,41 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._pendingStatelessConfirms.delete(confirm.requestId);
 		}
 
-		try {
-			await client.postConfirmResponse(traceId, confirm.requestId, {
-				request_id: confirm.requestId,
-				action: result.action,
-				selections: result.selections ?? null,
-				comment: result.comment ?? null,
-			});
-		} catch (err) {
-			this._logService.warn(
-				'[ChipOS Stateless] POST /confirm_response failed for request_id=%s: %s',
-				confirm.requestId, String(err),
+		// P1: the user's confirm decision is precious — a single POST that fails
+		// during a transient blip (network drop the moment they click, or a
+		// just-rotated token) must NOT be silently dropped (the card has already
+		// swapped to "responded", so there's no second click to recover). Retry
+		// with capped exponential backoff; each attempt re-resolves the token
+		// (P0.5), so a refresh between attempts lands cleanly. Bail on cancel.
+		const maxAttempts = 6;
+		let posted = false;
+		for (let attempt = 1; attempt <= maxAttempts && !token.isCancellationRequested; attempt++) {
+			try {
+				await client.postConfirmResponse(traceId, confirm.requestId, {
+					request_id: confirm.requestId,
+					action: result.action,
+					selections: result.selections ?? null,
+					comment: result.comment ?? null,
+				});
+				posted = true;
+				break;
+			} catch (err) {
+				this._logService.warn(
+					'[ChipOS Stateless] POST /confirm_response attempt %d/%d failed for request_id=%s: %s',
+					attempt, maxAttempts, confirm.requestId, String(err),
+				);
+				if (attempt < maxAttempts) {
+					// 1s, 2s, 4s, 8s, 8s — ~23s total, enough to ride out a brief
+					// outage / token refresh without hanging the turn forever.
+					const backoffMs = Math.min(1000 * 2 ** (attempt - 1), 8000);
+					await raceCancellation(timeout(backoffMs), token);
+				}
+			}
+		}
+		if (!posted) {
+			this._logService.error(
+				'[ChipOS Stateless] POST /confirm_response gave up after %d attempts for request_id=%s — user decision lost',
+				maxAttempts, confirm.requestId,
 			);
 		}
 	}

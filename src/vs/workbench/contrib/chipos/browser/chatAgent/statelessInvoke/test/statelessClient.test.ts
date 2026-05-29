@@ -637,4 +637,29 @@ suite('StatelessClient — Phase 1 (ADR-018)', () => {
 		const headers = calls[0].init?.headers as Record<string, string>;
 		assert.strictEqual(headers['Authorization'], 'Bearer secret-token');
 	});
+
+	test('authTokenProvider is resolved FRESH per request (P0.5 — expired-JWT 401 on resume)', async () => {
+		// Live-found regression: the client captured the token ONCE at
+		// construction, so a long-lived turn's late /resume + /confirm_response
+		// fired with an EXPIRED JWT → 401 at the ~10-min mark. The provider must
+		// be consulted on EVERY request so getAccessToken's near-expiry refresh
+		// keeps the Authorization header fresh. Here the provider hands out a new
+		// token each call (simulating a refresh between requests).
+		let n = 0;
+		const provider = async () => `tok-${++n}`;
+		const { fn, calls } = makeFetchSpy(() =>
+			makeJsonResponse(200, { catalog_version: 'v', accepted_tool_count: 0, rejected: [] }),
+		);
+		const client = new StatelessClient({ baseUrl, fetchFn: fn, authTokenProvider: provider });
+
+		await client.registerTools({ chat_session_id: 's', tools: [] });
+		await client.registerTools({ chat_session_id: 's', tools: [] });
+
+		const h0 = calls[0].init?.headers as Record<string, string>;
+		const h1 = calls[1].init?.headers as Record<string, string>;
+		assert.deepStrictEqual(
+			[h0['Authorization'], h1['Authorization']],
+			['Bearer tok-1', 'Bearer tok-2'],
+		);
+	});
 });
