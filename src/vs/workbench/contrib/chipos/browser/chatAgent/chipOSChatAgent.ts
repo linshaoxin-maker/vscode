@@ -15,6 +15,7 @@ import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
@@ -72,10 +73,12 @@ import {
 	StatelessResumeNotFoundError,
 } from './statelessInvoke/statelessClient.js';
 import type {
+	InFlightTrace,
 	InvokeRequest,
 	Message,
 	ToolDefinition,
 	TokenUsage,
+	TurnStateResponse,
 } from './statelessInvoke/types.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
@@ -340,6 +343,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	constructor(
 		@ILogService private readonly _logService: ILogService,
+		@IStorageService private readonly _storageService: IStorageService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IChatTodoListService private readonly _todoListService: IChatTodoListService,
@@ -387,6 +391,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// flushed on the next invoke. The actual subscription is per-session
 		// and opened in `_setSessionBackendId` once we know the sessionId.
 		this._register(this._workerPermissionService.onAsk(ask => this._onWorkerPermissionAsk(ask)));
+
+		// PHASE-1 §2.9 (ADR-018 §2 D10 / R-D) IDE-restart auto-resume: when a chat
+		// model is created — including the lazy restore of a persisted thread on
+		// startup — probe the reasoner for an in-flight turn that was cut off by
+		// the reload. The framework force-cancels a restored in-flight response
+		// (chatModel coerces Pending→Cancelled on (de)serialize), so we cannot
+		// append into the original row; instead we surface a notification whose
+		// "继续" click drives a /resume into a fresh render. See
+		// `_maybeProbeInFlightTurn`.
+		this._register(this._chatService.onDidCreateModel(model => {
+			void this._maybeProbeInFlightTurn(model).catch(err => {
+				this._logService.warn('[ChipOS Stateless] in-flight turn probe failed:', String(err));
+			});
+		}));
+		// Cover any thread already restored before this listener was wired
+		// (dedup in `_maybeProbeInFlightTurn` makes the double-cover harmless).
+		for (const model of this._chatService.chatModels.get()) {
+			void this._maybeProbeInFlightTurn(model).catch(err => {
+				this._logService.warn('[ChipOS Stateless] in-flight turn probe failed:', String(err));
+			});
+		}
 
 		// 2026-05-26: carousel subscription removed (see _pendingCarousels
 		// removal comment above). agent_ask now uses option-as-buttons via
@@ -609,6 +634,21 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				requestId,
 			);
 			return { errorDetails: { message: 'confirm card already responded' } };
+		}
+
+		// PHASE-1 §2.9 IDE-restart resume: the startup notification's "继续" click
+		// re-enters here via sendRequest carrying our resume marker (mirrors the
+		// confirm-card round-trip above). Route to the resume path so we CONTINUE
+		// the in-flight turn (/resume) instead of starting a fresh /invoke.
+		const resumeMarker = request.acceptedConfirmationData?.[0] as
+			{ __chiposStatelessResumeTraceId?: string; __chiposStatelessResumeCsId?: string; __chiposStatelessResumeLastSeq?: number }
+			| undefined;
+		if (resumeMarker?.__chiposStatelessResumeTraceId && resumeMarker.__chiposStatelessResumeCsId) {
+			return this._resumeStatelessTurn(request, progress, token, {
+				traceId: resumeMarker.__chiposStatelessResumeTraceId,
+				chatSessionId: resumeMarker.__chiposStatelessResumeCsId,
+				lastSequenceId: typeof resumeMarker.__chiposStatelessResumeLastSeq === 'number' ? resumeMarker.__chiposStatelessResumeLastSeq : -1,
+			});
 		}
 
 		if (useStateless) {
@@ -4643,6 +4683,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			void this._statelessClient?.cancel(trace.traceId, 'session_disposed').catch(() => { /* swallow */ });
 		}
 		this._statelessChatSessionIds.delete(sessionResource);
+		// Drop the durable id + probe-dedup marker — the thread is gone (cleared),
+		// so there is nothing left to resume on a future startup.
+		this._removeStoredStatelessChatSessionId(sessionResource);
+		this._probedStatelessSessions.delete(sessionResource.toString());
 		// Clean up any connection banner for this session
 		this._hideConnectionBanner(sessionResource);
 		this._connectionBanners.delete(sessionResource);
@@ -4974,6 +5018,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _statelessAdapter = new ChatModelToRecordsAdapter();
 	private readonly _statelessAssembler = new ConversationAssembler();
 
+	// PHASE-1 §2.9 IDE-restart resume state.
+	//   - `_STATELESS_CSID_STORAGE_KEY`: workspace-storage key holding a
+	//     {sessionResource → chat_session_id} map so the cs_id survives restart.
+	//   - `_probedStatelessSessions`: sessionResources already probed this IDE
+	//     run, so we offer resume at most once per thread per launch.
+	private static readonly _STATELESS_CSID_STORAGE_KEY = 'chipos.stateless.chatSessionIds';
+	private readonly _probedStatelessSessions = new Set<string>();
+
 	/**
 	 * Lazy / reused StatelessClient. Recreated when the configured baseUrl
 	 * changes (mode switch, user override edit). Token is read at request time
@@ -5007,18 +5059,30 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return this._statelessClient;
 	}
 
-	/** Stable per-chat-thread id. Minted on first stateless invoke. */
+	/**
+	 * Stable per-chat-thread id. Minted on first stateless invoke, then DURABLE:
+	 * persisted to workspace storage so it survives an IDE restart. Recovery on
+	 * startup (the `_maybeProbeInFlightTurn` path + this lookup) is what lets
+	 * GET /turn_state find a turn that was in-flight when the window reloaded —
+	 * the in-memory `_statelessChatSessionIds` map is empty after restart, so
+	 * without the storage fallback we would mint a *new* id and lose the link.
+	 */
 	private _statelessChatSessionIdFor(sessionResource: URI): string {
 		let id = this._statelessChatSessionIds.get(sessionResource);
+		if (!id) {
+			// Recover a durable id minted in a previous IDE run (survives restart).
+			id = this._readStoredStatelessChatSessionId(sessionResource);
+		}
 		if (!id) {
 			// PROD-READINESS P0-B: use an unguessable UUID, not a
 			// counter+timestamp. Combined with the reasoner-side owner check
 			// (claim_or_verify_owner), this prevents another authed user from
 			// enumerating / hijacking someone else's chat_session_id.
 			id = `stateless_chat_${generateUuid()}`;
-			this._statelessChatSessionIds.set(sessionResource, id);
 			this._logService.info('[ChipOS Stateless] New chat_session_id:', id);
 		}
+		this._statelessChatSessionIds.set(sessionResource, id);
+		this._writeStoredStatelessChatSessionId(sessionResource, id);
 		return id;
 	}
 
@@ -5488,6 +5552,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const resultMetadata: Record<string, unknown> = {
 			usage: usage ?? null,
 			trace_id: traceId,
+			// PHASE-1 §2.9: stash the chat_session_id on the result so it round-trips
+			// into chatSessions/*.jsonl (telemetry + a secondary recovery hint). The
+			// authoritative cross-restart recovery is workspace storage, written at
+			// id-mint time — see `_statelessChatSessionIdFor`.
+			chipos_chat_session_id: chatSessionId,
 		};
 
 		const totalElapsed = Date.now() - startTime;
@@ -5508,6 +5577,356 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			metadata: resultMetadata,
 			timings: { totalElapsed, firstProgress: firstProgressTime },
 		};
+	}
+
+	// =========================================================================
+	// PHASE-1 §2.9 (ADR-018 §2 D10 / R-D) — IDE-restart auto-resume
+	// =========================================================================
+	//
+	// When the IDE reloads while a stateless turn is in-flight, the reasoner
+	// keeps running the turn but the IDE's invoke()/progress callback is gone,
+	// so the answer is silently lost. The chat framework force-cancels a
+	// restored in-flight response (ChatResponseModel coerces Pending→Cancelled
+	// on both serialize and deserialize), and `acceptResponseProgress` throws on
+	// a completed response — so we CANNOT append into the original row. The only
+	// way to render a continuation without switching ChipOS to a custom
+	// session-content-provider scheme (large blast radius) is a fresh render
+	// driven by a user action. We therefore: probe GET /turn_state on restore,
+	// and for a `running` trace surface a notification whose "继续" click issues
+	// a sendRequest carrying a resume marker → invoke() routes to
+	// `_resumeStatelessTurn`, which streams POST /resume into the new row.
+
+	/**
+	 * On chat-model create/restore, recover the durable chat_session_id for this
+	 * thread and probe the reasoner for an in-flight turn cut off by an IDE
+	 * reload. No-op for fresh threads (no stored id) and for threads with no
+	 * in-flight trace (turn already finished — GET /turn_state is authoritative).
+	 */
+	private async _maybeProbeInFlightTurn(model: IChatModel): Promise<void> {
+		if (!(this._configurationService.getValue<boolean>('chipos.experiments.statelessReasoner') ?? false)) {
+			return;
+		}
+		const sessionResource = model.sessionResource;
+		const key = sessionResource.toString();
+		// Probe each thread at most once per IDE run.
+		if (this._probedStatelessSessions.has(key)) {
+			return;
+		}
+		// A durable id exists only for a thread that invoked in a prior run; its
+		// absence means there is nothing to resume.
+		const chatSessionId = this._readStoredStatelessChatSessionId(sessionResource);
+		if (!chatSessionId) {
+			return;
+		}
+		this._probedStatelessSessions.add(key);
+		// An active trace means an invoke is live for this session right now (not
+		// a restart-recovery case) — leave it to its own resume machinery.
+		if (this._statelessTraces.has(sessionResource)) {
+			return;
+		}
+		// Re-seed the in-memory id map so a subsequent invoke/resume reuses the
+		// same chat_session_id (the reasoner owner-check rejects a mismatched id).
+		this._statelessChatSessionIds.set(sessionResource, chatSessionId);
+		this._logService.info('[ChipOS Stateless] resume probe: restored thread %s -> cs=%s, querying turn_state', key, chatSessionId);
+
+		let client: StatelessClient;
+		try {
+			client = await this._ensureStatelessClient();
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] resume probe: client init failed: %s', String(err));
+			return;
+		}
+		// Retry getTurnState with backoff: this probe fires on session-restore,
+		// which races IChipOSTokenManager.initialize() (SecretStorage read). Until
+		// that completes getAccessToken() returns undefined → the request goes out
+		// tokenless → 401. The per-request token provider re-resolves a fresh token
+		// each attempt, so a short retry rides out the startup auth race.
+		let turnState: TurnStateResponse | undefined;
+		const maxProbeAttempts = 6;
+		for (let attempt = 1; attempt <= maxProbeAttempts; attempt++) {
+			try {
+				turnState = await client.getTurnState(chatSessionId);
+				break;
+			} catch (err) {
+				const is401 = err instanceof StatelessHttpError && err.status === 401;
+				const retriable = is401 || !(err instanceof StatelessHttpError);
+				if (attempt < maxProbeAttempts && retriable) {
+					const backoffMs = Math.min(1000 * attempt, 4000);
+					this._logService.info('[ChipOS Stateless] resume probe: getTurnState attempt %d not ready (%s) — retry in %dms', attempt, String(err), backoffMs);
+					await timeout(backoffMs);
+					continue;
+				}
+				this._logService.warn('[ChipOS Stateless] resume probe: getTurnState failed for cs=%s: %s', chatSessionId, String(err));
+				return;
+			}
+		}
+		if (!turnState || turnState.in_flight_traces.length === 0) {
+			this._logService.info('[ChipOS Stateless] resume probe: turn_state empty for cs=%s — nothing to resume', chatSessionId);
+			return;
+		}
+		// Offer to resume the most-recently-started in-flight trace.
+		const trace = turnState.in_flight_traces.reduce((a, b) => (b.started_at >= a.started_at ? b : a));
+		this._logService.info('[ChipOS Stateless] resume probe: in-flight trace=%s state=%s for cs=%s', trace.trace_id, trace.state, chatSessionId);
+		this._offerStatelessResume(sessionResource, chatSessionId, trace);
+	}
+
+	/**
+	 * Surface the restart-resume affordance. `running` → an info prompt that
+	 * continues the turn on click; `stale` (§2.9: reasoner replica may have died)
+	 * → a warning that asks the user before attempting resume. Both offer a
+	 * cancel so the dangling server turn can be torn down.
+	 */
+	private _offerStatelessResume(sessionResource: URI, chatSessionId: string, trace: InFlightTrace): void {
+		const preview = trace.last_user_message_preview ? `（"${trace.last_user_message_preview}"）` : '';
+		const resumeData = {
+			__chiposStatelessResumeTraceId: trace.trace_id,
+			__chiposStatelessResumeCsId: chatSessionId,
+			// last_checkpoint_seq is the reasoner's "safe to resume from here"
+			// watermark; -1 means "replay everything from the start of the turn".
+			__chiposStatelessResumeLastSeq: trace.last_checkpoint_seq ?? -1,
+		};
+		const doResume = () => {
+			const label = localize('chipos.stateless.resume.continueLabel', "继续生成");
+			void this._chatService.sendRequest(sessionResource, label, {
+				// Route to ChipOS without injecting an "@" mention; mark it as a
+				// confirmation reply so the conversation assembler skips this
+				// synthetic prompt on future invokes (chatModelAdapter §101).
+				agentIdSilent: 'chipos.chat',
+				confirmation: label,
+				acceptedConfirmationData: [resumeData],
+			}).then(result => {
+				if (result.kind !== 'sent') {
+					this._logService.warn('[ChipOS Stateless] resume sendRequest not sent: %s', JSON.stringify(result));
+				}
+			}, err => this._logService.error('[ChipOS Stateless] resume sendRequest failed:', String(err)));
+		};
+		const doCancel = () => {
+			void this._ensureStatelessClient()
+				.then(c => c.cancel(trace.trace_id, 'ide_restart_discarded'))
+				.catch(err => this._logService.warn('[ChipOS Stateless] resume-discard /cancel failed:', String(err)));
+		};
+		if (trace.state === 'running') {
+			void this._notificationService.prompt(
+				Severity.Info,
+				localize('chipos.stateless.resume.running', "ChipOS：上一个回答因 IDE 重启被中断{0}，是否继续生成？", preview),
+				[
+					{ label: localize('chipos.stateless.resume.continueBtn', "继续生成"), run: doResume },
+					{ label: localize('chipos.stateless.resume.cancelBtn', "取消该回合"), run: doCancel, isSecondary: true },
+				],
+				{ sticky: true },
+			);
+		} else {
+			// state === 'stale' — §2.9: ask, don't auto-resume.
+			void this._notificationService.prompt(
+				Severity.Warning,
+				localize('chipos.stateless.resume.stale', "ChipOS：上一个回答的连接已断开较久{0}，可能已无法恢复。要尝试继续吗？", preview),
+				[
+					{ label: localize('chipos.stateless.resume.tryBtn', "尝试继续"), run: doResume },
+					{ label: localize('chipos.stateless.resume.discardBtn', "丢弃"), run: doCancel, isSecondary: true },
+				],
+				{ sticky: true },
+			);
+		}
+	}
+
+	/**
+	 * Continue an in-flight turn after an IDE restart by streaming POST /resume
+	 * into a FRESH chat row (the restored row is force-cancelled and cannot be
+	 * appended to — see section header). Reached from invoke() when a request
+	 * carries the resume marker. Mirrors the in-invoke `'replay'` resume path:
+	 * per-request token (P0.5), capped-backoff retry, api_key re-supply (P2),
+	 * and 404 (turn finished) / 410 (buffer evicted) handling.
+	 */
+	private async _resumeStatelessTurn(
+		request: IChatAgentRequest,
+		progress: (parts: IChatProgress[]) => void,
+		token: CancellationToken,
+		ctx: { traceId: string; chatSessionId: string; lastSequenceId: number },
+	): Promise<IChatAgentResult> {
+		const startTime = Date.now();
+		const { traceId, chatSessionId } = ctx;
+		this._logService.info('[ChipOS Stateless] resume-on-restart: trace=%s chat_session=%s from seq=%d', traceId, chatSessionId, ctx.lastSequenceId);
+
+		let client: StatelessClient;
+		try {
+			client = await this._ensureStatelessClient();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			progress([this._markdown(localize('chipos.stateless.resume.clientErr', "$(error) **ChipOS:** 无法初始化以继续上一个回答 — {0}", msg))]);
+			return { errorDetails: { message: msg } };
+		}
+
+		// LLM key for resume (F6/P2): a reasoner restart rehydrates from a
+		// checkpoint that does NOT persist the raw key, so the re-driven LLM call
+		// would 401 at the provider without it.
+		const llm = this._buildLlmConfig();
+
+		const abortController = new AbortController();
+		this._statelessTraces.set(request.sessionResource, { traceId, lastSequenceId: ctx.lastSequenceId, abortController });
+		const cancelListener = token.onCancellationRequested(() => {
+			this._logService.info('[ChipOS Stateless] resume-on-restart: token cancel — aborting + /cancel');
+			abortController.abort();
+			void client.cancel(traceId, 'user_cancelled').catch(err => {
+				this._logService.warn('[ChipOS Stateless] resume /cancel POST failed (likely race):', String(err));
+			});
+		});
+
+		let assistantTextBuf = '';
+		const flushAssistantText = () => {
+			if (assistantTextBuf.length === 0) {
+				return;
+			}
+			progress([this._markdown(assistantTextBuf)]);
+			assistantTextBuf = '';
+		};
+		let usage: TokenUsage | undefined;
+		let errorResult: IChatAgentResult | undefined;
+		const friendlyToolName = (raw: string) => this._friendlyToolName(raw);
+
+		// Self-contained dispatch handling ONLY the committed DispatchResult fields
+		// (resume continuations are text/thinking/tool-progress + reverse-channel).
+		const applyDispatch = (handled: DispatchResult): void => {
+			if (handled.appendText) {
+				assistantTextBuf += handled.appendText;
+			}
+			if (handled.flushText) {
+				flushAssistantText();
+			}
+			if (handled.progressMessage) {
+				progress([this._progress(handled.progressMessage.content, handled.progressMessage.shimmer)]);
+			}
+			if (handled.thinkingText) {
+				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
+			}
+			if (handled.markdownError) {
+				progress([this._markdown(handled.markdownError)]);
+			}
+			if (handled.usage !== undefined) {
+				usage = handled.usage;
+			}
+			if (handled.errorMessage !== undefined) {
+				errorResult = { errorDetails: { message: handled.errorMessage } };
+			}
+			if (handled.ideToolCall) {
+				const call = handled.ideToolCall;
+				void this._handleStatelessIdeToolCall(client, traceId, request.sessionResource, call).catch(err => {
+					this._logService.error('[ChipOS Stateless] resume ide_tool_call handler failed:', String(err));
+				});
+			}
+			if (handled.confirmRequest) {
+				const confirm = handled.confirmRequest;
+				void this._handleStatelessConfirmRequest(client, traceId, confirm, progress, token).catch(err => {
+					this._logService.error('[ChipOS Stateless] resume confirm_request handler failed:', String(err));
+				});
+			}
+			if (handled.resumedBufferDrained) {
+				this._logService.info('[ChipOS Stateless] resume buffer drained at seq=%d', handled.resumedBufferDrained.sequenceId);
+			}
+		};
+
+		// Resume with capped-exponential backoff: a reasoner restart leaves a
+		// window where /resume returns "Failed to fetch" until it is healthy.
+		const maxResumeAttempts = 8;
+		for (let attempt = 1; attempt <= maxResumeAttempts && !abortController.signal.aborted; attempt++) {
+			const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? ctx.lastSequenceId;
+			this._logService.warn('[ChipOS Stateless] resume-on-restart attempt %d/%d from seq %d', attempt, maxResumeAttempts, lastSeq);
+			try {
+				for await (const event of client.resume(chatSessionId, {
+					trace_id: traceId,
+					last_sequence_id: lastSeq,
+					disconnect_reason: 'ide_restart',
+					api_key: llm.api_key || null,
+					api_key_alias: null,
+				}, abortController.signal)) {
+					const trace = this._statelessTraces.get(request.sessionResource);
+					if (trace && event.sequence_id > trace.lastSequenceId) {
+						trace.lastSequenceId = event.sequence_id;
+					}
+					applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+				}
+				break;  // resume stream completed cleanly
+			} catch (resumeErr) {
+				const verdict = classifySseFailure(resumeErr, abortController.signal);
+				if (verdict === 'cancelled') {
+					flushAssistantText();
+					cancelListener.dispose();
+					this._statelessTraces.delete(request.sessionResource);
+					return { errorDetails: { message: localize('chipos.stateless.cancelled', 'Cancelled by user.') } };
+				}
+				if (resumeErr instanceof StatelessResumeNotFoundError) {
+					// Turn finished naturally between the restart and our probe/resume.
+					this._logService.warn('[ChipOS Stateless] resume-on-restart 404 — turn already completed');
+					progress([this._markdown(localize('chipos.stateless.resume.finished', "$(info) **ChipOS:** 上一个回答已经完成。如需新的回答请重新发送消息。"))]);
+					break;
+				}
+				if (verdict === 'surface-replay-expired') {
+					this._logService.warn('[ChipOS Stateless] resume-on-restart 410 — buffer evicted');
+					progress([this._markdown(localize('chipos.stateless.resume.expired', "$(warning) **ChipOS:** 重连窗口已过期，请重新发送上一条消息。"))]);
+					errorResult = { errorDetails: { message: 'replay window expired' } };
+					break;
+				}
+				if (attempt < maxResumeAttempts) {
+					const backoffMs = Math.min(1000 * 2 ** (attempt - 1), 8000);
+					this._logService.warn('[ChipOS Stateless] resume-on-restart attempt %d transient-failed (%s) — retry in %dms', attempt, String(resumeErr), backoffMs);
+					await raceCancellation(timeout(backoffMs), token);
+				} else {
+					const msg = resumeErr instanceof Error ? resumeErr.message : String(resumeErr);
+					this._logService.error('[ChipOS Stateless] resume-on-restart gave up after %d attempts: %s', maxResumeAttempts, msg);
+					progress([this._markdown(localize('chipos.stateless.resume.failed', "$(error) **ChipOS:** 多次重连失败，请重新发送消息。"))]);
+					errorResult = { errorDetails: { message: msg } };
+				}
+			}
+		}
+
+		flushAssistantText();
+		cancelListener.dispose();
+		this._statelessTraces.delete(request.sessionResource);
+
+		const timings = { totalElapsed: Date.now() - startTime };
+		if (errorResult) {
+			return { ...errorResult, timings };
+		}
+		return {
+			metadata: { usage: usage ?? null, trace_id: traceId, chipos_chat_session_id: chatSessionId },
+			timings,
+		};
+	}
+
+	// ── Durable chat_session_id storage (survives IDE restart) ──────────────
+
+	private _readStoredStatelessChatSessionIds(): Record<string, string> {
+		const raw = this._storageService.get(ChipOSChatAgent._STATELESS_CSID_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return {};
+		}
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {};
+		} catch {
+			return {};
+		}
+	}
+
+	private _readStoredStatelessChatSessionId(sessionResource: URI): string | undefined {
+		return this._readStoredStatelessChatSessionIds()[sessionResource.toString()];
+	}
+
+	private _writeStoredStatelessChatSessionId(sessionResource: URI, chatSessionId: string): void {
+		const map = this._readStoredStatelessChatSessionIds();
+		if (map[sessionResource.toString()] === chatSessionId) {
+			return;
+		}
+		map[sessionResource.toString()] = chatSessionId;
+		this._storageService.store(ChipOSChatAgent._STATELESS_CSID_STORAGE_KEY, JSON.stringify(map), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private _removeStoredStatelessChatSessionId(sessionResource: URI): void {
+		const map = this._readStoredStatelessChatSessionIds();
+		if (!(sessionResource.toString() in map)) {
+			return;
+		}
+		delete map[sessionResource.toString()];
+		this._storageService.store(ChipOSChatAgent._STATELESS_CSID_STORAGE_KEY, JSON.stringify(map), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	// =========================================================================
