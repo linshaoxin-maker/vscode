@@ -65,14 +65,19 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('message_delta', {})), {});
 	});
 
-	test('tool_call_emitted → flushText + tools progress message via friendly name', () => {
+	test('tool_call_emitted → flushText + collapsible tool invocation carrying args', () => {
 		const r = dispatchStatelessEvent(
-			ev('tool_call_emitted', { name: 'read_file', id: 'toolu_abc' }),
+			ev('tool_call_emitted', { name: 'read_file', id: 'toolu_abc', input: { file_path: '/x' } }),
 			raw => `Friendly(${raw})`,
 		);
 		assert.deepStrictEqual(r, {
 			flushText: true,
-			progressMessage: { content: '$(tools) Friendly(read_file)' },
+			toolInvocation: {
+				callId: 'toolu_abc',
+				toolName: 'read_file',
+				input: { file_path: '/x' },
+				isComplete: false,
+			},
 		});
 	});
 
@@ -80,12 +85,27 @@ suite('dispatchStatelessEvent', () => {
 		const r = dispatchStatelessEvent(ev('tool_call_emitted', {}));
 		assert.deepStrictEqual(r, {
 			flushText: true,
-			progressMessage: { content: '$(tools) tool' },
+			toolInvocation: {
+				callId: 'tool',
+				toolName: 'tool',
+				input: undefined,
+				isComplete: false,
+			},
 		});
 	});
 
-	test('tool_result_observed → noop (internal bookkeeping)', () => {
-		assert.deepStrictEqual(dispatchStatelessEvent(ev('tool_result_observed', { tool_use_id: 'toolu_abc' })), {});
+	test('tool_result_observed → completes invocation with output preview', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('tool_result_observed', { tool_use_id: 'toolu_abc', content_preview: 'hello', is_error: false })),
+			{
+				toolInvocation: {
+					callId: 'toolu_abc',
+					isComplete: true,
+					outputPreview: 'hello',
+					isError: false,
+				},
+			},
+		);
 	});
 
 	test('thinking_delta with text → emitted as thinkingText; empty → noop', () => {
@@ -237,13 +257,18 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(r, { resumedLive: true });
 	});
 
-	test('error with message → flush + markdownError + errorMessage', () => {
+	test('error with message → flush + structured agentError + errorMessage', () => {
 		const r = dispatchStatelessEvent(
-			ev('error', { message: 'upstream LLM 429', error_code: 'rate_limit', category: 'transient' }),
+			ev('error', { message: 'upstream LLM 429', error_code: 'rate_limit', category: 'transient', retryable: true }),
 		);
 		assert.deepStrictEqual(r, {
 			flushText: true,
-			markdownError: '$(error) **ChipOS:** upstream LLM 429',
+			agentError: {
+				category: 'transient',
+				errorCode: 'rate_limit',
+				message: 'upstream LLM 429',
+				retryable: true,
+			},
 			errorMessage: 'upstream LLM 429',
 		});
 	});
@@ -252,7 +277,12 @@ suite('dispatchStatelessEvent', () => {
 		const r = dispatchStatelessEvent(ev('error', { error_code: 'rate_limit' }));
 		assert.deepStrictEqual(r, {
 			flushText: true,
-			markdownError: '$(error) **ChipOS:** reasoner error (rate_limit)',
+			agentError: {
+				category: undefined,
+				errorCode: 'rate_limit',
+				message: 'reasoner error (rate_limit)',
+				retryable: undefined,
+			},
 			errorMessage: 'reasoner error (rate_limit)',
 		});
 	});
@@ -261,7 +291,12 @@ suite('dispatchStatelessEvent', () => {
 		const r = dispatchStatelessEvent(ev('error', {}));
 		assert.deepStrictEqual(r, {
 			flushText: true,
-			markdownError: '$(error) **ChipOS:** reasoner error (unknown)',
+			agentError: {
+				category: undefined,
+				errorCode: undefined,
+				message: 'reasoner error (unknown)',
+				retryable: undefined,
+			},
 			errorMessage: 'reasoner error (unknown)',
 		});
 	});
@@ -273,9 +308,37 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(dispatchStatelessEvent(future), {});
 	});
 
-	test('default friendlyToolName is identity', () => {
+	test('tool_call_emitted carries the raw tool name (friendly mapping happens in applyDispatch)', () => {
 		const r = dispatchStatelessEvent(ev('tool_call_emitted', { name: 'raw_tool' }));
-		assert.strictEqual(r.progressMessage?.content, '$(tools) raw_tool');
+		assert.strictEqual(r.toolInvocation?.toolName, 'raw_tool');
+	});
+
+	test('event with undefined data → never throws (resume crash regression)', () => {
+		// Live repro (2026-05-29): /resume yields a `resumed_buffer_drained`
+		// marker with NO `data` field when a turn parked at confirm has nothing
+		// past the watermark to replay. The dispatcher read `data.sequence_id`
+		// on undefined → "Cannot read properties of undefined (reading
+		// 'sequence_id')", crashing the WHOLE auto-resume path (network drop +
+		// >10min-confirm both went through it). Every branch must tolerate a
+		// missing `data`. Snapshot: no throw + the no-data fallback shape.
+		const types: InvokeEvent['type'][] = [
+			'message_start', 'content_block_start', 'content_block_delta',
+			'content_block_stop', 'message_delta', 'message_stop',
+			'tool_call_emitted', 'tool_result_observed', 'ide_tool_call',
+			'confirm_request', 'keepalive', 'checkpoint',
+			'resumed_buffer_drained', 'resumed_live', 'thinking_delta',
+			'round_progress', 'trace_link', 'round_end', 'error',
+		];
+		const results = types.map(t => {
+			const evNoData = { type: t, sequence_id: 1, data: undefined } as unknown as InvokeEvent;
+			return dispatchStatelessEvent(evNoData);
+		});
+		// The specific crash site: resumed_buffer_drained must yield seq 0.
+		assert.deepStrictEqual(results[types.indexOf('resumed_buffer_drained')], {
+			resumedBufferDrained: { sequenceId: 0 },
+		});
+		// keepalive falls back to ts 0; none of the others throw.
+		assert.deepStrictEqual(results[types.indexOf('keepalive')], { keepalive: { ts: 0 } });
 	});
 });
 

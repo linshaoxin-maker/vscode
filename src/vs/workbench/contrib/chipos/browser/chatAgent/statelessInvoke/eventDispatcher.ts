@@ -106,6 +106,35 @@ export interface DispatchResult {
 	resumedLive?: boolean;
 	/** When `terminate: true`, the final_messages list to append to chatSessions/*.jsonl. */
 	finalMessages?: Message[];
+	/**
+	 * [ChipOS] A tool-call lifecycle update for collapsible tool-invocation
+	 * rendering (replaces the plain "$(tools) name" progressMessage). The
+	 * caller pairs start/complete by `callId`:
+	 *   - `tool_call_emitted`    → { isComplete:false, toolName, input }
+	 *   - `tool_result_observed` → { isComplete:true, outputPreview, isError }
+	 * The reasoner ships the args (`input`) and a result preview
+	 * (`content_preview`) precisely so the IDE can show what each tool did.
+	 */
+	toolInvocation?: {
+		callId: string;
+		toolName?: string;
+		input?: Record<string, unknown>;
+		isComplete: boolean;
+		outputPreview?: string;
+		isError?: boolean;
+	};
+	/**
+	 * [ChipOS] Structured agent error → rendered as an `agentError` card
+	 * (category icon + error code + retry hint) instead of a plain markdown
+	 * line. Carries the raw backend fields; the caller applies category
+	 * presets for the final visual.
+	 */
+	agentError?: {
+		category?: string;
+		errorCode?: string;
+		message: string;
+		retryable?: boolean;
+	};
 }
 
 /**
@@ -129,7 +158,7 @@ export function dispatchStatelessEvent(
 
 		case 'content_block_delta': {
 			// Anthropic shape: { delta: { type: 'text_delta', text: '...' } }
-			const data = event.data as { delta?: { type?: string; text?: string } };
+			const data = (event.data ?? {}) as { delta?: { type?: string; text?: string } };
 			if (data.delta?.type === 'text_delta' && typeof data.delta.text === 'string') {
 				return { appendText: data.delta.text };
 			}
@@ -141,7 +170,7 @@ export function dispatchStatelessEvent(
 
 		case 'message_delta': {
 			// PHASE-0-SPEC-AUDIT P0-3: server emits usage on message_delta.
-			const data = event.data as { usage?: TokenUsage };
+			const data = (event.data ?? {}) as { usage?: TokenUsage };
 			return data.usage ? { usage: data.usage } : {};
 		}
 
@@ -149,23 +178,48 @@ export function dispatchStatelessEvent(
 			return { flushText: true };
 
 		case 'tool_call_emitted': {
-			const data = event.data as { name?: string };
+			// [ChipOS] Render as a collapsible tool invocation (was: a plain
+			// "$(tools) name" progressMessage that couldn't be expanded). The
+			// reasoner ships id + name + input — pass them through so the IDE
+			// shows the tool name and its args.
+			const data = (event.data ?? {}) as { id?: string; name?: string; input?: Record<string, unknown> };
 			const name = typeof data.name === 'string' ? data.name : 'tool';
 			return {
 				flushText: true,
-				progressMessage: { content: `$(tools) ${friendlyToolName(name)}` },
+				toolInvocation: {
+					callId: typeof data.id === 'string' && data.id ? data.id : name,
+					toolName: name,
+					input: data.input && typeof data.input === 'object' ? data.input : undefined,
+					isComplete: false,
+				},
 			};
 		}
 
-		case 'tool_result_observed':
-			// Internal bookkeeping — not surfaced to user.
-			return {};
+		case 'tool_result_observed': {
+			// [ChipOS] Was dropped ("not surfaced to user") even though the
+			// reasoner explicitly marks this event display-purpose and ships a
+			// content_preview. Pair by tool_use_id and complete the invocation
+			// with the result preview so the user can see what the tool returned.
+			const data = (event.data ?? {}) as { tool_use_id?: string; is_error?: boolean; content_preview?: string };
+			const callId = typeof data.tool_use_id === 'string' ? data.tool_use_id : '';
+			if (!callId) {
+				return {};
+			}
+			return {
+				toolInvocation: {
+					callId,
+					isComplete: true,
+					outputPreview: typeof data.content_preview === 'string' ? data.content_preview : '',
+					isError: !!data.is_error,
+				},
+			};
+		}
 
 		case 'ide_tool_call': {
 			// Phase 1 reverse channel — IDE-side tool execution. Reasoner blocks
 			// awaiting POST /tool_result/{trace_id}/{call_id}. flushText so any
 			// pending assistant text renders before we kick off tool exec.
-			const data = event.data as unknown as IdeToolCallData;
+			const data = (event.data ?? {}) as unknown as IdeToolCallData;
 			return {
 				flushText: true,
 				ideToolCall: {
@@ -180,7 +234,7 @@ export function dispatchStatelessEvent(
 		case 'confirm_request': {
 			// Phase 1 reverse channel — render ChipOSPermissionCard, capture
 			// click, POST /confirm_response/{trace_id}/{request_id}.
-			const data = event.data as unknown as ConfirmRequestData;
+			const data = (event.data ?? {}) as unknown as ConfirmRequestData;
 			return {
 				flushText: true,
 				confirmRequest: {
@@ -196,14 +250,14 @@ export function dispatchStatelessEvent(
 		case 'keepalive': {
 			// Phase 1 anti-proxy-timeout heartbeat (every ~25s). Caller may
 			// use it to reset its idle timer or render a subtle alive indicator.
-			const data = event.data as unknown as KeepaliveData;
+			const data = (event.data ?? {}) as unknown as KeepaliveData;
 			return { keepalive: { ts: typeof data.ts === 'number' ? data.ts : 0 } };
 		}
 
 		case 'checkpoint': {
 			// Phase 1 safe-to-resume watermark. Caller stashes for a future
 			// /resume call's `last_sequence_id` semantics.
-			const data = event.data as unknown as CheckpointData;
+			const data = (event.data ?? {}) as unknown as CheckpointData;
 			return {
 				checkpoint: {
 					iteration: typeof data.iteration === 'number' ? data.iteration : 0,
@@ -215,7 +269,7 @@ export function dispatchStatelessEvent(
 		case 'resumed_buffer_drained': {
 			// Phase 1 /resume endpoint handoff marker — replay caught up,
 			// from this seq forward we're on the live stream (or stream closes).
-			const data = event.data as unknown as ResumedBufferDrainedData;
+			const data = (event.data ?? {}) as unknown as ResumedBufferDrainedData;
 			return {
 				resumedBufferDrained: {
 					sequenceId: typeof data.sequence_id === 'number' ? data.sequence_id : 0,
@@ -234,7 +288,7 @@ export function dispatchStatelessEvent(
 			return { resumedLive: true };
 
 		case 'thinking_delta': {
-			const data = event.data as { delta?: { text?: string } };
+			const data = (event.data ?? {}) as { delta?: { text?: string } };
 			const text = typeof data.delta?.text === 'string' ? data.delta.text : '';
 			return text.length > 0 ? { thinkingText: text } : {};
 		}
@@ -249,7 +303,7 @@ export function dispatchStatelessEvent(
 			// adds "max_iterations" / "interrupted". `langgraph_state_blob` is
 			// gone — IDE owns the conversation log via `final_messages` which
 			// it appends to chatSessions/*.jsonl (D8 mixed-state).
-			const data = event.data as { reason?: string; final_messages?: Message[] };
+			const data = (event.data ?? {}) as { reason?: string; final_messages?: Message[] };
 			return {
 				terminate: true,
 				flushText: true,
@@ -258,13 +312,21 @@ export function dispatchStatelessEvent(
 		}
 
 		case 'error': {
-			const data = event.data as { message?: string; error_code?: string; category?: string };
+			// [ChipOS] Emit a structured agentError so the caller can render a
+			// proper error card (category icon + code + retry hint) rather than
+			// a one-line markdown string.
+			const data = (event.data ?? {}) as { message?: string; error_code?: string; category?: string; retryable?: boolean };
 			const msg = typeof data.message === 'string'
 				? data.message
 				: `reasoner error (${data.error_code ?? data.category ?? 'unknown'})`;
 			return {
 				flushText: true,
-				markdownError: `$(error) **ChipOS:** ${msg}`,
+				agentError: {
+					category: typeof data.category === 'string' ? data.category : undefined,
+					errorCode: typeof data.error_code === 'string' ? data.error_code : undefined,
+					message: msg,
+					retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
+				},
 				errorMessage: msg,
 			};
 		}

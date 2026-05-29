@@ -55,6 +55,7 @@ import {
 	IChatTextEdit,
 	IChatRoundProgress,
 	IChatAgentError,
+	IChatChiposTodoCard,
 } from '../../../../contrib/chat/common/chatService/chatService.js';
 import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/common/tools/languageModelToolsService.js';
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
@@ -81,6 +82,8 @@ import type {
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
+import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
+import { isStatelessTurnResumable } from './statelessInvoke/statelessResumability.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
 import { FullTracer } from '../eventStream/fullTracer.js';
 import { ContextCollector } from '../autoContext/contextCollector.js';
@@ -333,6 +336,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _connectionBanners = new ResourceMap<ConnectionBannerHandler>();
 	/** T6b IDE FullTracer — created in constructor (DI), buffers per chat round. */
 	private readonly _fullTracer!: FullTracer;
+	/** PHASE-1-CUTOVER §5: client-observable stateless ramp counters (DI). */
+	private readonly _statelessObs!: StatelessObservability;
 	private _editorEffects: ChipOSEditorEffects | undefined;
 	private _contextCollector: ContextCollector | undefined;
 	private _sessionCounter = 0;
@@ -367,6 +372,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
 		// chat round and POSTs to reasoner /v1/trace/upload at TaskComplete.
 		this._fullTracer = this._register(this._instantiationService.createInstance(FullTracer));
+		this._statelessObs = this._instantiationService.createInstance(StatelessObservability);
 		this._register(this._chatService.onDidDisposeSession(e => {
 			for (const sessionResource of e.sessionResource) {
 				this._disposeRuntime(sessionResource);
@@ -430,6 +436,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			(_accessor, requestId: string, action: string, selections?: Record<string, string>) =>
 				this._resolveStatelessConfirm(requestId, action, selections),
 		));
+
+		// ADR-018 resume-from-break: the error card's PRIMARY "继续 (从中断处)" button
+		// fires this with the failed turn's resume context. We CONTINUE the turn from
+		// its last checkpoint (POST /resume) instead of re-running the whole prompt.
+		// Mirrors the IDE-restart notification path: a fresh chat row is the only
+		// render target available (see `_resumeStatelessTurn` section header), so we
+		// route through sendRequest rather than calling `_resumeStatelessTurn` directly.
+		this._register(CommandsRegistry.registerCommand(
+			'_chipos.resumeStatelessTurn',
+			(_accessor, ctx: { chatSessionId: string; traceId: string; lastSequenceId: number }) =>
+				this._resumeStatelessTurnFromCard(ctx),
+		));
 	}
 
 	/**
@@ -452,6 +470,101 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		pending.resolve({ action, selections, comment: undefined });
 		this._pendingStatelessConfirms.delete(requestId);
 		return true;
+	}
+
+	/**
+	 * ADR-018 resume-from-break — handler for the error card's "继续 (从中断处)"
+	 * button. The card carries only {chatSessionId, traceId, lastSequenceId}; we
+	 * reverse-map chat_session_id → sessionResource (the click has no session
+	 * context of its own) and drive a fresh chat row via `_sendStatelessResume-
+	 * Request`. The continuation streams into the new row from `lastSequenceId`,
+	 * preserving the prior (failed) row's already-rendered output.
+	 */
+	private async _resumeStatelessTurnFromCard(ctx: { chatSessionId: string; traceId: string; lastSequenceId: number }): Promise<boolean> {
+		if (!ctx?.chatSessionId || !ctx.traceId) {
+			this._logService.warn('[ChipOS Stateless] resume-from-card: missing context %s', JSON.stringify(ctx));
+			return false;
+		}
+		let sessionResource: URI | undefined;
+		for (const [resource, csId] of this._statelessChatSessionIds) {
+			if (csId === ctx.chatSessionId) {
+				sessionResource = resource;
+				break;
+			}
+		}
+		if (!sessionResource) {
+			// Session disposed, or history restored after an IDE restart before any
+			// invoke re-seeded the id map — there is no live render target. Returning
+			// false lets the error card fall back to resend instead of dead-ending.
+			this._logService.warn('[ChipOS Stateless] resume-from-card: no live session for cs=%s — caller should resend', ctx.chatSessionId);
+			return false;
+		}
+		this._logService.info('[ChipOS Stateless] resume-from-card: trace=%s cs=%s from seq=%d', ctx.traceId, ctx.chatSessionId, ctx.lastSequenceId);
+		return this._sendStatelessResumeRequest(sessionResource, ctx);
+	}
+
+	/**
+	 * Issue the synthetic sendRequest that re-enters invoke() carrying a resume
+	 * marker, so invoke() routes to `_resumeStatelessTurn` (which needs invoke()'s
+	 * render target — see its section header). Shared by the IDE-restart
+	 * notification ("继续生成") and the error-card "继续 (从中断处)" button.
+	 */
+	private async _sendStatelessResumeRequest(sessionResource: URI, ctx: { traceId: string; chatSessionId: string; lastSequenceId: number }): Promise<boolean> {
+		const label = localize('chipos.stateless.resume.continueLabel', "继续生成");
+		const resumeData = {
+			__chiposStatelessResumeTraceId: ctx.traceId,
+			__chiposStatelessResumeCsId: ctx.chatSessionId,
+			__chiposStatelessResumeLastSeq: ctx.lastSequenceId,
+		};
+		try {
+			const result = await this._chatService.sendRequest(sessionResource, label, {
+				// Route to ChipOS without injecting an "@" mention; mark it as a
+				// confirmation reply so the conversation assembler skips this
+				// synthetic prompt on future invokes (chatModelAdapter §101).
+				agentIdSilent: 'chipos.chat',
+				confirmation: label,
+				acceptedConfirmationData: [resumeData],
+			});
+			if (result.kind !== 'sent') {
+				// The chat session is busy (another turn is in flight) — sendRequest
+				// is rejected. Report so the caller can fall back to resend.
+				this._logService.warn('[ChipOS Stateless] resume sendRequest not sent: %s', JSON.stringify(result));
+				return false;
+			}
+			return true;
+		} catch (err) {
+			this._logService.error('[ChipOS Stateless] resume sendRequest failed:', String(err));
+			return false;
+		}
+	}
+
+	/**
+	 * Build the structured error card for a terminal stateless-invoke failure
+	 * (GAP-1: replaces plain-markdown surfacing so a button always appears).
+	 * `retryable` is always true → the card shows at least a Retry (resend)
+	 * button; when `resumable`, `resumeContext` upgrades the primary action to
+	 * continue-from-break (POST /resume), preserving already-rendered output.
+	 */
+	private _statelessFailureCard(args: {
+		errorCode: string;
+		message: string;
+		resumable: boolean;
+		chatSessionId: string;
+		traceId: string;
+		lastSequenceId: number;
+	}): IChatAgentError {
+		return {
+			kind: 'agentError',
+			error_code: args.errorCode,
+			message: args.message,
+			retryable: true,
+			suggestion: args.resumable
+				? localize('chipos.stateless.fail.continueHint', "可从中断处继续，已生成的内容会保留。")
+				: localize('chipos.stateless.fail.resendHint', "请重新发送上一条消息。"),
+			resumeContext: args.resumable
+				? { chatSessionId: args.chatSessionId, traceId: args.traceId, lastSequenceId: args.lastSequenceId }
+				: undefined,
+		} satisfies IChatAgentError;
 	}
 
 	// ── R62: MCP 工具变更通知 ──────────────────────────────────────────────
@@ -1895,41 +2008,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// 'in-progress' | 'completed'). cancelled/failed/error degrade
 				// to 'not-started' (closest existing semantic) but we log so
 				// the loss-of-information is debuggable.
-				const statusMap: Record<string, IChatTodo['status']> = {
-					'done': 'completed',
-					'completed': 'completed',
-					'finished': 'completed',
-					'in_progress': 'in-progress',
-					'in-progress': 'in-progress',
-					'inprogress': 'in-progress',
-					'running': 'in-progress',
-					'active': 'in-progress',
-					'pending': 'not-started',
-					'todo': 'not-started',
-					'not_started': 'not-started',
-					'not-started': 'not-started',
-					'cancelled': 'not-started',
-					'canceled': 'not-started',
-					'failed': 'not-started',
-					'error': 'not-started',
-				};
-				const nativeTodos: IChatTodo[] = p.todos.map((t, idx) => {
-					const rawKey = (t.task_status || t.status || 'pending').toLowerCase();
-					const status = statusMap[rawKey];
-					if (!status) {
-						this._logService.warn('[ChipOS Agent] TodoUpdate: unknown status', rawKey, '→ not-started fallback');
-					}
-					// B-T3 — fall back through empty strings as well as null/undef.
-					// task_des and content were both observed to arrive as ""
-					// (the model produced an empty step); without || we'd render
-					// blank rows.
-					const title = (t.task_des || t.content || `Todo ${idx + 1}`).trim() || `Todo ${idx + 1}`;
-					return {
-						id: idx,
-						title,
-						status: status ?? 'not-started',
-					};
-				});
+				// Normalize backend todos → native IChatTodo[] (shared helper, also
+				// used by the stateless write_todos path).
+				const nativeTodos: IChatTodo[] = ChipOSChatAgent._normalizeTodos(p.todos);
 				// B-T1 — call setTodos even with an empty array. Backend signals
 				// "all done, clean slate" by emitting `todos: []`; the prior
 				// `length > 0` gate left stale rows hanging in the UI forever.
@@ -3630,6 +3711,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return s.length > max ? s.slice(0, max) + '...' : s;
 	}
 
+	/**
+	 * [ChipOS] Normalize a backend `write_todos` / `TodoUpdate` todos array into
+	 * the native `IChatTodo[]` shape. The backend ships several serializations
+	 * (snake_case, kebab-case, TitleCase) across both `{task_des, task_status}`
+	 * and `{content, status}` field pairs — fold them all here. Shared by the
+	 * stateless write_todos handler and the legacy WebSocket TodoUpdate handler.
+	 */
+	private static _normalizeTodos(raw: unknown): IChatTodo[] {
+		if (!Array.isArray(raw)) {
+			return [];
+		}
+		const statusMap: Record<string, IChatTodo['status']> = {
+			'done': 'completed',
+			'completed': 'completed',
+			'finished': 'completed',
+			'in_progress': 'in-progress',
+			'in-progress': 'in-progress',
+			'inprogress': 'in-progress',
+			'running': 'in-progress',
+			'active': 'in-progress',
+			'pending': 'not-started',
+			'todo': 'not-started',
+			'not_started': 'not-started',
+			'not-started': 'not-started',
+			'cancelled': 'not-started',
+			'canceled': 'not-started',
+			'failed': 'not-started',
+			'error': 'not-started',
+		};
+		return raw.map((t, idx) => {
+			const item = (t ?? {}) as { task_status?: string; status?: string; task_des?: string; content?: string };
+			const rawKey = (item.task_status || item.status || 'pending').toLowerCase();
+			// Fall back through empty strings as well as null/undefined — task_des
+			// and content were both observed to arrive as "" (an empty step);
+			// without the chained || we'd render blank rows.
+			const title = (item.task_des || item.content || `Todo ${idx + 1}`).trim() || `Todo ${idx + 1}`;
+			return { id: idx, title, status: statusMap[rawKey] ?? 'not-started' };
+		});
+	}
+
 	private static _formatToolArgs(args: Record<string, unknown> | undefined): string {
 		if (!args) { return ''; }
 		const parts: string[] = [];
@@ -5298,6 +5419,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		let roundEndReceived = false;
 		let errorResult: IChatAgentResult | undefined;
 		let usage: TokenUsage | undefined;
+		// [ChipOS] Pair tool_call_emitted (args) with tool_result_observed
+		// (output preview) by callId for the collapsible tool card.
+		const statelessToolInputs = new Map<string, { toolName: string; rawInput: string }>();
+		// [ChipOS] Latest todo list seen from write_todos this turn. The live list
+		// drives the native sticky widget above the input; the final state is
+		// graduated into a permanent inline card when the turn ends (finish block).
+		let latestTodos: IChatTodo[] = [];
 		// Phase 1 round_end carries final_messages; we don't act on them in
 		// the IDE (the framework appends our return value's messages naturally
 		// via the chat model), but we keep last-seen for telemetry / future use.
@@ -5316,11 +5444,150 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (handled.progressMessage) {
 				progress([this._progress(handled.progressMessage.content, handled.progressMessage.shimmer)]);
 			}
+			if (handled.toolInvocation) {
+				const ti = handled.toolInvocation;
+				if (!ti.isComplete) {
+					// tool_call_emitted → start a collapsible invocation showing args.
+					const toolName = ti.toolName ?? 'tool';
+					const rawInput = ti.input ? JSON.stringify(ti.input, null, 2) : '';
+					statelessToolInputs.set(ti.callId, { toolName, rawInput });
+					const friendly = friendlyToolName(toolName);
+
+					if (toolName === 'write_todos') {
+						// [ChipOS] Phase 1: drive the native sticky todo widget (above
+						// the input) instead of a generic "更新计划" tool row, and
+						// remember the list so the finish block can graduate it into a
+						// permanent inline card when the turn ends.
+						const todos = ChipOSChatAgent._normalizeTodos(ti.input?.todos);
+						latestTodos = todos;
+						this._todoListService.setTodos(request.sessionResource, todos);
+					} else if (toolName === 'task' || toolName === 'run_subagent' || toolName === 'transfer_to_agent') {
+						// [ChipOS] Render subagent invocations as a collapsible card
+						// (description + agent type) rather than a raw JSON tool row.
+						// Internal steps aren't on the stateless wire, so the card
+						// shows description on start and the result on completion.
+						const args = (ti.input ?? {}) as Record<string, unknown>;
+						const desc = typeof args.description === 'string' ? args.description
+							: typeof args.prompt === 'string' ? args.prompt : '';
+						const shortDesc = desc.split('\n')[0].slice(0, 60);
+						const agentType = (typeof args.subagent_type === 'string' ? args.subagent_type
+							: typeof args.agent_type === 'string' ? args.agent_type : '') || 'sub-agent';
+						progress([{
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: ti.callId,
+							toolName,
+							isComplete: false,
+							invocationMessage: friendly,
+							toolSpecificData: {
+								kind: 'subagent',
+								description: shortDesc,
+								agentName: agentType,
+								prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : shortDesc,
+							} satisfies IChatSubagentToolInvocationData,
+						} satisfies IChatExternalToolInvocationUpdate]);
+					} else {
+						const argDetail = ChipOSChatAgent._formatToolArgs(ti.input);
+						progress([{
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: ti.callId,
+							toolName,
+							isComplete: false,
+							invocationMessage: argDetail ? `${friendly} ${argDetail}` : friendly,
+							toolSpecificData: { kind: 'input', rawInput } satisfies IChatToolInputInvocationData,
+						} satisfies IChatExternalToolInvocationUpdate]);
+					}
+				} else {
+					// tool_result_observed → complete the invocation with the
+					// output preview so the user can see what the tool returned.
+					const cached = statelessToolInputs.get(ti.callId);
+					statelessToolInputs.delete(ti.callId);
+					const toolName = cached?.toolName ?? 'tool';
+					const friendly = friendlyToolName(toolName);
+					const output = ti.outputPreview ?? '';
+
+					if (toolName === 'task' || toolName === 'run_subagent' || toolName === 'transfer_to_agent') {
+						// Re-send the subagent card with its result. We must
+						// re-supply description/agentName: the model layer REPLACES
+						// (not merges) toolSpecificData on update.
+						let description = '';
+						let agentName = 'sub-agent';
+						let prompt = '';
+						try {
+							const args = cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : {};
+							const desc = typeof args.description === 'string' ? args.description
+								: typeof args.prompt === 'string' ? args.prompt : '';
+							description = desc.split('\n')[0].slice(0, 60);
+							agentName = (typeof args.subagent_type === 'string' ? args.subagent_type
+								: typeof args.agent_type === 'string' ? args.agent_type : '') || 'sub-agent';
+							prompt = typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : description;
+						} catch (err) {
+							// best-effort — fall back to a bare card
+							this._logService.trace('[ChipOS Stateless] subagent result parse failed:', String(err));
+						}
+						progress([{
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: ti.callId,
+							toolName,
+							isComplete: true,
+							pastTenseMessage: friendly,
+							errorMessage: ti.isError ? output : undefined,
+							toolSpecificData: {
+								kind: 'subagent',
+								description,
+								agentName,
+								prompt,
+								result: output,
+							} satisfies IChatSubagentToolInvocationData,
+						} satisfies IChatExternalToolInvocationUpdate]);
+					} else if (toolName !== 'write_todos') {
+						// write_todos has no completion row — the sticky widget
+						// already reflects the latest list from the call side.
+						progress([{
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: ti.callId,
+							toolName,
+							isComplete: true,
+							pastTenseMessage: friendly,
+							errorMessage: ti.isError ? output : undefined,
+							resultDetails: {
+								input: cached?.rawInput ?? '',
+								output: [{ type: 'embed' as const, value: output, isText: true, mimeType: 'text/plain' }],
+								isError: !!ti.isError,
+							} satisfies IToolResultInputOutputDetails,
+						} satisfies IChatExternalToolInvocationUpdate]);
+					}
+				}
+			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
 			}
 			if (handled.markdownError) {
 				progress([this._markdown(handled.markdownError)]);
+			}
+			if (handled.agentError) {
+				// [ChipOS] Render a structured error card (matches the old
+				// WebSocket-path Error handler's category presets for a
+				// consistent look across both paths).
+				const ae = handled.agentError;
+				const cat = (ae.category ?? 'INTERNAL').toUpperCase();
+				this._statelessObs.turnError(cat, ae.errorCode);  // §5.1 client mirror
+
+				const presets: Record<string, { icon: string; label: string; suggestion: string }> = {
+					AUTH: { icon: '🔐', label: '认证失败', suggestion: '请重新登录后再试。' },
+					SESSION: { icon: '⏱️', label: '会话已结束', suggestion: '请刷新页面或开启新对话。' },
+					WORKER: { icon: '🔌', label: 'Worker 连接异常', suggestion: '正在尝试恢复，可稍后重试。' },
+					TOOL: { icon: '🛠️', label: '工具执行失败', suggestion: '可重新发送以重试，或换一种描述。' },
+					PROTO: { icon: '⚠️', label: '请求参数错误', suggestion: '可重新发送让模型修正。' },
+					INTERNAL: { icon: '❌', label: '内部错误', suggestion: '请稍后重试，问题持续可联系支持。' },
+				};
+				const preset = presets[cat] ?? presets.INTERNAL;
+				progress([{
+					kind: 'agentError',
+					error_code: ae.errorCode ?? 'AGENT_ERROR',
+					message: `${preset.icon} **${preset.label}**：${ae.message}`,
+					retryable: ae.retryable ?? (cat === 'WORKER' || cat === 'TOOL' || cat === 'PROTO'),
+					suggestion: preset.suggestion,
+				} satisfies IChatAgentError]);
 			}
 			if (handled.usage !== undefined) {
 				usage = handled.usage;
@@ -5350,6 +5617,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// handled by the existing `acceptedConfirmationData` plumbing below.
 			if (handled.confirmRequest) {
 				const confirm = handled.confirmRequest;
+				this._statelessObs.confirmShown(confirm.cardType);  // §5.2 client mirror
 				void this._handleStatelessConfirmRequest(client, traceId, confirm, progress, token).catch(err => {
 					this._logService.error('[ChipOS Stateless] confirm_request handler failed:', String(err));
 				});
@@ -5448,19 +5716,46 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					const httpErr = err as StatelessHttpError;
 					const msg = `reasoner returned HTTP ${httpErr.status}`;
 					this._logService.error('[ChipOS Stateless] %s body=%s', msg, JSON.stringify(httpErr.body));
-					progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+					// 401/403 mid-stream = token expired/invalid: neither resend nor
+					// continue helps — route to the auth card (Log In) via an AUTH
+					// error_code the renderer recognises (chatAgentErrorPart.ts).
+					const isAuth = httpErr.status === 401 || httpErr.status === 403;
+					progress([this._statelessFailureCard({
+						errorCode: isAuth ? 'AUTH_TOKEN_EXPIRED' : `REASONER_HTTP_${httpErr.status}`,
+						message: isAuth
+							? localize('chipos.stateless.fail.auth', "登录状态已失效，请重新登录。")
+							: localize('chipos.stateless.fail.http', "Reasoner 返回 HTTP {0}。", httpErr.status),
+						resumable: !isAuth && isStatelessTurnResumable({ verdict: 'surface-http', httpStatus: httpErr.status }),
+						chatSessionId,
+						traceId,
+						lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? -1,
+					})]);
 					errorResult = { errorDetails: { message: msg } };
 					break;
 				}
 				case 'surface-replay-expired':
 					this._logService.warn('[ChipOS Stateless] /replay window expired — surfacing error to user');
-					progress([this._markdown('$(warning) **ChipOS:** connection lost and reconnect window expired. Please send your last message again.')]);
+					progress([this._statelessFailureCard({
+						errorCode: 'RECONNECT_EXPIRED',
+						message: localize('chipos.stateless.fail.expired', "连接已断开且重连窗口已过期。"),
+						resumable: false,
+						chatSessionId,
+						traceId,
+						lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? -1,
+					})]);
 					errorResult = { errorDetails: { message: 'replay window expired' } };
 					break;
 				case 'surface-other': {
 					const msg = err instanceof Error ? err.message : String(err);
 					this._logService.error('[ChipOS Stateless] unexpected failure:', msg);
-					progress([this._markdown(`$(error) **ChipOS:** ${msg}`)]);
+					progress([this._statelessFailureCard({
+						errorCode: 'REASONER_ERROR',
+						message: msg,
+						resumable: isStatelessTurnResumable({ verdict: 'surface-other' }),
+						chatSessionId,
+						traceId,
+						lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? -1,
+					})]);
 					errorResult = { errorDetails: { message: msg } };
 					break;
 				}
@@ -5475,6 +5770,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// only transient network errors retry. Each attempt re-resolves the token
 					// (P0.5), so an expired JWT refreshes between attempts.
 					const maxResumeAttempts = 8;
+					this._statelessObs.resumeTriggered('network-drop');  // §5.2 client mirror
 					for (let resumeAttempt = 1; resumeAttempt <= maxResumeAttempts && !abortController.signal.aborted; resumeAttempt++) {
 						const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? -1;
 						this._logService.warn('[ChipOS Stateless] SSE failed (%s) — /resume attempt %d/%d from seq %d', String(err), resumeAttempt, maxResumeAttempts, lastSeq);
@@ -5498,6 +5794,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								}
 								applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
 							}
+							this._statelessObs.resumeOutcome('success', resumeAttempt);  // §5.2 client mirror
 							break;  // resume stream completed cleanly
 						} catch (replayErr) {
 							const replayVerdict = classifySseFailure(replayErr, abortController.signal);
@@ -5509,13 +5806,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							}
 							if (replayErr instanceof StatelessResumeNotFoundError) {
 								this._logService.warn('[ChipOS Stateless] /resume 404 — turn already completed or never existed');
-								progress([this._markdown('$(info) **ChipOS:** the previous turn already finished. Please send your message again to start a new one.')]);
+								progress([this._statelessFailureCard({
+									errorCode: 'TURN_FINISHED',
+									message: localize('chipos.stateless.fail.finished', "上一个回答已经完成。"),
+									resumable: isStatelessTurnResumable({ verdict: 'replay', resumeNotFound: true }),
+									chatSessionId,
+									traceId,
+									lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? lastSeq,
+								})]);
 								errorResult = { errorDetails: { message: 'resume target not found' } };
 								break;
 							}
 							if (replayVerdict === 'surface-replay-expired') {
 								this._logService.warn('[ChipOS Stateless] /resume 410 — SSE buffer evicted');
-								progress([this._markdown('$(warning) **ChipOS:** reconnect window expired. Please send your last message again.')]);
+								progress([this._statelessFailureCard({
+									errorCode: 'RECONNECT_EXPIRED',
+									message: localize('chipos.stateless.fail.resumeExpired', "重连窗口已过期。"),
+									resumable: false,
+									chatSessionId,
+									traceId,
+									lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? lastSeq,
+								})]);
 								errorResult = { errorDetails: { message: 'replay window expired' } };
 								break;
 							}
@@ -5527,7 +5838,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							} else {
 								const msg = replayErr instanceof Error ? replayErr.message : String(replayErr);
 								this._logService.error('[ChipOS Stateless] /resume gave up after %d attempts: %s', maxResumeAttempts, msg);
-								progress([this._markdown(`$(error) **ChipOS:** reconnect failed after ${maxResumeAttempts} attempts — please send your message again.`)]);
+								this._statelessObs.resumeOutcome('gave-up', maxResumeAttempts);  // §5.2 client mirror
+								progress([this._statelessFailureCard({
+									errorCode: 'RECONNECT_FAILED',
+									message: localize('chipos.stateless.fail.reconnect', "自动重连 {0} 次后仍失败。", maxResumeAttempts),
+									resumable: isStatelessTurnResumable({ verdict: 'replay' }),
+									chatSessionId,
+									traceId,
+									lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? lastSeq,
+								})]);
 								errorResult = { errorDetails: { message: msg } };
 							}
 						}
@@ -5541,6 +5860,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		}
 		flushAssistantText();
+		// [ChipOS] Phase 2: graduate the live sticky todo list into a permanent,
+		// read-only card in the chat history, then clear the sticky widget so the
+		// next turn starts clean. Mirrors the legacy WebSocket path's TaskComplete
+		// snapshot, but renders a styled card instead of markdown. No-op when the
+		// turn produced no todos.
+		if (latestTodos.length > 0) {
+			progress([{
+				kind: 'chiposTodoCard',
+				todos: latestTodos.map(t => ({ title: t.title, status: t.status })),
+			} satisfies IChatChiposTodoCard]);
+			this._todoListService.setTodos(request.sessionResource, []);
+		}
 		cancelListener.dispose();
 		this._statelessTraces.delete(request.sessionResource);
 
@@ -5678,28 +6009,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 */
 	private _offerStatelessResume(sessionResource: URI, chatSessionId: string, trace: InFlightTrace): void {
 		const preview = trace.last_user_message_preview ? `（"${trace.last_user_message_preview}"）` : '';
-		const resumeData = {
-			__chiposStatelessResumeTraceId: trace.trace_id,
-			__chiposStatelessResumeCsId: chatSessionId,
+		const doResume = () => this._sendStatelessResumeRequest(sessionResource, {
+			traceId: trace.trace_id,
+			chatSessionId,
 			// last_checkpoint_seq is the reasoner's "safe to resume from here"
 			// watermark; -1 means "replay everything from the start of the turn".
-			__chiposStatelessResumeLastSeq: trace.last_checkpoint_seq ?? -1,
-		};
-		const doResume = () => {
-			const label = localize('chipos.stateless.resume.continueLabel', "继续生成");
-			void this._chatService.sendRequest(sessionResource, label, {
-				// Route to ChipOS without injecting an "@" mention; mark it as a
-				// confirmation reply so the conversation assembler skips this
-				// synthetic prompt on future invokes (chatModelAdapter §101).
-				agentIdSilent: 'chipos.chat',
-				confirmation: label,
-				acceptedConfirmationData: [resumeData],
-			}).then(result => {
-				if (result.kind !== 'sent') {
-					this._logService.warn('[ChipOS Stateless] resume sendRequest not sent: %s', JSON.stringify(result));
-				}
-			}, err => this._logService.error('[ChipOS Stateless] resume sendRequest failed:', String(err)));
-		};
+			lastSequenceId: trace.last_checkpoint_seq ?? -1,
+		});
 		const doCancel = () => {
 			void this._ensureStatelessClient()
 				.then(c => c.cancel(trace.trace_id, 'ide_restart_discarded'))
@@ -5815,6 +6131,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.confirmRequest) {
 				const confirm = handled.confirmRequest;
+				this._statelessObs.confirmShown(confirm.cardType);  // §5.2 client mirror
 				void this._handleStatelessConfirmRequest(client, traceId, confirm, progress, token).catch(err => {
 					this._logService.error('[ChipOS Stateless] resume confirm_request handler failed:', String(err));
 				});
@@ -5827,6 +6144,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Resume with capped-exponential backoff: a reasoner restart leaves a
 		// window where /resume returns "Failed to fetch" until it is healthy.
 		const maxResumeAttempts = 8;
+		this._statelessObs.resumeTriggered('auto-restart');  // §5.2 client mirror
 		for (let attempt = 1; attempt <= maxResumeAttempts && !abortController.signal.aborted; attempt++) {
 			const lastSeq = this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? ctx.lastSequenceId;
 			this._logService.warn('[ChipOS Stateless] resume-on-restart attempt %d/%d from seq %d', attempt, maxResumeAttempts, lastSeq);
@@ -5856,12 +6174,26 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (resumeErr instanceof StatelessResumeNotFoundError) {
 					// Turn finished naturally between the restart and our probe/resume.
 					this._logService.warn('[ChipOS Stateless] resume-on-restart 404 — turn already completed');
-					progress([this._markdown(localize('chipos.stateless.resume.finished', "$(info) **ChipOS:** 上一个回答已经完成。如需新的回答请重新发送消息。"))]);
+					progress([this._statelessFailureCard({
+						errorCode: 'TURN_FINISHED',
+						message: localize('chipos.stateless.fail.finished', "上一个回答已经完成。"),
+						resumable: false,
+						chatSessionId,
+						traceId,
+						lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? ctx.lastSequenceId,
+					})]);
 					break;
 				}
 				if (verdict === 'surface-replay-expired') {
 					this._logService.warn('[ChipOS Stateless] resume-on-restart 410 — buffer evicted');
-					progress([this._markdown(localize('chipos.stateless.resume.expired', "$(warning) **ChipOS:** 重连窗口已过期，请重新发送上一条消息。"))]);
+					progress([this._statelessFailureCard({
+						errorCode: 'RECONNECT_EXPIRED',
+						message: localize('chipos.stateless.fail.resumeExpired', "重连窗口已过期。"),
+						resumable: false,
+						chatSessionId,
+						traceId,
+						lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? ctx.lastSequenceId,
+					})]);
 					errorResult = { errorDetails: { message: 'replay window expired' } };
 					break;
 				}
@@ -5872,7 +6204,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				} else {
 					const msg = resumeErr instanceof Error ? resumeErr.message : String(resumeErr);
 					this._logService.error('[ChipOS Stateless] resume-on-restart gave up after %d attempts: %s', maxResumeAttempts, msg);
-					progress([this._markdown(localize('chipos.stateless.resume.failed', "$(error) **ChipOS:** 多次重连失败，请重新发送消息。"))]);
+					// GAP-1 on the resume path too: keep offering continue-from-break so
+					// a still-flaky link doesn't dead-end at buttonless text.
+					progress([this._statelessFailureCard({
+						errorCode: 'RECONNECT_FAILED',
+						message: localize('chipos.stateless.fail.reconnect', "自动重连 {0} 次后仍失败。", maxResumeAttempts),
+						resumable: isStatelessTurnResumable({ verdict: 'replay' }),
+						chatSessionId,
+						traceId,
+						lastSequenceId: this._statelessTraces.get(request.sessionResource)?.lastSequenceId ?? ctx.lastSequenceId,
+					})]);
 					errorResult = { errorDetails: { message: msg } };
 				}
 			}
@@ -6162,12 +6503,52 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 *      Promise with `{action, selections, comment}`
 	 *   5. POST /confirm_response — agent loop on reasoner unblocks
 	 *
-	 * Renders agent_ask radio form (with selections={}) when card_type is
-	 * 'agent_ask' + has questions; otherwise renders generic confirm card.
-	 * Card rendering is delegated to ChipOSPermissionCardContentPart via
+	 * Renders the radio form (with selections={}) for ANY card whose card_data
+	 * carries well-formed questions[] — not just card_type === 'agent_ask' (the
+	 * stateless reasoner labels confirm cards ad-hoc; see
+	 * `_extractInteractiveAskQuestions`). Otherwise renders the generic confirm
+	 * card. Card rendering is delegated to ChipOSPermissionCardContentPart via
 	 * the `__chiposAgentAskCard` / `__chiposGenericConfirmCard` markers
 	 * (same as legacy path so we get the existing UX for free).
 	 */
+	/**
+	 * Normalize a confirm card's `card_data.questions[]` into the radio-form
+	 * shape `ChipOSPermissionCardContentPart` consumes, or `undefined` when the
+	 * card carries no well-formed questions (→ caller falls back to markdown).
+	 *
+	 * Card-type-AGNOSTIC by design: in the stateless path a confirm card is the
+	 * LLM emitting a `chipos_user_confirm` tool whose `card_type` it picks ad-hoc
+	 * (agent_ask | generic | …), so interactivity must key on the SHAPE of
+	 * card_data, not the label. A question is well-formed iff it has a non-empty
+	 * `question_id` and at least one option with a non-empty `action_id`; the
+	 * validation mirrors the legacy ConfirmRequest path so the content part
+	 * receives the exact `{question_id, prompt, options:[{action_id,label}]}`
+	 * shape it iterates. `static` so it is unit-testable without the full DI
+	 * graph (same rationale as `_renderConfirmMessage`).
+	 */
+	static _extractInteractiveAskQuestions(
+		cardData: Record<string, unknown>,
+	): Array<{ question_id: string; prompt: string; options: Array<{ action_id: string; label: string }> }> | undefined {
+		const raw = Array.isArray((cardData as { questions?: unknown }).questions)
+			? (cardData as { questions: Array<{ question_id?: string; prompt?: string; options?: Array<{ action_id?: string; label?: string }> }> }).questions
+			: undefined;
+		if (!raw) {
+			return undefined;
+		}
+		const normalized = raw
+			.filter(q => typeof q.question_id === 'string' && q.question_id.length > 0
+				&& Array.isArray(q.options) && q.options.length > 0)
+			.map(q => ({
+				question_id: q.question_id as string,
+				prompt: (q.prompt ?? '').trim() || (q.question_id as string),
+				options: (q.options as Array<{ action_id?: string; label?: string }>)
+					.filter(o => typeof o.action_id === 'string' && o.action_id.length > 0)
+					.map(o => ({ action_id: o.action_id as string, label: (o.label ?? o.action_id as string) })),
+			}))
+			.filter(q => q.options.length > 0);
+		return normalized.length > 0 ? normalized : undefined;
+	}
+
 	private async _handleStatelessConfirmRequest(
 		client: StatelessClient,
 		traceId: string,
@@ -6185,10 +6566,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const title = confirm.title || 'Confirm requested';
 		const buttons = confirm.buttons && confirm.buttons.length > 0 ? confirm.buttons : ['Approve', 'Reject'];
 		const cardData = confirm.cardData;
-		const askQuestions = Array.isArray((cardData as { questions?: unknown }).questions)
-			? (cardData as { questions: unknown[] }).questions
-			: undefined;
-		const isInteractiveAgentAsk = confirm.cardType === 'agent_ask' && askQuestions && askQuestions.length > 0;
+		// Card-type-AGNOSTIC interactive-form detection (see
+		// `_extractInteractiveAskQuestions`). The stateless reasoner labels a
+		// `chipos_user_confirm` card's `card_type` ad-hoc (agent_ask | generic |
+		// …), so keying the radio form on the exact label `agent_ask` left any
+		// other label carrying the same questions[] shape degrading to markdown.
+		// We detect on the SHAPE of card_data instead.
+		const askQuestions = ChipOSChatAgent._extractInteractiveAskQuestions(cardData);
+		const isInteractiveAsk = askQuestions !== undefined;
 		// Prefer explicit {label, action_id} options from card_data (worker
 		// permission_ask cards send these so a localized label like "允许一次"
 		// still maps to the canonical action_id "allow_once"). Fall back to the
@@ -6232,7 +6617,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				? explicitOptions
 				: buttons.map(label => ({ label, action_id: label.toLowerCase() })),
 		};
-		const data: Record<string, unknown> = isInteractiveAgentAsk
+		const data: Record<string, unknown> = isInteractiveAsk
 			? {
 				...baseData,
 				__chiposAgentAskCard: true,

@@ -110,6 +110,37 @@ export interface IChatAgentError {
 	message: string;
 	retryable: boolean;
 	suggestion?: string;
+	/**
+	 * [ChipOS] ADR-018 resume-from-break. When present, the error card offers a
+	 * PRIMARY "继续 (从中断处)" action that CONTINUES the in-flight stateless turn
+	 * from the last checkpoint (POST /resume) — preserving already-rendered
+	 * assistant text + completed tool calls — instead of re-running the whole
+	 * prompt. The `retryable` "Retry" (resend) button stays as the fallback.
+	 */
+	resumeContext?: {
+		chatSessionId: string;
+		traceId: string;
+		lastSequenceId: number;
+	};
+}
+
+// ── ChipOS Todo Summary Card ─────────────────────────────────────────────────
+
+export interface IChatChiposTodoCardItem {
+	title: string;
+	status: 'not-started' | 'in-progress' | 'completed';
+}
+
+/**
+ * [ChipOS] A permanent, read-only snapshot of the turn's todo list, rendered
+ * inline in the chat history when a turn completes. The live, mutable list is
+ * shown in the native sticky widget above the input (driven by
+ * IChatTodoListService) while the turn runs; on completion it "graduates" into
+ * one of these cards so the user can scroll back and see what got done.
+ */
+export interface IChatChiposTodoCard {
+	kind: 'chiposTodoCard';
+	todos: ReadonlyArray<IChatChiposTodoCardItem>;
 }
 
 // ── EDA PPA Report ─────────────────────────────────────────────────────────
@@ -149,7 +180,8 @@ export type IChatEdaProgress =
 	| IChatEdaSpecReview
 	| IChatRoundProgress
 	| IChatAgentError
-	| IChatEdaPpaReport;
+	| IChatEdaPpaReport
+	| IChatChiposTodoCard;
 
 // ── EDA kind constants ──────────────────────────────────────────────────────
 
@@ -163,6 +195,7 @@ export const EDA_CONTENT_KINDS = [
 	'roundProgress',
 	'agentError',
 	'edaPpaReport',
+	'chiposTodoCard',
 ] as const;
 
 export type EdaContentKind = typeof EDA_CONTENT_KINDS[number];

@@ -305,6 +305,8 @@
 
 .chat-agent-error-actions {
 	margin-top: 8px;
+	display: flex;
+	gap: 8px;
 }
 
 .chat-agent-error-retry {
@@ -319,6 +321,16 @@
 
 .chat-agent-error-retry:hover {
 	background: var(--vscode-button-hoverBackground);
+}
+
+/* Secondary (resend) action when a primary resume-from-break button precedes it. */
+.chat-agent-error-retry.secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.chat-agent-error-retry.secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
 }
 
 /* ── Round Progress ─────────────────────────────────────────────────────────── */
@@ -352,4 +364,85 @@
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
+}
+
+/* ── ChipOS Todo Summary Card ─────────────────────────────────────────────────── */
+
+.chipos-todo-card {
+	padding: 10px 12px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-chat-requestBorder, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)));
+	background: var(--vscode-chat-slashCommandBackground, rgba(128, 128, 128, 0.08));
+	margin: 6px 0 8px;
+}
+
+.chipos-todo-card-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 8px;
+}
+
+.chipos-todo-card-header .codicon-checklist {
+	color: var(--vscode-textLink-foreground);
+}
+
+.chipos-todo-card-title {
+	font-weight: 600;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	flex: 1;
+}
+
+.chipos-todo-card-count {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}
+
+.chipos-todo-card-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.chipos-todo-card-item {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--vscode-foreground);
+}
+
+.chipos-todo-card-item .codicon {
+	font-size: 14px;
+	flex-shrink: 0;
+	position: relative;
+	top: 2px;
+}
+
+.chipos-todo-card-item.completed .codicon-pass-filled {
+	color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #89d185));
+}
+
+.chipos-todo-card-item.in-progress .codicon-arrow-right {
+	color: var(--vscode-textLink-foreground);
+}
+
+.chipos-todo-card-item.not-started .codicon-circle-large-outline {
+	color: var(--vscode-descriptionForeground);
+}
+
+.chipos-todo-card-item.completed .chipos-todo-card-item-title {
+	color: var(--vscode-descriptionForeground);
+	text-decoration: line-through;
+}
+
+.chipos-todo-card-item.in-progress .chipos-todo-card-item-title {
+	font-weight: 600;
+}
+
+.chipos-todo-card-item-title {
+	word-break: break-word;
 }
