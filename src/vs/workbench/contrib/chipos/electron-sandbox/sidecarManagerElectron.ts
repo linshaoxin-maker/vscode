@@ -722,7 +722,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 					this._stopHealthWatch();
 					return;
 				}
-				const ok = await this._probeWorkerHealth();
+				const ok = await this._probeWorkerLiveness();
 				if (ok) {
 					this._healthWatchFailureCount = 0;
 					return;
@@ -738,7 +738,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				// the counter; if worker is truly gone, retry also fails
 				// and we continue the existing 3/3 logic.
 				await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1500));
-				const retryOk = await this._probeWorkerHealth();
+				const retryOk = await this._probeWorkerLiveness();
 				if (retryOk) {
 					this._healthWatchFailureCount = 0;
 					this._logService.info(
@@ -790,54 +790,70 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	 * (it lives on a remote host or wherever the user put it), so we skip
 	 * (a) and rely on the reasoner-side check alone.
 	 */
-	private async _probeWorkerHealth(): Promise<boolean> {
-		// (a) Local worker /health — only meaningful in Local mode.
-		if (this._mode === BackendMode.Local) {
-			// 2026-05-23: read the ACTUAL bound port from instance.json
-			// rather than trusting `chipos.backend.workerHttpPort`. The
-			// worker's start_http_server falls back to a kernel-assigned
-			// port on EADDRINUSE (port-roll TOCTOU fix), so the config
-			// default (8081) lies more often than not when two workers
-			// share a host. Without this read, probe hits a dead port
-			// → 60s "Worker registration not observed" → Reconnect badge
-			// even though the worker is fully functional.
-			//
-			// Fallback to config value when instance.json isn't readable
-			// yet (worker mid-startup, never spawned, REH path, etc.) —
-			// the probe will likely fail, but that's the same as today.
-			const folders = this._workspaceContextService.getWorkspace().folders;
-			const workspaceRoot = folders[0]?.uri.fsPath ?? '';
-			let port = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
-			if (workspaceRoot) {
-				try {
-					const meta = await this.readInstanceMeta(workspaceRoot);
-					if (meta && typeof meta.http_port === 'number' && meta.http_port > 0) {
-						port = meta.http_port;
-						// Stash for synchronous callers (workerHttpUrl getter,
-						// workerToolManager base URL, permission SSE, etc).
-						// They all derived from config before the port-roll
-						// TOCTOU fix; without this cache they'd silently
-						// target a dead port whenever the kernel picks
-						// something other than what config requested.
-						this._cachedActualWorkerHttpPort = meta.http_port;
-					}
-				} catch {
-					// Keep config default; probe failure below will surface it
-				}
-			}
+	/**
+	 * Local worker liveness ONLY — is the worker PROCESS up and serving its
+	 * localhost HTTP `/health`? Deliberately does NOT consult the reasoner's
+	 * `workers_connected`: the worker is a LOCAL process, so a worker↔reasoner
+	 * gRPC flap (the WAN link to the cloud reasoner) must NOT mark the local
+	 * worker as down. Worker↔reasoner connectivity is a separate concern
+	 * surfaced via the reasoner ("ChipOS") state, not the "Worker" pill.
+	 */
+	private async _probeLocalWorkerHealth(): Promise<boolean> {
+		// 2026-05-23: read the ACTUAL bound port from instance.json rather than
+		// trusting `chipos.backend.workerHttpPort` — the worker rolls to a
+		// kernel-assigned port on EADDRINUSE, so the config default (8081) often
+		// lies. Fallback to config when instance.json isn't readable yet.
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		const workspaceRoot = folders[0]?.uri.fsPath ?? '';
+		let port = this._configurationService.getValue<number>('chipos.backend.workerHttpPort') ?? 8081;
+		if (workspaceRoot) {
 			try {
-				const controller = new AbortController();
-				const timer = setTimeout(() => controller.abort(), 1500);
-				const resp = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
-				clearTimeout(timer);
-				if (!resp.ok) { return false; }
+				const meta = await this.readInstanceMeta(workspaceRoot);
+				if (meta && typeof meta.http_port === 'number' && meta.http_port > 0) {
+					port = meta.http_port;
+					// Stash for synchronous callers (workerHttpUrl getter, etc).
+					this._cachedActualWorkerHttpPort = meta.http_port;
+				}
 			} catch {
-				// Local worker not responding → chat won't work no matter
-				// what reasoner thinks. Bail before bothering the WAN probe.
-				return false;
+				// Keep config default; probe failure below will surface it
 			}
 		}
-		// (b) Reasoner sees a worker.
+		try {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 1500);
+			const resp = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+			clearTimeout(timer);
+			return resp.ok;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Liveness signal for the ongoing health watch + the "Worker" status pill.
+	 * In Local mode this is the LOCAL worker process ONLY — a worker↔reasoner
+	 * gRPC flap must never flip the local "Worker" pill to Reconnect (the
+	 * process is alive; only its upstream blipped). Non-local modes have no
+	 * local process, so fall back to the reasoner-aware probe.
+	 */
+	private async _probeWorkerLiveness(): Promise<boolean> {
+		return this._mode === BackendMode.Local
+			? this._probeLocalWorkerHealth()
+			: this._probeWorkerHealth();
+	}
+
+	/**
+	 * Full readiness probe used at STARTUP (`_observeWorkerRegistration`): the
+	 * local worker is up AND the reasoner has registered it. The reasoner check
+	 * is appropriate for "has the worker finished wiring up" but NOT for ongoing
+	 * liveness — see `_probeWorkerLiveness`.
+	 */
+	private async _probeWorkerHealth(): Promise<boolean> {
+		// (a) Local worker process alive (localhost /health).
+		if (this._mode === BackendMode.Local && !(await this._probeLocalWorkerHealth())) {
+			return false;
+		}
+		// (b) Reasoner sees a worker registered.
 		try {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), 3000);
