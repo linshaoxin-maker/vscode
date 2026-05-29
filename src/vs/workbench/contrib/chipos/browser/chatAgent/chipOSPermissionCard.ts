@@ -420,6 +420,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			this._renderAgentAskForm(card, data);
 		} else if (renderAsMarkdown) {
 			const previewWrap = dom.$('.chipos-permission-preview.chipos-permission-preview-markdown');
+				this._containWheelScroll(previewWrap);
 			card.appendChild(previewWrap);
 			const md = isMarkdownString(confirmation.message)
 				? confirmation.message
@@ -428,6 +429,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			previewWrap.appendChild(rendered.element);
 		} else if ((data as { contentPreview?: string }).contentPreview) {
 			const previewWrap = dom.$('.chipos-permission-preview');
+				this._containWheelScroll(previewWrap);
 			card.appendChild(previewWrap);
 			const pre = dom.$('pre.chipos-code-preview');
 			pre.textContent = (data as { contentPreview?: string }).contentPreview ?? '';
@@ -767,6 +769,27 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			return `~${(n / 1024).toFixed(1)} KB`;
 		}
 		return `~${(n / (1024 * 1024)).toFixed(1)} MB`;
+	}
+
+	/**
+	 * [ChipOS] Keep mouse-wheel scrolling inside a scrollable preview box instead
+	 * of bubbling to the chat list's ScrollableElement (which would scroll the
+	 * whole conversation). Only stops propagation while the box can still scroll
+	 * in the wheel's direction; at a top/bottom boundary the event passes through
+	 * so the chat list takes over (natural overscroll). We never call
+	 * preventDefault, so the box's own native scroll still happens.
+	 */
+	private _containWheelScroll(el: HTMLElement): void {
+		this._register(dom.addDisposableListener(el, 'wheel', (e: WheelEvent) => {
+			if (el.scrollHeight <= el.clientHeight) {
+				return;
+			}
+			const atTop = el.scrollTop <= 0;
+			const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+			if ((e.deltaY > 0 && !atBottom) || (e.deltaY < 0 && !atTop)) {
+				e.stopPropagation();
+			}
+		}));
 	}
 
 	private _truncateSession(sessionId: string): string {
