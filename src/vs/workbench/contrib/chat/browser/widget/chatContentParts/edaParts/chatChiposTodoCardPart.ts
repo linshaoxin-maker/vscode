@@ -40,6 +40,17 @@ export class ChatChiposTodoCardContentPart extends Disposable implements IChatCo
 		const countEl = dom.append(header, dom.$('.chipos-todo-card-count'));
 		countEl.textContent = `${completed}/${todos.length}`;
 
+		// Completion progress bar — at-a-glance ratio of the turn's plan. Turns
+		// green once every item is done.
+		if (todos.length > 0) {
+			const track = dom.append(this.domNode, dom.$('.chipos-todo-card-progress'));
+			if (completed === todos.length) {
+				track.classList.add('done');
+			}
+			const fill = dom.append(track, dom.$('.chipos-todo-card-progress-fill'));
+			fill.style.width = `${Math.round((completed / todos.length) * 100)}%`;
+		}
+
 		const list = dom.append(this.domNode, dom.$('.chipos-todo-card-list'));
 		for (const todo of todos) {
 			const item = dom.append(list, dom.$(`.chipos-todo-card-item.${todo.status}`));

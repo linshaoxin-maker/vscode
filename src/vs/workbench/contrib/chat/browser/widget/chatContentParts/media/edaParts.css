@@ -400,6 +400,25 @@
 	font-variant-numeric: tabular-nums;
 }
 
+.chipos-todo-card-progress {
+	height: 3px;
+	border-radius: 2px;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	overflow: hidden;
+	margin: 0 0 8px;
+}
+
+.chipos-todo-card-progress-fill {
+	height: 100%;
+	border-radius: 2px;
+	background: var(--vscode-textLink-foreground);
+	transition: width 0.3s ease;
+}
+
+.chipos-todo-card-progress.done .chipos-todo-card-progress-fill {
+	background: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #89d185));
+}
+
 .chipos-todo-card-list {
 	display: flex;
 	flex-direction: column;

@@ -3116,6 +3116,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return hookId ? `[${hookId}] ${base}` : base;
 	}
 
+	/**
+	 * Stateless confirm `card_type`s that have a dedicated rich body `case` in
+	 * `_renderConfirmMessage` (the labels in the switch below). Only these opt
+	 * into rich rendering in the stateless confirm path
+	 * (`_handleStatelessConfirmRequest`): the renderer's `default` branch
+	 * JSON-dumps `card_data`, which would regress generic stateless cards
+	 * (`chipos_user_confirm` / ad-hoc labels) whose body is plain `message`.
+	 */
+	private static readonly _RICH_STATELESS_CARD_TYPES = new Set<string>([
+		'spec_confirm', 'arch_confirm', 'hook_confirm', 'file_edit', 'agent_ask',
+		'VERIFICATION_GROUP_REVIEW', 'VERIFICATION_HUMAN_CHECK',
+		'sim_report', 'lint_report', 'coverage_report',
+	]);
+
 	// ── FEAT-29: Render rich confirm message based on card_type ──
 	//
 	// 2026-05-26: dropped `private` → `static` so unit tests in
@@ -6682,6 +6696,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				? explicitOptions
 				: buttons.map(label => ({ label, action_id: label.toLowerCase() })),
 		};
+		// ④ Rich-card readiness: when a stateless confirm card carries a card_type
+		// that has a dedicated structured renderer (spec/arch/hook/file_edit/
+		// verification/sim/lint/coverage report), render its body via the SAME
+		// `_renderConfirmMessage` the legacy event-stream path uses (FEAT-29), so
+		// the card isn't a flat one-liner the moment the reasoner emits a structured
+		// EDA card. Allowlisted on purpose: that renderer's `default` branch
+		// JSON-dumps card_data, which would regress generic stateless confirm cards
+		// (chipos_user_confirm / ad-hoc labels) whose body lives only in `message`.
+		// Skipped for the interactive radio form (questions render in the form).
+		const baseMessage = typeof (cardData as { message?: unknown }).message === 'string'
+			? (cardData as { message: string }).message
+			: title;
+		const isRichCard = !isInteractiveAsk && ChipOSChatAgent._RICH_STATELESS_CARD_TYPES.has(confirm.cardType);
+		const message = isRichCard
+			? ChipOSChatAgent._renderConfirmMessage({
+				request_id: confirm.requestId,
+				card_type: confirm.cardType,
+				card_data: cardData,
+				title: confirm.title,
+				message: baseMessage,
+			})
+			: baseMessage;
+
 		const data: Record<string, unknown> = isInteractiveAsk
 			? {
 				...baseData,
@@ -6694,9 +6731,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				__chiposGenericConfirmCard: true,
 				// permission_ask renders via structured fields (header/path/meta/
 				// contentPreview); every OTHER generic stateless confirm card
-				// (chipos_user_confirm, hook_confirm, spec/arch/code/...) has its
-				// content ONLY in `message`, so it must opt into markdown
-				// rendering or the card body shows up blank.
+				// (chipos_user_confirm, spec/arch/code/...) has its content in
+				// `message` (rich-rendered above when the card_type has a dedicated
+				// renderer), so it must opt into markdown rendering or the card body
+				// shows up blank.
 				renderMessageAsMarkdown: confirm.cardType !== 'permission_ask',
 			};
 
@@ -6706,9 +6744,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		});
 
 		// Emit the inline confirmation card.
-		const message = typeof (cardData as { message?: unknown }).message === 'string'
-			? (cardData as { message: string }).message
-			: title;
 		const confirmation: IChatConfirmation = {
 			kind: 'confirmation',
 			title,
