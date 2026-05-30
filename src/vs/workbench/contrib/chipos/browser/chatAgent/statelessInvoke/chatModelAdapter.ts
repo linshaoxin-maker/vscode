@@ -173,9 +173,21 @@ export class ChatModelToRecordsAdapter {
 						input: extractRawInput(tool.toolSpecificData),
 					},
 				});
-				// Tool result — only emit if complete; pending tool calls
-				// don't have a result yet (this can happen if we read the
-				// model mid-stream).
+				// Pair the tool_result ONLY when the call actually completed (incl.
+				// completed-with-error — VS Code marks those isComplete:true with an
+				// error result, so they flow through here with their real content).
+				//
+				// An *incomplete* call at assembly time is an ABANDONED one: the turn
+				// was cancelled / interrupted and the user started a fresh turn instead
+				// of resuming (resume continues via /resume from the reasoner
+				// checkpoint, NOT through this re-assembly path). We deliberately do
+				// NOT fabricate a result here — we can't know whether the tool actually
+				// succeeded server-side (e.g. it may have completed after an IDE
+				// restart), and a wrong synthetic "interrupted" would mislead the
+				// model. Accurate closure happens at cancellation time when possible
+				// (turn-end cleanup in chipOSChatAgent emits a real "cancelled"
+				// result); any call still left dangling is DROPPED by
+				// ConversationAssembler so it never poisons the next turn's history.
 				if (tool.isComplete) {
 					out.push({
 						role: 'user',
@@ -227,6 +239,21 @@ export class ChatModelToRecordsAdapter {
 								comment: nextReq.message?.text ?? '',
 							}),
 							is_error: false,
+						},
+					});
+				} else {
+					// No recorded answer — the card was dismissed / the turn was
+					// cancelled before the user chose a button (e.g. they sent a fresh
+					// prompt instead of answering). Same orphan hazard as an incomplete
+					// tool call above: pair the chipos_user_confirm tool_use with a
+					// synthetic tool_result so it isn't left dangling for the next
+					// turn's assembly.
+					out.push({
+						role: 'user',
+						toolResult: {
+							tool_use_id: id,
+							content: '[Confirmation was dismissed without a response.]',
+							is_error: true,
 						},
 					});
 				}

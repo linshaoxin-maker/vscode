@@ -257,6 +257,30 @@ suite('ConversationAssembler', () => {
 		assert.strictEqual(block.is_error, true);
 	});
 
+	// ─── Bonus 13b: orphaned tool_use is DROPPED (cancelled-turn recovery) ──
+
+	test('orphaned tool_use followed by an assistant message is DROPPED (not thrown, not fabricated)', () => {
+		const result = assembler.assemble([
+			{ role: 'user', content: 'go' },
+			{ role: 'assistant', toolUse: { id: 'toolu_orphan', name: 'bash', input: {} } },
+			{ role: 'assistant', content: 'next turn assistant text' },
+		]);
+		// Unpaired tool_use removed; no synthetic result invented.
+		assert.strictEqual(result.messages.length, 2);
+		assert.strictEqual(result.messages[0].role, 'user');
+		assert.strictEqual(result.messages[1].role, 'assistant');
+		assert.strictEqual(result.messages[1].content, 'next turn assistant text');
+	});
+
+	test('orphaned tool_use at end of records is DROPPED', () => {
+		const result = assembler.assemble([
+			{ role: 'user', content: 'go' },
+			{ role: 'assistant', toolUse: { id: 'toolu_tail', name: 'bash', input: {} } },
+		]);
+		assert.strictEqual(result.messages.length, 1);
+		assert.strictEqual(result.messages[0].role, 'user');
+	});
+
 	// ─── Bonus 14: tool_use_id mismatch in following tool_result throws ───
 
 	test('tool_use_id mismatched with following tool_result throws', () => {

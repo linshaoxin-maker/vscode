@@ -139,7 +139,7 @@ suite('ChatModelToRecordsAdapter', () => {
 		]);
 	});
 
-	test('incomplete tool_use emits assistant record but no tool_result', () => {
+	test('incomplete tool_use emits the assistant record but NOT a fabricated tool_result', () => {
 		const out = adapter.fromChatModel(fakeModel([
 			fakeReq({
 				message: 'go',
@@ -155,7 +155,10 @@ suite('ChatModelToRecordsAdapter', () => {
 			}),
 		]) as FakeModel);
 
-		// Only 2 records — no tool_result.
+		// The adapter must NOT invent a result for an unfinished call — it can't know
+		// the server-side outcome. Accurate closure happens at cancellation time;
+		// any leftover orphan is DROPPED by ConversationAssembler. So we see only the
+		// assistant tool_use, no synthetic user tool_result.
 		assert.strictEqual(out.length, 2);
 		assert.strictEqual(out[1].role, 'assistant');
 		assert.ok(out[1].toolUse);
@@ -202,6 +205,37 @@ suite('ChatModelToRecordsAdapter', () => {
 		// message (it's the confirmation reply, not a new prompt)
 		const userPlainCount = out.filter(r => r.role === 'user' && r.content === 'reason').length;
 		assert.strictEqual(userPlainCount, 0);
+	});
+
+	test('confirmation card with no answer is paired with a synthetic dismissed tool_result', () => {
+		// The card is the only/last thing in turn 1; turn 2 is a FRESH prompt
+		// (no `confirmation` field) — i.e. the user sent a new message instead of
+		// answering. The confirm tool_use must still be paired so turn 2 assembles.
+		const out = adapter.fromChatModel(fakeModel([
+			fakeReq({
+				message: 'do it',
+				response: {
+					parts: [{
+						kind: 'confirmation',
+						title: 'Are you sure?',
+						message: 'destructive op',
+						data: { requestId: 'confirm-99', card_type: 'agent_ask' },
+						buttons: ['yes', 'no'],
+					}],
+				},
+			}),
+			fakeReq({ message: 'actually do something else' }),
+		]) as FakeModel);
+
+		// out[0] user "do it", out[1] assistant confirm tool_use,
+		// out[2] synthetic dismissed tool_result, out[3] user "actually..."
+		assert.strictEqual(out[1].role, 'assistant');
+		assert.strictEqual(out[1].toolUse?.id, 'confirm-99');
+		assert.strictEqual(out[2].role, 'user');
+		assert.strictEqual(out[2].toolResult?.tool_use_id, 'confirm-99');
+		assert.strictEqual(out[2].toolResult?.is_error, true);
+		assert.strictEqual(out[3].role, 'user');
+		assert.strictEqual(out[3].content, 'actually do something else');
 	});
 
 	test('confirmation card without requestId synthesises a stable id', () => {

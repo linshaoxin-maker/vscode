@@ -214,17 +214,19 @@ export class ConversationAssembler {
 						break;
 					}
 				}
-				if (peek === null) {
-					throw new ConversationAssemblyError(
-						`assistant tool_use at record index ${i} (ids=[${toolUseIds.join(',')}]) has no following record to carry its tool_result`,
-						'tool_use_unmatched_end_of_records',
-					);
-				}
-				if (peek.role !== 'user') {
-					throw new ConversationAssemblyError(
-						`assistant tool_use at record index ${i} (ids=[${toolUseIds.join(',')}]) must be followed by a user tool_result; got role=${peek.role}`,
-						'tool_use_unmatched_non_user_follow',
-					);
+				if (peek === null || peek.role !== 'user') {
+					// BACKSTOP — orphaned tool_use: an assistant tool_use with no following
+					// user tool_result. The turn was cancelled / interrupted and never closed
+					// (e.g. a cross-restart leftover), and the user abandoned it with a fresh
+					// turn instead of /resume. We DROP the unpaired tool_use rather than
+					// fabricate a result — we can't know whether it actually succeeded
+					// server-side, and a wrong synthetic result would mislead the model.
+					// Dropping keeps the conversation both VALID (no dangling tool_use) and
+					// HONEST (no invented data). In-process cancels are normally closed
+					// accurately upstream (turn-end cleanup emits a real 'cancelled' result);
+					// this only catches the leftovers.
+					messages.pop(); // remove the orphan we just pushed
+					continue;
 				}
 				const resultIds = this._extractToolResultIds(peek);
 				for (const useId of toolUseIds) {

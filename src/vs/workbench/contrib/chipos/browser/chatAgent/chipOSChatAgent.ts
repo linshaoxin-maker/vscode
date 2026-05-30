@@ -5860,6 +5860,44 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		}
 		flushAssistantText();
+		// [ChipOS] Scenario-aware closure on turn end (mainly cancellation): any
+		// tool call still tracked in `statelessToolInputs` never received a
+		// `tool_result_observed`, i.e. it's still in-flight when the turn ends.
+		// Close it with an ACCURATE result so the next turn's history is honest and
+		// assemblable — "已取消" when the user stopped/superseded the turn, else
+		// "未完成". We do NOT fabricate success (we can't verify server-side state).
+		// Best-effort: if the response is already cancelled the progress emit can
+		// throw (acceptResponseProgress on a closed response) — we swallow it, and
+		// ConversationAssembler drops any still-orphaned tool_use as the backstop.
+		if (statelessToolInputs.size > 0) {
+			const wasCancelled = token.isCancellationRequested;
+			const closeMsg = wasCancelled
+				? localize('chipos.stateless.toolCancelled', "已取消（用户中断了本轮）")
+				: localize('chipos.stateless.toolIncomplete', "未完成（本轮结束时该工具调用未返回结果）");
+			for (const [callId, cached] of statelessToolInputs) {
+				if (cached.toolName === 'write_todos') {
+					continue; // no completion row — the sticky widget owns write_todos
+				}
+				try {
+					progress([{
+						kind: 'externalToolInvocationUpdate',
+						toolCallId: callId,
+						toolName: cached.toolName,
+						isComplete: true,
+						pastTenseMessage: friendlyToolName(cached.toolName),
+						errorMessage: closeMsg,
+						resultDetails: {
+							input: cached.rawInput ?? '',
+							output: [{ type: 'embed' as const, value: closeMsg, isText: true, mimeType: 'text/plain' }],
+							isError: true,
+						} satisfies IToolResultInputOutputDetails,
+					} satisfies IChatExternalToolInvocationUpdate]);
+				} catch (err) {
+					this._logService.trace('[ChipOS Stateless] close-on-cancel emit failed for %s (response likely closed): %s', callId, String(err));
+				}
+			}
+			statelessToolInputs.clear();
+		}
 		// [ChipOS] Phase 2: graduate the live sticky todo list into a permanent,
 		// read-only card in the chat history, then clear the sticky widget so the
 		// next turn starts clean. Mirrors the legacy WebSocket path's TaskComplete
