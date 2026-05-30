@@ -287,6 +287,19 @@ export type InvokeEventType =
 	| 'thinking_delta'
 	| 'round_progress'
 	| 'trace_link'
+	// [ChipOS] Fusion (Direction 2): rich agent events emitted when the
+	// reasoner drives /invoke through the full agent_core stack
+	// (CHIPOS_STATELESS_DRIVER=agentcore). The bare loop never emits these;
+	// the dispatcher maps them onto existing render channels.
+	| 'round_start'
+	| 'status'
+	| 'chat'
+	| 'model_output'
+	| 'model_turn_start'
+	| 'model_turn_end'
+	| 'subagent_event'
+	| 'task_summary'
+	| 'todo'
 	| 'keepalive'
 	| 'checkpoint'
 	| 'resumed_buffer_drained'

@@ -298,6 +298,66 @@ export function dispatchStatelessEvent(
 			// Decorative — reserved for future UI hooks.
 			return {};
 
+		// ── [ChipOS] Fusion (Direction 2): rich agent_core events ──────────
+		// The bare loop streams assistant text as `content_block_delta`; the
+		// agent_core driver instead emits `model_output` (streamed deltas) +
+		// the rich semantic events below. Map them onto the existing render
+		// channels so the agentcore path renders without new chat-agent code.
+
+		case 'model_output': {
+			// Streamed assistant text (legacy adapter shape: { content, is_delta }).
+			// Without this the agentcore path would render NO assistant text.
+			const data = (event.data ?? {}) as { content?: string };
+			return typeof data.content === 'string' && data.content
+				? { appendText: data.content }
+				: {};
+		}
+
+		case 'chat':
+			// Final assistant reply (deps.reply). In agentcore mode the text was
+			// already streamed via `model_output`; ignore to avoid duplicating it.
+			return {};
+
+		case 'status': {
+			// EDA status line ("正在综合…" etc.) → a progress message.
+			const data = (event.data ?? {}) as { message?: string; text?: string };
+			const content = typeof data.message === 'string' ? data.message
+				: typeof data.text === 'string' ? data.text : '';
+			return content ? { flushText: true, progressMessage: { content } } : {};
+		}
+
+		case 'subagent_event': {
+			// Sub-agent (task) activity → a compact progress line. Full
+			// collapsible sub-agent cards are a later refinement.
+			const data = (event.data ?? {}) as { subagent?: string; phase?: string; message?: string };
+			const who = typeof data.subagent === 'string' ? data.subagent : 'subagent';
+			const what = typeof data.message === 'string' ? data.message
+				: typeof data.phase === 'string' ? data.phase : '';
+			return { progressMessage: { content: what ? `${who}: ${what}` : who } };
+		}
+
+		case 'task_summary': {
+			// End-of-turn structured summary → a progress line carrying the verdict.
+			const data = (event.data ?? {}) as { verdict?: string; task_type?: string };
+			const bits = [data.task_type, data.verdict].filter(v => typeof v === 'string' && v);
+			return bits.length ? { flushText: true, progressMessage: { content: bits.join(' · ') } } : {};
+		}
+
+		case 'todo': {
+			// Planning state. Minimal: surface a progress line with the count;
+			// the native todo widget remains driven by the write_todos toolInvocation path.
+			const data = (event.data ?? {}) as { todos?: unknown[] };
+			const n = Array.isArray(data.todos) ? data.todos.length : 0;
+			return n > 0 ? { progressMessage: { content: `Updated todo list (${n})` } } : {};
+		}
+
+		case 'round_start':
+		case 'model_turn_start':
+		case 'model_turn_end':
+			// Turn/round boundaries — no direct render (the deltas + summary carry
+			// the visible signal); flush any buffered text at a turn boundary.
+			return { flushText: true };
+
 		case 'round_end': {
 			// Phase 1 (ADR-018): `reason` literal now excludes "tool_use" and
 			// adds "max_iterations" / "interrupted". `langgraph_state_blob` is

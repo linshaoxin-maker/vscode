@@ -313,6 +313,62 @@ suite('dispatchStatelessEvent', () => {
 		assert.strictEqual(r.toolInvocation?.toolName, 'raw_tool');
 	});
 
+	// ── [ChipOS] Fusion (Direction 2): rich agent_core events ──────────────
+
+	test('model_output → appendText (agentcore streamed assistant text)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('model_output', { content: 'hello', is_delta: true })),
+			{ appendText: 'hello' },
+		);
+		// empty content → noop
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('model_output', {})), {});
+	});
+
+	test('chat → noop (text already streamed via model_output)', () => {
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('chat', { content: 'dup' })), {});
+	});
+
+	test('status → flushText + progressMessage', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('status', { message: '正在综合…' })),
+			{ flushText: true, progressMessage: { content: '正在综合…' } },
+		);
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('status', {})), {});
+	});
+
+	test('subagent_event → progressMessage with who/what', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('subagent_event', { subagent: 'rtl-coder', phase: 'start' })),
+			{ progressMessage: { content: 'rtl-coder: start' } },
+		);
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('subagent_event', {})),
+			{ progressMessage: { content: 'subagent' } },
+		);
+	});
+
+	test('task_summary → flushText + progressMessage verdict line', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('task_summary', { task_type: 'rtl', verdict: 'ok' })),
+			{ flushText: true, progressMessage: { content: 'rtl · ok' } },
+		);
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('task_summary', {})), {});
+	});
+
+	test('todo → progressMessage count (full widget stays on toolInvocation path)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('todo', { todos: [{ content: 'a', status: 'pending' }, { content: 'b', status: 'pending' }] })),
+			{ progressMessage: { content: 'Updated todo list (2)' } },
+		);
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('todo', { todos: [] })), {});
+	});
+
+	test('round_start / model_turn_start / model_turn_end → flushText (turn boundary)', () => {
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('round_start')), { flushText: true });
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('model_turn_start', { step: 1 })), { flushText: true });
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('model_turn_end', { step: 1 })), { flushText: true });
+	});
+
 	test('event with undefined data → never throws (resume crash regression)', () => {
 		// Live repro (2026-05-29): /resume yields a `resumed_buffer_drained`
 		// marker with NO `data` field when a turn parked at confirm has nothing
@@ -328,6 +384,10 @@ suite('dispatchStatelessEvent', () => {
 			'confirm_request', 'keepalive', 'checkpoint',
 			'resumed_buffer_drained', 'resumed_live', 'thinking_delta',
 			'round_progress', 'trace_link', 'round_end', 'error',
+			// Fusion rich events must also tolerate missing data.
+			'round_start', 'status', 'chat', 'model_output',
+			'model_turn_start', 'model_turn_end', 'subagent_event',
+			'task_summary', 'todo',
 		];
 		const results = types.map(t => {
 			const evNoData = { type: t, sequence_id: 1, data: undefined } as unknown as InvokeEvent;
