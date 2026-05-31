@@ -3448,6 +3448,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * Best-effort extraction of the shell command from a tool's parsed args.
+	 * The master's `execute` uses `command`; other shells use `cmd` /
+	 * `command_line` / `commandLine` / `script`. Returns '' when none is present.
+	 */
+	private static _extractShellCommand(args: Record<string, unknown> | undefined): string {
+		if (!args) { return ''; }
+		const raw = args.command ?? args.cmd ?? args.command_line ?? args.commandLine ?? args.script;
+		return typeof raw === 'string' ? raw : '';
+	}
+
+	/**
 	 * Get the current editing session for a chat session resource.
 	 */
 	private _getEditingSession(sessionResource: URI): IChatEditingSession | undefined {
@@ -5614,6 +5625,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : shortDesc,
 							} satisfies IChatSubagentToolInvocationData,
 						} satisfies IChatExternalToolInvocationUpdate]);
+					} else if (ChipOSChatAgent._isShellTool(toolName)) {
+						// [ChipOS] P0-4: stateless shell tools render as a terminal-style card
+						// (syntax-highlighted command + exit-code decoration + collapsible output),
+						// mirroring the agentic path's terminal block, instead of a bare "执行命令"
+						// row. The command already ran on the worker, so this is DISPLAY-only: no
+						// live terminal session is created; the done side fills terminalCommandOutput
+						// + terminalCommandState.exitCode, and the renderer auto-collapses on exit 0
+						// / auto-expands on failure.
+						const shellArgs = (ti.input ?? {}) as Record<string, unknown>;
+						const cmdLine = ChipOSChatAgent._extractShellCommand(shellArgs);
+						const cwdPath = (typeof shellArgs.cwd === 'string' ? shellArgs.cwd : '') || this._getWorkspaceRoot() || '';
+						progress([{
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: ti.callId,
+							toolName,
+							isComplete: false,
+							invocationMessage: friendly,
+							toolSpecificData: {
+								kind: 'terminal',
+								commandLine: { original: cmdLine },
+								cwd: cwdPath ? URI.file(cwdPath) : undefined,
+								language: 'shellscript',
+								isBackground: false,
+							} satisfies IChatTerminalToolInvocationData,
+						} satisfies IChatExternalToolInvocationUpdate]);
 					} else {
 						const argDetail = ChipOSChatAgent._formatToolArgs(ti.input);
 						progress([{
@@ -5667,6 +5703,43 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								prompt,
 								result: output,
 							} satisfies IChatSubagentToolInvocationData,
+						} satisfies IChatExternalToolInvocationUpdate]);
+					} else if (ChipOSChatAgent._isShellTool(toolName)) {
+						// [ChipOS] P0-4: complete the terminal card with the worker's captured
+						// output + exit code. `execute`/`execute_command` return JSON
+						// ({exit_code, stdout, stderr}); fall back to the raw preview + isError.
+						let cachedCmd = '';
+						try { cachedCmd = ChipOSChatAgent._extractShellCommand(cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined); } catch { /* best-effort */ }
+						let outputText = output;
+						let exitCode: number | undefined;
+						try {
+							const parsed = JSON.parse(output) as { exit_code?: number; returncode?: number; stdout?: string; stderr?: string };
+							const combined = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n');
+							if (combined) { outputText = combined; }
+							exitCode = typeof parsed.exit_code === 'number' ? parsed.exit_code
+								: typeof parsed.returncode === 'number' ? parsed.returncode : undefined;
+						} catch { /* not JSON — use the raw preview */ }
+						if (cachedCmd) { outputText = `$ ${cachedCmd}\n${outputText}`; }
+						progress([{
+							kind: 'externalToolInvocationUpdate',
+							toolCallId: ti.callId,
+							toolName,
+							isComplete: true,
+							pastTenseMessage: friendly,
+							errorMessage: ti.isError ? output : undefined,
+							toolSpecificData: {
+								kind: 'terminal',
+								commandLine: { original: cachedCmd },
+								language: 'shellscript',
+								terminalCommandOutput: {
+									text: outputText,
+									truncated: outputText.length > 10_000,
+									lineCount: outputText.split('\n').length,
+								},
+								terminalCommandState: {
+									exitCode: exitCode ?? (ti.isError ? 1 : 0),
+								},
+							} satisfies IChatTerminalToolInvocationData,
 						} satisfies IChatExternalToolInvocationUpdate]);
 					} else if (toolName !== 'write_todos') {
 						// write_todos has no completion row — the sticky widget
