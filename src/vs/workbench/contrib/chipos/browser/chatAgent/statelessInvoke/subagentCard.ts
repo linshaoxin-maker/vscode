@@ -48,10 +48,12 @@ export interface ISubagentCardState {
 	 * message so a finished row still reads "读取文件 `card_demo_buggy.v`".
 	 */
 	readonly childLabels: Map<string, IMarkdownString>;
+	/** role → number of tool steps the sub-agent ran (drives the card header "· N 步"). */
+	readonly cardSteps: Map<string, number>;
 }
 
 export function createSubagentCardState(): ISubagentCardState {
-	return { parentIds: new Map(), openChildren: new Map(), childSeq: new Map(), childLabels: new Map() };
+	return { parentIds: new Map(), openChildren: new Map(), childSeq: new Map(), childLabels: new Map(), cardSteps: new Map() };
 }
 
 /**
@@ -117,6 +119,7 @@ export function computeSubagentToolUpdates(
 	if (evt.kind === 'tool_start') {
 		const seq = state.childSeq.get(qKey) ?? 0;
 		state.childSeq.set(qKey, seq + 1);
+		state.cardSteps.set(role, (state.cardSteps.get(role) ?? 0) + 1);
 		const childKey = `substateless_${role}_${toolName}_${seq}`;
 		const queue = state.openChildren.get(qKey);
 		if (queue) {
@@ -210,15 +213,30 @@ export function computeSubagentFinalizeUpdates(
 	state.openChildren.clear();
 	state.childSeq.clear();
 	state.childLabels.clear();
-	for (const parentId of state.parentIds.values()) {
+	for (const [role, parentId] of state.parentIds) {
+		const steps = state.cardSteps.get(role) ?? 0;
+		// Supplying toolSpecificData REPLACES the card's subagent data, so the
+		// collapsed header self-describes ("rtl-coder · 3 步 · 完成") instead of the
+		// static "Delegated task" placeholder. (Goal/verdict need a reasoner
+		// `goal`/`status` field — follow-up; step count is derivable today.)
 		updates.push({
 			kind: 'externalToolInvocationUpdate',
 			toolCallId: parentId,
 			toolName: 'task',
 			isComplete: true,
-			pastTenseMessage: localize('chipos.subagent.completed', "Sub-agent completed"),
+			pastTenseMessage: steps > 0
+				? localize('chipos.subagent.doneSteps', "{0} · {1} 步 · 完成", role, steps)
+				: localize('chipos.subagent.completed', "{0} · 完成", role),
+			toolSpecificData: {
+				kind: 'subagent',
+				agentName: role,
+				description: steps > 0
+					? localize('chipos.subagent.doneDesc', "{0} 步 · 完成", steps)
+					: localize('chipos.subagent.doneDescNoSteps', "完成"),
+			} satisfies IChatSubagentToolInvocationData,
 		});
 	}
 	state.parentIds.clear();
+	state.cardSteps.clear();
 	return updates;
 }

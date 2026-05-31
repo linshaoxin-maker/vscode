@@ -144,9 +144,10 @@ suite('subagentCard.computeSubagentFinalizeUpdates', () => {
 		assert.deepStrictEqual(proj(finalize), [
 			// dangling child closed first…
 			{ toolCallId: 'substateless_rtl-coder_read_file_0', toolName: 'read_file', isComplete: true, subagentInvocationId: 'substateless_parent_rtl-coder', toolSpecificKind: undefined, message: 'read_file' },
-			// …then each parent (no toolSpecificData → preserves the subagent header).
-			{ toolCallId: 'substateless_parent_rtl-coder', toolName: 'task', isComplete: true, subagentInvocationId: undefined, toolSpecificKind: undefined, message: 'Sub-agent completed' },
-			{ toolCallId: 'substateless_parent_lint-fixer', toolName: 'task', isComplete: true, subagentInvocationId: undefined, toolSpecificKind: undefined, message: 'Sub-agent completed' },
+			// …then each parent — header self-describes with the step count (rtl-coder
+			// ran 1 tool_start; lint-fixer had only a tool_end so 0 steps).
+			{ toolCallId: 'substateless_parent_rtl-coder', toolName: 'task', isComplete: true, subagentInvocationId: undefined, toolSpecificKind: 'subagent', message: 'rtl-coder · 1 步 · 完成' },
+			{ toolCallId: 'substateless_parent_lint-fixer', toolName: 'task', isComplete: true, subagentInvocationId: undefined, toolSpecificKind: 'subagent', message: 'lint-fixer · 完成' },
 		]);
 		// State fully reset → a re-finalize is a no-op.
 		assert.deepStrictEqual(computeSubagentFinalizeUpdates(state, friendly), []);

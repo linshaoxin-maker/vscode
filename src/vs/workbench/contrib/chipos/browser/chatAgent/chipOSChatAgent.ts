@@ -3394,6 +3394,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		web_search: '网络搜索',
 		web_fetch: '网页获取',
 		code_execution: '代码执行',
+		// EDA worker tools + common aliases the master calls directly — without
+		// these the row falls back to title-cased English ("Grep" / "Verilog Lint").
+		grep: '文本搜索',
+		verilog_lint: '代码检查',
+		lint: '代码检查',
+		verilog_syntax_check: '语法检查',
+		check_syntax: '语法检查',
+		verilog_simulate: '运行仿真',
+		verilog_format: '格式化',
+		format: '格式化',
+		yosys_synthesis: '逻辑综合',
+		yosys_qor: 'QoR 分析',
+		rtl_ppa_scan: 'PPA 扫描',
+		power_analysis: '功耗分析',
+		equiv_check: '等价性检查',
+		formal_equiv_check: '形式等价检查',
+		fpga_synthesize: 'FPGA 综合',
+		vcd_info: '波形信息',
+		vcd_signals: '波形信号',
+		vcd_waveform: '波形分析',
+		execute: '执行命令',
+		execute_command: '执行命令',
+		run_in_terminal: '执行命令',
+		get_terminal_output: '读取终端输出',
+		query_verification_guide: '查阅验证指南',
+		calculate: '计算',
 	};
 
 	private _friendlyToolName(toolName: string): string {
