@@ -541,6 +541,14 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 						this.updateHover();
 					}
 
+					// [ChipOS] re-read description on completion — the finalize update may
+					// have replaced the static "Delegated task" header with a self-describing
+					// "<role> · N 步 · 完成"; refresh the collapsed title so it shows.
+					const doneInfo = ChatSubagentContentPart.extractSubagentInfo(toolInvocation);
+					this.description = doneInfo.description;
+					if (doneInfo.agentName) { this.agentName = doneInfo.agentName; }
+					this.updateTitle();
+
 					// Mark as inactive when the tool completes
 					this.markAsInactive();
 				} else if (wasStreaming && state.type !== IChatToolInvocation.StateKind.Streaming) {
