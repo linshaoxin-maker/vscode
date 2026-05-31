@@ -13,7 +13,8 @@
  * stays unit-testable and runtime-decoupled.
  */
 
-import type { IMarkdownString } from '../../../../../../base/common/htmlContent.js';
+import { createMarkdownCommandLink, type IMarkdownString } from '../../../../../../base/common/htmlContent.js';
+import { URI } from '../../../../../../base/common/uri.js';
 
 /**
  * Collapse a long file path to its last two segments —
@@ -30,8 +31,14 @@ export function shortenPathArg(p: string): string {
  * pattern) renders as a quiet monospace code chip. `friendly` stays plain; a
  * self-delimited detail (command `…`, quoted "…", /…/ regex) is left as-is, and
  * a bare path/identifier is shortened + wrapped in inline code.
+ *
+ * P2-1: when `linkPath` (the resolved ABSOLUTE workspace path the object refers
+ * to) is supplied, the code chip becomes a clickable `command:vscode.open` link
+ * so a click opens the file — matching Cursor / Claude Code. The link is a
+ * code-styled label (`\`path\``) inside an anchor, and the returned markdown is
+ * marked `isTrusted` for `vscode.open` ONLY (no other command can be invoked).
  */
-export function buildToolRowLabel(friendly: string, argDetail: string): IMarkdownString {
+export function buildToolRowLabel(friendly: string, argDetail: string, linkPath?: string): IMarkdownString {
 	if (!argDetail) {
 		return { value: friendly, supportThemeIcons: false } as IMarkdownString;
 	}
@@ -42,6 +49,15 @@ export function buildToolRowLabel(friendly: string, argDetail: string): IMarkdow
 		return { value: `${friendly} ${argDetail}`, supportThemeIcons: false } as IMarkdownString;
 	}
 	const compact = shortenPathArg(argDetail).replace(/`/g, '');
+	if (linkPath) {
+		// `[\`compact\`](command:vscode.open?["<uri>"])` — escapeTokens=false keeps
+		// the backticks so the label still renders as a monospace chip, now clickable.
+		const link = createMarkdownCommandLink(
+			{ text: `\`${compact}\``, id: 'vscode.open', arguments: [URI.file(linkPath)], tooltip: linkPath },
+			false,
+		);
+		return { value: `${friendly} ${link}`, isTrusted: { enabledCommands: ['vscode.open'] }, supportThemeIcons: false } as IMarkdownString;
+	}
 	return { value: `${friendly} \`${compact}\``, supportThemeIcons: false } as IMarkdownString;
 }
 
@@ -53,7 +69,8 @@ export function withResultBadge(label: IMarkdownString, result: string | undefin
 	if (!result) {
 		return label;
 	}
-	return { value: `${label.value} · ${result}`, supportThemeIcons: false } as IMarkdownString;
+	// Preserve `isTrusted` so a P2-1 clickable command link survives the rebuild.
+	return { value: `${label.value} · ${result}`, isTrusted: label.isTrusted, supportThemeIcons: false } as IMarkdownString;
 }
 
 /**

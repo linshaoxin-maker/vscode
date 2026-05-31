@@ -3459,6 +3459,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * P2-1: resolve a tool's file argument to an ABSOLUTE workspace path so the
+	 * tool-row's object chip can be a clickable `vscode.open` link. Mirrors the
+	 * path keys `_formatToolArgs` recognises (path / file_path / rtl_path) plus
+	 * the common file/file_name aliases. Returns undefined when there's no path
+	 * arg or no workspace to resolve a relative one against.
+	 */
+	private _resolveToolFileLink(input: Record<string, unknown> | undefined): string | undefined {
+		if (!input) { return undefined; }
+		const raw = input.path ?? input.file_path ?? input.rtl_path ?? input.file ?? input.file_name;
+		if (typeof raw !== 'string' || !raw) { return undefined; }
+		if (raw.startsWith('/')) { return raw; }
+		const root = this._getWorkspaceRoot();
+		return root ? `${root.replace(/\/+$/, '')}/${raw}` : undefined;
+	}
+
+	/**
 	 * Get the current editing session for a chat session resource.
 	 */
 	private _getEditingSession(sessionResource: URI): IChatEditingSession | undefined {
@@ -5657,7 +5673,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							toolCallId: ti.callId,
 							toolName,
 							isComplete: false,
-							invocationMessage: buildToolRowLabel(friendly, argDetail),
+							invocationMessage: buildToolRowLabel(friendly, argDetail, this._resolveToolFileLink(ti.input)),
 							toolSpecificData: { kind: 'input', rawInput } satisfies IChatToolInputInvocationData,
 						} satisfies IChatExternalToolInvocationUpdate]);
 					}
@@ -5747,8 +5763,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						// Rebuild the "verb `object`" label from the cached input and append a
 						// result badge (· ✓ 通过 / · 改 1 处) — same row template as the sub-agent card.
 						let doneArg = '';
-						try { doneArg = ChipOSChatAgent._formatToolArgs(cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined); } catch { /* best-effort */ }
-						const doneLabel = withResultBadge(buildToolRowLabel(friendly, doneArg), summarizeToolOutput(toolName, output, !!ti.isError));
+						let doneInput: Record<string, unknown> | undefined;
+						try { doneInput = cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined; doneArg = ChipOSChatAgent._formatToolArgs(doneInput); } catch { /* best-effort */ }
+						const doneLabel = withResultBadge(buildToolRowLabel(friendly, doneArg, this._resolveToolFileLink(doneInput)), summarizeToolOutput(toolName, output, !!ti.isError));
 						progress([{
 							kind: 'externalToolInvocationUpdate',
 							toolCallId: ti.callId,

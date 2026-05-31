@@ -58,6 +58,18 @@ suite('toolRowFormat.buildToolRowLabel', () => {
 			'读取文件 `rtl/ab.v`',
 		]);
 	});
+
+	test('P2-1: a linkPath turns the path chip into a trusted vscode.open command link', () => {
+		const linked = buildToolRowLabel('读取文件', 'rtl/a.v', '/ws/rtl/a.v');
+		// label is a code-styled anchor pointing at vscode.open, kept as a chip…
+		assert.ok(linked.value.startsWith('读取文件 [`rtl/a.v`](command:vscode.open?'), linked.value);
+		// …and the markdown is trusted for vscode.open ONLY (no other command runs).
+		assert.deepStrictEqual(linked.isTrusted, { enabledCommands: ['vscode.open'] });
+		// A command/quoted/regex detail never becomes a link even if a path is passed.
+		assert.strictEqual(buildToolRowLabel('执行命令', '`ls -la`', '/ws/ls').value, '执行命令 `ls -la`');
+		// withResultBadge preserves the trust so the appended badge keeps the link live.
+		assert.deepStrictEqual(withResultBadge(linked, '14 行').isTrusted, { enabledCommands: ['vscode.open'] });
+	});
 });
 
 suite('toolRowFormat.withResultBadge', () => {
