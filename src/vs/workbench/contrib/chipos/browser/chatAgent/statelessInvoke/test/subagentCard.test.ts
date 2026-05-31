@@ -75,6 +75,19 @@ suite('subagentCard.computeSubagentToolUpdates', () => {
 		assert.strictEqual(r.startEdit, undefined);
 	});
 
+	test('P2-1: a resolveLinkPath turns the child path chip into a vscode.open command link', () => {
+		const state = createSubagentCardState();
+		const resolveLink = (args: Record<string, unknown> | undefined) =>
+			typeof args?.file_path === 'string' ? `/ws/${args.file_path}` : undefined;
+		const r = computeSubagentToolUpdates(
+			frame({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'read_file', args: { file_path: 'rtl/a.v' } }),
+			state, friendly, formatArgs, isFileWrite, resolveLink,
+		);
+		// child row (index 1) — the path is now a clickable command link; parent (0) unchanged.
+		const msg = (r.updates[1].invocationMessage as { value: string }).value;
+		assert.ok(msg.startsWith('read_file [`rtl/a.v`](command:vscode.open?'), msg);
+	});
+
 	test('parent synthesized once per role; child keys are stable-unique per (role, tool)', () => {
 		const state = createSubagentCardState();
 		computeSubagentToolUpdates(frame({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'read_file' }), state, friendly, formatArgs, isFileWrite);

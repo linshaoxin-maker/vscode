@@ -88,6 +88,7 @@ export function computeSubagentToolUpdates(
 	friendlyToolName: (raw: string) => string,
 	formatArgs: (args: Record<string, unknown> | undefined) => string,
 	isFileWriteTool: (toolName: string) => boolean,
+	resolveLinkPath?: (args: Record<string, unknown> | undefined) => string | undefined,
 ): ISubagentToolUpdates {
 	const role = evt.taskId;
 	const updates: IChatExternalToolInvocationUpdate[] = [];
@@ -129,7 +130,7 @@ export function computeSubagentToolUpdates(
 		}
 
 		const argDetail = formatArgs(evt.args);
-		const label = buildToolRowLabel(friendly, argDetail);
+		const label = buildToolRowLabel(friendly, argDetail, resolveLinkPath?.(evt.args));
 		state.childLabels.set(childKey, label);
 		updates.push({
 			kind: 'externalToolInvocationUpdate',

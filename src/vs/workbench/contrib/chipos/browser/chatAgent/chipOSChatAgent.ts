@@ -3767,6 +3767,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			raw => this._friendlyToolName(raw),
 			args => ChipOSChatAgent._formatToolArgs(args),
 			toolName => ChipOSChatAgent._isFileWriteTool(toolName),
+			args => this._resolveToolFileLink(args), // P2-1: clickable file chips inside the card too
 		);
 		if (result.updates.length > 0) {
 			progress(result.updates);
