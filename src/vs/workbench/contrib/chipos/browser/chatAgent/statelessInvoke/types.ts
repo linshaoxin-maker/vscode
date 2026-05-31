@@ -282,6 +282,12 @@ export type InvokeEventType =
 	| 'message_stop'
 	| 'tool_call_emitted'
 	| 'tool_result_observed'
+	// [ChipOS] Fusion: the agent_core bridge surfaces the MASTER's own tool
+	// calls via the legacy 10-event names `tool_start` / `tool_result` (NOT the
+	// Anthropic-passthrough pair above). `eventDispatcher` maps both onto the
+	// shared toolInvocation render directive (verb + `object` + result).
+	| 'tool_start'
+	| 'tool_result'
 	| 'ide_tool_call'
 	| 'confirm_request'
 	| 'thinking_delta'
