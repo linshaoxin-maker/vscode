@@ -169,6 +169,36 @@
 				display: inline-flex;
 			}
 
+			/* ── ChipOS row polish (SPEC-chat-rendering-redesign §2.1/§2.2) ──
+			   The TOP-LEVEL "Finished with N steps" tool group reuses this
+			   thinking-box but NOT the sub-agent card's chatSubagentContent
+			   polish, so its rows render dim + check-less — the same "读取文件
+			   `foo.v` · 4 行" row looks crisp in a sub-agent card yet gray here.
+			   Lift the treatment up so both tiers match: object-chip rows read at
+			   full contrast (completion shown by a ✓, NOT by graying), with a
+			   quiet monospace object chip. Scoped via :has(code) so only rows
+			   that carry an object (real tool calls) brighten; plain status stays dim. */
+			.rendered-markdown:has(code) {
+				color: var(--vscode-foreground);
+			}
+
+			.rendered-markdown code {
+				font-family: var(--monaco-monospace-font);
+				font-size: 0.92em;
+				padding: 0 3px;
+				border-radius: 3px;
+				background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+				color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+			}
+
+			/* finished tool row carrying an object → show a green completion ✓
+			   (overrides the display:none !important above; higher specificity). */
+			.progress-container:not(.shimmer-progress):has(.rendered-markdown code) > .codicon.codicon-check {
+				display: inline-flex !important;
+				color: var(--vscode-testing-iconPassed, var(--vscode-charts-green)) !important;
+				margin-right: 2px;
+			}
+
 			.chat-used-context.chat-hook-outcome-blocked,
 			.chat-used-context.chat-hook-outcome-warning {
 					padding: 4px 12px 4px 20px;

@@ -96,5 +96,35 @@ export function summarizeToolOutput(toolName: string, output: string | undefined
 		const lines = text.split('\n').length;
 		return lines > 1 ? `${lines} 行` : '';
 	}
+	// grep / search → match count, glob → file count (the one-glance count the
+	// reference tools always show: "Found 12 matches" / "· 12 results").
+	if (/grep|search/.test(name)) {
+		const m = flat.match(/"(?:match_count|count|total|num_matches)"\s*:\s*(\d+)/);
+		if (m) { return `${m[1]} 匹配`; }
+		const n = (text.match(/\n/g) || []).length;
+		return n > 0 ? `${n} 匹配` : '';
+	}
+	if (/glob/.test(name)) {
+		const m = flat.match(/"(?:count|total|num_files)"\s*:\s*(\d+)/);
+		if (m) { return `${m[1]} 个文件`; }
+		const n = (text.match(/\n/g) || []).length;
+		return n > 0 ? `${n} 个文件` : '';
+	}
+	// list directory → item count
+	if (/(^|_)ls$|list_dir|list_directory|listdir/.test(name)) {
+		const items = (flat.match(/"(?:name|type)"\s*:/g) || []).length;
+		if (items > 0) { return `${Math.max(1, Math.round(items / 2))} 项`; }
+		const n = (text.match(/\n/g) || []).length;
+		return n > 0 ? `${n} 项` : '';
+	}
+	// shell execution → exit code (✓ 退出 0 / ✗ 退出 N) — the reference tools
+	// always surface non-zero exits prominently.
+	if (/execute|run_in_terminal|run_command|shell/.test(name)) {
+		const ec = flat.match(/"(?:exit_code|exitCode|returncode|return_code)"\s*:\s*(-?\d+)/);
+		if (ec) { return Number(ec[1]) === 0 ? '✓ 退出 0' : `✗ 退出 ${ec[1]}`; }
+		if (/"success"\s*:\s*true/.test(flat)) { return '✓ 退出 0'; }
+		if (/"success"\s*:\s*false/.test(flat)) { return '✗ 失败'; }
+		return '';
+	}
 	return '';
 }

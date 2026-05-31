@@ -2663,6 +2663,45 @@ have to be updated for changes to the rules above, or to support more deeply nes
 	margin-left: 4px;
 }
 
+/* ── ChipOS row polish (SPEC-chat-rendering-redesign §2.1/§2.2) ──────────────
+   The top-level tool rows render through this native progress-step path, which
+   forces dim descriptionForeground, hides the completion ✓, and shrinks the
+   object code to body-xs with no chip — so the SAME "读取文件 `foo.v` · 45 行"
+   row looks crisp inside a sub-agent card but unfinished-and-gray inline. Lift
+   the sub-agent card treatment up to the shared progress-step so both tiers
+   match. Scoped with :has(code) so it ONLY touches rows that carry an object
+   (real tool calls), never plain status/working lines (which stay dim). */
+.interactive-item-container .progress-container .rendered-markdown.progress-step {
+	/* object chip: file path / command rendered as a quiet monospace chip */
+	& code {
+		font-family: var(--monaco-monospace-font);
+		font-size: 0.92em;
+		padding: 0 3px;
+		border-radius: 3px;
+		background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+		color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+	}
+
+	/* completion is conveyed by a leading ✓ — NOT by graying the text out.
+	   De-gray only object-bearing rows (= tool calls); plain status keeps dim. */
+	& > p:has(code) {
+		color: var(--vscode-foreground);
+	}
+}
+
+/* show + green-tint the completion ✓ on finished (non-active) tool rows */
+.interactive-item-container .progress-container:not(.shimmer-progress):has(.rendered-markdown.progress-step code) > .codicon.codicon-check {
+	display: inline-flex;
+	margin-left: 0;
+	margin-right: 2px;
+	color: var(--vscode-testing-iconPassed, var(--vscode-charts-green)) !important;
+}
+
+/* tighten a burst of consecutive tool rows so they pack densely (Cursor-like) */
+.interactive-item-container .progress-container:has(.rendered-markdown.progress-step code) {
+	min-height: 20px;
+}
+
 .interactive-item-container .chat-command-button {
 	display: flex;
 	flex-wrap: wrap;
