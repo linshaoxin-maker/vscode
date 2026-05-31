@@ -1285,7 +1285,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const label = runtime.firstEditedFileLabel ?? 'file';
 						const filePart = fileCount === 1
 							? `\`${label}\``
-							: `${fileCount} files (starting with \`${label}\`)`;
+							: localize('chipos.inlineChat.multiFile', "{0} 个文件（从 {1} 开始）", fileCount, `\`${label}\``);
 						// Reference framework chatEditing keybindings: ⌘⇧Y
 						// (Keep) and ⌘⇧N (Undo) per chatEditingEditorActions
 						// §195-200. Toast surfaces both as clickable primary
@@ -1293,22 +1293,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						const commandService = this._commandService;
 						this._notificationService.notify({
 							severity: Severity.Info,
-							message: `ChipOS: Applied AI edits to ${filePart} — review & keep or undo below`,
+							message: localize('chipos.inlineChat.editsApplied', "ChipOS：已对 {0} 应用 AI 编辑 — 在下方保留或撤销", filePart),
 							source: 'ChipOS Inline Chat',
 							actions: {
 								primary: [
 									{
 										id: 'chipos.inlineChat.keepEdits',
-										label: 'Keep (⌘⇧Y)',
-										tooltip: 'Keep all chat edits in this file',
+										label: localize('chipos.inlineChat.keep', "保留 (⌘⇧Y)"),
+										tooltip: localize('chipos.inlineChat.keepTip', "保留此文件中的所有 AI 编辑"),
 										class: undefined,
 										enabled: true,
 										run: () => commandService.executeCommand('chatEditor.action.accept'),
 									},
 									{
 										id: 'chipos.inlineChat.undoEdits',
-										label: 'Undo (⌘⇧N)',
-										tooltip: 'Undo all chat edits in this file',
+										label: localize('chipos.inlineChat.undo', "撤销 (⌘⇧N)"),
+										tooltip: localize('chipos.inlineChat.undoTip', "撤销此文件中的所有 AI 编辑"),
 										class: undefined,
 										enabled: true,
 										run: () => commandService.executeCommand('chatEditor.action.reject'),

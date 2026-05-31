@@ -449,6 +449,25 @@
 	font-weight: 500;
 }
 
+/* Render P3-1: complete the tri-state hierarchy so one card reads done / doing /
+ * pending at a glance — done & pending recede, the active step is the focus.
+ * Pending recedes (空圈 dim) just like completed, leaving in-progress to pop. */
+.interactive-session .chat-todo-list-widget .todo-item.todo-item-not-started .todo-content {
+	opacity: 0.7;
+}
+
+/* Active step's dot gently pulses so "doing" reads as live without a spinner —
+ * an opacity pulse on the symmetric codicon-record avoids the codicon-loading
+ * rotation jitter (see memory: codicon-loading asymmetric-glyph jitter). */
+.interactive-session .chat-todo-list-widget .todo-item.todo-item-in-progress .todo-status-icon {
+	animation: chipos-todo-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes chipos-todo-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
+}
+
 /* 2026-05-15 (ChipOS UX): switched from `:has(.codicon-pass)` / `:has(.codicon-record)`
  * to plain class selectors above to fix scrollbar lag in the chat list — the
  * `:has()` evaluator forces re-matching the descendant tree on every paint
