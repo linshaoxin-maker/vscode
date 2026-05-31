@@ -336,15 +336,57 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('status', {})), {});
 	});
 
-	test('subagent_event → progressMessage with who/what', () => {
+	test('subagent_event tool_start → subagentEvent directive (drives the collapsible card)', () => {
+		// A composite role's (e.g. rtl-coder) tool call becomes a structured
+		// `subagentEvent` directive — the caller turns the first frame per
+		// task_id into a parent ChatSubagentContentPart card and each
+		// tool_start/tool_end into a nested child tool row. (Was: a bare
+		// transient `progressMessage` one-liner.)
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('subagent_event', {
+				task_id: 'rtl-coder', kind: 'tool_start', tool_name: 'edit_file',
+				args: { file_path: 'rtl/foo.v' }, snapshot_content: 'old contents',
+			})),
+			{
+				subagentEvent: {
+					taskId: 'rtl-coder',
+					kind: 'tool_start',
+					toolName: 'edit_file',
+					args: { file_path: 'rtl/foo.v' },
+					filePath: undefined,
+					snapshotContent: 'old contents',
+				},
+			},
+		);
+	});
+
+	test('subagent_event tool_end → subagentEvent directive with file_path (completes the child row)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('subagent_event', {
+				task_id: 'rtl-coder', kind: 'tool_end', tool_name: 'edit_file', file_path: 'rtl/foo.v',
+			})),
+			{
+				subagentEvent: {
+					taskId: 'rtl-coder',
+					kind: 'tool_end',
+					toolName: 'edit_file',
+					args: undefined,
+					filePath: 'rtl/foo.v',
+					snapshotContent: undefined,
+				},
+			},
+		);
+	});
+
+	test('subagent_event non-tool / empty frame → dropped (no transient progress line)', () => {
+		// Legacy alias-only frames (subagent/phase, no tool lifecycle) and empty
+		// frames are dropped — the bare one-line progress message is exactly what
+		// the collapsible card replaces.
 		assert.deepStrictEqual(
 			dispatchStatelessEvent(ev('subagent_event', { subagent: 'rtl-coder', phase: 'start' })),
-			{ progressMessage: { content: 'rtl-coder: start' } },
+			{},
 		);
-		assert.deepStrictEqual(
-			dispatchStatelessEvent(ev('subagent_event', {})),
-			{ progressMessage: { content: 'subagent' } },
-		);
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('subagent_event', {})), {});
 	});
 
 	test('task_summary → flushText + progressMessage verdict line', () => {

@@ -82,6 +82,7 @@ import type {
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
+import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
 import { isStatelessTurnResumable } from './statelessInvoke/statelessResumability.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
@@ -3692,6 +3693,88 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 	}
 
+	/**
+	 * [ChipOS] Fusion: render one stateless `subagent_event` frame into the
+	 * native collapsible `ChatSubagentContentPart` card. The pure
+	 * `computeSubagentToolUpdates` (see `subagentCard.ts`) owns the bookkeeping
+	 * — parent-synthesized-once, FIFO child pairing — and returns the
+	 * toolInvocation parts to emit; this method does the I/O: emit progress and,
+	 * for file-write child tools, drive the editing session so the file diff
+	 * renders inside the card (mirroring the agentic `SubagentEvent` handler).
+	 */
+	private _renderStatelessSubagentEvent(
+		evt: NonNullable<DispatchResult['subagentEvent']>,
+		progress: (parts: IChatProgress[]) => void,
+		request: IChatAgentRequest,
+		state: ISubagentCardState,
+	): void {
+		const result = computeSubagentToolUpdates(
+			evt, state,
+			raw => this._friendlyToolName(raw),
+			args => ChipOSChatAgent._formatToolArgs(args),
+			toolName => ChipOSChatAgent._isFileWriteTool(toolName),
+		);
+		if (result.updates.length > 0) {
+			progress(result.updates);
+		}
+
+		// File-write tool_start → start an external edit (snapshot_content is the
+		// before-image when present) so the card shows the file diff.
+		if (result.startEdit) {
+			const { childKey, filePath, snapshotContent } = result.startEdit;
+			const runtime = this._getOrCreateRuntime(request.sessionResource);
+			// Dedup: skip if this file already has a pending external edit.
+			const alreadyTracked = [...runtime.toolFileArgs.entries()].some(
+				([k, v]) => v === filePath && runtime.externalEditOps.has(k),
+			);
+			if (!alreadyTracked) {
+				const workspaceRoot = this._getWorkspaceRoot();
+				const fileUri = filePath.startsWith('/')
+					? URI.file(filePath)
+					: workspaceRoot
+						? URI.joinPath(URI.file(workspaceRoot), filePath)
+						: URI.file(filePath);
+				runtime.toolFileArgs.set(childKey, filePath);
+				this._startExternalEdit(childKey, fileUri, request.sessionResource, request.requestId, runtime, snapshotContent);
+			}
+		}
+
+		// tool_end → stop the external edit (if one was started) and emit its diff.
+		if (result.stopEditChildKey) {
+			const childKey = result.stopEditChildKey;
+			const runtime = this._sessionRuntimes.get(request.sessionResource);
+			if (runtime && runtime.externalEditOps.has(childKey)) {
+				void this._stopExternalEdit(childKey, request.sessionResource, runtime).then(editProgress => {
+					if (editProgress.length > 0) {
+						progress(editProgress);
+					}
+				}).catch(err => {
+					this._logService.error('[ChipOS Stateless] subagent stopExternalEdit failed:', String(err));
+				});
+				runtime.toolFileArgs.delete(childKey);
+			}
+		}
+	}
+
+	/**
+	 * [ChipOS] Fusion: close any sub-agent cards still open at turn end. The
+	 * stateless path has no `complete` frame (the agentic `SubagentEvent` path
+	 * does), so when the round ends we flip each synthesized parent card — and
+	 * any dangling child whose `tool_end` never arrived — to complete, so no
+	 * card is left spinning. The renderer additionally collapses active cards
+	 * when the response element completes; this settles the underlying model
+	 * state. See `computeSubagentFinalizeUpdates`.
+	 */
+	private _finalizeStatelessSubagents(
+		progress: (parts: IChatProgress[]) => void,
+		state: ISubagentCardState,
+	): void {
+		const updates = computeSubagentFinalizeUpdates(state, raw => this._friendlyToolName(raw));
+		if (updates.length > 0) {
+			progress(updates);
+		}
+	}
+
 	private static _formatRawInput(toolName: string, args: unknown): unknown {
 		if (!args || typeof args !== 'object') { return args ?? {}; }
 		const obj = args as Record<string, unknown>;
@@ -5436,6 +5519,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// [ChipOS] Pair tool_call_emitted (args) with tool_result_observed
 		// (output preview) by callId for the collapsible tool card.
 		const statelessToolInputs = new Map<string, { toolName: string; rawInput: string }>();
+		// [ChipOS] Fusion: sub-agent (composite role) delegation cards, turn-scoped.
+		// The reasoner has no model `task` tool call for composite roles, so the
+		// FIRST `subagent_event` frame per role synthesizes the parent card and
+		// each tool_start/tool_end nests as a child. See `_renderStatelessSubagentEvent`.
+		const subagentCardState = createSubagentCardState();
 		// [ChipOS] Latest todo list seen from write_todos this turn. The live list
 		// drives the native sticky widget above the input; the final state is
 		// graduated into a permanent inline card when the turn ends (finish block).
@@ -5572,6 +5660,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 				}
 			}
+			if (handled.subagentEvent) {
+				// [ChipOS] Fusion: composite-role delegation → collapsible
+				// ChatSubagentContentPart card (parent header + nested tool
+				// rows), replacing the old transient one-line progress message.
+				trackFirstProgress();
+				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, subagentCardState);
+			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
 			}
@@ -5611,6 +5706,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.terminate) {
 				roundEndReceived = true;
+				// [ChipOS] Fusion: settle any sub-agent cards still open at round
+				// end (no `complete` frame exists on this path) so none spins on.
+				this._finalizeStatelessSubagents(progress, subagentCardState);
 			}
 			if (handled.finalMessages !== undefined) {
 				lastFinalMessages = handled.finalMessages;

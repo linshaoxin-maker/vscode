@@ -124,6 +124,30 @@ export interface DispatchResult {
 		isError?: boolean;
 	};
 	/**
+	 * [ChipOS] Fusion: a sub-agent (composite role) tool-lifecycle frame. On
+	 * the agent_core path the reasoner delegates to internal roles (e.g.
+	 * `lint_fix_loop` → `rtl-coder`) and emits `subagent_event` frames for each
+	 * of the role's own tool calls. The caller turns the FIRST frame per
+	 * `taskId` into a parent subagent toolInvocation (the collapsible card
+	 * header) and each `tool_start` / `tool_end` into a CHILD toolInvocation
+	 * tagged with that card's id — so the activity renders inside the native
+	 * `ChatSubagentContentPart` card instead of the old transient one-line
+	 * progress message. There is no model `task` tool call on this path
+	 * (composite roles run reasoner-side), so the caller synthesizes the parent.
+	 */
+	subagentEvent?: {
+		/** The delegated role, e.g. "rtl-coder" — keys the card + names the agent. */
+		taskId: string;
+		kind: 'tool_start' | 'tool_end';
+		toolName?: string;
+		/** tool_start args (file_path lives here for edit tools). */
+		args?: Record<string, unknown>;
+		/** tool_end file path (for edit tools, when the reasoner resolved it). */
+		filePath?: string;
+		/** tool_start before-snapshot for edit tools (often empty on this path). */
+		snapshotContent?: string;
+	};
+	/**
 	 * [ChipOS] Structured agent error → rendered as an `agentError` card
 	 * (category icon + error code + retry hint) instead of a plain markdown
 	 * line. Carries the raw backend fields; the caller applies category
@@ -327,13 +351,40 @@ export function dispatchStatelessEvent(
 		}
 
 		case 'subagent_event': {
-			// Sub-agent (task) activity → a compact progress line. Full
-			// collapsible sub-agent cards are a later refinement.
-			const data = (event.data ?? {}) as { subagent?: string; phase?: string; message?: string };
-			const who = typeof data.subagent === 'string' ? data.subagent : 'subagent';
-			const what = typeof data.message === 'string' ? data.message
+			// Sub-agent (composite role) activity → a `subagentEvent` directive
+			// the caller renders as a collapsible `ChatSubagentContentPart` card
+			// (parent header + nested tool rows), replacing the old transient
+			// one-line progress message. The reasoner ships `task_id` (the role,
+			// e.g. "rtl-coder") + `kind` ("tool_start"/"tool_end") + `tool_name`
+			// (+ `args` / `file_path` / `snapshot_content`); legacy aliases
+			// `subagent` / `phase` mirror task_id / kind.
+			const data = (event.data ?? {}) as {
+				task_id?: string; subagent?: string;
+				kind?: string; phase?: string;
+				tool_name?: string;
+				args?: Record<string, unknown>;
+				file_path?: string; snapshot_content?: string;
+			};
+			const taskId = typeof data.task_id === 'string' && data.task_id ? data.task_id
+				: typeof data.subagent === 'string' && data.subagent ? data.subagent : '';
+			const kind = typeof data.kind === 'string' ? data.kind
 				: typeof data.phase === 'string' ? data.phase : '';
-			return { progressMessage: { content: what ? `${who}: ${what}` : who } };
+			// Only tool-lifecycle frames drive the card; anything else (or a frame
+			// with no task_id) is dropped — forward-compatible, and the bare
+			// progress line it used to render is exactly what we're replacing.
+			if (!taskId || (kind !== 'tool_start' && kind !== 'tool_end')) {
+				return {};
+			}
+			return {
+				subagentEvent: {
+					taskId,
+					kind,
+					toolName: typeof data.tool_name === 'string' ? data.tool_name : undefined,
+					args: data.args && typeof data.args === 'object' ? data.args as Record<string, unknown> : undefined,
+					filePath: typeof data.file_path === 'string' ? data.file_path : undefined,
+					snapshotContent: typeof data.snapshot_content === 'string' ? data.snapshot_content : undefined,
+				},
+			};
 		}
 
 		case 'task_summary': {
