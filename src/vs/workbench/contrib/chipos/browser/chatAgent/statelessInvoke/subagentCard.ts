@@ -25,6 +25,7 @@
 
 import { localize } from '../../../../../../nls.js';
 import type { IMarkdownString } from '../../../../../../base/common/htmlContent.js';
+import { buildToolRowLabel, withResultBadge } from './toolRowFormat.js';
 import type { DispatchResult } from './eventDispatcher.js';
 import type { IChatExternalToolInvocationUpdate, IChatSubagentToolInvocationData } from '../../../../chat/common/chatService/chatService.js';
 
@@ -60,35 +61,6 @@ export function createSubagentCardState(): ISubagentCardState {
  * detail is wrapped in an inline-code span (callers already delimit commands
  * with backticks / patterns with slashes, so a bare path is the common case).
  */
-/**
- * Collapse a long file path to its last two segments — `rtl/card_demo_buggy.v`
- * instead of `/private/tmp/chipos-eda-ws/rtl/card_demo_buggy.v` — matching how
- * Cursor / Claude Code show the relevant tail rather than the absolute path.
- */
-function shortenPathArg(p: string): string {
-	const parts = p.split('/').filter(Boolean);
-	return parts.length > 2 ? parts.slice(-2).join('/') : p.replace(/^\/+/, '');
-}
-
-function buildChildLabel(friendly: string, argDetail: string): IMarkdownString {
-	if (!argDetail) {
-		return { value: friendly, supportThemeIcons: false } as IMarkdownString;
-	}
-	// Self-delimited details keep their own formatting: a command `…`, a quoted
-	// "…" query, or a /…/ regex (slashes at BOTH ends — an absolute path starts
-	// with one slash but does not end with one, so it is NOT treated as a regex).
-	const isCommand = /^`.*`$/.test(argDetail);
-	const isQuoted = /^".*"$/.test(argDetail);
-	const isRegex = /^\/.*\/$/.test(argDetail);
-	if (isCommand || isQuoted || isRegex) {
-		return { value: `${friendly} ${argDetail}`, supportThemeIcons: false } as IMarkdownString;
-	}
-	// Otherwise it is a path/identifier → compact tail, rendered as a monospace
-	// code chip so the file reads like an identifier (CSS gives it the chip bg).
-	const compact = shortenPathArg(argDetail).replace(/`/g, '');
-	return { value: `${friendly} \`${compact}\``, supportThemeIcons: false } as IMarkdownString;
-}
-
 /** Result of folding one `subagent_event` frame into card updates. */
 export interface ISubagentToolUpdates {
 	/** toolInvocation progress parts to emit, in order (parent before child). */
@@ -154,7 +126,7 @@ export function computeSubagentToolUpdates(
 		}
 
 		const argDetail = formatArgs(evt.args);
-		const label = buildChildLabel(friendly, argDetail);
+		const label = buildToolRowLabel(friendly, argDetail);
 		state.childLabels.set(childKey, label);
 		updates.push({
 			kind: 'externalToolInvocationUpdate',
@@ -191,13 +163,10 @@ export function computeSubagentToolUpdates(
 	// the terse outcome ("· ✓ 通过" / "· 12 行") the reasoner derived — the
 	// "verb object result" triple the reference tools all show. Falls back to the
 	// bare verb only if the start label was somehow never recorded.
-	const startLabel = state.childLabels.get(childKey);
+	const startLabel = state.childLabels.get(childKey)
+		?? ({ value: friendly, supportThemeIcons: false } as IMarkdownString);
 	state.childLabels.delete(childKey);
-	const baseValue = startLabel ? startLabel.value : friendly;
-	const endLabel: IMarkdownString = {
-		value: evt.result ? `${baseValue} · ${evt.result}` : baseValue,
-		supportThemeIcons: false,
-	} as IMarkdownString;
+	const endLabel = withResultBadge(startLabel, evt.result);
 	updates.push({
 		kind: 'externalToolInvocationUpdate',
 		toolCallId: childKey,

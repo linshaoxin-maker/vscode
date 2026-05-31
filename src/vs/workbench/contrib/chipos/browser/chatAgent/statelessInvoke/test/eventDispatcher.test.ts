@@ -81,6 +81,23 @@ suite('dispatchStatelessEvent', () => {
 		});
 	});
 
+	test('tool_start (agent_core bridge) → same toolInvocation directive as tool_call_emitted', () => {
+		const r = dispatchStatelessEvent(
+			ev('tool_start', { tool_name: 'verilog_lint', tool_id: 'run_1', args: { file_path: '/x.v' } }),
+		);
+		assert.deepStrictEqual(r, {
+			flushText: true,
+			toolInvocation: { callId: 'run_1', toolName: 'verilog_lint', input: { file_path: '/x.v' }, isComplete: false },
+		});
+	});
+
+	test('tool_result (agent_core bridge) → completes the invocation with content preview', () => {
+		const r = dispatchStatelessEvent(ev('tool_result', { tool_id: 'run_1', content: '0 errors', tool_name: 'verilog_lint' }));
+		assert.deepStrictEqual(r, {
+			toolInvocation: { callId: 'run_1', isComplete: true, outputPreview: '0 errors', isError: false },
+		});
+	});
+
 	test('tool_call_emitted without name → falls back to "tool"', () => {
 		const r = dispatchStatelessEvent(ev('tool_call_emitted', {}));
 		assert.deepStrictEqual(r, {

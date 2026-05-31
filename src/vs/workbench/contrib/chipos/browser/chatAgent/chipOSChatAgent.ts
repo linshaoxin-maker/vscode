@@ -7,7 +7,7 @@ import { DeferredPromise, raceCancellation, timeout } from '../../../../../base/
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
-import { MarkdownString } from '../../../../../base/common/htmlContent.js';
+import { MarkdownString, type IMarkdownString } from '../../../../../base/common/htmlContent.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { stripIcons } from '../../../../../base/common/iconLabels.js';
 import { ResourceMap } from '../../../../../base/common/map.js';
@@ -83,6 +83,7 @@ import type {
 } from './statelessInvoke/types.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
+import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
 import { isStatelessTurnResumable } from './statelessInvoke/statelessResumability.js';
 import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
@@ -5518,7 +5519,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		let usage: TokenUsage | undefined;
 		// [ChipOS] Pair tool_call_emitted (args) with tool_result_observed
 		// (output preview) by callId for the collapsible tool card.
-		const statelessToolInputs = new Map<string, { toolName: string; rawInput: string }>();
+		const statelessToolInputs = new Map<string, { toolName: string; rawInput: string; label?: IMarkdownString }>();
 		// [ChipOS] Fusion: sub-agent (composite role) delegation cards, turn-scoped.
 		// The reasoner has no model `task` tool call for composite roles, so the
 		// FIRST `subagent_event` frame per role synthesizes the parent card and
@@ -5594,7 +5595,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 							toolCallId: ti.callId,
 							toolName,
 							isComplete: false,
-							invocationMessage: argDetail ? `${friendly} ${argDetail}` : friendly,
+							invocationMessage: buildToolRowLabel(friendly, argDetail),
 							toolSpecificData: { kind: 'input', rawInput } satisfies IChatToolInputInvocationData,
 						} satisfies IChatExternalToolInvocationUpdate]);
 					}
@@ -5644,12 +5645,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					} else if (toolName !== 'write_todos') {
 						// write_todos has no completion row — the sticky widget
 						// already reflects the latest list from the call side.
+						// Rebuild the "verb `object`" label from the cached input and append a
+						// result badge (· ✓ 通过 / · 改 1 处) — same row template as the sub-agent card.
+						let doneArg = '';
+						try { doneArg = ChipOSChatAgent._formatToolArgs(cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined); } catch { /* best-effort */ }
+						const doneLabel = withResultBadge(buildToolRowLabel(friendly, doneArg), summarizeToolOutput(toolName, output, !!ti.isError));
 						progress([{
 							kind: 'externalToolInvocationUpdate',
 							toolCallId: ti.callId,
 							toolName,
 							isComplete: true,
-							pastTenseMessage: friendly,
+							pastTenseMessage: doneLabel,
 							errorMessage: ti.isError ? output : undefined,
 							resultDetails: {
 								input: cached?.rawInput ?? '',
@@ -5991,12 +5997,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					continue; // no completion row — the sticky widget owns write_todos
 				}
 				try {
+					let danglingArg = '';
+					try { danglingArg = ChipOSChatAgent._formatToolArgs(cached.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined); } catch { /* best-effort */ }
 					progress([{
 						kind: 'externalToolInvocationUpdate',
 						toolCallId: callId,
 						toolName: cached.toolName,
 						isComplete: true,
-						pastTenseMessage: friendlyToolName(cached.toolName),
+						pastTenseMessage: cached.label ?? buildToolRowLabel(friendlyToolName(cached.toolName), danglingArg),
 						errorMessage: closeMsg,
 						resultDetails: {
 							input: cached.rawInput ?? '',

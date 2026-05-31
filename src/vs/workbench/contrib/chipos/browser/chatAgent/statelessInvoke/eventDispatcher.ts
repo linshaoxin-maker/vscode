@@ -241,6 +241,43 @@ export function dispatchStatelessEvent(
 			};
 		}
 
+		case 'tool_start': {
+			// [ChipOS] Fusion: the agent_core bridge surfaces the MASTER's own tool
+			// calls as `tool_start` / `tool_result` (legacy 10-event protocol), NOT
+			// the `tool_call_emitted` / `tool_result_observed` pair above (those are
+			// the Anthropic-passthrough names). Without these two cases the master's
+			// read/edit/lint/synthesis calls rendered as nothing — only the model's
+			// prose — so we map them onto the same toolInvocation directive that the
+			// shared row template (verb + `object` + result) renders.
+			const data = (event.data ?? {}) as { tool_id?: string; tool_name?: string; args?: Record<string, unknown> };
+			const name = typeof data.tool_name === 'string' ? data.tool_name : 'tool';
+			return {
+				flushText: true,
+				toolInvocation: {
+					callId: typeof data.tool_id === 'string' && data.tool_id ? data.tool_id : name,
+					toolName: name,
+					input: data.args && typeof data.args === 'object' ? data.args : undefined,
+					isComplete: false,
+				},
+			};
+		}
+
+		case 'tool_result': {
+			const data = (event.data ?? {}) as { tool_id?: string; content?: string; is_error?: boolean };
+			const callId = typeof data.tool_id === 'string' ? data.tool_id : '';
+			if (!callId) {
+				return {};
+			}
+			return {
+				toolInvocation: {
+					callId,
+					isComplete: true,
+					outputPreview: typeof data.content === 'string' ? data.content : '',
+					isError: !!data.is_error,
+				},
+			};
+		}
+
 		case 'ide_tool_call': {
 			// Phase 1 reverse channel — IDE-side tool execution. Reasoner blocks
 			// awaiting POST /tool_result/{trace_id}/{call_id}. flushText so any
