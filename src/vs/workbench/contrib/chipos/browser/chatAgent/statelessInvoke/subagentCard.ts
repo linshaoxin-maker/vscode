@@ -24,6 +24,7 @@
  */
 
 import { localize } from '../../../../../../nls.js';
+import type { IMarkdownString } from '../../../../../../base/common/htmlContent.js';
 import type { DispatchResult } from './eventDispatcher.js';
 import type { IChatExternalToolInvocationUpdate, IChatSubagentToolInvocationData } from '../../../../chat/common/chatService/chatService.js';
 
@@ -38,10 +39,54 @@ export interface ISubagentCardState {
 	readonly openChildren: Map<string, string[]>;
 	/** `${role}::${tool}` → monotonic counter for stable-unique child keys. */
 	readonly childSeq: Map<string, number>;
+	/**
+	 * childKey → the markdown label built at `tool_start` ("verb `object`").
+	 * The `tool_end` frame carries no args, so without this the completed row
+	 * would collapse back to the bare verb (e.g. "读取文件") and lose the file it
+	 * acted on. We stash the start-time label and reuse it as the pastTense
+	 * message so a finished row still reads "读取文件 `card_demo_buggy.v`".
+	 */
+	readonly childLabels: Map<string, IMarkdownString>;
 }
 
 export function createSubagentCardState(): ISubagentCardState {
-	return { parentIds: new Map(), openChildren: new Map(), childSeq: new Map() };
+	return { parentIds: new Map(), openChildren: new Map(), childSeq: new Map(), childLabels: new Map() };
+}
+
+/**
+ * Build the child-row label as markdown so the object (file path / command /
+ * pattern) renders monospace — matching how Cursor / Claude Code / Codex show
+ * `Read <file>` with the target in code style. `friendly` stays plain; only the
+ * detail is wrapped in an inline-code span (callers already delimit commands
+ * with backticks / patterns with slashes, so a bare path is the common case).
+ */
+/**
+ * Collapse a long file path to its last two segments — `rtl/card_demo_buggy.v`
+ * instead of `/private/tmp/chipos-eda-ws/rtl/card_demo_buggy.v` — matching how
+ * Cursor / Claude Code show the relevant tail rather than the absolute path.
+ */
+function shortenPathArg(p: string): string {
+	const parts = p.split('/').filter(Boolean);
+	return parts.length > 2 ? parts.slice(-2).join('/') : p.replace(/^\/+/, '');
+}
+
+function buildChildLabel(friendly: string, argDetail: string): IMarkdownString {
+	if (!argDetail) {
+		return { value: friendly, supportThemeIcons: false } as IMarkdownString;
+	}
+	// Self-delimited details keep their own formatting: a command `…`, a quoted
+	// "…" query, or a /…/ regex (slashes at BOTH ends — an absolute path starts
+	// with one slash but does not end with one, so it is NOT treated as a regex).
+	const isCommand = /^`.*`$/.test(argDetail);
+	const isQuoted = /^".*"$/.test(argDetail);
+	const isRegex = /^\/.*\/$/.test(argDetail);
+	if (isCommand || isQuoted || isRegex) {
+		return { value: `${friendly} ${argDetail}`, supportThemeIcons: false } as IMarkdownString;
+	}
+	// Otherwise it is a path/identifier → compact tail, rendered as a monospace
+	// code chip so the file reads like an identifier (CSS gives it the chip bg).
+	const compact = shortenPathArg(argDetail).replace(/`/g, '');
+	return { value: `${friendly} \`${compact}\``, supportThemeIcons: false } as IMarkdownString;
 }
 
 /** Result of folding one `subagent_event` frame into card updates. */
@@ -109,12 +154,14 @@ export function computeSubagentToolUpdates(
 		}
 
 		const argDetail = formatArgs(evt.args);
+		const label = buildChildLabel(friendly, argDetail);
+		state.childLabels.set(childKey, label);
 		updates.push({
 			kind: 'externalToolInvocationUpdate',
 			toolCallId: childKey,
 			toolName,
 			isComplete: false,
-			invocationMessage: argDetail ? `${friendly} ${argDetail}` : friendly,
+			invocationMessage: label,
 			subagentInvocationId: parentId,
 		});
 
@@ -139,12 +186,24 @@ export function computeSubagentToolUpdates(
 	if (!childKey) {
 		return { updates }; // tool_end with no matching tool_start — defensive.
 	}
+	// Reuse the start-time "verb `object`" label so the finished row keeps the
+	// file/command it acted on (the tool_end frame carries no args), then append
+	// the terse outcome ("· ✓ 通过" / "· 12 行") the reasoner derived — the
+	// "verb object result" triple the reference tools all show. Falls back to the
+	// bare verb only if the start label was somehow never recorded.
+	const startLabel = state.childLabels.get(childKey);
+	state.childLabels.delete(childKey);
+	const baseValue = startLabel ? startLabel.value : friendly;
+	const endLabel: IMarkdownString = {
+		value: evt.result ? `${baseValue} · ${evt.result}` : baseValue,
+		supportThemeIcons: false,
+	} as IMarkdownString;
 	updates.push({
 		kind: 'externalToolInvocationUpdate',
 		toolCallId: childKey,
 		toolName,
 		isComplete: true,
-		pastTenseMessage: friendly,
+		pastTenseMessage: endLabel,
 		subagentInvocationId: parentId,
 	});
 	return { updates, stopEditChildKey: childKey };
@@ -174,13 +233,14 @@ export function computeSubagentFinalizeUpdates(
 				toolCallId: childKey,
 				toolName,
 				isComplete: true,
-				pastTenseMessage: friendlyToolName(toolName),
+				pastTenseMessage: state.childLabels.get(childKey) ?? friendlyToolName(toolName),
 				subagentInvocationId: parentId,
 			});
 		}
 	}
 	state.openChildren.clear();
 	state.childSeq.clear();
+	state.childLabels.clear();
 	for (const parentId of state.parentIds.values()) {
 		updates.push({
 			kind: 'externalToolInvocationUpdate',

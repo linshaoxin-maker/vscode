@@ -105,9 +105,36 @@
 		padding-left: 4px;
 	}
 
-	/* ChipOS UI polish: completed subagents (no longer active) — soften the body so finished
-	   work reads as background, but stay readable (0.78, not 0.5, to keep tables/diffs legible). */
+	/* ChipOS UI polish: completed subagents (no longer active) — keep the body
+	   crisp. Finished tool rows in Cursor / Claude Code / Codex stay fully
+	   legible (a leading ✓ marks "done", not a wash-out), so we no longer fade
+	   the whole body to 0.78 — that read as a disabled panel. */
 	&:not(.chat-thinking-active) > .chat-used-context-list.chat-thinking-collapsible {
-		opacity: 0.78;
+		opacity: 0.96;
+	}
+
+	/* ── ChipOS row polish: dense, legible tool rows (study of Cursor/Claude Code/Codex) ──
+	   Each child tool row = one line "verb `object`". Tighten the vertical rhythm,
+	   keep the label at body contrast, and render the monospace object as a subtle
+	   chip so the file/command reads like an identifier rather than prose. */
+	.chat-thinking-tool-wrapper {
+		min-height: 20px;
+
+		.progress-container {
+			min-height: 18px;
+			gap: 5px;
+			line-height: 1.35;
+		}
+
+		/* The "object" in the row label (file path / command) is emitted as inline
+		   code — give it the quiet monospace-chip treatment the reference tools use. */
+		.rendered-markdown code {
+			font-family: var(--monaco-monospace-font);
+			font-size: 0.92em;
+			padding: 0 3px;
+			border-radius: 3px;
+			background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+			color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+		}
 	}
 }

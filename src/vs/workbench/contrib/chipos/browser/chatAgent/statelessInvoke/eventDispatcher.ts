@@ -146,6 +146,8 @@ export interface DispatchResult {
 		filePath?: string;
 		/** tool_start before-snapshot for edit tools (often empty on this path). */
 		snapshotContent?: string;
+		/** tool_end terse outcome ("✓ 通过" / "12 行" / "改 1 处") — rendered as a dim badge after the object. */
+		result?: string;
 	};
 	/**
 	 * [ChipOS] Structured agent error → rendered as an `agentError` card
@@ -364,6 +366,7 @@ export function dispatchStatelessEvent(
 				tool_name?: string;
 				args?: Record<string, unknown>;
 				file_path?: string; snapshot_content?: string;
+				result?: string;
 			};
 			const taskId = typeof data.task_id === 'string' && data.task_id ? data.task_id
 				: typeof data.subagent === 'string' && data.subagent ? data.subagent : '';
@@ -383,6 +386,7 @@ export function dispatchStatelessEvent(
 					args: data.args && typeof data.args === 'object' ? data.args as Record<string, unknown> : undefined,
 					filePath: typeof data.file_path === 'string' ? data.file_path : undefined,
 					snapshotContent: typeof data.snapshot_content === 'string' ? data.snapshot_content : undefined,
+					result: typeof data.result === 'string' && data.result ? data.result : undefined,
 				},
 			};
 		}

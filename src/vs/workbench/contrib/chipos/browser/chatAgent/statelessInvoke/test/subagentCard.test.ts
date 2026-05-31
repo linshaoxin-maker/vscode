@@ -39,14 +39,22 @@ const isFileWrite = (toolName: string) => toolName === 'edit_file';
 
 // Compact projection of the fields that matter for grouping/rendering.
 function proj(updates: ReadonlyArray<{ toolCallId: string; toolName: string; isComplete: boolean; subagentInvocationId?: string; invocationMessage?: unknown; pastTenseMessage?: unknown; toolSpecificData?: { kind: string } }>) {
-	return updates.map(u => ({
-		toolCallId: u.toolCallId,
-		toolName: u.toolName,
-		isComplete: u.isComplete,
-		subagentInvocationId: u.subagentInvocationId,
-		toolSpecificKind: u.toolSpecificData?.kind,
-		message: u.invocationMessage ?? u.pastTenseMessage,
-	}));
+	return updates.map(u => {
+		const raw = u.invocationMessage ?? u.pastTenseMessage;
+		// Child labels are now IMarkdownString ({ value }) so the file/command
+		// renders monospace; unwrap to the plain value for assertions.
+		const message = (raw && typeof raw === 'object' && 'value' in (raw as Record<string, unknown>))
+			? (raw as { value: string }).value
+			: raw;
+		return {
+			toolCallId: u.toolCallId,
+			toolName: u.toolName,
+			isComplete: u.isComplete,
+			subagentInvocationId: u.subagentInvocationId,
+			toolSpecificKind: u.toolSpecificData?.kind,
+			message,
+		};
+	});
 }
 
 suite('subagentCard.computeSubagentToolUpdates', () => {
@@ -61,7 +69,7 @@ suite('subagentCard.computeSubagentToolUpdates', () => {
 			// parent: subagent toolSpecificData, NO subagentInvocationId → card header
 			{ toolCallId: 'substateless_parent_rtl-coder', toolName: 'task', isComplete: false, subagentInvocationId: undefined, toolSpecificKind: 'subagent', message: 'Delegating to rtl-coder' },
 			// child: tagged with the parent card id → nests inside the card
-			{ toolCallId: 'substateless_rtl-coder_read_file_0', toolName: 'read_file', isComplete: false, subagentInvocationId: 'substateless_parent_rtl-coder', toolSpecificKind: undefined, message: 'read_file rtl/a.v' },
+			{ toolCallId: 'substateless_rtl-coder_read_file_0', toolName: 'read_file', isComplete: false, subagentInvocationId: 'substateless_parent_rtl-coder', toolSpecificKind: undefined, message: 'read_file `rtl/a.v`' },
 		]);
 		// read_file is not a file-write tool → no external-edit intent.
 		assert.strictEqual(r.startEdit, undefined);
@@ -89,7 +97,16 @@ suite('subagentCard.computeSubagentToolUpdates', () => {
 			['substateless_rtl-coder_edit_file_0', 'substateless_rtl-coder_edit_file_1'],
 		);
 		assert.deepStrictEqual(proj(end1.updates), [
-			{ toolCallId: 'substateless_rtl-coder_edit_file_0', toolName: 'edit_file', isComplete: true, subagentInvocationId: 'substateless_parent_rtl-coder', toolSpecificKind: undefined, message: 'edit_file' },
+			{ toolCallId: 'substateless_rtl-coder_edit_file_0', toolName: 'edit_file', isComplete: true, subagentInvocationId: 'substateless_parent_rtl-coder', toolSpecificKind: undefined, message: 'edit_file `a.v`' },
+		]);
+	});
+
+	test('tool_end appends the reasoner result badge after the "verb `object`" label', () => {
+		const state = createSubagentCardState();
+		computeSubagentToolUpdates(frame({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'read_file', args: { file_path: 'rtl/x.v' } }), state, friendly, formatArgs, isFileWrite);
+		const end = computeSubagentToolUpdates(frame({ taskId: 'rtl-coder', kind: 'tool_end', toolName: 'read_file', result: '12 行' }), state, friendly, formatArgs, isFileWrite);
+		assert.deepStrictEqual(proj(end.updates), [
+			{ toolCallId: 'substateless_rtl-coder_read_file_0', toolName: 'read_file', isComplete: true, subagentInvocationId: 'substateless_parent_rtl-coder', toolSpecificKind: undefined, message: 'read_file `rtl/x.v` · 12 行' },
 		]);
 	});
 
