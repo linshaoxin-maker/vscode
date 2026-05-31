@@ -117,6 +117,21 @@ export function summarizeToolOutput(toolName: string, output: string | undefined
 		const n = (text.match(/\n/g) || []).length;
 		return n > 0 ? `${n} 项` : '';
 	}
+	// yosys / synthesis → success (+ chip area when present)
+	if (/yosys|synth/.test(name)) {
+		if (/"success"\s*:\s*true/.test(flat)) {
+			const a = flat.match(/"area"\s*:\s*([\d.]+)/);
+			return a ? `✓ ${Math.round(Number(a[1]))} µm²` : '✓ 综合成功';
+		}
+		if (/"success"\s*:\s*false/.test(flat)) { return '✗ 失败'; }
+		return '';
+	}
+	// simulation → pass/fail
+	if (/simulat|verilog_sim|run_sim/.test(name)) {
+		if (/"sim_pass"\s*:\s*true|"success"\s*:\s*true|\bpass(ed)?\b|通过/i.test(flat)) { return '✓ 通过'; }
+		if (/"sim_pass"\s*:\s*false|"success"\s*:\s*false|\bfail/i.test(flat)) { return '✗ 失败'; }
+		return '';
+	}
 	// shell execution → exit code (✓ 退出 0 / ✗ 退出 N) — the reference tools
 	// always surface non-zero exits prominently.
 	if (/execute|run_in_terminal|run_command|shell/.test(name)) {

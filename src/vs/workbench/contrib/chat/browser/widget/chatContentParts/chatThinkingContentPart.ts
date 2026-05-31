@@ -78,6 +78,50 @@ export function getToolInvocationIcon(toolId: string): ThemeIcon {
 		return Codicon.terminal;
 	}
 
+	// ── ChipOS EDA-tool icons (SPEC §2.3): give domain tools a recognizable
+	// glyph instead of the generic wrench. Order matters — coverage/ppa is
+	// checked before lint/check so "check_coverage" maps to the graph, not the
+	// checklist. ──
+	if (
+		lowerToolId.includes('coverage') ||
+		lowerToolId.includes('ppa') ||
+		lowerToolId.includes('power')
+	) {
+		return Codicon.graph;
+	}
+
+	if (
+		lowerToolId.includes('lint') ||
+		lowerToolId.includes('syntax') ||
+		lowerToolId.includes('check') ||
+		lowerToolId.includes('equiv')
+	) {
+		return Codicon.checklist;
+	}
+
+	if (
+		lowerToolId.includes('yosys') ||
+		lowerToolId.includes('synth')
+	) {
+		return Codicon.circuitBoard;
+	}
+
+	if (
+		lowerToolId.includes('sim') ||
+		lowerToolId.includes('waveform') ||
+		lowerToolId.includes('vcd')
+	) {
+		return Codicon.pulse;
+	}
+
+	if (
+		lowerToolId.includes('generate') ||
+		lowerToolId.includes('testbench') ||
+		lowerToolId.includes('format')
+	) {
+		return Codicon.fileCode;
+	}
+
 	// default to generic tool icon
 	return Codicon.tools;
 }
