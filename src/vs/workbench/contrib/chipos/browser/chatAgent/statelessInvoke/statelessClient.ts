@@ -484,7 +484,7 @@ export class StatelessClient {
 	 * single controller passed to fetch. Aborts on EITHER source firing.
 	 * Returns a ``clear()`` to cancel the timeout once the request settles.
 	 */
-	private _timeoutSignal(callerSignal: AbortSignal | undefined): { controller: AbortController; clear: () => void } {
+	private _timeoutSignal(callerSignal: AbortSignal | undefined): { controller: AbortController; clear: () => void; reset: () => void } {
 		const controller = new AbortController();
 		// Forward caller-abort → our controller so the fetch sees a single
 		// signal. Done via listener (cheap) rather than ``AbortSignal.any``
@@ -503,20 +503,39 @@ export class StatelessClient {
 				callerSignal.addEventListener('abort', onCallerAbort, { once: true });
 			}
 		}
-		const timer = setTimeout(() => {
-			try {
-				controller.abort(new Error(`stateless request timed out after ${this._timeoutMs}ms`));
-			} catch {
-				// best-effort
+		// A (idle timeout, not a hard cap): a re-armable timer. `reset()` is
+		// called on every received SSE chunk, so the abort only fires after a
+		// TRUE idle gap of _timeoutMs. Keepalives (~25s) keep a healthy stream —
+		// including a 永等 human-confirm wait — alive indefinitely; only a
+		// genuinely dead stream aborts. Previously this was a hard per-request
+		// cap that cut the confirm wait every 10 min → reconnect → permission
+		// card supersede churn → un-clickable card on long waits.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const arm = () => {
+			timer = setTimeout(() => {
+				try {
+					controller.abort(new Error(`stateless request idle for ${this._timeoutMs}ms`));
+				} catch {
+					// best-effort
+				}
+			}, this._timeoutMs);
+		};
+		arm();
+		const reset = () => {
+			if (timer !== undefined) {
+				clearTimeout(timer);
 			}
-		}, this._timeoutMs);
+			arm();
+		};
 		const clear = () => {
-			clearTimeout(timer);
+			if (timer !== undefined) {
+				clearTimeout(timer);
+			}
 			if (callerSignal) {
 				callerSignal.removeEventListener('abort', onCallerAbort);
 			}
 		};
-		return { controller, clear };
+		return { controller, clear, reset };
 	}
 
 	/**
@@ -554,6 +573,7 @@ export class StatelessClient {
 				let started = false;
 				let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 				let clearTimer: (() => void) | undefined;
+				let resetTimer: (() => void) | undefined;
 				const decoder = new TextDecoder('utf-8');
 				let buffer = '';
 				let exhausted = false;
@@ -565,8 +585,9 @@ export class StatelessClient {
 						headers['Content-Type'] = 'application/json';
 					}
 					Object.assign(headers, await authHeaders());
-					const { controller, clear } = timeoutCtor(signal);
+					const { controller, clear, reset } = timeoutCtor(signal);
 					clearTimer = clear;
+					resetTimer = reset;
 					const resp = await fetchFn(url, {
 						method: 'POST',
 						headers,
@@ -624,6 +645,10 @@ export class StatelessClient {
 					}
 					while (queue.length === 0 && !exhausted) {
 						const { done, value } = await reader.read();
+						// A: any received chunk (incl. keepalive) re-arms the idle
+						// timeout, so a healthy stream — or a long 永等 confirm wait
+						// kept warm by ~25s keepalives — never hits the abort cap.
+						resetTimer?.();
 						if (done) {
 							exhausted = true;
 							// Handle a truncated final event: if the buffer
