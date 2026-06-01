@@ -94,7 +94,7 @@ import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
 import { IChipOSWorkerPermissionService, IWorkerPermissionAsk } from '../permission/workerPermissionService.js';
-import { IChipOSConfirmRetireService } from './chiposConfirmRetireService.js';
+import { IChipOSConfirmRetireService, type ChipOSConfirmRetireReason } from './chiposConfirmRetireService.js';
 import { ChatAgentLocation, ChatPermissionLevel, isAutoApproveLevel } from '../../../chat/common/constants.js';
 import {
 	AgentEventType,
@@ -3749,6 +3749,235 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * for file-write child tools, drive the editing session so the file diff
 	 * renders inside the card (mirroring the agentic `SubagentEvent` handler).
 	 */
+	/**
+	 * [ChipOS] Fusion (#6): render a single stateless tool_call / tool_result
+	 * as a chat tool row (write_todos widget / sub-agent card / terminal card /
+	 * generic row with clickable file link). Shared by the live invoke() loop
+	 * AND the /resume loop so a turn resumed after an IDE restart renders tool
+	 * activity identically (previously the resume path silently dropped it).
+	 * Returns the normalized todo list when this was a write_todos start so the
+	 * caller can graduate it into a permanent inline card at turn end.
+	 */
+	private _renderStatelessToolInvocation(
+		ti: NonNullable<DispatchResult['toolInvocation']>,
+		progress: (parts: IChatProgress[]) => void,
+		request: IChatAgentRequest,
+		toolInputs: Map<string, { toolName: string; rawInput: string; label?: IMarkdownString }>,
+	): IChatTodo[] | undefined {
+		if (!ti.isComplete) {
+			// tool_call_emitted → start a collapsible invocation showing args.
+			const toolName = ti.toolName ?? 'tool';
+			const rawInput = ti.input ? JSON.stringify(ti.input, null, 2) : '';
+			toolInputs.set(ti.callId, { toolName, rawInput });
+			const friendly = this._friendlyToolName(toolName);
+
+			if (toolName === 'write_todos') {
+				// [ChipOS] Phase 1: drive the native sticky todo widget (above
+				// the input) instead of a generic "更新计划" tool row, and
+				// remember the list so the finish block can graduate it into a
+				// permanent inline card when the turn ends.
+				const todos = ChipOSChatAgent._normalizeTodos(ti.input?.todos);
+				this._todoListService.setTodos(request.sessionResource, todos);
+				return todos;
+			} else if (toolName === 'task' || toolName === 'run_subagent' || toolName === 'transfer_to_agent') {
+				// [ChipOS] Render subagent invocations as a collapsible card
+				// (description + agent type) rather than a raw JSON tool row.
+				// Internal steps aren't on the stateless wire, so the card
+				// shows description on start and the result on completion.
+				const args = (ti.input ?? {}) as Record<string, unknown>;
+				const desc = typeof args.description === 'string' ? args.description
+					: typeof args.prompt === 'string' ? args.prompt : '';
+				const shortDesc = desc.split('\n')[0].slice(0, 60);
+				const agentType = (typeof args.subagent_type === 'string' ? args.subagent_type
+					: typeof args.agent_type === 'string' ? args.agent_type : '') || 'sub-agent';
+				progress([{
+					kind: 'externalToolInvocationUpdate',
+					toolCallId: ti.callId,
+					toolName,
+					isComplete: false,
+					invocationMessage: friendly,
+					toolSpecificData: {
+						kind: 'subagent',
+						description: shortDesc,
+						agentName: agentType,
+						prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : shortDesc,
+					} satisfies IChatSubagentToolInvocationData,
+				} satisfies IChatExternalToolInvocationUpdate]);
+			} else if (ChipOSChatAgent._isShellTool(toolName)) {
+				// [ChipOS] P0-4: stateless shell tools render as a terminal-style card
+				// (syntax-highlighted command + exit-code decoration + collapsible output),
+				// mirroring the agentic path's terminal block, instead of a bare "执行命令"
+				// row. The command already ran on the worker, so this is DISPLAY-only: no
+				// live terminal session is created; the done side fills terminalCommandOutput
+				// + terminalCommandState.exitCode, and the renderer auto-collapses on exit 0
+				// / auto-expands on failure.
+				const shellArgs = (ti.input ?? {}) as Record<string, unknown>;
+				const cmdLine = ChipOSChatAgent._extractShellCommand(shellArgs);
+				const cwdPath = (typeof shellArgs.cwd === 'string' ? shellArgs.cwd : '') || this._getWorkspaceRoot() || '';
+				progress([{
+					kind: 'externalToolInvocationUpdate',
+					toolCallId: ti.callId,
+					toolName,
+					isComplete: false,
+					invocationMessage: friendly,
+					toolSpecificData: {
+						kind: 'terminal',
+						commandLine: { original: cmdLine },
+						cwd: cwdPath ? URI.file(cwdPath) : undefined,
+						language: 'shellscript',
+						isBackground: false,
+					} satisfies IChatTerminalToolInvocationData,
+				} satisfies IChatExternalToolInvocationUpdate]);
+			} else {
+				const argDetail = ChipOSChatAgent._formatToolArgs(ti.input);
+				progress([{
+					kind: 'externalToolInvocationUpdate',
+					toolCallId: ti.callId,
+					toolName,
+					isComplete: false,
+					invocationMessage: buildToolRowLabel(friendly, argDetail, this._resolveToolFileLink(ti.input)),
+					toolSpecificData: { kind: 'input', rawInput } satisfies IChatToolInputInvocationData,
+				} satisfies IChatExternalToolInvocationUpdate]);
+			}
+		} else {
+			// tool_result_observed → complete the invocation with the
+			// output preview so the user can see what the tool returned.
+			const cached = toolInputs.get(ti.callId);
+			toolInputs.delete(ti.callId);
+			const toolName = cached?.toolName ?? 'tool';
+			const friendly = this._friendlyToolName(toolName);
+			const output = ti.outputPreview ?? '';
+
+			if (toolName === 'task' || toolName === 'run_subagent' || toolName === 'transfer_to_agent') {
+				// Re-send the subagent card with its result. We must
+				// re-supply description/agentName: the model layer REPLACES
+				// (not merges) toolSpecificData on update.
+				let description = '';
+				let agentName = 'sub-agent';
+				let prompt = '';
+				try {
+					const args = cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : {};
+					const desc = typeof args.description === 'string' ? args.description
+						: typeof args.prompt === 'string' ? args.prompt : '';
+					description = desc.split('\n')[0].slice(0, 60);
+					agentName = (typeof args.subagent_type === 'string' ? args.subagent_type
+						: typeof args.agent_type === 'string' ? args.agent_type : '') || 'sub-agent';
+					prompt = typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : description;
+				} catch (err) {
+					// best-effort — fall back to a bare card
+					this._logService.trace('[ChipOS Stateless] subagent result parse failed:', String(err));
+				}
+				progress([{
+					kind: 'externalToolInvocationUpdate',
+					toolCallId: ti.callId,
+					toolName,
+					isComplete: true,
+					pastTenseMessage: friendly,
+					errorMessage: ti.isError ? output : undefined,
+					toolSpecificData: {
+						kind: 'subagent',
+						description,
+						agentName,
+						prompt,
+						result: output,
+					} satisfies IChatSubagentToolInvocationData,
+				} satisfies IChatExternalToolInvocationUpdate]);
+			} else if (ChipOSChatAgent._isShellTool(toolName)) {
+				// [ChipOS] P0-4: complete the terminal card with the worker's captured
+				// output + exit code. `execute`/`execute_command` return JSON
+				// ({exit_code, stdout, stderr}); fall back to the raw preview + isError.
+				let cachedCmd = '';
+				try { cachedCmd = ChipOSChatAgent._extractShellCommand(cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined); } catch { /* best-effort */ }
+				let outputText = output;
+				let exitCode: number | undefined;
+				try {
+					const parsed = JSON.parse(output) as { exit_code?: number; returncode?: number; stdout?: string; stderr?: string };
+					const combined = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n');
+					if (combined) { outputText = combined; }
+					exitCode = typeof parsed.exit_code === 'number' ? parsed.exit_code
+						: typeof parsed.returncode === 'number' ? parsed.returncode : undefined;
+				} catch { /* not JSON — use the raw preview */ }
+				if (cachedCmd) { outputText = `$ ${cachedCmd}\n${outputText}`; }
+				progress([{
+					kind: 'externalToolInvocationUpdate',
+					toolCallId: ti.callId,
+					toolName,
+					isComplete: true,
+					pastTenseMessage: friendly,
+					errorMessage: ti.isError ? output : undefined,
+					toolSpecificData: {
+						kind: 'terminal',
+						commandLine: { original: cachedCmd },
+						language: 'shellscript',
+						terminalCommandOutput: {
+							text: outputText,
+							truncated: outputText.length > 10_000,
+							lineCount: outputText.split('\n').length,
+						},
+						terminalCommandState: {
+							exitCode: exitCode ?? (ti.isError ? 1 : 0),
+						},
+					} satisfies IChatTerminalToolInvocationData,
+				} satisfies IChatExternalToolInvocationUpdate]);
+			} else if (toolName !== 'write_todos') {
+				// write_todos has no completion row — the sticky widget
+				// already reflects the latest list from the call side.
+				// Rebuild the "verb `object`" label from the cached input and append a
+				// result badge (· ✓ 通过 / · 改 1 处) — same row template as the sub-agent card.
+				let doneArg = '';
+				let doneInput: Record<string, unknown> | undefined;
+				try { doneInput = cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined; doneArg = ChipOSChatAgent._formatToolArgs(doneInput); } catch { /* best-effort */ }
+				const doneLabel = withResultBadge(buildToolRowLabel(friendly, doneArg, this._resolveToolFileLink(doneInput)), summarizeToolOutput(toolName, output, !!ti.isError));
+				progress([{
+					kind: 'externalToolInvocationUpdate',
+					toolCallId: ti.callId,
+					toolName,
+					isComplete: true,
+					pastTenseMessage: doneLabel,
+					errorMessage: ti.isError ? output : undefined,
+					resultDetails: {
+						input: cached?.rawInput ?? '',
+						output: [{ type: 'embed' as const, value: output, isText: true, mimeType: 'text/plain' }],
+						isError: !!ti.isError,
+					} satisfies IToolResultInputOutputDetails,
+				} satisfies IChatExternalToolInvocationUpdate]);
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * [ChipOS] Render a structured agent-error card (category presets matching
+	 * the legacy WebSocket Error handler). Shared by invoke() and /resume.
+	 */
+	private _renderStatelessAgentError(
+		ae: NonNullable<DispatchResult['agentError']>,
+		progress: (parts: IChatProgress[]) => void,
+	): void {
+		// [ChipOS] Render a structured error card (matches the old
+		// WebSocket-path Error handler's category presets for a
+		// consistent look across both paths).
+		const cat = (ae.category ?? 'INTERNAL').toUpperCase();
+		this._statelessObs.turnError(cat, ae.errorCode);  // §5.1 client mirror
+
+		const presets: Record<string, { icon: string; label: string; suggestion: string }> = {
+			AUTH: { icon: '🔐', label: '认证失败', suggestion: '请重新登录后再试。' },
+			SESSION: { icon: '⏱️', label: '会话已结束', suggestion: '请刷新页面或开启新对话。' },
+			WORKER: { icon: '🔌', label: 'Worker 连接异常', suggestion: '正在尝试恢复，可稍后重试。' },
+			TOOL: { icon: '🛠️', label: '工具执行失败', suggestion: '可重新发送以重试，或换一种描述。' },
+			PROTO: { icon: '⚠️', label: '请求参数错误', suggestion: '可重新发送让模型修正。' },
+			INTERNAL: { icon: '❌', label: '内部错误', suggestion: '请稍后重试，问题持续可联系支持。' },
+		};
+		const preset = presets[cat] ?? presets.INTERNAL;
+		progress([{
+			kind: 'agentError',
+			error_code: ae.errorCode ?? 'AGENT_ERROR',
+			message: `${preset.icon} **${preset.label}**：${ae.message}`,
+			retryable: ae.retryable ?? (cat === 'WORKER' || cat === 'TOOL' || cat === 'PROTO'),
+			suggestion: preset.suggestion,
+		} satisfies IChatAgentError]);
+	}
+
 	private _renderStatelessSubagentEvent(
 		evt: NonNullable<DispatchResult['subagentEvent']>,
 		progress: (parts: IChatProgress[]) => void,
@@ -5538,6 +5767,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const cancelListener = token.onCancellationRequested(() => {
 			this._logService.info('[ChipOS Stateless] token cancellation — aborting + posting /cancel');
 			abortController.abort();
+			// #9: settle any confirm card still up so it doesn't linger with live
+			// buttons after the turn is cancelled (swaps to a "已取消" pill; the
+			// parked-confirm handler skips its POST since /cancel already fired).
+			this._retireStatelessConfirmsForTrace(traceId, 'cancelled');
 			// Fire-and-forget server-side cancel so the reasoner can stop the
 			// in-flight LLM call + bill less. 404 (race) is silently OK.
 			void client.cancel(traceId, 'user_cancelled').catch(err => {
@@ -5595,186 +5828,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				progress([this._progress(handled.progressMessage.content, handled.progressMessage.shimmer)]);
 			}
 			if (handled.toolInvocation) {
-				const ti = handled.toolInvocation;
-				if (!ti.isComplete) {
-					// tool_call_emitted → start a collapsible invocation showing args.
-					const toolName = ti.toolName ?? 'tool';
-					const rawInput = ti.input ? JSON.stringify(ti.input, null, 2) : '';
-					statelessToolInputs.set(ti.callId, { toolName, rawInput });
-					const friendly = friendlyToolName(toolName);
-
-					if (toolName === 'write_todos') {
-						// [ChipOS] Phase 1: drive the native sticky todo widget (above
-						// the input) instead of a generic "更新计划" tool row, and
-						// remember the list so the finish block can graduate it into a
-						// permanent inline card when the turn ends.
-						const todos = ChipOSChatAgent._normalizeTodos(ti.input?.todos);
-						latestTodos = todos;
-						this._todoListService.setTodos(request.sessionResource, todos);
-					} else if (toolName === 'task' || toolName === 'run_subagent' || toolName === 'transfer_to_agent') {
-						// [ChipOS] Render subagent invocations as a collapsible card
-						// (description + agent type) rather than a raw JSON tool row.
-						// Internal steps aren't on the stateless wire, so the card
-						// shows description on start and the result on completion.
-						const args = (ti.input ?? {}) as Record<string, unknown>;
-						const desc = typeof args.description === 'string' ? args.description
-							: typeof args.prompt === 'string' ? args.prompt : '';
-						const shortDesc = desc.split('\n')[0].slice(0, 60);
-						const agentType = (typeof args.subagent_type === 'string' ? args.subagent_type
-							: typeof args.agent_type === 'string' ? args.agent_type : '') || 'sub-agent';
-						progress([{
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: ti.callId,
-							toolName,
-							isComplete: false,
-							invocationMessage: friendly,
-							toolSpecificData: {
-								kind: 'subagent',
-								description: shortDesc,
-								agentName: agentType,
-								prompt: typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : shortDesc,
-							} satisfies IChatSubagentToolInvocationData,
-						} satisfies IChatExternalToolInvocationUpdate]);
-					} else if (ChipOSChatAgent._isShellTool(toolName)) {
-						// [ChipOS] P0-4: stateless shell tools render as a terminal-style card
-						// (syntax-highlighted command + exit-code decoration + collapsible output),
-						// mirroring the agentic path's terminal block, instead of a bare "执行命令"
-						// row. The command already ran on the worker, so this is DISPLAY-only: no
-						// live terminal session is created; the done side fills terminalCommandOutput
-						// + terminalCommandState.exitCode, and the renderer auto-collapses on exit 0
-						// / auto-expands on failure.
-						const shellArgs = (ti.input ?? {}) as Record<string, unknown>;
-						const cmdLine = ChipOSChatAgent._extractShellCommand(shellArgs);
-						const cwdPath = (typeof shellArgs.cwd === 'string' ? shellArgs.cwd : '') || this._getWorkspaceRoot() || '';
-						progress([{
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: ti.callId,
-							toolName,
-							isComplete: false,
-							invocationMessage: friendly,
-							toolSpecificData: {
-								kind: 'terminal',
-								commandLine: { original: cmdLine },
-								cwd: cwdPath ? URI.file(cwdPath) : undefined,
-								language: 'shellscript',
-								isBackground: false,
-							} satisfies IChatTerminalToolInvocationData,
-						} satisfies IChatExternalToolInvocationUpdate]);
-					} else {
-						const argDetail = ChipOSChatAgent._formatToolArgs(ti.input);
-						progress([{
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: ti.callId,
-							toolName,
-							isComplete: false,
-							invocationMessage: buildToolRowLabel(friendly, argDetail, this._resolveToolFileLink(ti.input)),
-							toolSpecificData: { kind: 'input', rawInput } satisfies IChatToolInputInvocationData,
-						} satisfies IChatExternalToolInvocationUpdate]);
-					}
-				} else {
-					// tool_result_observed → complete the invocation with the
-					// output preview so the user can see what the tool returned.
-					const cached = statelessToolInputs.get(ti.callId);
-					statelessToolInputs.delete(ti.callId);
-					const toolName = cached?.toolName ?? 'tool';
-					const friendly = friendlyToolName(toolName);
-					const output = ti.outputPreview ?? '';
-
-					if (toolName === 'task' || toolName === 'run_subagent' || toolName === 'transfer_to_agent') {
-						// Re-send the subagent card with its result. We must
-						// re-supply description/agentName: the model layer REPLACES
-						// (not merges) toolSpecificData on update.
-						let description = '';
-						let agentName = 'sub-agent';
-						let prompt = '';
-						try {
-							const args = cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : {};
-							const desc = typeof args.description === 'string' ? args.description
-								: typeof args.prompt === 'string' ? args.prompt : '';
-							description = desc.split('\n')[0].slice(0, 60);
-							agentName = (typeof args.subagent_type === 'string' ? args.subagent_type
-								: typeof args.agent_type === 'string' ? args.agent_type : '') || 'sub-agent';
-							prompt = typeof args.prompt === 'string' ? args.prompt.slice(0, 500) : description;
-						} catch (err) {
-							// best-effort — fall back to a bare card
-							this._logService.trace('[ChipOS Stateless] subagent result parse failed:', String(err));
-						}
-						progress([{
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: ti.callId,
-							toolName,
-							isComplete: true,
-							pastTenseMessage: friendly,
-							errorMessage: ti.isError ? output : undefined,
-							toolSpecificData: {
-								kind: 'subagent',
-								description,
-								agentName,
-								prompt,
-								result: output,
-							} satisfies IChatSubagentToolInvocationData,
-						} satisfies IChatExternalToolInvocationUpdate]);
-					} else if (ChipOSChatAgent._isShellTool(toolName)) {
-						// [ChipOS] P0-4: complete the terminal card with the worker's captured
-						// output + exit code. `execute`/`execute_command` return JSON
-						// ({exit_code, stdout, stderr}); fall back to the raw preview + isError.
-						let cachedCmd = '';
-						try { cachedCmd = ChipOSChatAgent._extractShellCommand(cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined); } catch { /* best-effort */ }
-						let outputText = output;
-						let exitCode: number | undefined;
-						try {
-							const parsed = JSON.parse(output) as { exit_code?: number; returncode?: number; stdout?: string; stderr?: string };
-							const combined = [parsed.stdout, parsed.stderr].filter(Boolean).join('\n');
-							if (combined) { outputText = combined; }
-							exitCode = typeof parsed.exit_code === 'number' ? parsed.exit_code
-								: typeof parsed.returncode === 'number' ? parsed.returncode : undefined;
-						} catch { /* not JSON — use the raw preview */ }
-						if (cachedCmd) { outputText = `$ ${cachedCmd}\n${outputText}`; }
-						progress([{
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: ti.callId,
-							toolName,
-							isComplete: true,
-							pastTenseMessage: friendly,
-							errorMessage: ti.isError ? output : undefined,
-							toolSpecificData: {
-								kind: 'terminal',
-								commandLine: { original: cachedCmd },
-								language: 'shellscript',
-								terminalCommandOutput: {
-									text: outputText,
-									truncated: outputText.length > 10_000,
-									lineCount: outputText.split('\n').length,
-								},
-								terminalCommandState: {
-									exitCode: exitCode ?? (ti.isError ? 1 : 0),
-								},
-							} satisfies IChatTerminalToolInvocationData,
-						} satisfies IChatExternalToolInvocationUpdate]);
-					} else if (toolName !== 'write_todos') {
-						// write_todos has no completion row — the sticky widget
-						// already reflects the latest list from the call side.
-						// Rebuild the "verb `object`" label from the cached input and append a
-						// result badge (· ✓ 通过 / · 改 1 处) — same row template as the sub-agent card.
-						let doneArg = '';
-						let doneInput: Record<string, unknown> | undefined;
-						try { doneInput = cached?.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined; doneArg = ChipOSChatAgent._formatToolArgs(doneInput); } catch { /* best-effort */ }
-						const doneLabel = withResultBadge(buildToolRowLabel(friendly, doneArg, this._resolveToolFileLink(doneInput)), summarizeToolOutput(toolName, output, !!ti.isError));
-						progress([{
-							kind: 'externalToolInvocationUpdate',
-							toolCallId: ti.callId,
-							toolName,
-							isComplete: true,
-							pastTenseMessage: doneLabel,
-							errorMessage: ti.isError ? output : undefined,
-							resultDetails: {
-								input: cached?.rawInput ?? '',
-								output: [{ type: 'embed' as const, value: output, isText: true, mimeType: 'text/plain' }],
-								isError: !!ti.isError,
-							} satisfies IToolResultInputOutputDetails,
-						} satisfies IChatExternalToolInvocationUpdate]);
-					}
-				}
+				const todos = this._renderStatelessToolInvocation(handled.toolInvocation, progress, request, statelessToolInputs);
+				if (todos && todos.length) { latestTodos = todos; }
 			}
 			if (handled.subagentEvent) {
 				// [ChipOS] Fusion: composite-role delegation → collapsible
@@ -5790,29 +5845,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				progress([this._markdown(handled.markdownError)]);
 			}
 			if (handled.agentError) {
-				// [ChipOS] Render a structured error card (matches the old
-				// WebSocket-path Error handler's category presets for a
-				// consistent look across both paths).
-				const ae = handled.agentError;
-				const cat = (ae.category ?? 'INTERNAL').toUpperCase();
-				this._statelessObs.turnError(cat, ae.errorCode);  // §5.1 client mirror
-
-				const presets: Record<string, { icon: string; label: string; suggestion: string }> = {
-					AUTH: { icon: '🔐', label: '认证失败', suggestion: '请重新登录后再试。' },
-					SESSION: { icon: '⏱️', label: '会话已结束', suggestion: '请刷新页面或开启新对话。' },
-					WORKER: { icon: '🔌', label: 'Worker 连接异常', suggestion: '正在尝试恢复，可稍后重试。' },
-					TOOL: { icon: '🛠️', label: '工具执行失败', suggestion: '可重新发送以重试，或换一种描述。' },
-					PROTO: { icon: '⚠️', label: '请求参数错误', suggestion: '可重新发送让模型修正。' },
-					INTERNAL: { icon: '❌', label: '内部错误', suggestion: '请稍后重试，问题持续可联系支持。' },
-				};
-				const preset = presets[cat] ?? presets.INTERNAL;
-				progress([{
-					kind: 'agentError',
-					error_code: ae.errorCode ?? 'AGENT_ERROR',
-					message: `${preset.icon} **${preset.label}**：${ae.message}`,
-					retryable: ae.retryable ?? (cat === 'WORKER' || cat === 'TOOL' || cat === 'PROTO'),
-					suggestion: preset.suggestion,
-				} satisfies IChatAgentError]);
+				this._renderStatelessAgentError(handled.agentError, progress);
 			}
 			if (handled.usage !== undefined) {
 				usage = handled.usage;
@@ -6350,6 +6383,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const cancelListener = token.onCancellationRequested(() => {
 			this._logService.info('[ChipOS Stateless] resume-on-restart: token cancel — aborting + /cancel');
 			abortController.abort();
+			// #9: settle any confirm card still up (see invoke() cancel listener).
+			this._retireStatelessConfirmsForTrace(traceId, 'cancelled');
 			void client.cancel(traceId, 'user_cancelled').catch(err => {
 				this._logService.warn('[ChipOS Stateless] resume /cancel POST failed (likely race):', String(err));
 			});
@@ -6366,9 +6401,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		let usage: TokenUsage | undefined;
 		let errorResult: IChatAgentResult | undefined;
 		const friendlyToolName = (raw: string) => this._friendlyToolName(raw);
+		// #6: a resumed turn re-emits the SAME rich event stream (tool_call /
+		// tool_result / subagent_event / agent_error) as the live invoke() loop,
+		// so resume needs the same per-turn render state to render them identically
+		// (previously the resume dispatch silently dropped all tool/subagent rows).
+		const resumeToolInputs = new Map<string, { toolName: string; rawInput: string; label?: IMarkdownString }>();
+		const resumeSubagentCardState = createSubagentCardState();
 
-		// Self-contained dispatch handling ONLY the committed DispatchResult fields
-		// (resume continuations are text/thinking/tool-progress + reverse-channel).
+		// Dispatch parity with the live invoke() loop: renders text/thinking AND
+		// tool rows / sub-agent cards / error cards from the /resume event stream.
 		const applyDispatch = (handled: DispatchResult): void => {
 			if (handled.appendText) {
 				assistantTextBuf += handled.appendText;
@@ -6379,17 +6420,33 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (handled.progressMessage) {
 				progress([this._progress(handled.progressMessage.content, handled.progressMessage.shimmer)]);
 			}
+			if (handled.toolInvocation) {
+				// #6 parity: render tool rows on resume (terminal / sub-agent /
+				// write_todos widget / generic row w/ file link). latestTodos
+				// graduation is invoke()-only, so the return value is unused here.
+				this._renderStatelessToolInvocation(handled.toolInvocation, progress, request, resumeToolInputs);
+			}
+			if (handled.subagentEvent) {
+				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, resumeSubagentCardState);
+			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
 			}
 			if (handled.markdownError) {
 				progress([this._markdown(handled.markdownError)]);
 			}
+			if (handled.agentError) {
+				this._renderStatelessAgentError(handled.agentError, progress);
+			}
 			if (handled.usage !== undefined) {
 				usage = handled.usage;
 			}
 			if (handled.errorMessage !== undefined) {
 				errorResult = { errorDetails: { message: handled.errorMessage } };
+			}
+			if (handled.terminate) {
+				// settle any sub-agent cards still open when the resumed turn ends.
+				this._finalizeStatelessSubagents(progress, resumeSubagentCardState);
 			}
 			if (handled.ideToolCall) {
 				const call = handled.ideToolCall;
@@ -6406,6 +6463,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.resumedBufferDrained) {
 				this._logService.info('[ChipOS Stateless] resume buffer drained at seq=%d', handled.resumedBufferDrained.sequenceId);
+			}
+			if (handled.resumedLive) {
+				// rehydrated loop re-emits pending confirms with fresh request_ids;
+				// retire the cards that were live on the now-dead reasoner.
+				this._retireStatelessConfirmsForTrace(traceId);
 			}
 		};
 
@@ -7084,17 +7146,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 *      `_handleStatelessConfirmRequest` unblocks and skips its POST (the old
 	 *      request_id is gone on the restarted reasoner)
 	 */
-	private _retireStatelessConfirmsForTrace(traceId: string): void {
+	private _retireStatelessConfirmsForTrace(traceId: string, reason: ChipOSConfirmRetireReason = 'superseded'): void {
 		for (const [requestId, pending] of [...this._pendingStatelessConfirms]) {
 			if (pending.traceId !== traceId) {
 				continue;
 			}
 			this._logService.info(
-				'[ChipOS Stateless] retiring superseded confirm request_id=%s (trace=%s rehydrated)',
-				requestId, traceId,
+				'[ChipOS Stateless] retiring confirm request_id=%s (trace=%s reason=%s)',
+				requestId, traceId, reason,
 			);
-			this._confirmRetireService.retire(requestId);
-			pending.resolve({ action: 'skip', comment: 'superseded by reasoner-restart rehydrate', superseded: true });
+			this._confirmRetireService.retire(requestId, reason);
+			// Resolving with superseded:true makes the parked-confirm handler SKIP
+			// its POST. On cancel the SSE is being torn down + /cancel already POSTed,
+			// so skipping the per-card POST is also correct (#9).
+			const comment = reason === 'cancelled'
+				? 'turn cancelled by user'
+				: 'superseded by reasoner-restart rehydrate';
+			pending.resolve({ action: 'skip', comment, superseded: true });
 			this._pendingStatelessConfirms.delete(requestId);
 		}
 	}

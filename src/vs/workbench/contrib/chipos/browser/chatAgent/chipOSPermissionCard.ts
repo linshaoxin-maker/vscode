@@ -31,7 +31,7 @@ import { ChatSendResult, IChatConfirmation, IChatSendRequestOptions, IChatServic
 import { IChatContentPart, IChatContentPartRenderContext } from '../../../../contrib/chat/browser/widget/chatContentParts/chatContentParts.js';
 import { IChatRendererContent, IChatResponseViewModel, isResponseVM } from '../../../../contrib/chat/common/model/chatViewModel.js';
 import { ChatTreeItem, IChatWidget, IChatWidgetService } from '../../../../contrib/chat/browser/chat.js';
-import { IChipOSConfirmRetireService } from './chiposConfirmRetireService.js';
+import { IChipOSConfirmRetireService, type ChipOSConfirmRetireReason } from './chiposConfirmRetireService.js';
 import './chipOSPermissionCard.css';
 
 // ── Data shape stored in confirmation.data ────────────────────────────────────
@@ -259,7 +259,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 	 * pill so only the freshly re-emitted card stays actionable. Undefined once
 	 * the card is already responded/used (retire is then a no-op).
 	 */
-	private _retireToSupersededPill?: () => void;
+	private _retireToSupersededPill?: (reason?: ChipOSConfirmRetireReason) => void;
 
 	constructor(
 		private readonly confirmation: IChatConfirmation,
@@ -491,9 +491,9 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		// pill (a no-op if the card already responded). Stateless cards only.
 		const statelessRetireId = (confirmation.data as { __chiposStatelessConfirmRequestId?: string })?.__chiposStatelessConfirmRequestId;
 		if (statelessRetireId) {
-			this._register(this.confirmRetireService.onRetire(retiredId => {
-				if (retiredId === statelessRetireId) {
-					this._retireToSupersededPill?.();
+			this._register(this.confirmRetireService.onRetire(({ requestId, reason }) => {
+				if (requestId === statelessRetireId) {
+					this._retireToSupersededPill?.(reason);
 				}
 			}));
 		}
@@ -563,14 +563,17 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		// Swap the live buttons to a dimmed "superseded" pill and mark isUsed so
 		// the keyboard path is a no-op. Guarded so it never clobbers a card the
 		// user already responded to.
-		this._retireToSupersededPill = () => {
+		this._retireToSupersededPill = (reason: ChipOSConfirmRetireReason = 'superseded') => {
 			if (inFlight || this.confirmation.isUsed) {
 				return;
 			}
 			this.confirmation.isUsed = true;
+			const pill = reason === 'cancelled'
+				? { label: localize('chipos.card.cancelled', '已取消'), iconClass: 'codicon-circle-slash' }
+				: { label: localize('chipos.card.superseded', '已重新请求'), iconClass: 'codicon-history' };
 			swapToRespondedPill(
-				{ label: localize('chipos.card.superseded', '已重新请求') },
-				{ iconClass: 'codicon-history', pillClass: 'chipos-superseded-pill' },
+				{ label: pill.label },
+				{ iconClass: pill.iconClass, pillClass: 'chipos-superseded-pill' },
 			);
 		};
 
