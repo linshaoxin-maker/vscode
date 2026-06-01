@@ -3950,6 +3950,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * [ChipOS] Render a structured agent-error card (category presets matching
 	 * the legacy WebSocket Error handler). Shared by invoke() and /resume.
 	 */
+	/**
+	 * [ChipOS] Phase 2: graduate the live sticky todo list into a permanent,
+	 * read-only card in the chat history, then clear the sticky widget so the
+	 * next turn starts clean. Mirrors the legacy WebSocket path's TaskComplete
+	 * snapshot. Shared by the invoke() finish block AND the /resume finalization
+	 * so a write_todos turn resumed after an IDE restart also graduates + clears
+	 * (otherwise the sticky widget lingers until the next live write_todos turn).
+	 * No-op when the turn produced no todos.
+	 */
+	private _graduateStatelessTodos(
+		latestTodos: IChatTodo[],
+		progress: (parts: IChatProgress[]) => void,
+		request: IChatAgentRequest,
+	): void {
+		if (latestTodos.length > 0) {
+			progress([{
+				kind: 'chiposTodoCard',
+				todos: latestTodos.map(t => ({ title: t.title, status: t.status })),
+			} satisfies IChatChiposTodoCard]);
+			this._todoListService.setTodos(request.sessionResource, []);
+		}
+	}
+
 	private _renderStatelessAgentError(
 		ae: NonNullable<DispatchResult['agentError']>,
 		progress: (parts: IChatProgress[]) => void,
@@ -5829,7 +5852,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.toolInvocation) {
 				const todos = this._renderStatelessToolInvocation(handled.toolInvocation, progress, request, statelessToolInputs);
-				if (todos && todos.length) { latestTodos = todos; }
+				// `undefined` = not a write_todos call (leave latestTodos as-is); an
+				// array (possibly EMPTY) = a write_todos snapshot. An empty list is a
+				// deliberate "clean slate" clear (legacy B-T1) — must reset latestTodos
+				// so the finish block doesn't graduate a stale card. So gate on the
+				// array's existence, NOT its length.
+				if (todos) { latestTodos = todos; }
 			}
 			if (handled.subagentEvent) {
 				// [ChipOS] Fusion: composite-role delegation → collapsible
@@ -6161,18 +6189,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			statelessToolInputs.clear();
 		}
-		// [ChipOS] Phase 2: graduate the live sticky todo list into a permanent,
-		// read-only card in the chat history, then clear the sticky widget so the
-		// next turn starts clean. Mirrors the legacy WebSocket path's TaskComplete
-		// snapshot, but renders a styled card instead of markdown. No-op when the
-		// turn produced no todos.
-		if (latestTodos.length > 0) {
-			progress([{
-				kind: 'chiposTodoCard',
-				todos: latestTodos.map(t => ({ title: t.title, status: t.status })),
-			} satisfies IChatChiposTodoCard]);
-			this._todoListService.setTodos(request.sessionResource, []);
-		}
+		// [ChipOS] Phase 2: graduate the live sticky todo list into a permanent
+		// history card + clear the widget (shared with the /resume finalization).
+		this._graduateStatelessTodos(latestTodos, progress, request);
 		cancelListener.dispose();
 		this._statelessTraces.delete(request.sessionResource);
 
@@ -6407,6 +6426,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// (previously the resume dispatch silently dropped all tool/subagent rows).
 		const resumeToolInputs = new Map<string, { toolName: string; rawInput: string; label?: IMarkdownString }>();
 		const resumeSubagentCardState = createSubagentCardState();
+		let resumeLatestTodos: IChatTodo[] = [];
 
 		// Dispatch parity with the live invoke() loop: renders text/thinking AND
 		// tool rows / sub-agent cards / error cards from the /resume event stream.
@@ -6422,9 +6442,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.toolInvocation) {
 				// #6 parity: render tool rows on resume (terminal / sub-agent /
-				// write_todos widget / generic row w/ file link). latestTodos
-				// graduation is invoke()-only, so the return value is unused here.
-				this._renderStatelessToolInvocation(handled.toolInvocation, progress, request, resumeToolInputs);
+				// write_todos widget / generic row w/ file link). Capture the
+				// write_todos snapshot so the resume finalization can graduate +
+				// clear it like the live loop ('undefined' = not write_todos).
+				const todos = this._renderStatelessToolInvocation(handled.toolInvocation, progress, request, resumeToolInputs);
+				if (todos) { resumeLatestTodos = todos; }
 			}
 			if (handled.subagentEvent) {
 				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, resumeSubagentCardState);
@@ -6550,6 +6572,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 
 		flushAssistantText();
+		// #6/E parity: graduate + clear the sticky todo list if the resumed turn
+		// drove write_todos, so the widget doesn't linger after an IDE-restart resume.
+		this._graduateStatelessTodos(resumeLatestTodos, progress, request);
 		cancelListener.dispose();
 		this._statelessTraces.delete(request.sessionResource);
 
