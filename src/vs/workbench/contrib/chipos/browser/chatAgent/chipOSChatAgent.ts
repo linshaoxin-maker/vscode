@@ -6846,14 +6846,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (priorReqId === confirm.requestId) {
 				continue;
 			}
-			this._confirmRetireService.retire(priorReqId);
-			const stillPending = this._pendingStatelessConfirms.get(priorReqId);
-			if (stillPending) {
-				stillPending.resolve({ action: 'skip', comment: 'superseded by reasoner-restart rehydrate', superseded: true });
-				this._pendingStatelessConfirms.delete(priorReqId);
+			// C (parallel-confirm fix): a prior confirm STILL live-pending on the
+			// current stream is a legitimate PARALLEL confirm — the agent_core
+			// path dispatches e.g. verilog_lint + yosys_synthesis together, so two
+			// cards are open at once and EACH needs its own approval. Retiring it
+			// here (the old behaviour) killed the first of two parallel cards into
+			// an un-clickable "superseded" pill → the turn hung. Only retire priors
+			// that are no longer pending: stale ghost cards from a dead/previous
+			// turn (the rehydrate / "继续(从中断处)" path this guard was built for).
+			if (this._pendingStatelessConfirms.has(priorReqId)) {
+				continue;
 			}
+			this._confirmRetireService.retire(priorReqId);
 		}
-		renderedForTrace.clear();
 		renderedForTrace.add(confirm.requestId);
 
 		// Build the IChatConfirmation data shape mirroring legacy ConfirmRequest
