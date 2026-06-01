@@ -372,6 +372,7 @@ suite('dispatchStatelessEvent', () => {
 					args: { file_path: 'rtl/foo.v' },
 					filePath: undefined,
 					snapshotContent: 'old contents',
+					result: undefined,
 				},
 			},
 		);
@@ -390,6 +391,7 @@ suite('dispatchStatelessEvent', () => {
 					args: undefined,
 					filePath: 'rtl/foo.v',
 					snapshotContent: undefined,
+					result: undefined,
 				},
 			},
 		);
