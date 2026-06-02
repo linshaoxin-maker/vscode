@@ -210,29 +210,40 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 	}
 
 	private _removeTab(uri: URI): void {
-		const before = this._openTabs.length;
 		this._openTabs = this._openTabs.filter(u => !isEqual(u, uri));
-		if (this._openTabs.length === before) {
+		this._saveOpenTabs();
+
+		// Resolve the chat widget so we can both detect what session it is
+		// currently rendering and (if needed) reset it to the welcome view.
+		const w = this._chatWidgetService.lastFocusedWidget
+			?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat).find(x => x.viewModel)
+			?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat)[0];
+		const onScreen = w?.viewModel?.sessionResource;
+		const closedWasOnScreen =
+			(!!this._activeUri && isEqual(this._activeUri, uri)) ||
+			(!!onScreen && isEqual(onScreen, uri));
+
+		this._logService.info(`[ChipOS Tabs] _removeTab closed=${uri.toString()} remaining=${this._openTabs.length} activeUri=${this._activeUri?.toString() ?? '<none>'} onScreen=${onScreen?.toString() ?? '<none>'} closedWasOnScreen=${closedWasOnScreen} hasWidget=${!!w}`);
+
+		// No tabs left — reset the chat widget so the user lands on the welcome
+		// state instead of staring at the previous (now-detached) session's
+		// transcript. The strip is empty, so the welcome view is the correct
+		// destination. We deliberately do NOT early-return when `uri` wasn't in
+		// `_openTabs` (an auto-pinned *focused* session can be visible without a
+		// matching stored tab) and do NOT gate the clear on `_activeUri` (a
+		// restored/auto-pinned tab may never have set it). Earlier those two
+		// guards each suppressed the clear for the single-tab case (reported
+		// bug: closing the only tab kept the session and never returned to the
+		// welcome view). Same `clear()` call as the `+` new-chat handler.
+		if (this._openTabs.length === 0) {
+			this._activeUri = undefined;
+			w?.clear().catch(err => this._logService.warn('[ChipOS Tabs] close-last clear failed', err));
 			return;
 		}
-		this._saveOpenTabs();
-		// If we just closed the active tab, switch to the new head (if any).
-		if (this._activeUri && isEqual(this._activeUri, uri)) {
-			const next = this._openTabs[0];
-			if (next) {
-				this._openSessionByUri(next);
-			} else {
-				this._activeUri = undefined;
-				// Last tab closed — reset the chat widget so the user lands on
-				// the welcome state instead of staring at the previous
-				// (now-detached) session's transcript. Same `clear()` call as
-				// the `+` new-chat handler, just without a follow-up open.
-				const w = this._chatWidgetService.lastFocusedWidget
-					?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat)
-						.find(x => x.viewModel)
-					?? this._chatWidgetService.getWidgetsByLocations(ChatAgentLocation.Chat)[0];
-				w?.clear().catch(err => this._logService.warn('[ChipOS Tabs] close-last clear failed', err));
-			}
+
+		// Tabs remain — if we just closed the session on screen, switch to head.
+		if (closedWasOnScreen) {
+			this._openSessionByUri(this._openTabs[0]);
 		}
 	}
 
