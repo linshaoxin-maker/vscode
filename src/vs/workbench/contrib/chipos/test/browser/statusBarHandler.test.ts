@@ -163,13 +163,19 @@ suite('StatusBarHandler', () => {
 		assert.ok(text!.includes('Reconnect'));
 	});
 
-	test('reconnect button: hides when reason is undefined', () => {
+	test('reconnect button: shows persistent Connected pill when reason is undefined', () => {
+		// 2026-05-15: undefined no longer disposes the entry. It flips to a
+		// persistent "Worker: Connected" pill (reason ?? 'connected') so the
+		// indicator is always present instead of vanishing on reconnect —
+		// dispose() left stale entries during some transition sequences.
 		handler.updateReconnectButton('worker-error');
 		const accessor = statusbarService.entries.get('chipos.statusbar.reconnect');
 		assert.ok(accessor);
 
 		handler.updateReconnectButton(undefined);
-		assert.strictEqual(accessor!.disposed, true);
+		assert.strictEqual(accessor!.disposed, false);
+		const text = statusbarService.getLastText('chipos.statusbar.reconnect');
+		assert.ok(text!.includes('Connected'));
 	});
 
 	test('reconnect button: updates existing entry when reason changes', () => {

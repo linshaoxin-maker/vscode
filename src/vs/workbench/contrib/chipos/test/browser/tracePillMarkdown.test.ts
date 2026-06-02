@@ -65,8 +65,10 @@ suite('_buildTracePillMarkdown', () => {
 		const evil = 'trace-with-"quote"-and-\\backslash';
 		const md = _buildTracePillMarkdown(evil);
 		// Title field should escape both, leaving the link parseable.
+		// Round 5 markdown closes the link + italic after the title, so the
+		// value ends with `")*` rather than the bare title-closing quote.
 		assert.match(md.value,
-			/"Trace ID: trace-with-\\"quote\\"-and-\\\\backslash — click to copy"$/,
+			/"Trace ID: trace-with-\\"quote\\"-and-\\\\backslash — click to copy"\)\*$/,
 			`escapes should land in the title: ${md.value}`,
 		);
 		// And: the command arg (URL-encoded JSON) must still round-trip

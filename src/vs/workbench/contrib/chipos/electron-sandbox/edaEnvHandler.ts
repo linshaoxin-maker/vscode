@@ -94,8 +94,11 @@ export function parseEdaEnvLine(rawLine: string): EdaEnvParsed {
 		return { kind: 'ready', level: 'core' };
 	}
 
-	if (line.startsWith('check ')) {
-		const body = line.slice('check '.length);
+	// Match the bare verb too (`[EdaEnv] check` with no tool tokens) — a
+	// degenerate-but-valid overview reporting zero tools. Mirrors the
+	// `poll_stopped` handling below, which also parses its arg-less form.
+	if (line === 'check' || line.startsWith('check ')) {
+		const body = line.slice('check'.length).trim();
 		const statuses: Record<string, 'ok' | 'missing'> = {};
 		for (const tok of body.split(/\s+/)) {
 			if (!tok) { continue; }
