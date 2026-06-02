@@ -87,6 +87,19 @@ export class WorkerManager {
 	}
 
 	/**
+	 * The Worker's ACTUAL HTTP port on the remote loopback, resolved from
+	 * `instance.json` during `ensureWorkerRunning()`. Since 2026-05-25 the
+	 * Worker binds a kernel-assigned port (no fixed 8081), so callers that set
+	 * up the SSH forward for the Worker Tools panel MUST forward to this value
+	 * — NOT the stale `chipos.backend.workerHttpPort` config default (8081),
+	 * which leaves the panel stuck on "Worker API unavailable". Returns 8081
+	 * only until `ensureWorkerRunning()` has resolved a real port.
+	 */
+	public get httpPort(): number {
+		return this._workerHttpPort;
+	}
+
+	/**
 	 * Build the env-var prefix string used when starting the Worker via
 	 * `bash -c 'export ...; ...'`. Centralized here so both binary and
 	 * python spawn paths stay in sync.

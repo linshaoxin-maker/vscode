@@ -528,8 +528,12 @@ class ChipOSSSHResolver implements vscode.RemoteAuthorityResolver {
 					await workerMgr.ensureWorkerRunning(reasonerGrpcTarget, remoteWorkspacePath);
 					log('[Step 5] Execution Worker started on remote');
 
-					const workerHttpPort = vscode.workspace.getConfiguration('chipos.backend')
-						.get<number>('workerHttpPort', 8081);
+					// Forward to the Worker's ACTUAL bound port (kernel-assigned since
+					// 2026-05-25, read from instance.json by ensureWorkerRunning), NOT
+					// the stale `chipos.backend.workerHttpPort` config default (8081).
+					// Forwarding to 8081 left the Worker Tools panel stuck on "Worker
+					// API unavailable" because the worker binds a random free port.
+					const workerHttpPort = workerMgr.httpPort;
 					try {
 						const localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
 						log(`[Step 5] Worker HTTP port forwarding: 127.0.0.1:${localWorkerPort} → remote:${workerHttpPort}`);
@@ -1017,9 +1021,6 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 		attachReconnectNotifier(sshConn, sshConn.host);
 	}
 
-	const cfg = vscode.workspace.getConfiguration('chipos.backend');
-	const workerHttpPort = cfg.get<number>('workerHttpPort', 8081);
-
 	// Spawn Worker on remote (reuse existing WorkerManager — same logic as
 	// ChipOSSSHResolver.resolve() step 5, including ref_count for multi-window).
 	const workerInstallPath = getWorkerInstallPath();
@@ -1057,9 +1058,11 @@ async function ensureRemoteWorker(args: EnsureRemoteWorkerArgs): Promise<EnsureR
 	}
 	log(`[ChipOS RemoteWorker] worker running elapsed=${Date.now() - t0}ms`);
 
-	// Forward Worker HTTP. The Worker listens on `workerHttpPort` (default 8081)
-	// on remote loopback; the IDE-side Worker Tools panel + HTTP clients dial
-	// through the local forwarded port.
+	// Forward Worker HTTP to the Worker's ACTUAL bound port (kernel-assigned,
+	// read from instance.json by ensureWorkerRunning), NOT the stale
+	// `chipos.backend.workerHttpPort` config default (8081). The IDE-side
+	// Worker Tools panel + HTTP clients dial through the local forwarded port.
+	const workerHttpPort = workerMgr.httpPort;
 	let localWorkerPort = workerHttpPort;
 	try {
 		localWorkerPort = await sshConn.forwardPort(0, '127.0.0.1', workerHttpPort);
