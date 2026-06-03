@@ -748,6 +748,22 @@ export class ChatListWidget extends Disposable {
 	 * Scroll the list to reveal the last item.
 	 */
 	scrollToEnd(): void {
+		// [ChipOS] A failed / interrupted turn ends with an agent-error card
+		// whose "继续 (从中断处)" / Retry buttons render INLINE at the response
+		// tail. The most-recent response also carries a tall min-height +
+		// 160px bottom padding (added so streaming text clears the input). The
+		// default bottom-aligned reveal below scrolls to that padding/filler,
+		// which strands the error card — and its buttons — up in the title-bar
+		// band ABOVE the list viewport, where the list clips it and the static
+		// `.chat-view-title-label` (pointer-events:auto) intercepts the click,
+		// so the buttons can't be pressed. Reveal the card element itself
+		// instead so the buttons land inside the clickable viewport.
+		// `block:'nearest'` is a no-op once the card is already visible.
+		const errorCard = this._errorCardWithActionsInLastResponse();
+		if (errorCard) {
+			errorCard.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+			return;
+		}
 		// Phase B: when the chat carries a chipos worker-permission card,
 		// any automatic scroll-to-end (whether from refresh, layout, the
 		// scroll-down button, or any other call site) snaps the user back
@@ -777,6 +793,29 @@ export class ChatListWidget extends Disposable {
 				this._tree.reveal(this._lastItem, offset);
 			}
 		}
+	}
+
+	/**
+	 * [ChipOS] The DOM node of the agent-error card in the most-recent
+	 * response, but only when that card carries action buttons (Retry /
+	 * 继续 from break). `scrollToEnd` reveals this node directly rather than
+	 * the response's min-height/padding filler, which would otherwise push
+	 * the card's inline buttons up into the click-stealing title-bar band
+	 * above the list viewport. Returns undefined when the last item is not
+	 * such an error response.
+	 */
+	private _errorCardWithActionsInLastResponse(): HTMLElement | undefined {
+		const last = this._viewModel?.getItems().at(-1);
+		if (!last || !isResponseVM(last)) {
+			return undefined;
+		}
+		const hasErrorActions = last.response?.value.some(
+			part => part.kind === 'agentError' && (!!part.resumeContext || part.retryable),
+		);
+		if (!hasErrorActions) {
+			return undefined;
+		}
+		return this._container.querySelector<HTMLElement>('.chat-most-recent-response .chat-agent-error') ?? undefined;
 	}
 
 	/**
