@@ -223,28 +223,48 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 			(!!this._activeUri && isEqual(this._activeUri, uri)) ||
 			(!!onScreen && isEqual(onScreen, uri));
 
-		this._logService.info(`[ChipOS Tabs] _removeTab closed=${uri.toString()} remaining=${this._openTabs.length} activeUri=${this._activeUri?.toString() ?? '<none>'} onScreen=${onScreen?.toString() ?? '<none>'} closedWasOnScreen=${closedWasOnScreen} hasWidget=${!!w}`);
+		// Count tabs the strip will actually RENDER. A URI only earns a visible
+		// tab once its session has a real, conversation-derived title; `_openTabs`
+		// also accumulates stale/untitled URIs (closed sessions across restarts)
+		// that never render. Mirror ChipOSChatSessionTabs.render's `_hasRealTitle`
+		// filter so this decision matches what the user actually sees. The earlier
+		// `_openTabs.length === 0` check used the raw count, which stayed > 0
+		// because of those phantom entries (observed live: rawRemaining=7 with a
+		// single visible tab) — so the welcome reset never fired (reported bug:
+		// closing the only *visible* tab kept the session, never returning to
+		// the welcome view).
+		const visibleRemaining = this._openTabs.filter(u => this._hasRealTitle(u));
+		this._logService.info(`[ChipOS Tabs] _removeTab closed=${uri.toString()} rawRemaining=${this._openTabs.length} visibleRemaining=${visibleRemaining.length} closedWasOnScreen=${closedWasOnScreen} hasWidget=${!!w}`);
 
-		// No tabs left — reset the chat widget so the user lands on the welcome
-		// state instead of staring at the previous (now-detached) session's
-		// transcript. The strip is empty, so the welcome view is the correct
-		// destination. We deliberately do NOT early-return when `uri` wasn't in
-		// `_openTabs` (an auto-pinned *focused* session can be visible without a
-		// matching stored tab) and do NOT gate the clear on `_activeUri` (a
-		// restored/auto-pinned tab may never have set it). Earlier those two
-		// guards each suppressed the clear for the single-tab case (reported
-		// bug: closing the only tab kept the session and never returned to the
-		// welcome view). Same `clear()` call as the `+` new-chat handler.
-		if (this._openTabs.length === 0) {
+		if (visibleRemaining.length === 0) {
+			// No visible tabs left — reset the chat widget to the welcome state.
+			// Same `clear()` the `+` new-chat handler uses, without a follow-up open.
 			this._activeUri = undefined;
 			w?.clear().catch(err => this._logService.warn('[ChipOS Tabs] close-last clear failed', err));
 			return;
 		}
 
-		// Tabs remain — if we just closed the session on screen, switch to head.
+		// Visible tabs remain — if we closed the one on screen, switch to the head.
 		if (closedWasOnScreen) {
-			this._openSessionByUri(this._openTabs[0]);
+			this._openSessionByUri(visibleRemaining[0]);
 		}
+	}
+
+	/**
+	 * Mirror of `ChipOSChatSessionTabs._hasRealTitle`: a URI earns a visible
+	 * tab only once its session has a real, conversation-derived title (not a
+	 * fresh untitled session, not the raw base64 URI segment). `_openTabs` can
+	 * hold stale/untitled URIs that never render, so close/welcome decisions
+	 * must count VISIBLE tabs by this rule rather than `_openTabs.length`.
+	 */
+	private _hasRealTitle(uri: URI): boolean {
+		const title = this._chatService.getSessionTitle(uri);
+		if (!title || !title.trim()) {
+			return false;
+		}
+		const segments = uri.path.split('/').filter(Boolean);
+		const lastSeg = segments[segments.length - 1];
+		return !lastSeg || !title.includes(lastSeg.slice(0, 16));
 	}
 
 	private _scanAndRender(): void {
