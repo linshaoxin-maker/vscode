@@ -4533,12 +4533,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * POST /tool_result on StatelessClient for Phase 1). Never throws —
 	 * exceptions are caught and surfaced as `isError: true` content so the
 	 * agent loop on the server side can decide what to do next.
+	 *
+	 * `terminalApprovalOverride`: when defined, short-circuits the
+	 * `run_in_terminal` approval gate with a decision the caller already made
+	 * (true = approved, false = rejected) instead of running the legacy
+	 * `_awaitTerminalApproval` here. The stateless path resolves approval up
+	 * front via the inline confirm-card mechanism (`_awaitStatelessTerminal-
+	 * Approval`) because its round-scoped `runtime.activeProgress` is never set,
+	 * so it hands the verdict in through this param. Legacy callers omit it and
+	 * keep the in-dispatch `_awaitTerminalApproval` behaviour.
 	 */
 	private async _dispatchIdeTool(
 		name: string,
 		args: Record<string, unknown>,
 		runtime: IChatSessionRuntime,
 		callId: string,
+		terminalApprovalOverride?: boolean,
 	): Promise<{ content: string; isError: boolean }> {
 		if (runtime.disposeController.signal.aborted) {
 			return {
@@ -4581,9 +4591,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// Approval gate: inline IChatConfirmation — see legacy comment.
 					const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
 					const cmd = typeof args.command === 'string' ? args.command : '';
-					this._logService.info('[ChipOS Agent] run_in_terminal approval: mode=%s, cmd=%s', approveMode, cmd);
+					this._logService.info('[ChipOS Agent] run_in_terminal approval: mode=%s, cmd=%s, override=%s', approveMode, cmd, String(terminalApprovalOverride));
 					if (approveMode !== 'full_auto') {
-						const confirmed = await this._awaitTerminalApproval(callId, cmd, runtime);
+						// Stateless path pre-resolves approval via the inline confirm
+						// card and passes the verdict in; legacy path awaits its own
+						// round-scoped inline card / modal here.
+						const confirmed = terminalApprovalOverride !== undefined
+							? terminalApprovalOverride
+							: await this._awaitTerminalApproval(callId, cmd, runtime);
 						if (!confirmed) {
 							content = 'User rejected the terminal command.';
 							isError = true;
@@ -4755,8 +4770,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * data shape so the chat list dispatches to `ChipOSPermissionCardContentPart`
 	 * (same visual vocabulary as the worker permission ask) rather than the
 	 * framework's stock confirmation widget.
+	 *
+	 * `statelessTraceId`: when set, also stamp the stateless-confirm markers
+	 * (`__chiposStatelessConfirmTraceId` / `__chiposStatelessConfirmRequestId`)
+	 * so the card's click resolves IN-PROCESS via the `_chipos.resolveStateless-
+	 * Confirm` command (see `ChipOSPermissionCardContentPart.sendAction`) instead
+	 * of `sendRequest`. The stateless path needs this: while its originating turn
+	 * is in flight the chat session is busy, so the sendRequest re-entry route the
+	 * legacy `__chiposTerminalConfirmId` click takes is rejected.
 	 */
-	private _buildTerminalConfirmation(call_id: string, cmd: string, runtime: IChatSessionRuntime): IChatConfirmation {
+	private _buildTerminalConfirmation(call_id: string, cmd: string, runtime?: IChatSessionRuntime, statelessTraceId?: string): IChatConfirmation {
 		const title = localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command');
 		const runLabel = localize('chipos.terminal.approval.run', 'Run');
 		const rejectLabel = localize('chipos.terminal.approval.reject', 'Reject');
@@ -4770,9 +4793,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			message,
 			data: {
 				__chiposTerminalConfirmId: call_id,
+				// Stateless path: route the click through the in-process command
+				// resolver (the in-flight turn blocks the sendRequest re-entry).
+				...(statelessTraceId ? {
+					__chiposStatelessConfirmTraceId: statelessTraceId,
+					__chiposStatelessConfirmRequestId: call_id,
+				} : {}),
 				tool: 'Bash',
 				specifier: cmd || '(empty command)',
-				sessionId: runtime.backendSessionId ?? '',
+				sessionId: runtime?.backendSessionId ?? statelessTraceId ?? '',
 				requestId: call_id,
 				options: [
 					{ label: runLabel, action_id: 'run' },
@@ -5977,7 +6006,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// could stall every subsequent event for the same trace).
 			if (handled.ideToolCall) {
 				const call = handled.ideToolCall;
-				void this._handleStatelessIdeToolCall(client, traceId, request.sessionResource, call).catch(err => {
+				void this._handleStatelessIdeToolCall(client, traceId, request.sessionResource, call, progress, token).catch(err => {
 					this._logService.error('[ChipOS Stateless] ide_tool_call handler failed:', String(err));
 				});
 			}
@@ -6552,7 +6581,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.ideToolCall) {
 				const call = handled.ideToolCall;
-				void this._handleStatelessIdeToolCall(client, traceId, request.sessionResource, call).catch(err => {
+				void this._handleStatelessIdeToolCall(client, traceId, request.sessionResource, call, progress, token).catch(err => {
 					this._logService.error('[ChipOS Stateless] resume ide_tool_call handler failed:', String(err));
 				});
 			}
@@ -6896,14 +6925,43 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		traceId: string,
 		sessionResource: URI,
 		call: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number },
+		progress: (parts: IChatProgress[]) => void,
+		token: CancellationToken,
 	): Promise<void> {
 		this._logService.info(
 			'[ChipOS Stateless] ide_tool_call name=%s call_id=%s',
 			call.toolName, call.callId,
 		);
 		const runtime = this._getOrCreateRuntime(sessionResource);
+
+		// run_in_terminal approval: in the stateless/fusion path the legacy
+		// `_awaitTerminalApproval` cannot host an inline card — it keys off
+		// `runtime.activeProgress` (only set on the legacy stateful invoke) and
+		// the invoke()-reentry click route is dead while the turn is in flight
+		// (busy chat session rejects sendRequest), so it fell back to a native
+		// modal. Resolve approval up front via the SAME in-process confirm-card
+		// mechanism the worker permission asks use, then hand the verdict to the
+		// shared dispatcher as an override (keeps `_dispatchIdeTool` generic).
+		let terminalApprovalOverride: boolean | undefined;
+		if (call.toolName === 'run_in_terminal') {
+			const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
+			if (approveMode !== 'full_auto') {
+				const cmd = typeof call.args.command === 'string' ? call.args.command : '';
+				const decision = await this._awaitStatelessTerminalApproval(traceId, call.callId, cmd, progress, token);
+				if (decision.skipResult) {
+					// Turn cancelled (Stop/dispose) or the card was superseded by a
+					// reasoner-restart rehydrate: the awaited tool_result is moot
+					// (old call_id gone / turn torn down). Skip the POST so we don't
+					// burn the retry budget against a dead trace.
+					this._logService.info('[ChipOS Stateless] run_in_terminal approval skipped result POST for call_id=%s', call.callId);
+					return;
+				}
+				terminalApprovalOverride = decision.approved;
+			}
+		}
+
 		const { content, isError } = await this._dispatchIdeTool(
-			call.toolName, call.args, runtime, call.callId,
+			call.toolName, call.args, runtime, call.callId, terminalApprovalOverride,
 		);
 		try {
 			await client.postToolResult(traceId, call.callId, {
@@ -6917,6 +6975,64 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				call.callId, String(err),
 			);
 		}
+	}
+
+	/**
+	 * Stateless `run_in_terminal` approval. Renders the inline terminal-confirm
+	 * card on the live (in-flight) `progress` and resolves it through the SAME
+	 * in-process path the worker permission asks use — park a Promise in
+	 * `_pendingStatelessConfirms` keyed by `callId`, stamp the card with the
+	 * stateless-confirm markers so the click fires `_chipos.resolveStateless-
+	 * Confirm` (which fulfils the parked Promise in-process), and await it. This
+	 * replaces the legacy `_awaitTerminalApproval` + `_pendingTerminalApprovals` +
+	 * invoke()-reentry route, which cannot work while the originating turn is in
+	 * flight (busy chat session → sendRequest rejected → native-modal fallback).
+	 *
+	 * Returns `{ approved, skipResult }`. `skipResult` is true when the turn was
+	 * cancelled or the card was superseded by a reasoner-restart rehydrate — in
+	 * which case the caller must NOT POST a tool_result (the trace is gone). The
+	 * cancel/retire path (`_retireStatelessConfirmsForTrace`) and the per-turn
+	 * cancel listener both resolve the parked Promise, so no separate cleanup of
+	 * `_pendingStatelessConfirms` is needed beyond the finally below.
+	 */
+	private async _awaitStatelessTerminalApproval(
+		traceId: string,
+		callId: string,
+		cmd: string,
+		progress: (parts: IChatProgress[]) => void,
+		token: CancellationToken,
+	): Promise<{ approved: boolean; skipResult: boolean }> {
+		// Park the Promise BEFORE emitting the card so an immediate click always
+		// has a pending target to resolve (mirrors `_handleStatelessConfirmRequest`).
+		const responsePromise = new Promise<{ action: string; selections?: Record<string, string>; comment?: string; superseded?: boolean }>((resolve, reject) => {
+			this._pendingStatelessConfirms.set(callId, { resolve, reject, traceId });
+		});
+		this._statelessObs.confirmShown('terminal');  // §5.2 client mirror — parity w/ worker cards
+		progress([this._buildTerminalConfirmation(callId, cmd, undefined, traceId)]);
+
+		let resolved: { action: string; selections?: Record<string, string>; comment?: string; superseded?: boolean } | undefined;
+		try {
+			// 永等 (parity with the confirm card): no client-side timeout — the card
+			// waits for the click; the only escape is turn cancellation via `token`.
+			resolved = await raceCancellation(responsePromise, token);
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] terminal approval wait error for call_id=%s: %s', callId, String(err));
+			resolved = undefined;
+		} finally {
+			this._pendingStatelessConfirms.delete(callId);
+		}
+
+		if (!resolved) {
+			this._logService.info('[ChipOS Stateless] terminal approval cancelled (Stop/dispose) for call_id=%s', callId);
+			return { approved: false, skipResult: true };
+		}
+		if (resolved.superseded) {
+			this._logService.info('[ChipOS Stateless] terminal approval superseded by rehydrate for call_id=%s', callId);
+			return { approved: false, skipResult: true };
+		}
+		const approved = resolved.action === 'run';
+		this._logService.info('[ChipOS Stateless] terminal approval resolved: call_id=%s action=%s approved=%s', callId, resolved.action, approved);
+		return { approved, skipResult: false };
 	}
 
 	/**
