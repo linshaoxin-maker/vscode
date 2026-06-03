@@ -18,6 +18,7 @@ import { INotificationService, Severity } from '../../../../../platform/notifica
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalService, ITerminalChatService } from '../../../terminal/browser/terminal.js';
@@ -358,6 +359,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatEditingService private readonly _chatEditingService: IChatEditingService,
 		@IChatService private readonly _chatService: IChatService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IDialogService private readonly _dialogService: IDialogService,
 		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
 		@ITerminalChatService private readonly _terminalChatService: ITerminalChatService,
@@ -4648,8 +4650,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const progress = runtime.activeProgress;
 		const finish = runtime.activeFinish;
 		if (!progress || !finish) {
-			this._logService.warn('[ChipOS Agent] terminal approval: no activeProgress/Finish — auto-rejecting');
-			return Promise.resolve(false);
+			// No active invoke to host the inline confirmation card. In the
+			// stateless/fusion path a tool call (e.g. a retry) can be dispatched
+			// via the reverse channel outside an invoke — there may be no
+			// upcoming invoke to flush a queued card, and the reasoner is blocked
+			// awaiting this result. Auto-rejecting here lied to the user
+			// ("User rejected the terminal command") even after they approved.
+			// Fall back to a modal confirm, which does not depend on
+			// invoke-scoped progress and resolves the moment the user answers —
+			// the same modal this inline card originally replaced, now used only
+			// as the out-of-invoke fallback.
+			this._logService.info('[ChipOS Agent] terminal approval: no activeProgress — using modal confirm fallback');
+			return this._dialogService.confirm({
+				type: 'warning',
+				message: localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command'),
+				detail: cmd || '(empty command)',
+				primaryButton: localize('chipos.terminal.approval.run', 'Run'),
+				cancelButton: localize('chipos.terminal.approval.reject', 'Reject'),
+			}).then(res => res.confirmed);
 		}
 
 		// One pending approval per call_id. The next invoke matches via
