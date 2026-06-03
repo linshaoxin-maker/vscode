@@ -2518,6 +2518,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			case AgentEventType.IdeToolCall: {
 				const p = event.payload as IIdeToolCallPayload;
 				this._logService.info('[ChipOS Agent] IDE tool call: name=%s, call_id=%s', p.name, p.call_id);
+				// Emit the run_in_terminal approval card NOW, while this round is
+				// still active — `_executeIdeToolCall` is fire-and-forget and its
+				// approval await usually runs after the round has finished (no
+				// activeProgress → modal fallback). Pre-emitting here keeps it an
+				// inline card; `_awaitTerminalApproval` awaits the registered Deferred.
+				this._maybePreEmitTerminalApprovalCard(p, ctx.runtime);
 				this._executeIdeToolCall(p, ctx.runtime, ctx.streamClient).catch(err => {
 					this._logService.error('[ChipOS Agent] IDE tool execution failed:', err);
 				});
@@ -4647,56 +4653,121 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * hang.
 	 */
 	private _awaitTerminalApproval(call_id: string, cmd: string, runtime: IChatSessionRuntime): Promise<boolean> {
+		// The approval card may already have been pre-emitted at `IdeToolCall`
+		// dispatch time, while the round was still active — see
+		// `_maybePreEmitTerminalApprovalCard`. If so, just await that Deferred:
+		// the inline card is already on screen; don't re-emit or fall back.
+		const existing = this._pendingTerminalApprovals.get(call_id);
+		if (existing) {
+			return existing.p;
+		}
+
+		// In-round path: a round is active, so host the inline confirmation card
+		// on it (emit card + finish the round). This is the common case when the
+		// approval await happens to still run inside the originating round.
+		const progress = runtime.activeProgress;
+		const finish = runtime.activeFinish;
+		if (progress && finish) {
+			return this._emitTerminalApprovalCard(call_id, cmd, runtime, progress, finish);
+		}
+
+		// No active round AND no pre-emitted card. In the stateless/fusion path
+		// the IDE tool call is dispatched via the reverse channel after the round
+		// has finished. Auto-rejecting here lied to the user ("User rejected the
+		// terminal command") even after they approved. Fall back to a modal
+		// confirm, which does not depend on round-scoped progress and resolves
+		// the moment the user answers.
+		this._logService.info('[ChipOS Agent] terminal approval: no active round and no pre-emitted card — using modal confirm fallback');
+		return this._dialogService.confirm({
+			type: 'warning',
+			message: localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command'),
+			detail: cmd || '(empty command)',
+			primaryButton: localize('chipos.terminal.approval.run', 'Run'),
+			cancelButton: localize('chipos.terminal.approval.reject', 'Reject'),
+		}).then(res => res.confirmed);
+	}
+
+	/**
+	 * Pre-emit the run_in_terminal approval card at `IdeToolCall` dispatch time,
+	 * while the round is still active (`activeProgress` set). The actual approval
+	 * await happens inside the fire-and-forget `_executeIdeToolCall`, by which
+	 * time the round has usually finished — `activeProgress` is cleared and an
+	 * inline card can no longer be hosted, so `_awaitTerminalApproval` would fall
+	 * back to a modal. Emitting here keeps run_in_terminal approvals as inline
+	 * cards (same vocabulary as the worker permission ask) in the stateless path;
+	 * `_awaitTerminalApproval` then just awaits the pre-registered Deferred.
+	 */
+	private _maybePreEmitTerminalApprovalCard(payload: IIdeToolCallPayload, runtime: IChatSessionRuntime): void {
+		if (payload.name !== 'run_in_terminal') {
+			return;
+		}
+		const approveMode = this._configurationService.getValue<string>('chipos.autoApproveMode') ?? 'standard';
+		if (approveMode === 'full_auto') {
+			return;
+		}
 		const progress = runtime.activeProgress;
 		const finish = runtime.activeFinish;
 		if (!progress || !finish) {
-			// No active invoke to host the inline confirmation card. In the
-			// stateless/fusion path a tool call (e.g. a retry) can be dispatched
-			// via the reverse channel outside an invoke — there may be no
-			// upcoming invoke to flush a queued card, and the reasoner is blocked
-			// awaiting this result. Auto-rejecting here lied to the user
-			// ("User rejected the terminal command") even after they approved.
-			// Fall back to a modal confirm, which does not depend on
-			// invoke-scoped progress and resolves the moment the user answers —
-			// the same modal this inline card originally replaced, now used only
-			// as the out-of-invoke fallback.
-			this._logService.info('[ChipOS Agent] terminal approval: no activeProgress — using modal confirm fallback');
-			return this._dialogService.confirm({
-				type: 'warning',
-				message: localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command'),
-				detail: cmd || '(empty command)',
-				primaryButton: localize('chipos.terminal.approval.run', 'Run'),
-				cancelButton: localize('chipos.terminal.approval.reject', 'Reject'),
-			}).then(res => res.confirmed);
+			// No active round even now — leave it to `_awaitTerminalApproval`'s
+			// modal fallback.
+			return;
 		}
+		if (this._pendingTerminalApprovals.has(payload.call_id)) {
+			return;
+		}
+		let cmd = '';
+		try {
+			const args = JSON.parse(payload.args_json) as { command?: string };
+			cmd = typeof args.command === 'string' ? args.command : '';
+		} catch {
+			// leave cmd empty — the card still renders, the command shows blank
+		}
+		this._logService.info('[ChipOS Agent] pre-emitting terminal approval card at dispatch (round active): call_id=%s', payload.call_id);
+		this._emitTerminalApprovalCard(payload.call_id, cmd, runtime, progress, finish);
+	}
 
-		// One pending approval per call_id. The next invoke matches via
-		// `__chiposTerminalConfirmId` on the accepted/rejected data.
-		const existing = this._pendingTerminalApprovals.get(call_id);
-		if (existing) {
-			// Duplicate dispatch (shouldn't happen): re-use the existing
-			// deferred so we don't lose the first awaiter.
-			return existing.p;
-		}
+	/**
+	 * Register the approval Deferred + emit the inline confirmation card via the
+	 * supplied progress/finish (the active round's). Shared by the in-round await
+	 * path and the dispatch-time pre-emit. Mirrors the worker-ask card pattern:
+	 * emit the card, then finish the round so the framework re-enables input for
+	 * the click → new invoke → Deferred resolution.
+	 */
+	private _emitTerminalApprovalCard(
+		call_id: string,
+		cmd: string,
+		runtime: IChatSessionRuntime,
+		progress: (parts: IChatProgress[]) => void,
+		finish: (result: IChatAgentResult, thinkingTitle?: string) => void,
+	): Promise<boolean> {
 		const deferred = new DeferredPromise<boolean>();
 		this._pendingTerminalApprovals.set(call_id, deferred);
+		progress([this._buildTerminalConfirmation(call_id, cmd, runtime)]);
+		// Finish the in-flight round so the framework opens the input for the
+		// next request (button click → new invoke with the accepted/rejected
+		// data). Mirrors the ConfirmRequest / worker-ask handlers.
+		finish({}, localize('chipos.terminal.approval.awaiting', 'Awaiting terminal approval'));
+		return deferred.p;
+	}
 
+	/**
+	 * Build the `IChatConfirmation` carrying the chipos terminal-confirm card
+	 * data shape so the chat list dispatches to `ChipOSPermissionCardContentPart`
+	 * (same visual vocabulary as the worker permission ask) rather than the
+	 * framework's stock confirmation widget.
+	 */
+	private _buildTerminalConfirmation(call_id: string, cmd: string, runtime: IChatSessionRuntime): IChatConfirmation {
 		const title = localize('chipos.terminal.approval.title', 'ChipOS wants to run a terminal command');
 		const runLabel = localize('chipos.terminal.approval.run', 'Run');
 		const rejectLabel = localize('chipos.terminal.approval.reject', 'Reject');
-
-		// Plain string message (visible to screen-readers + accessible
-		// preview when the custom card collapses). The card's main visual
-		// — header + buttons — is built by `ChipOSPermissionCardContentPart`
-		// from the data fields below, not from this message body.
+		// Plain string message (screen-reader + collapsed-card preview). The
+		// card's main visual is built by `ChipOSPermissionCardContentPart` from
+		// the data fields below, not from this message body.
 		const message = `${cmd || '(empty command)'}`;
-
-		const confirmation: IChatConfirmation = {
+		return {
 			kind: 'confirmation',
 			title,
 			message,
-			// IChipOSTerminalConfirmCardData shape — routes to chipos
-			// permission card renderer via `isChipOSCardData` umbrella.
 			data: {
 				__chiposTerminalConfirmId: call_id,
 				tool: 'Bash',
@@ -4704,21 +4775,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				sessionId: runtime.backendSessionId ?? '',
 				requestId: call_id,
 				options: [
-					{ label: runLabel,    action_id: 'run' },
+					{ label: runLabel, action_id: 'run' },
 					{ label: rejectLabel, action_id: 'reject' },
 				],
 			},
 			buttons: [runLabel, rejectLabel],
 		};
-
-		progress([confirmation]);
-		// Finish the in-flight invoke so the framework opens the input for
-		// the next request (button click → new invoke with the
-		// accepted/rejected data). Mirrors the existing pattern used by
-		// `ConfirmRequest` handler (line 1447).
-		finish({}, localize('chipos.terminal.approval.awaiting', 'Awaiting terminal approval'));
-
-		return deferred.p;
 	}
 
 	/**
