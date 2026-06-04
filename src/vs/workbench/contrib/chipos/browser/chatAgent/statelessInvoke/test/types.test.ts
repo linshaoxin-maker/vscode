@@ -140,11 +140,17 @@ suite('statelessInvoke/types — Phase 0 #8a schema contract', () => {
 			workspace_meta: { current_file: '/abs/path/src/main.ts', git_branch: 'main' },
 			user: { user_id: 'u1', org_id: 'o1' },
 			metadata: { ide_version: '1.0.0' },
+			prompt_resource_attachments: [
+				{ kind: 'rule', name: 'style', source: 'user', reason: 'always', payload: { body: 'be terse' } },
+				{ kind: 'command', name: 'fix-lint', source: 'plugin', source_ref: 'lint-pack', description: 'run linter' },
+			],
 		};
 		assert.strictEqual(req.messages.length, 4);
 		assert.strictEqual(req.mode, 'agent');
 		assert.strictEqual(req.expected_catalog_version, 'sha256-abc123');
 		assert.strictEqual(req.workspace_meta?.current_file, '/abs/path/src/main.ts');
+		assert.strictEqual(req.prompt_resource_attachments?.length, 2);
+		assert.strictEqual(req.prompt_resource_attachments?.[0].kind, 'rule');
 	});
 
 	test('round_end_helper', () => {

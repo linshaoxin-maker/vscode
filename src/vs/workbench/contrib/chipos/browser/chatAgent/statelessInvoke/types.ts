@@ -230,8 +230,45 @@ export interface InvokeRequest {
 	// Telemetry
 	user?: Record<string, unknown> | null;
 	metadata?: Record<string, unknown> | null;
+	// Prompt resources (rules/commands) — marketplace v5 extension system.
+	// Additive + backward compatible: reasoner defaults to [] when absent (ADR-008).
+	// The collector (FEAT-001a) populates this from ~/.chipos-ide/{rules,commands};
+	// the reasoner renders them into a synthetic user message at the head of
+	// `messages` (ADR-002). Mirrors backend_v2 shared.contracts.invoke.
+	prompt_resource_attachments?: PromptResourceAttachment[];
 	// Protocol version handshake — bump when wire format breaks
 	protocol_version?: number;
+}
+
+/**
+ * Kind of a prompt resource (ADR-001 narrow scope: Beta-1 only `rule` + `command`).
+ */
+export type PromptResourceKind = 'rule' | 'command';
+
+/**
+ * A user/workspace/plugin-authored resource injected into the prompt. Mirrors
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py` PromptResourceAttachment.
+ * The reasoner renders these into a synthetic user message at the head of
+ * `messages` (ADR-002), NOT the system-prompt segment.
+ */
+export interface PromptResourceAttachment {
+	kind: PromptResourceKind;
+	/** Short identifier, <=128 chars. */
+	name: string;
+	/** Human-readable summary, <=512 chars. */
+	description?: string;
+	/** Who contributed it. */
+	source?: 'user' | 'workspace' | 'plugin';
+	/** Plugin id / file path that contributed it, <=256 chars. */
+	source_ref?: string | null;
+	/** Why it is in this turn (e.g. `always`, or a glob-match reason), <=512 chars. */
+	reason?: string;
+	/** Higher wins when truncating under the byte/count cap. */
+	priority?: number;
+	/** Optional IDE-side token estimate for budget accounting. */
+	token_estimate?: number | null;
+	/** Kind-specific body (rule text / command definition). */
+	payload?: Record<string, unknown>;
 }
 
 // =============================================================================
