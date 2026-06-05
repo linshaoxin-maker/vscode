@@ -89,6 +89,7 @@ import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposSkillsService } from '../resources/chiposSkillsService.js';
 import { ChiposPluginsService } from '../resources/chiposPluginsService.js';
+import { buildIdeMcpTools, shapeMcpToolResult, IdeMcpToolInfo } from './ideToolCatalog.js';
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
@@ -5040,14 +5041,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				const tool = tools.find(t => t.definition.name === name);
 				if (tool) {
 					this._logService.info('[ChipOS Agent] MCP tool found: %s on server %s', name, server.definition.id);
-					const result = await tool.call(args);
-					const textParts = (result.content || [])
-						.filter((c: any) => c.type === 'text')
-						.map((c: any) => c.text);
-					return {
-						content: textParts.join('\n') || JSON.stringify(result),
-						isError: !!result.isError,
-					};
+					return shapeMcpToolResult(await tool.call(args));
 				}
 			}
 			return null;
@@ -7017,22 +7011,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			chipos_source: 'ide_builtin',
 		});
 
-		// User-installed MCP servers (VS Code IMcpService)
+		// User-installed MCP servers (VS Code IMcpService). The ide_mcp tagging +
+		// schema fallback lives in buildIdeMcpTools (pure, unit-tested).
 		try {
-			const servers = this._mcpService.servers.get();
-			for (const server of servers) {
+			const mcpTools: IdeMcpToolInfo[] = [];
+			for (const server of this._mcpService.servers.get()) {
 				const serverTools = server.tools.get();
 				if (!serverTools) { continue; }
 				for (const tool of serverTools) {
-					tools.push({
+					mcpTools.push({
 						name: tool.definition.name,
-						description: tool.definition.description || '',
-						// IMcpService delivers parsed JSON Schema dict already
-						input_schema: (tool.definition.inputSchema as Record<string, unknown>) || { type: 'object', properties: {} },
-						chipos_source: 'ide_mcp',
+						description: tool.definition.description,
+						inputSchema: tool.definition.inputSchema,
 					});
 				}
 			}
+			tools.push(...buildIdeMcpTools(mcpTools));
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] failed enumerating IDE MCP servers:', String(err));
 		}
