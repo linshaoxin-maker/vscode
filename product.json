@@ -109,6 +109,11 @@
 	],
 	"defaultChatAgent": {},
 	"trustedExtensionAuthAccess": {},
+	"_comment_linkProtection": "Trust the chiops website origin so OAuth sign-in (openExternal to /auth/ide-login) does NOT raise VS Code's link-protection confirmation dialog. Pure data; mirrors chiposDefaults.websiteUrl. Update both together.",
+	"linkProtectionTrustedDomains": [
+		"http://121.89.82.122",
+		"http://121.89.82.122:*"
+	],
 	"quality": "stable",
 	"updateUrl": "https://github.com/linshaoxin-maker/chipos-releases/releases/download",
 	"downloadUrl": "https://github.com/linshaoxin-maker/chipos-releases/releases",
