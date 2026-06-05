@@ -236,6 +236,13 @@ export interface InvokeRequest {
 	// the reasoner renders them into a synthetic user message at the head of
 	// `messages` (ADR-002). Mirrors backend_v2 shared.contracts.invoke.
 	prompt_resource_attachments?: PromptResourceAttachment[];
+	// Skill catalog headers (FEAT-003 / ADR-004) — name+description only; bodies
+	// are lazy-loaded via the IDE `read_skill_body` tool. Additive + backward
+	// compatible: reasoner defaults to [] when absent. The collector
+	// (ChiposSkillsService) populates this from `.chipos/skills/<id>/SKILL.md`; the
+	// reasoner renders a `## Available Skills` catalog segment. Mirrors backend_v2
+	// shared.contracts.invoke.SkillHeader.
+	skills?: SkillHeader[];
 	// Reasoner hooks (FEAT-004) — extension system. Additive + backward
 	// compatible: reasoner defaults to [] when absent. The collector
 	// (ChiposHooksService) populates this from `.chipos/hooks/`; the reasoner
@@ -276,6 +283,23 @@ export interface PromptResourceAttachment {
 	token_estimate?: number | null;
 	/** Kind-specific body (rule text / command definition). */
 	payload?: Record<string, unknown>;
+}
+
+/**
+ * A skill's catalog-visible header (FEAT-003 / ADR-004). Mirrors
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py` SkillHeader.
+ * Only name + description travel in-band; the body is lazy-loaded by the model
+ * via the IDE-side `read_skill_body` tool.
+ */
+export interface SkillHeader {
+	/** Skill id / name, <=128 chars. */
+	name: string;
+	/** One-line catalog summary, <=512 chars. */
+	description?: string;
+	/** Who contributed it. */
+	source?: 'builtin' | 'user' | 'plugin';
+	/** Plugin id / file path that contributed it, <=256 chars. */
+	source_ref?: string;
 }
 
 /**

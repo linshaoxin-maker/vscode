@@ -87,6 +87,7 @@ import type {
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
+import { ChiposSkillsService } from '../resources/chiposSkillsService.js';
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
@@ -5921,6 +5922,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] command collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
+		}
+
+		// FEAT-003: attach the workspace skill catalog headers (.chipos/skills/<id>/SKILL.md)
+		// so the reasoner renders a `## Available Skills` segment; the model
+		// lazy-loads a body via `read_skill_body` only when it decides to use one.
+		// Header-only — bodies are never shipped here. Best-effort.
+		try {
+			const skills = await this._instantiationService.createInstance(ChiposSkillsService).getSkills();
+			if (skills.length) {
+				invokeReq.skills = skills;
+			}
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] skill collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
 		}
 
 		// FEAT-004: attach the user's configured hooks (workspace .chipos/hooks/)
