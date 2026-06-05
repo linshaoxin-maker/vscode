@@ -1005,11 +1005,23 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			if (this._mode === BackendMode.Local) {
 				this._logService.info('[ChipOS SidecarElectron] login state changed — Local mode, respawning worker with fresh token');
 				try {
+					// Mirror restartWorker(): stop the stale health watch + show Starting, and
+					// (crucially) re-observe after the respawn so WorkerState flips back to
+					// Connected. Without the re-observe the status bar stays "Reconnect" even
+					// though the freshly-spawned worker registers fine on the reasoner.
+					this._stopHealthWatch();
+					this._setWorkerState(WorkerState.Starting);
 					await this._releaseLocalWorkerRef();
 					await this._invokeIpc('vscode:chipos:killProcess', 'worker').catch(() => { /* best effort */ });
-					await this._ensureLocalWorker();
+					const spawned = await this._ensureLocalWorker();
+					if (spawned) {
+						void this._observeWorkerRegistration().catch(() => { /* best effort */ });
+					} else {
+						this._setWorkerState(WorkerState.Disconnected);
+					}
 				} catch (err) {
 					this._logService.warn(`[ChipOS SidecarElectron] Local respawn during token refresh failed: ${err}`);
+					this._setWorkerState(WorkerState.Disconnected);
 				}
 				return;
 			}
