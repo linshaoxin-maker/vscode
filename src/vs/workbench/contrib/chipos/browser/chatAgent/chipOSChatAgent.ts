@@ -88,6 +88,7 @@ import { collectPromptResources } from '../resources/promptResourceAttachmentCol
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposSkillsService } from '../resources/chiposSkillsService.js';
+import { ChiposPluginsService } from '../resources/chiposPluginsService.js';
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
@@ -5883,6 +5884,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// UI; tracked as follow-ups.)
 		try {
 			const rules = await this._instantiationService.createInstance(ChiposRulesService).getRules();
+			// FEAT-002a: merge rules contributed by installed agent plugins
+			// (~/.chipos-ide/plugins/<id>/rules/) — tagged source=plugin so the
+			// reasoner renders a `[from plugin <id>]` provenance badge.
+			const pluginRules = await this._instantiationService.createInstance(ChiposPluginsService).getPluginRules();
+			const allRules = pluginRules.length ? [...rules, ...pluginRules] : rules;
 			// FEAT-001c: glob rules apply when the active editor's workspace-relative
 			// path matches their globs, so pass it in. Without it only `always` rules
 			// fire. (`manual` rules still need an attach UI — tracked as a follow-up.)
@@ -5893,7 +5899,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					? activeResource.path.slice(workspaceRoot.length + 1)
 					: activeResource.path)
 				: undefined;
-			const collected = collectPromptResources(rules, { activeFile });
+			const collected = collectPromptResources(allRules, { activeFile });
 			if (collected.attachments.length) {
 				invokeReq.prompt_resource_attachments = collected.attachments;
 			}
