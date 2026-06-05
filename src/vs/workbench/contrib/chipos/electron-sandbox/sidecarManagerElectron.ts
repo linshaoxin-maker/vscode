@@ -81,6 +81,13 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	// before Reasoner starts rejecting on UNAUTHENTICATED.
 	private _workerTokenRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 	private _refreshingWorkerToken = false;
+	// Worker-bootstrap fix: whether the CURRENTLY-running local worker was
+	// spawned with a valid worker_token. The onDidChangeLoginState suppression
+	// below uses it to tell a spurious startup-restore login flip (worker already
+	// has a token -> skip respawn) from a genuine sign-in after a tokenless
+	// (logged-out) spawn (worker has no tools -> MUST respawn). Adopted / shared
+	// workers keep `true` so a sign-in never kills a worker owned by another window.
+	private _workerSpawnedWithToken = false;
 	/**
 	 * Tracks whether Path-3 Stage-2 RPC was used to spawn the remote Worker.
 	 * If set, dispose() must call `releaseWorker` on the same channel so the
@@ -248,8 +255,11 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			// + new state is logged-in => this is the startup-restore flow,
 			// not a real signin. The worker is already bound to the right
 			// identity from the SecretStorage-derived worker_token.
-			if (wasSeen === undefined && isLoggedIn === true) {
-				this._logService.info('[ChipOS SidecarElectron] initial onDidChangeLoginState(true) with worker already running; suppressing startup-flow respawn');
+			// Only suppress when the running worker was actually spawned WITH a token
+			// (genuine startup-restore). A tokenless spawn (logged out at startup) means
+			// this `true` is a real first sign-in and MUST respawn to mint the token.
+			if (wasSeen === undefined && isLoggedIn === true && this._workerSpawnedWithToken) {
+				this._logService.info('[ChipOS SidecarElectron] initial onDidChangeLoginState(true) with token-bearing worker already running; suppressing startup-flow respawn');
 				return;
 			}
 			this._logService.info('[ChipOS SidecarElectron] login state changed — respawning Worker to refresh identity');
@@ -1146,6 +1156,10 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 			});
 			this._localWorkerWorkspaceRoot = workspaceRoot;
 			this._logService.info(`[ChipOS Local] adopted existing worker pid=${inst.pid} ref_count=${newCount}`);
+			// Adopted a live (possibly cross-window shared) worker — its identity is
+			// owned by whoever spawned it; treat as token-bearing so a later sign-in
+			// here never kills a shared worker out from under another window.
+			this._workerSpawnedWithToken = true;
 			return true;
 		}
 
@@ -1265,6 +1279,10 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		});
 		this._localWorkerWorkspaceRoot = workspaceRoot;
 		this._logService.info(`[ChipOS Local] worker spawned pid=${result?.pid} alreadyRunning=${result?.alreadyRunning ?? false}`);
+		// Only a FRESH spawn (not a process-level adopt) carries our just-minted
+		// token. A tokenless fresh spawn (logged out at spawn) leaves this false, so a
+		// later real sign-in is NOT suppressed above and respawns the worker.
+		this._workerSpawnedWithToken = result?.alreadyRunning ? true : !!workerToken;
 
 		// Briefly confirm to the user. `alreadyRunning` means we adopted an
 		// existing process — no need to celebrate; that's quiet by design.
