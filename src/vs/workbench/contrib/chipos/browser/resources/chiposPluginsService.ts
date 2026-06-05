@@ -5,6 +5,7 @@
 
 import { URI } from '../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IConfigurationService, ConfigurationTarget } from '../../../../../platform/configuration/common/configuration.js';
 import { IPathService } from '../../../../services/path/common/pathService.js';
 import { parseRuleFile } from './frontmatterParser.js';
 import { RuleDescriptor } from './promptResourceAttachmentCollector.js';
@@ -25,17 +26,24 @@ export interface InstalledPlugin {
 export interface PluginContributionSummary {
 	readonly manifest: PluginManifest;
 	readonly root: URI;
+	/** False when the plugin id is in `chipos.plugins.disabled` (FEAT-002c). */
+	readonly enabled: boolean;
 	readonly ruleCount: number;
 	readonly commandCount: number;
 	readonly skillCount: number;
 }
 
+/** Config key holding the ids of disabled plugins (FEAT-002c). */
+const DISABLED_PLUGINS_KEY = 'chipos.plugins.disabled';
+
 /**
- * Indexes installed agent plugins (FEAT-002a) under `~/.chipos-ide/plugins/<id>/`
- * and decomposes their contributed resources into the FEAT-001 collector shapes,
- * tagged `source: 'plugin'` (so the renderer adds the `[from plugin <id>]`
- * provenance badge). v1 covers plugin-contributed **rules**; commands/skills/hooks
- * decomposition + the install command + a Plugins tab are follow-up slices.
+ * Indexes installed agent plugins under `~/.chipos-ide/plugins/<id>/` and
+ * decomposes their contributed rules/commands/skills into the FEAT-001/003
+ * collector shapes, tagged `source: 'plugin'` (so the renderer adds the
+ * `[from plugin <id>]` provenance badge). Also installs (FEAT-002a) and
+ * disables/uninstalls (FEAT-002c) plugins. A **disabled** plugin stays on disk
+ * but contributes nothing — the decomposition scan filters it out, so its
+ * resources drop from the next invoke with no other wiring.
  *
  * NOTE: this is the chipos agent-plugin (AI-capability bundle) format — NOT a VS
  * Code extension (.vsix / Open VSX), which is a separate IDE concern.
@@ -44,6 +52,7 @@ export class ChiposPluginsService {
 	constructor(
 		@IFileService private readonly _fileService: IFileService,
 		@IPathService private readonly _pathService: IPathService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) { }
 
 	/** `~/.chipos-ide/plugins/` — the user-global install root for agent plugins. */
@@ -99,20 +108,71 @@ export class ChiposPluginsService {
 		return installLocalPlugin(this._fileService, sourceDir, await this._pluginsRoot());
 	}
 
+	/** The set of disabled plugin ids from `chipos.plugins.disabled` (FEAT-002c). */
+	private _disabledIds(): ReadonlySet<string> {
+		const raw = this._configurationService.getValue<string[]>(DISABLED_PLUGINS_KEY);
+		return new Set(Array.isArray(raw) ? raw : []);
+	}
+
+	/** Whether a plugin currently contributes its resources (FEAT-002c). */
+	isPluginEnabled(id: string): boolean {
+		return !this._disabledIds().has(id);
+	}
+
+	/**
+	 * Enable/disable a plugin by adding/removing its id from
+	 * `chipos.plugins.disabled` (user scope). A disabled plugin stays installed
+	 * but its rules/commands/skills are filtered out of the next decomposition
+	 * scan — no other wiring needed (FEAT-002c, BDD "disable 移除贡献资源").
+	 */
+	async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
+		const next = new Set(this._disabledIds());
+		if (enabled) {
+			next.delete(id);
+		} else {
+			next.add(id);
+		}
+		await this._configurationService.updateValue(DISABLED_PLUGINS_KEY, [...next], ConfigurationTarget.USER);
+	}
+
+	/**
+	 * Uninstall a plugin: delete `~/.chipos-ide/plugins/<id>/`, then drop any
+	 * stale `disabled` entry (so a later reinstall starts enabled). If the delete
+	 * throws, the error propagates before the cleanup — an already-disabled
+	 * plugin therefore stays disabled (FEAT-002c rollback invariant: a failed
+	 * file delete keeps the prior disable in effect).
+	 */
+	async uninstall(id: string): Promise<void> {
+		const target = URI.joinPath(await this._pluginsRoot(), id);
+		await this._fileService.del(target, { recursive: true, useTrash: false });
+		if (this._disabledIds().has(id)) {
+			await this.setPluginEnabled(id, true);
+		}
+	}
+
+	/** Installed plugins minus the disabled ones — the set the decomposition uses. */
+	private async _getEnabledPlugins(): Promise<InstalledPlugin[]> {
+		const disabled = this._disabledIds();
+		return (await this.getInstalledPlugins()).filter(p => !disabled.has(p.manifest.id));
+	}
+
 	/**
 	 * List installed plugins with a count of the rules/commands/skills each
-	 * contributes — the data the Plugins settings tab renders. Counts mirror the
-	 * decomposition rules in {@link getPluginRules}/{@link getPluginCommands}/
-	 * {@link getPluginSkills} (matching file extensions; a skill = a subdir with
-	 * a readable `SKILL.md`).
+	 * contributes + its enabled state — the data the Plugins settings tab renders.
+	 * Includes disabled plugins (shown greyed with an Enable action). Counts mirror
+	 * the decomposition rules in {@link getPluginRules}/{@link getPluginCommands}/
+	 * {@link getPluginSkills} (matching file extensions; a skill = a subdir with a
+	 * readable `SKILL.md`).
 	 */
 	async getInstalledPluginSummaries(): Promise<PluginContributionSummary[]> {
 		const plugins = await this.getInstalledPlugins();
+		const disabled = this._disabledIds();
 		const summaries: PluginContributionSummary[] = [];
 		for (const plugin of plugins) {
 			summaries.push({
 				manifest: plugin.manifest,
 				root: plugin.root,
+				enabled: !disabled.has(plugin.manifest.id),
 				ruleCount: await this._countFiles(URI.joinPath(plugin.root, 'rules'), RULE_FILE_RE),
 				commandCount: await this._countFiles(URI.joinPath(plugin.root, 'commands'), COMMAND_FILE_RE),
 				skillCount: await this._countSkillDirs(URI.joinPath(plugin.root, 'skills')),
@@ -148,12 +208,13 @@ export class ChiposPluginsService {
 	}
 
 	/**
-	 * Decompose every installed plugin's `rules/*.{mdc,md,txt}` into
+	 * Decompose every **enabled** plugin's `rules/*.{mdc,md,txt}` into
 	 * {@link RuleDescriptor}s (source=plugin, sourceRef=plugin id). The caller
 	 * merges these with the workspace rules before the FEAT-001a collector runs.
+	 * Disabled plugins (FEAT-002c) are skipped so their rules drop from the invoke.
 	 */
 	async getPluginRules(): Promise<RuleDescriptor[]> {
-		const plugins = await this.getInstalledPlugins();
+		const plugins = await this._getEnabledPlugins();
 		const rules: RuleDescriptor[] = [];
 		for (const plugin of plugins) {
 			const rulesDir = URI.joinPath(plugin.root, 'rules');
@@ -191,12 +252,13 @@ export class ChiposPluginsService {
 	}
 
 	/**
-	 * Decompose every installed plugin's `commands/*.{md,txt}` into
+	 * Decompose every **enabled** plugin's `commands/*.{md,txt}` into
 	 * {@link CommandDescriptor}s (source=plugin, sourceRef=plugin id). The caller
-	 * merges these with the workspace commands for the `/<name>` lookup.
+	 * merges these with the workspace commands for the `/<name>` lookup. Disabled
+	 * plugins (FEAT-002c) are skipped.
 	 */
 	async getPluginCommands(): Promise<CommandDescriptor[]> {
-		const plugins = await this.getInstalledPlugins();
+		const plugins = await this._getEnabledPlugins();
 		const commands: CommandDescriptor[] = [];
 		for (const plugin of plugins) {
 			const dir = URI.joinPath(plugin.root, 'commands');
@@ -230,13 +292,14 @@ export class ChiposPluginsService {
 	}
 
 	/**
-	 * Decompose every installed plugin's `skills/<id>/SKILL.md` headers into
+	 * Decompose every **enabled** plugin's `skills/<id>/SKILL.md` headers into
 	 * {@link SkillHeader}s (source=plugin, source_ref=plugin id). Header only —
 	 * the body is lazy-loaded via read_skill_body. The caller merges these with
-	 * the workspace skills for the `## Available Skills` catalog.
+	 * the workspace skills for the `## Available Skills` catalog. Disabled plugins
+	 * (FEAT-002c) are skipped.
 	 */
 	async getPluginSkills(): Promise<SkillHeader[]> {
-		const plugins = await this.getInstalledPlugins();
+		const plugins = await this._getEnabledPlugins();
 		const skills: SkillHeader[] = [];
 		for (const plugin of plugins) {
 			const skillsDir = URI.joinPath(plugin.root, 'skills');

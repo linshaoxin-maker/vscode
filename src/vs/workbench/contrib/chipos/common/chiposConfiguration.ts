@@ -204,6 +204,15 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		// ── Plugins ──
+		'chipos.plugins.disabled': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.plugins.disabled.desc', 'IDs of installed agent plugins that are disabled. A disabled plugin stays installed under ~/.chipos-ide/plugins/ but does not contribute its rules, commands or skills to the agent. Managed from the Plugins settings tab.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Beta Features ──
 		'chipos.beta.terminalAgent': {
 			type: 'boolean',
