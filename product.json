@@ -109,6 +109,15 @@
 	],
 	"defaultChatAgent": {},
 	"trustedExtensionAuthAccess": {},
+	"_comment_extensionsGallery": "FEAT-006a: point the extension gallery at Open VSX (open-vsx.org) so the Extensions panel can browse/install third-party VS Code extensions. ChipOS shipped with no extensionsGallery, so the panel was Unavailable; Microsoft's Marketplace is licensed for MS products only, hence Open VSX (the compliant gallery used by VS Code derivatives). Builtin/vendored extensions bypass the gallery and are unaffected.",
+	"extensionsGallery": {
+		"serviceUrl": "https://open-vsx.org/vscode/gallery",
+		"itemUrl": "https://open-vsx.org/vscode/item",
+		"resourceUrlTemplate": "https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}",
+		"controlUrl": "",
+		"nlsBaseUrl": "",
+		"publisherUrl": ""
+	},
 	"_comment_linkProtection": "Trust the chiops website origin so OAuth sign-in (openExternal to /auth/ide-login) does NOT raise VS Code's link-protection confirmation dialog. Pure data; mirrors chiposDefaults.websiteUrl. Update both together.",
 	"linkProtectionTrustedDomains": [
 		"http://121.89.82.122",
