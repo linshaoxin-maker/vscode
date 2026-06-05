@@ -10,7 +10,9 @@ import { IInstantiationService } from '../../../../../../platform/instantiation/
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IDialogService } from '../../../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
+import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { ChiposPluginsService, PluginContributionSummary } from '../../resources/chiposPluginsService.js';
+import { ChiposPluginCatalogService, CatalogEntry } from '../../resources/catalogClient.js';
 
 /**
  * Plugins settings tab (FEAT-002a). Lists the agent plugins installed under
@@ -23,6 +25,7 @@ export class PluginsTab extends Disposable {
 
 	private readonly _disposables = this._register(new DisposableStore());
 	private _listContainer: HTMLElement | undefined;
+	private _catalogContainer: HTMLElement | undefined;
 
 	constructor(
 		private readonly _container: HTMLElement,
@@ -66,6 +69,90 @@ export class PluginsTab extends Disposable {
 
 		this._listContainer = dom.append(section, dom.$('.chipos-plugins-list'));
 		this._loadPlugins(this._listContainer);
+
+		// ── Browse Catalog (FEAT-002d) ──
+		const catalogSection = dom.append(this._container, dom.$('.chipos-settings-section'));
+		dom.append(catalogSection, dom.$('.chipos-settings-section-title', undefined,
+			localize('chipos.plugins.catalog', 'Browse Catalog')));
+		dom.append(catalogSection, dom.$('.chipos-setting-description', undefined,
+			localize('chipos.plugins.catalog.desc', 'Curated agent plugins from the ChipOS catalog. Installing clones the plugin from its Git repository (host-checked + confirmed).')));
+		this._catalogContainer = dom.append(catalogSection, dom.$('.chipos-plugins-catalog-list'));
+		this._loadCatalog(this._catalogContainer);
+	}
+
+	private async _loadCatalog(container: HTMLElement): Promise<void> {
+		let entries: CatalogEntry[];
+		let offline = false;
+		try {
+			const result = await this._instantiationService.createInstance(ChiposPluginCatalogService).getCatalog(CancellationToken.None);
+			entries = result.entries;
+			offline = result.offline;
+		} catch {
+			if (container.isConnected) {
+				dom.append(container, dom.$('.chipos-setting-description', undefined,
+					localize('chipos.plugins.catalog.unavailable', 'Catalog is unavailable (offline with no cached copy).')));
+			}
+			return;
+		}
+		if (!container.isConnected) {
+			return;
+		}
+		if (offline) {
+			dom.append(container, dom.$('.chipos-setting-description', undefined,
+				localize('chipos.plugins.catalog.offline', 'Showing a cached catalog (offline).')));
+		}
+		if (entries.length === 0) {
+			dom.append(container, dom.$('.chipos-setting-description', undefined,
+				localize('chipos.plugins.catalog.empty', 'No plugins in the catalog yet.')));
+			return;
+		}
+		for (const entry of entries) {
+			this._renderCatalogRow(container, entry);
+		}
+	}
+
+	private _renderCatalogRow(parent: HTMLElement, entry: CatalogEntry): void {
+		const row = dom.append(parent, dom.$('.chipos-rule-item'));
+
+		const nameCell = dom.append(row, dom.$('.chipos-rule-name'));
+		dom.append(nameCell, dom.$('span', undefined, entry.name));
+		const meta = dom.append(nameCell, dom.$('span'));
+		meta.style.marginLeft = '8px';
+		meta.style.fontSize = '11px';
+		meta.style.color = 'var(--vscode-descriptionForeground)';
+		const parts: string[] = [];
+		if (entry.author) {
+			parts.push(localize('chipos.plugins.catalog.by', 'by {0}', entry.author));
+		}
+		if (entry.verified) {
+			parts.push(localize('chipos.plugins.catalog.verified', 'verified'));
+		}
+		if (entry.description) {
+			parts.push(entry.description);
+		}
+		meta.textContent = parts.join(' · ');
+
+		const actions = dom.append(row, dom.$('.chipos-rule-actions'));
+		const installBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
+		installBtn.textContent = localize('chipos.plugins.catalog.install', 'Install');
+		this._disposables.add(dom.addDisposableListener(installBtn, 'click', async () => {
+			const confirmed = await this._dialogService.confirm({
+				message: localize('chipos.plugins.catalog.confirm', 'Install "{0}" from the catalog?', entry.name),
+				detail: localize('chipos.plugins.catalog.confirmDetail', '{0}\n\nThis clones the plugin from its Git repository. Only install plugins you trust.', entry.repo),
+				primaryButton: localize('chipos.plugins.catalog.confirmButton', 'Clone & Install'),
+				type: 'warning',
+			});
+			if (!confirmed.confirmed) {
+				return;
+			}
+			try {
+				const result = await this._service().installFromGit(entry.repo);
+				this._notificationService.info(localize('chipos.plugins.catalog.done', 'Installed plugin "{0}".', result.manifest.name));
+			} catch (err) {
+				this._notificationService.error(localize('chipos.plugins.catalog.failed', 'Could not install "{0}": {1}', entry.name, err instanceof Error ? err.message : String(err)));
+			}
+			this._refresh();
+		}));
 	}
 
 	private _refresh(): void {

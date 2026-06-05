@@ -221,6 +221,13 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.plugins.catalogUrl': {
+			type: 'string',
+			default: '',
+			description: localize('chipos.plugins.catalogUrl.desc', 'Override URL of the agent-plugin catalog (catalog.json) shown in the Plugins tab\'s Browse Catalog list. Empty = derive from the chipos-releases repo.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Beta Features ──
 		'chipos.beta.terminalAgent': {
 			type: 'boolean',
