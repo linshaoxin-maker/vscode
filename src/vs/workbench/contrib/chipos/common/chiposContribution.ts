@@ -2029,6 +2029,72 @@ registerAction2(class InstallPluginFromLocalAction extends Action2 {
 	}
 });
 
+/**
+ * FEAT-002b: install a chipos agent plugin from a Git URL. Prompts for an https
+ * Git URL, shows a trust confirmation, then clones (host restricted by
+ * `chipos.plugins.allowedGitDomains`) into a temp dir and installs it via the
+ * same validate+copy pipeline as the local install; the temp clone is always
+ * cleaned up. Plugin HOOKS are still NOT decomposed (a trust-gated follow-up).
+ */
+registerAction2(class InstallPluginFromGitAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.plugins.installFromGit',
+			title: localize2('chipos.plugins.installFromGit', 'Import Plugin from Git URL…'),
+			category: localize2('chipos.category', 'ChipOS'),
+			menu: [{ id: MenuId.CommandPalette }],
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const quickInputService = accessor.get(IQuickInputService);
+		const dialogService = accessor.get(IDialogService);
+		const notificationService = accessor.get(INotificationService);
+		const instantiationService = accessor.get(IInstantiationService);
+
+		const url = await quickInputService.input({
+			title: localize('chipos.plugins.installFromGit.title', 'Import Plugin from Git URL'),
+			prompt: localize('chipos.plugins.installFromGit.prompt', 'https Git URL of the plugin repository (host must be allow-listed in chipos.plugins.allowedGitDomains)'),
+			placeHolder: 'https://github.com/owner/repo.git',
+			validateInput: async value => {
+				const v = value.trim();
+				if (!v) { return localize('chipos.plugins.installFromGit.required', 'A Git URL is required.'); }
+				if (!/^https:\/\//i.test(v)) { return localize('chipos.plugins.installFromGit.https', 'Only https:// URLs are supported.'); }
+				return undefined;
+			},
+		});
+		const trimmed = url?.trim();
+		if (!trimmed) {
+			return;
+		}
+
+		const confirmed = await dialogService.confirm({
+			message: localize('chipos.plugins.installFromGit.confirm', 'Install plugin from this Git repository?'),
+			detail: localize('chipos.plugins.installFromGit.confirmDetail', '{0}\n\nOnly install plugins from sources you trust — a plugin can contribute rules, commands and skills to the agent.', trimmed),
+			primaryButton: localize('chipos.plugins.installFromGit.confirmButton', 'Clone & Install'),
+			type: 'warning',
+		});
+		if (!confirmed.confirmed) {
+			return;
+		}
+
+		try {
+			const result = await instantiationService.createInstance(ChiposPluginsService).installFromGit(trimmed);
+			notificationService.info(localize(
+				'chipos.plugins.installFromGit.done',
+				'Installed plugin "{0}" v{1} from Git.',
+				result.manifest.name, result.manifest.version,
+			));
+		} catch (err) {
+			// Untrusted-host / clone / manifest failures all surface their message.
+			const message = err instanceof Error ? err.message : String(err);
+			notificationService.error(localize(
+				'chipos.plugins.installFromGit.failed',
+				'Could not install plugin from Git: {0}', message,
+			));
+		}
+	}
+});
+
 registerWorkbenchContribution2(
 	ChipOSContribution.ID,
 	ChipOSContribution,

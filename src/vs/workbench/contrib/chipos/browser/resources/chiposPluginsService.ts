@@ -12,6 +12,8 @@ import { RuleDescriptor } from './promptResourceAttachmentCollector.js';
 import { CommandDescriptor } from './chiposCommandsService.js';
 import { SkillHeader } from './chiposSkillsService.js';
 import { PLUGIN_MANIFEST_DIRS, PluginManifest, parsePluginManifest, installLocalPlugin, IPluginInstallResult } from './pluginInstaller.js';
+import { isAllowedGitUrl, cloneGitRepo } from './gitImport.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
 
 const RULE_FILE_RE = /\.(mdc|md|txt)$/i;
 const COMMAND_FILE_RE = /\.(md|txt)$/i;
@@ -106,6 +108,50 @@ export class ChiposPluginsService {
 	 */
 	async installFromFolder(sourceDir: URI): Promise<IPluginInstallResult> {
 		return installLocalPlugin(this._fileService, sourceDir, await this._pluginsRoot());
+	}
+
+	/** Hosts a plugin may be cloned from (`chipos.plugins.allowedGitDomains`). */
+	private _allowedGitDomains(): string[] {
+		const raw = this._configurationService.getValue<string[]>('chipos.plugins.allowedGitDomains');
+		return Array.isArray(raw) && raw.length > 0 ? raw : ['github.com'];
+	}
+
+	/**
+	 * Install a plugin from a Git URL (FEAT-002b): validate the host against
+	 * `chipos.plugins.allowedGitDomains`, shallow-clone into a temp dir, then hand
+	 * the clone to the verified {@link installLocalPlugin} core. The temp clone is
+	 * always removed (success or failure) so no residue is left. Rejects before
+	 * any clone when the host is not allow-listed. `cloneToTemp` is injectable for
+	 * hermetic tests; production uses the real git clone.
+	 */
+	async installFromGit(url: string, cloneToTemp?: (url: string) => Promise<URI>): Promise<IPluginInstallResult> {
+		const allowed = this._allowedGitDomains();
+		if (!isAllowedGitUrl(url, allowed)) {
+			throw new Error(`Refusing to clone from an untrusted host. Allowed hosts (chipos.plugins.allowedGitDomains): ${allowed.join(', ')}.`);
+		}
+		const clone = cloneToTemp ?? (u => this._cloneToTemp(u));
+		const tempDir = await clone(url);
+		try {
+			return await installLocalPlugin(this._fileService, tempDir, await this._pluginsRoot());
+		} finally {
+			// Always remove the temp clone — on success it has been copied to
+			// <id>/, on failure it is residue.
+			try {
+				await this._fileService.del(tempDir, { recursive: true, useTrash: false });
+			} catch {
+				// best-effort cleanup
+			}
+		}
+	}
+
+	/** Shallow-clone `url` into a fresh temp dir under `~/.chipos-ide/.cache/`. */
+	private async _cloneToTemp(url: string): Promise<URI> {
+		const home = await this._pathService.userHome();
+		const cloneParent = URI.joinPath(home, '.chipos-ide', '.cache', 'plugin-clones');
+		await this._fileService.createFolder(cloneParent);
+		const tempDir = URI.joinPath(cloneParent, generateUuid());
+		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 });
+		return tempDir;
 	}
 
 	/** The set of disabled plugin ids from `chipos.plugins.disabled` (FEAT-002c). */

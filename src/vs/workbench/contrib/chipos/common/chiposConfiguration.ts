@@ -213,6 +213,14 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.plugins.allowedGitDomains': {
+			type: 'array',
+			items: { type: 'string' },
+			default: ['github.com'],
+			description: localize('chipos.plugins.allowedGitDomains.desc', 'Hostnames an agent plugin may be installed from with "Import Plugin from Git URL…". Only https:// URLs whose host exactly matches an entry are allowed. Defaults to github.com.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Beta Features ──
 		'chipos.beta.terminalAgent': {
 			type: 'boolean',

@@ -111,4 +111,50 @@ suite('ChiposPluginsService', () => {
 		assert.strictEqual(rules.length, 1);
 		assert.strictEqual(rules[0].sourceRef, 'keep');
 	});
+
+	suite('installFromGit (FEAT-002b)', () => {
+		const TEMP = URI.from({ scheme: SCHEME, path: '/clone-tmp' });
+
+		// A fake clone that "checks out" a plugin (just a manifest) into a temp
+		// dir on the in-memory FS, standing in for the real git clone.
+		const fakeClone = (manifest: string) => async (): Promise<URI> => {
+			await write(URI.joinPath(TEMP, '.chipos-plugin', 'plugin.json'), manifest);
+			return TEMP;
+		};
+
+		test('rejects a non-allow-listed host before cloning (default allow-list = github.com)', async () => {
+			let cloned = false;
+			await assert.rejects(
+				service.installFromGit('https://evil.example.com/x', async () => { cloned = true; return TEMP; }),
+				/untrusted host/i,
+			);
+			assert.strictEqual(cloned, false);
+			assert.strictEqual((await service.getInstalledPlugins()).length, 0);
+		});
+
+		test('clones an allow-listed repo, installs it, and removes the temp clone', async () => {
+			const result = await service.installFromGit('https://github.com/owner/gitplug.git', fakeClone('{"name":"gitplug","version":"3.1.0"}'));
+
+			assert.strictEqual(result.manifest.name, 'gitplug');
+			assert.strictEqual(await fileService.exists(pluginRoot('gitplug')), true);
+			assert.strictEqual(await fileService.exists(TEMP), false); // temp clone cleaned
+		});
+
+		test('removes the temp clone even when the install fails (bad manifest)', async () => {
+			await assert.rejects(
+				service.installFromGit('https://github.com/owner/bad.git', fakeClone('{"name":"bad"}')), // missing version
+				/version/i,
+			);
+			assert.strictEqual(await fileService.exists(TEMP), false);
+			assert.strictEqual((await service.getInstalledPlugins()).length, 0);
+		});
+
+		test('honours chipos.plugins.allowedGitDomains config', async () => {
+			await config.updateValue('chipos.plugins.allowedGitDomains', ['gitlab.com']);
+			await assert.rejects(service.installFromGit('https://github.com/x.git', fakeClone('{"name":"x","version":"1.0.0"}')), /untrusted host/i);
+
+			const result = await service.installFromGit('https://gitlab.com/owner/gl.git', fakeClone('{"name":"gl","version":"1.0.0"}'));
+			assert.strictEqual(result.manifest.name, 'gl');
+		});
+	});
 });

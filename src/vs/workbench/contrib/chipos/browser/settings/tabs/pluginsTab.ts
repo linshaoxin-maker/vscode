@@ -54,6 +54,13 @@ export class PluginsTab extends Disposable {
 			this._refresh();
 		}));
 
+		const gitBtn = dom.append(header, dom.$('button.chipos-btn-secondary'));
+		gitBtn.textContent = localize('chipos.plugins.importFromGit', 'Import from Git URL…');
+		this._disposables.add(dom.addDisposableListener(gitBtn, 'click', async () => {
+			await this._commandService.executeCommand('chipos.plugins.installFromGit');
+			this._refresh();
+		}));
+
 		dom.append(section, dom.$('.chipos-setting-description', undefined,
 			localize('chipos.plugins.desc', 'Agent plugins are AI-capability bundles installed under ~/.chipos-ide/plugins/. Each plugin can contribute rules, commands and skills to the agent. This is separate from VS Code extensions.')));
 
