@@ -4621,6 +4621,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					content = this._getTerminalOutput(args as { terminal_id: string });
 					break;
 				}
+				case 'read_skill_body': {
+					// FEAT-003 (ADR-004): lazy-load a skill body on the model's request.
+					const skillId = typeof args.skill_id === 'string' ? args.skill_id : '';
+					const res = await this._instantiationService.createInstance(ChiposSkillsService).readBody(skillId);
+					content = res.content;
+					isError = res.isError;
+					break;
+				}
 				default: {
 					// R56: route to MCP service if no IDE-builtin handler matched.
 					const mcpResult = await this._tryCallMcpTool(name, args);
@@ -6973,6 +6981,25 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					terminal_id: { type: 'string', description: 'The terminal ID returned by run_in_terminal.' },
 				},
 				required: ['terminal_id'],
+			},
+			chipos_source: 'ide_builtin',
+		});
+
+		// IDE builtin — read_skill_body (FEAT-003 / ADR-004): the model loads a
+		// skill's full instructions on demand after seeing it in the
+		// `## Available Skills` catalog. Header-only catalog keeps prompts small.
+		tools.push({
+			name: 'read_skill_body',
+			description:
+				'Load the full instructions (body) of a skill listed in the "## Available Skills" ' +
+				'section. Call this with the skill\'s name when you decide to use that skill, then ' +
+				'follow the returned instructions (which may direct you to read further files).',
+			input_schema: {
+				type: 'object',
+				properties: {
+					skill_id: { type: 'string', description: 'The skill name/id exactly as shown in the Available Skills catalog.' },
+				},
+				required: ['skill_id'],
 			},
 			chipos_source: 'ide_builtin',
 		});
