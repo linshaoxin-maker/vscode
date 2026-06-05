@@ -236,6 +236,13 @@ export interface InvokeRequest {
 	// the reasoner renders them into a synthetic user message at the head of
 	// `messages` (ADR-002). Mirrors backend_v2 shared.contracts.invoke.
 	prompt_resource_attachments?: PromptResourceAttachment[];
+	// Reasoner hooks (FEAT-004) — extension system. Additive + backward
+	// compatible: reasoner defaults to [] when absent. The collector
+	// (ChiposHooksService) populates this from `.chipos/hooks/`; the reasoner
+	// registers each as a per-turn subscriber on its ReasonerHookDispatcher, so a
+	// `deny` hook at `tool.before_dispatch` blocks the matching tool. Mirrors
+	// backend_v2 shared.contracts.invoke.ReasonerHookDefinition.
+	hooks?: ReasonerHookDefinition[];
 	// Protocol version handshake — bump when wire format breaks
 	protocol_version?: number;
 }
@@ -269,6 +276,55 @@ export interface PromptResourceAttachment {
 	token_estimate?: number | null;
 	/** Kind-specific body (rule text / command definition). */
 	payload?: Record<string, unknown>;
+}
+
+/**
+ * Canonical reasoner lifecycle point a hook attaches to (mirrors
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py` ReasonerHookPoint).
+ * `tool.before_dispatch` is the deny-capable point used by Beta-1.
+ */
+export type ReasonerHookPoint =
+	| 'turn.before_start'
+	| 'context.before_collect'
+	| 'context.after_collect'
+	| 'prompt.before_render'
+	| 'prompt.after_render'
+	| 'llm.before_call'
+	| 'llm.after_response'
+	| 'tool.before_dispatch'
+	| 'tool.after_result'
+	| 'subagent.before_invoke'
+	| 'subagent.after_result'
+	| 'final.before_emit'
+	| 'turn.after_end'
+	| 'turn.on_error';
+
+/**
+ * What a configured hook asks the reasoner to do when it matches (mirrors
+ * ReasonerHookAction). `deny` is only honoured at deny-capable points (Beta-1:
+ * `tool.before_dispatch`); elsewhere it degrades to `observe`.
+ */
+export type ReasonerHookAction = 'observe' | 'deny';
+
+/**
+ * A user/workspace/plugin-configured reasoner hook (FEAT-004). Mirrors
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py`
+ * ReasonerHookDefinition. Carried in-band on {@link InvokeRequest.hooks}; the
+ * reasoner registers each as a per-turn dispatcher subscriber.
+ */
+export interface ReasonerHookDefinition {
+	/** Lifecycle point this hook attaches to. */
+	point: ReasonerHookPoint;
+	/** observe (default) | deny. */
+	action?: ReasonerHookAction;
+	/** Matcher (Beta-1): exact tool name, or `*`/absent to match any tool, <=128 chars. */
+	tool_name?: string | null;
+	/** Agent-facing explanation surfaced on a deny, <=512 chars. */
+	reason?: string;
+	/** Who configured it. */
+	source?: 'user' | 'workspace' | 'plugin';
+	/** Plugin id / file path that contributed it, <=256 chars. */
+	source_ref?: string | null;
 }
 
 // =============================================================================

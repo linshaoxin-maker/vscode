@@ -84,6 +84,7 @@ import type {
 } from './statelessInvoke/types.js';
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
+import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
@@ -5874,6 +5875,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] prompt-resource collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
+		}
+
+		// FEAT-004: attach the user's configured hooks (workspace .chipos/hooks/)
+		// so the reasoner registers them as per-turn dispatcher subscribers; a
+		// `deny` hook at `tool.before_dispatch` blocks the matching tool.
+		// Best-effort: a failure here must never block the turn.
+		try {
+			const hooks = await this._instantiationService.createInstance(ChiposHooksService).getHooks();
+			if (hooks.length) {
+				invokeReq.hooks = hooks;
+			}
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] hook collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
 		}
 
 		// Optional compaction. Plan B from ADR-017 Q3: client owns the trigger;
