@@ -90,6 +90,7 @@ import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposStartupFocu
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatInputHistory.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposRtlFileWatcher.js';
 import '../../../../workbench/contrib/chipos/browser/edaStatusBar.js';
+import '../../../../workbench/contrib/chipos/browser/auth/chiposAuthenticationProvider.js';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSInputAccent.css';
 
