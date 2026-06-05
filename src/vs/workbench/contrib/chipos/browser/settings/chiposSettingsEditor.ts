@@ -19,6 +19,7 @@ import { ModelsTab } from './tabs/modelsTab.js';
 import { FeaturesTab } from './tabs/featuresTab.js';
 import { ConnectionTab } from './tabs/connectionTab.js';
 import { RulesTab } from './tabs/rulesTab.js';
+import { PluginsTab } from './tabs/pluginsTab.js';
 import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
 import { EdaToolsTab } from './tabs/edaToolsTab.js';
@@ -48,6 +49,7 @@ const CATEGORY_GROUPS: ICategoryDef[][] = [
 		{ id: 'models', label: localize('chipos.cat.models', 'Models'), icon: Codicon.hubot, searchableTerms: ['provider', 'api key', 'model', 'base url', 'zhipu', 'openai', 'anthropic', 'deepseek'] },
 		{ id: 'features', label: localize('chipos.cat.features', 'Features'), icon: Codicon.extensions, searchableTerms: ['thinking', 'context', 'tools', 'skills', 'approve', 'chat mode', 'token budget'] },
 		{ id: 'rules', label: localize('chipos.cat.rules', 'Rules'), icon: Codicon.law, searchableTerms: ['rules', 'global', 'project', 'hook'] },
+		{ id: 'plugins', label: localize('chipos.cat.plugins', 'Plugins'), icon: Codicon.package, searchableTerms: ['plugins', 'install', 'agent', 'bundle', 'marketplace', 'rules', 'commands', 'skills', 'cursor'] },
 	],
 	[
 		{ id: 'connection', label: localize('chipos.cat.connection', 'Connection'), icon: Codicon.plug, searchableTerms: ['backend', 'mode', 'reasoning', 'worker', 'grpc', 'tls', 'port', 'python', 'sidecar'] },
@@ -344,6 +346,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 					break;
 				case 'rules':
 					store.add(this._instantiationService.createInstance(RulesTab, inner));
+					break;
+				case 'plugins':
+					store.add(this._instantiationService.createInstance(PluginsTab, inner));
 					break;
 				case 'beta':
 					store.add(this._instantiationService.createInstance(BetaTab, inner));

@@ -10,7 +10,7 @@ import { parseRuleFile } from './frontmatterParser.js';
 import { RuleDescriptor } from './promptResourceAttachmentCollector.js';
 import { CommandDescriptor } from './chiposCommandsService.js';
 import { SkillHeader } from './chiposSkillsService.js';
-import { PLUGIN_MANIFEST_DIRS, PluginManifest, parsePluginManifest } from './pluginInstaller.js';
+import { PLUGIN_MANIFEST_DIRS, PluginManifest, parsePluginManifest, installLocalPlugin, IPluginInstallResult } from './pluginInstaller.js';
 
 const RULE_FILE_RE = /\.(mdc|md|txt)$/i;
 const COMMAND_FILE_RE = /\.(md|txt)$/i;
@@ -19,6 +19,15 @@ const COMMAND_FILE_RE = /\.(md|txt)$/i;
 export interface InstalledPlugin {
 	readonly manifest: PluginManifest;
 	readonly root: URI;
+}
+
+/** An installed plugin plus a count of the resources it contributes (Plugins tab). */
+export interface PluginContributionSummary {
+	readonly manifest: PluginManifest;
+	readonly root: URI;
+	readonly ruleCount: number;
+	readonly commandCount: number;
+	readonly skillCount: number;
 }
 
 /**
@@ -78,6 +87,64 @@ export class ChiposPluginsService {
 			}
 		}
 		return plugins;
+	}
+
+	/**
+	 * Install a local plugin folder into `~/.chipos-ide/plugins/<id>/`. Thin
+	 * orchestration over {@link installLocalPlugin} (the testable core): supplies
+	 * the file service + resolved install root. Rejects with `PluginManifestError`
+	 * when the folder has no valid manifest — the install command surfaces it.
+	 */
+	async installFromFolder(sourceDir: URI): Promise<IPluginInstallResult> {
+		return installLocalPlugin(this._fileService, sourceDir, await this._pluginsRoot());
+	}
+
+	/**
+	 * List installed plugins with a count of the rules/commands/skills each
+	 * contributes — the data the Plugins settings tab renders. Counts mirror the
+	 * decomposition rules in {@link getPluginRules}/{@link getPluginCommands}/
+	 * {@link getPluginSkills} (matching file extensions; a skill = a subdir with
+	 * a readable `SKILL.md`).
+	 */
+	async getInstalledPluginSummaries(): Promise<PluginContributionSummary[]> {
+		const plugins = await this.getInstalledPlugins();
+		const summaries: PluginContributionSummary[] = [];
+		for (const plugin of plugins) {
+			summaries.push({
+				manifest: plugin.manifest,
+				root: plugin.root,
+				ruleCount: await this._countFiles(URI.joinPath(plugin.root, 'rules'), RULE_FILE_RE),
+				commandCount: await this._countFiles(URI.joinPath(plugin.root, 'commands'), COMMAND_FILE_RE),
+				skillCount: await this._countSkillDirs(URI.joinPath(plugin.root, 'skills')),
+			});
+		}
+		return summaries;
+	}
+
+	/** Count non-dir entries in `dir` whose name matches `fileRe` (0 if absent). */
+	private async _countFiles(dir: URI, fileRe: RegExp): Promise<number> {
+		try {
+			const children = (await this._fileService.resolve(dir)).children ?? [];
+			return children.filter(c => !c.isDirectory && fileRe.test(c.name)).length;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** Count subdirs of `dir` that contain a readable `SKILL.md` (0 if absent). */
+	private async _countSkillDirs(dir: URI): Promise<number> {
+		try {
+			const children = (await this._fileService.resolve(dir)).children ?? [];
+			let count = 0;
+			for (const child of children) {
+				if (child.isDirectory && await this._fileService.exists(URI.joinPath(child.resource, 'SKILL.md'))) {
+					count++;
+				}
+			}
+			return count;
+		} catch {
+			return 0;
+		}
 	}
 
 	/**

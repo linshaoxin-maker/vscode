@@ -4,13 +4,22 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Agent-plugin manifest parsing (FEAT-002a). A chipos agent plugin is a folder
- * with a `.chipos-plugin/plugin.json` manifest plus convention dirs (`rules/`,
- * `commands/`, later `skills/`, `hooks/`) whose resources are decomposed into
- * the FEAT-001/003/004 collectors tagged `source: 'plugin'`. This is NOT a VS
- * Code extension (.vsix / Open VSX) — it is the chipos AI-capability bundle
- * format. Pure parsing here (no I/O) so it is independently unit-testable.
+ * Agent-plugin manifest parsing + local install (FEAT-002a). A chipos agent
+ * plugin is a folder with a `.chipos-plugin/plugin.json` manifest plus
+ * convention dirs (`rules/`, `commands/`, later `skills/`, `hooks/`) whose
+ * resources are decomposed into the FEAT-001/003/004 collectors tagged
+ * `source: 'plugin'`. This is NOT a VS Code extension (.vsix / Open VSX) — it
+ * is the chipos AI-capability bundle format.
+ *
+ * {@link parsePluginManifest} is pure (no I/O). {@link readPluginManifest} and
+ * {@link installLocalPlugin} take their {@link IFileService} + target root
+ * explicitly (rather than via DI) so they stay unit-testable against an
+ * in-memory file system; the native folder picker is wired separately in the
+ * install command.
  */
+
+import { URI } from '../../../../../base/common/uri.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 
 /** Where a plugin manifest came from (for transparent Cursor import). */
 export type PluginManifestSource = 'chipos' | 'cursor';
@@ -74,4 +83,53 @@ export function parsePluginManifest(jsonText: string, source: PluginManifestSour
 		publisher: typeof obj.publisher === 'string' ? obj.publisher : undefined,
 		source,
 	};
+}
+
+/** Result of a successful local plugin install. */
+export interface IPluginInstallResult {
+	readonly manifest: PluginManifest;
+	/** The install dir the plugin was copied to (`<pluginsRoot>/<id>/`). */
+	readonly installedAt: URI;
+}
+
+/**
+ * Locate, read and validate the manifest under a candidate plugin source dir.
+ * Probes `.chipos-plugin/plugin.json` then `.cursor-plugin/plugin.json`
+ * ({@link PLUGIN_MANIFEST_DIRS}, first match wins). Throws
+ * {@link PluginManifestError} when no probe yields a readable manifest, or when
+ * the first manifest found is malformed (missing `name`/`version`, bad JSON) —
+ * a present-but-invalid manifest is rejected with its schema error rather than
+ * silently falling through to the next probe.
+ */
+export async function readPluginManifest(fileService: IFileService, sourceDir: URI): Promise<PluginManifest> {
+	for (const probe of PLUGIN_MANIFEST_DIRS) {
+		const manifestUri = URI.joinPath(sourceDir, probe.dir, probe.file);
+		let content: string;
+		try {
+			content = (await fileService.readFile(manifestUri)).value.toString();
+		} catch {
+			continue; // not this manifest format — try the next probe
+		}
+		// A readable manifest is authoritative: parse errors propagate (they are
+		// PluginManifestError) so the caller surfaces the schema problem.
+		return parsePluginManifest(content, probe.source);
+	}
+	throw new PluginManifestError('The selected folder has no .chipos-plugin/plugin.json (or .cursor-plugin/plugin.json) manifest');
+}
+
+/**
+ * Install a local plugin folder into `<pluginsRoot>/<id>/`. Validates the
+ * manifest first (rejecting with {@link PluginManifestError}), then copies the
+ * whole source tree to the install dir keyed by the manifest id, overwriting an
+ * existing install of the same id (a clean reinstall/update, not a merge). The
+ * install root (`~/.chipos-ide/plugins/`) is passed in so this stays pure of
+ * path-service DI and unit-testable.
+ */
+export async function installLocalPlugin(fileService: IFileService, sourceDir: URI, pluginsRoot: URI): Promise<IPluginInstallResult> {
+	const manifest = await readPluginManifest(fileService, sourceDir);
+	const installedAt = URI.joinPath(pluginsRoot, manifest.id);
+	// overwrite=true: the file service deletes an existing target first (clean
+	// replace) and no-ops when source === target (re-picking an installed dir).
+	await fileService.copy(sourceDir, installedAt, true);
+	return { manifest, installedAt };
 }

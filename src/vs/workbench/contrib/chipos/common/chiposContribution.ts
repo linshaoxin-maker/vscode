@@ -19,7 +19,7 @@ import { IProductService } from '../../../../platform/product/common/productServ
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IChipOSTokenManager } from '../../../../workbench/contrib/chipos/browser/auth/chiposTokenManager.js';
@@ -59,6 +59,8 @@ import { EditorExtensions } from '../../../../workbench/common/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ChipOSSettingsEditor } from '../../../../workbench/contrib/chipos/browser/settings/chiposSettingsEditor.js';
 import { ChipOSSettingsEditorInput, ChipOSSettingsTab } from '../../../../workbench/contrib/chipos/browser/settings/chiposSettingsEditorInput.js';
+import { ChiposPluginsService } from '../../../../workbench/contrib/chipos/browser/resources/chiposPluginsService.js';
+import { PluginManifestError } from '../../../../workbench/contrib/chipos/browser/resources/pluginInstaller.js';
 import { IChatContentPartRegistry } from '../../../../workbench/contrib/chat/browser/chatContentPartRegistry.js';
 import { chatViewsWelcomeRegistry } from '../../../../workbench/contrib/chat/browser/viewsWelcome/chatViewsWelcome.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
@@ -1973,6 +1975,57 @@ CommandsRegistry.registerCommand('chipos.eda.openInstallGuide', async (accessor:
 				String(err),
 			),
 		});
+	}
+});
+
+/**
+ * FEAT-002a: install a chipos agent plugin from a local folder. Opens a folder
+ * picker, validates its `.chipos-plugin/plugin.json` (or Cursor `.cursor-plugin/`)
+ * manifest, and copies the tree into `~/.chipos-ide/plugins/<id>/` so the
+ * plugin's rules/commands/skills decompose into the agent (source=plugin).
+ * Agent plugins are chipos's own AI-capability bundle format — NOT VS Code
+ * extensions (.vsix / Open VSX), which are a separate IDE concern.
+ */
+registerAction2(class InstallPluginFromLocalAction extends Action2 {
+	constructor() {
+		super({
+			id: 'chipos.plugins.installFromLocal',
+			title: localize2('chipos.plugins.installFromLocal', 'Install Plugin from Local…'),
+			category: localize2('chipos.category', 'ChipOS'),
+			menu: [{ id: MenuId.CommandPalette }],
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const fileDialogService = accessor.get(IFileDialogService);
+		const notificationService = accessor.get(INotificationService);
+		const instantiationService = accessor.get(IInstantiationService);
+
+		const picked = await fileDialogService.showOpenDialog({
+			canSelectFiles: false,
+			canSelectFolders: true,
+			canSelectMany: false,
+			title: localize('chipos.plugins.installFromLocal.pick', 'Select Plugin Folder'),
+		});
+		if (!picked || picked.length === 0) {
+			return;
+		}
+
+		try {
+			const result = await instantiationService.createInstance(ChiposPluginsService).installFromFolder(picked[0]);
+			notificationService.info(localize(
+				'chipos.plugins.installFromLocal.done',
+				'Installed plugin "{0}" v{1}.',
+				result.manifest.name, result.manifest.version,
+			));
+		} catch (err) {
+			// A bad/absent manifest is rejected with a PluginManifestError whose
+			// message names the schema problem; surface it verbatim (BDD-002).
+			const message = err instanceof PluginManifestError ? err.message : String(err);
+			notificationService.error(localize(
+				'chipos.plugins.installFromLocal.failed',
+				'Could not install plugin: {0}', message,
+			));
+		}
 	}
 });
 
