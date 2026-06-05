@@ -20,6 +20,7 @@ import { CommandsRegistry, ICommandService } from '../../../../../platform/comma
 import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalService, ITerminalChatService } from '../../../terminal/browser/terminal.js';
 import { ITerminalSandboxService } from '../../../terminalContrib/chatAgentTools/common/terminalSandboxService.js';
@@ -78,12 +79,14 @@ import type {
 	InFlightTrace,
 	InvokeRequest,
 	Message,
+	PromptResourceAttachment,
 	ToolDefinition,
 	TokenUsage,
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
+import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
@@ -374,6 +377,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@ICommandService private readonly _commandService: ICommandService,
 		@IFileService private readonly _fileService: IFileService,
 		@IChipOSConfirmRetireService private readonly _confirmRetireService: IChipOSConfirmRetireService,
+		@IEditorService private readonly _editorService: IEditorService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -5869,12 +5873,54 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// UI; tracked as follow-ups.)
 		try {
 			const rules = await this._instantiationService.createInstance(ChiposRulesService).getRules();
-			const collected = collectPromptResources(rules, {});
+			// FEAT-001c: glob rules apply when the active editor's workspace-relative
+			// path matches their globs, so pass it in. Without it only `always` rules
+			// fire. (`manual` rules still need an attach UI — tracked as a follow-up.)
+			const activeResource = this._editorService.activeEditor?.resource;
+			const workspaceRoot = this._getWorkspaceRoot();
+			const activeFile = activeResource
+				? (workspaceRoot && activeResource.path.startsWith(workspaceRoot)
+					? activeResource.path.slice(workspaceRoot.length + 1)
+					: activeResource.path)
+				: undefined;
+			const collected = collectPromptResources(rules, { activeFile });
 			if (collected.attachments.length) {
 				invokeReq.prompt_resource_attachments = collected.attachments;
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] prompt-resource collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
+		}
+
+		// FEAT-001: a slash command (`.chipos/commands/<name>.md`) is injected on
+		// demand — when the user's message opens with `/<name>` — as a `command`
+		// prompt-resource attachment the reasoner renders alongside rules (ADR-002).
+		// Best-effort: a failure here (or no match) must never block the turn.
+		try {
+			// The user can invoke a command either as a parsed slash command
+			// (`request.command`, when the chat framework recognises it) or by
+			// typing `/<name>` inline in the prompt (kept in `request.message`).
+			// Accept both so collection is robust to how the input is parsed.
+			const explicitCommand = (request as { command?: string }).command;
+			const inlineMatch = /(?:^|\s)\/([\w-]+)/.exec(request.message ?? '');
+			const commandName = explicitCommand || inlineMatch?.[1];
+			if (commandName) {
+				const commands = await this._instantiationService.createInstance(ChiposCommandsService).getCommands();
+				const command = commands.find(c => c.name === commandName);
+				if (command) {
+					const attachment: PromptResourceAttachment = {
+						kind: 'command',
+						name: command.name,
+						source: 'workspace',
+						source_ref: command.sourceRef,
+						reason: 'slash',
+						priority: 0,
+						payload: { body: command.body },
+					};
+					invokeReq.prompt_resource_attachments = [...(invokeReq.prompt_resource_attachments ?? []), attachment];
+				}
+			}
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] command collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
 		}
 
 		// FEAT-004: attach the user's configured hooks (workspace .chipos/hooks/)
