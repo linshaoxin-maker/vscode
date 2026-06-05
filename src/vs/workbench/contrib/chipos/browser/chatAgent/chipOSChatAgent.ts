@@ -82,6 +82,8 @@ import type {
 	TokenUsage,
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
+import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
+import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
@@ -5857,6 +5859,21 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._logService.error('[ChipOS Stateless] assemble failed: %s (cause=%s)', msg, cause);
 			progress([this._markdown(`$(error) **ChipOS:** conversation could not be assembled — ${msg}`)]);
 			return { errorDetails: { message: msg } };
+		}
+
+		// FEAT-001b: attach the user's always-apply rules (workspace .chipos/rules/)
+		// so the reasoner injects them as a synthetic message at the head of the
+		// conversation (ADR-002). Best-effort — a failure here must never block the
+		// turn. (glob + manual rules additionally need the active editor + attach
+		// UI; tracked as follow-ups.)
+		try {
+			const rules = await this._instantiationService.createInstance(ChiposRulesService).getRules();
+			const collected = collectPromptResources(rules, {});
+			if (collected.attachments.length) {
+				invokeReq.prompt_resource_attachments = collected.attachments;
+			}
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] prompt-resource collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
 		}
 
 		// Optional compaction. Plan B from ADR-017 Q3: client owns the trigger;
