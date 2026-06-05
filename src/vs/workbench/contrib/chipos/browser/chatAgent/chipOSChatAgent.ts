@@ -3373,6 +3373,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		run_sim: '执行仿真',
 		run_lint: '代码检查',
 		read_file: '读取文件',
+		read_skill_body: '加载技能',
 		write_file: '写入文件',
 		edit_file: '编辑文件',
 		file_edit: '编辑文件',
