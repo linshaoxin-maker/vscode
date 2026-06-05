@@ -8,9 +8,12 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IPathService } from '../../../../services/path/common/pathService.js';
 import { parseRuleFile } from './frontmatterParser.js';
 import { RuleDescriptor } from './promptResourceAttachmentCollector.js';
+import { CommandDescriptor } from './chiposCommandsService.js';
+import { SkillHeader } from './chiposSkillsService.js';
 import { PLUGIN_MANIFEST_DIRS, PluginManifest, parsePluginManifest } from './pluginInstaller.js';
 
 const RULE_FILE_RE = /\.(mdc|md|txt)$/i;
+const COMMAND_FILE_RE = /\.(md|txt)$/i;
 
 /** An installed agent plugin: its manifest + the install dir it lives in. */
 export interface InstalledPlugin {
@@ -118,5 +121,86 @@ export class ChiposPluginsService {
 			}
 		}
 		return rules;
+	}
+
+	/**
+	 * Decompose every installed plugin's `commands/*.{md,txt}` into
+	 * {@link CommandDescriptor}s (source=plugin, sourceRef=plugin id). The caller
+	 * merges these with the workspace commands for the `/<name>` lookup.
+	 */
+	async getPluginCommands(): Promise<CommandDescriptor[]> {
+		const plugins = await this.getInstalledPlugins();
+		const commands: CommandDescriptor[] = [];
+		for (const plugin of plugins) {
+			const dir = URI.joinPath(plugin.root, 'commands');
+			let children;
+			try {
+				children = (await this._fileService.resolve(dir)).children;
+			} catch {
+				continue;
+			}
+			if (!children) {
+				continue;
+			}
+			for (const child of children) {
+				if (child.isDirectory || !COMMAND_FILE_RE.test(child.name)) {
+					continue;
+				}
+				try {
+					const content = await this._fileService.readFile(child.resource);
+					commands.push({
+						name: child.name.replace(COMMAND_FILE_RE, ''),
+						body: content.value.toString(),
+						source: 'plugin',
+						sourceRef: plugin.manifest.id,
+					});
+				} catch {
+					// skip unreadable command file — never fail the scan
+				}
+			}
+		}
+		return commands;
+	}
+
+	/**
+	 * Decompose every installed plugin's `skills/<id>/SKILL.md` headers into
+	 * {@link SkillHeader}s (source=plugin, source_ref=plugin id). Header only —
+	 * the body is lazy-loaded via read_skill_body. The caller merges these with
+	 * the workspace skills for the `## Available Skills` catalog.
+	 */
+	async getPluginSkills(): Promise<SkillHeader[]> {
+		const plugins = await this.getInstalledPlugins();
+		const skills: SkillHeader[] = [];
+		for (const plugin of plugins) {
+			const skillsDir = URI.joinPath(plugin.root, 'skills');
+			let entries;
+			try {
+				entries = (await this._fileService.resolve(skillsDir)).children;
+			} catch {
+				continue;
+			}
+			if (!entries) {
+				continue;
+			}
+			for (const entry of entries) {
+				if (!entry.isDirectory) {
+					continue;
+				}
+				const skillMd = URI.joinPath(entry.resource, 'SKILL.md');
+				try {
+					const content = await this._fileService.readFile(skillMd);
+					const parsed = parseRuleFile(content.value.toString());
+					skills.push({
+						name: entry.name,
+						description: parsed.description ?? '',
+						source: 'plugin',
+						source_ref: plugin.manifest.id,
+					});
+				} catch {
+					// directory without a readable SKILL.md — skip
+				}
+			}
+		}
+		return skills;
 	}
 }

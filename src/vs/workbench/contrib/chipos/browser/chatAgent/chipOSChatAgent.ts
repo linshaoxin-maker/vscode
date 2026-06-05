@@ -5921,12 +5921,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const commandName = explicitCommand || inlineMatch?.[1];
 			if (commandName) {
 				const commands = await this._instantiationService.createInstance(ChiposCommandsService).getCommands();
-				const command = commands.find(c => c.name === commandName);
+				// FEAT-002a: also match commands contributed by installed plugins.
+				const pluginCommands = await this._instantiationService.createInstance(ChiposPluginsService).getPluginCommands();
+				const command = [...commands, ...pluginCommands].find(c => c.name === commandName);
 				if (command) {
 					const attachment: PromptResourceAttachment = {
 						kind: 'command',
 						name: command.name,
-						source: 'workspace',
+						source: command.source,
 						source_ref: command.sourceRef,
 						reason: 'slash',
 						priority: 0,
@@ -5945,8 +5947,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Header-only — bodies are never shipped here. Best-effort.
 		try {
 			const skills = await this._instantiationService.createInstance(ChiposSkillsService).getSkills();
-			if (skills.length) {
-				invokeReq.skills = skills;
+			// FEAT-002a: also surface skills contributed by installed plugins
+			// (header only — body lazy-loads via read_skill_body, FEAT-003).
+			const pluginSkills = await this._instantiationService.createInstance(ChiposPluginsService).getPluginSkills();
+			const allSkills = pluginSkills.length ? [...skills, ...pluginSkills] : skills;
+			if (allSkills.length) {
+				invokeReq.skills = allSkills;
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] skill collection failed (continuing): %s', err instanceof Error ? err.message : String(err));

@@ -17,6 +17,9 @@ const COMMAND_FILE_RE = /\.(md|txt)$/i;
 export interface CommandDescriptor {
 	readonly name: string;
 	readonly body: string;
+	/** Who contributed it — workspace `.chipos/commands/` or an installed plugin. */
+	readonly source: 'workspace' | 'plugin';
+	/** Workspace file path, or the plugin id for a plugin-contributed command. */
 	readonly sourceRef: string;
 }
 
@@ -70,6 +73,7 @@ export class ChiposCommandsService {
 					commands.push({
 						name: child.name.replace(COMMAND_FILE_RE, ''),
 						body: content.value.toString(),
+						source: 'workspace',
 						sourceRef: child.resource.path,
 					});
 				} catch {
