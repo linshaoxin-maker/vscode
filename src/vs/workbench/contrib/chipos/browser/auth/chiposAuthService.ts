@@ -112,6 +112,24 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 			this._lastLoggedInState = newState;
 			this._onDidChangeLoginState.fire(newState);
 		}));
+
+		// A persisted session is restored SILENTLY by ChipOSTokenManager.initialize()
+		// (it reads the token from SecretStorage without firing onDidChangeToken,
+		// then confirms via restoreUserFromServer() which fires only onDidChangeUser).
+		// So on startup the access token can land with NO onDidChangeToken — meaning
+		// onDidChangeLoginState never fires, and consumers like the chat login gate
+		// stay stuck on "sign in" even though we are authenticated (while the settings
+		// account card, which listens to onDidChangeUser, correctly shows the user).
+		// Re-evaluate login state on user changes too; the same flip-gate suppresses
+		// true->true so routine refreshes don't re-fire (no spurious worker respawn).
+		this._register(this._tokenManager.onDidChangeUser(() => {
+			const newState = this._tokenManager.isLoggedIn();
+			if (this._lastLoggedInState === newState) {
+				return;
+			}
+			this._lastLoggedInState = newState;
+			this._onDidChangeLoginState.fire(newState);
+		}));
 	}
 
 	async login(): Promise<void> {
