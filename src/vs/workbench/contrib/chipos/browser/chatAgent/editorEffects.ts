@@ -24,6 +24,57 @@ import {
 } from '../eventStream/eventTypes.js';
 import { SkillTreeHandler, type ISkillTreeData, type ISkillDomain, type ISkillItem } from '../../browser/migration/skillTreeHandler.js';
 
+/**
+ * Node access for the git/file operations below. The browser layer isn't typed
+ * for Node, so we use the bare global `require` that Electron's renderer injects
+ * — the same binding gitImport.ts / gitLogProvider.ts rely on (`globalThis.require`
+ * is a DIFFERENT binding that is undefined in the renderer). It's declared locally
+ * (type-only, erased at runtime) and the Node module slices we touch are typed by
+ * hand, so the browser tsconfig (no `@types/node`) still type-checks without the
+ * TS2307/TS2591 errors a bare `require('child_process')` otherwise triggers.
+ * Resolves to undefined outside Electron, where every caller falls back gracefully.
+ */
+declare const require: ((moduleName: string) => unknown) | undefined;
+
+/** The slice of Node's `child_process` we use, typed locally to avoid node types. */
+interface INodeChildProcess {
+	exec(
+		command: string,
+		options: { readonly cwd?: string; readonly timeout?: number },
+		callback: (error: Error | null, stdout: string, stderr: string) => void,
+	): void;
+}
+
+/** The slice of Node's `fs` we use, typed locally to avoid node types. */
+interface INodeFs {
+	statSync(path: string): { isFile(): boolean };
+	readFileSync(path: string, encoding: 'utf8'): string;
+}
+
+/**
+ * Load `child_process` through the renderer's bare `require`, returning undefined
+ * when Node isn't reachable (non-Electron host) instead of throwing. The module
+ * specifier is kept literal — matching gitImport.ts and the original inline call
+ * — so the bundler/static analysis treats it exactly as before (a dynamic
+ * `require(variable)` would be analysed differently).
+ */
+function requireChildProcess(): INodeChildProcess | undefined {
+	try {
+		return typeof require === 'function' ? (require('child_process') as INodeChildProcess) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** As {@link requireChildProcess}, for Node's `fs`. Literal specifier, undefined off-Electron. */
+function requireFs(): INodeFs | undefined {
+	try {
+		return typeof require === 'function' ? (require('fs') as INodeFs) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface IFileChangeInfo {
 	path: string;
 	action: 'created' | 'modified';
@@ -324,8 +375,11 @@ export class ChipOSEditorEffects extends Disposable {
 		const modified = files.filter(f => f.action === 'modified').map(f => f.path);
 
 		if (modified.length) {
+			const cp = requireChildProcess();
 			try {
-				const cp: typeof import('child_process') = require('child_process');
+				if (!cp) {
+					throw new Error('Node child_process is not available in this environment.');
+				}
 				await new Promise<void>((resolve, reject) => {
 					cp.exec(`git checkout HEAD -- ${modified.map(p => `"${p}"`).join(' ')}`, { cwd: workspacePath }, (err) => {
 						if (err) { reject(err); } else { resolve(); }
@@ -364,8 +418,16 @@ export class ChipOSEditorEffects extends Disposable {
 			return;
 		}
 
+		const cp = requireChildProcess();
+		if (!cp) {
+			// require('child_process') not available in browser context — try
+			// the filesystem fallback directly so we still produce real line
+			// counts in restricted environments.
+			this._applyFilesystemFallbackStats(sessionResource, state);
+			return;
+		}
+
 		try {
-			const cp: typeof import('child_process') = require('child_process');
 			cp.exec('git diff --numstat HEAD', { cwd: workspacePath, timeout: 5000 }, (err, stdout) => {
 				const numstatEmpty = !stdout || !stdout.trim();
 				if (err || numstatEmpty) {
@@ -411,9 +473,8 @@ export class ChipOSEditorEffects extends Disposable {
 				}
 			});
 		} catch {
-			// require('child_process') not available in browser context — try
-			// the filesystem fallback directly so we still produce real line
-			// counts in restricted environments.
+			// Defensive: if cp.exec throws synchronously, fall back to the
+			// filesystem line counter so we still avoid the "+0 -0" sentinel.
 			this._applyFilesystemFallbackStats(sessionResource, state);
 		}
 	}
@@ -434,10 +495,8 @@ export class ChipOSEditorEffects extends Disposable {
 		state: ISessionEditorEffectsState,
 		onlyPaths?: readonly string[],
 	): void {
-		let fs: typeof import('fs');
-		try {
-			fs = require('fs');
-		} catch {
+		const fs = requireFs();
+		if (!fs) {
 			return;
 		}
 
