@@ -215,11 +215,21 @@ export class PluginsTab extends Disposable {
 			row.style.opacity = '0.55';
 		}
 
+		const icon = dom.append(row, dom.$('span.codicon.codicon-package'));
+		icon.style.fontSize = '16px';
+		icon.style.flexShrink = '0';
+		icon.style.color = 'var(--vscode-textLink-foreground)';
+
 		const nameCell = dom.append(row, dom.$('.chipos-rule-name'));
-		dom.append(nameCell, dom.$('span', undefined, summary.manifest.name));
+		nameCell.style.display = 'flex';
+		nameCell.style.flexDirection = 'column';
+		nameCell.style.gap = '2px';
+		nameCell.style.minWidth = '0';
+		const nameEl = dom.append(nameCell, dom.$('span'));
+		nameEl.style.fontWeight = '600';
+		nameEl.textContent = summary.manifest.name;
 
 		const meta = dom.append(nameCell, dom.$('span'));
-		meta.style.marginLeft = '8px';
 		meta.style.fontSize = '11px';
 		meta.style.color = 'var(--vscode-descriptionForeground)';
 		const parts: string[] = [localize('chipos.plugins.version', 'v{0}', summary.manifest.version)];
