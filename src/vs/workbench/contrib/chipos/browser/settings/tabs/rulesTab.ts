@@ -20,6 +20,13 @@ import { IContextViewProvider } from '../../../../../../base/browser/ui/contextv
 export class RulesTab extends Disposable {
 
 	private readonly _disposables = this._register(new DisposableStore());
+	// Rule-row listeners live here and are cleared on every re-detect — the rows
+	// are re-created each time, so registering them on `_disposables` would leak
+	// until the tab closes.
+	private readonly _rulesListDisposables = this._register(new DisposableStore());
+	// Monotonic token so a slower re-detect resolving after a newer one can't
+	// append stale/duplicate rows (the file scan is async).
+	private _rulesEpoch = 0;
 	private _rulesListContainer: HTMLElement | undefined;
 	private readonly _contextViewProvider: IContextViewProvider | undefined;
 
@@ -102,38 +109,52 @@ export class RulesTab extends Disposable {
 		try {
 			await this._fileService.writeFile(fileUri, VSBuffer.fromString(template));
 			await this._editorService.openEditor({ resource: fileUri });
-			// Guard against tab dispose during the await above.
+			// _detectProjectRules clears + re-renders the list itself (epoch-guarded).
 			if (this._rulesListContainer?.isConnected) {
-				dom.clearNode(this._rulesListContainer);
 				this._detectProjectRules(this._rulesListContainer);
 			}
 		} catch { /* ignore */ }
 	}
 
 	private async _detectProjectRules(container: HTMLElement): Promise<void> {
+		const epoch = ++this._rulesEpoch;
 		const folders = this._workspaceService.getWorkspace().folders;
+
+		// Gather the rule files (async) BEFORE touching the DOM, so the
+		// clear + render below is one synchronous step guarded by the epoch
+		// (no duplicate rows from concurrent calls, no leaked row listeners).
+		let files: Array<{ resource: URI; name: string }> | undefined;
+		let errored = false;
+		if (folders.length > 0) {
+			const rulesDir = URI.joinPath(folders[0].uri, '.chipos', 'rules');
+			try {
+				const stat = await this._fileService.resolve(rulesDir);
+				files = (stat.children ?? []).filter(c => !c.isDirectory).map(c => ({ resource: c.resource, name: c.name }));
+			} catch {
+				errored = true;
+			}
+		}
+
+		// A newer re-detect started while we awaited, or the tab was disposed.
+		if (epoch !== this._rulesEpoch || !container.isConnected) {
+			return;
+		}
+		this._rulesListDisposables.clear();
+		dom.clearNode(container);
+
 		if (folders.length === 0) {
 			dom.append(container, dom.$('.chipos-setting-description', undefined,
 				localize('chipos.rules.noWorkspace', 'No workspace open. Open a folder to see project rules.')));
-			return;
-		}
-
-		const rulesDir = URI.joinPath(folders[0].uri, '.chipos', 'rules');
-		try {
-			const stat = await this._fileService.resolve(rulesDir);
-			if (stat.children && stat.children.length > 0) {
-				for (const child of stat.children) {
-					if (!child.isDirectory) {
-						this._renderRuleRow(container, child.resource, child.name);
-					}
-				}
-			} else {
-				dom.append(container, dom.$('.chipos-setting-description', undefined,
-					localize('chipos.rules.empty', 'No rules files found in .chipos/rules/. Create .md files to provide project-specific instructions.')));
-			}
-		} catch {
+		} else if (errored) {
 			dom.append(container, dom.$('.chipos-setting-description', undefined,
 				localize('chipos.rules.noDir', 'No .chipos/rules/ directory found. Create it to add project rules.')));
+		} else if (!files || files.length === 0) {
+			dom.append(container, dom.$('.chipos-setting-description', undefined,
+				localize('chipos.rules.empty', 'No rules files found in .chipos/rules/. Create .md files to provide project-specific instructions.')));
+		} else {
+			for (const file of files) {
+				this._renderRuleRow(container, file.resource, file.name);
+			}
 		}
 	}
 
@@ -147,13 +168,13 @@ export class RulesTab extends Disposable {
 
 		const editBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
 		editBtn.textContent = localize('chipos.rules.edit', 'Edit');
-		this._disposables.add(dom.addDisposableListener(editBtn, 'click', () => {
+		this._rulesListDisposables.add(dom.addDisposableListener(editBtn, 'click', () => {
 			this._editorService.openEditor({ resource });
 		}));
 
 		const deleteBtn = dom.append(actions, dom.$('button.chipos-btn-secondary.chipos-btn-danger'));
 		deleteBtn.textContent = localize('chipos.rules.delete', 'Delete');
-		this._disposables.add(dom.addDisposableListener(deleteBtn, 'click', async () => {
+		this._rulesListDisposables.add(dom.addDisposableListener(deleteBtn, 'click', async () => {
 			try {
 				await this._fileService.del(resource);
 				row.remove();

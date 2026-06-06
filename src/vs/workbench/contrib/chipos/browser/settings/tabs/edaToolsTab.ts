@@ -64,6 +64,12 @@ const STRATEGY_OPTIONS: { value: string; label: string; desc: string }[] = [
 export class EdaToolsTab extends Disposable {
 
 	private readonly _disposables = this._register(new DisposableStore());
+	// Per-row listeners are re-created on every table re-render (a checkbox/filter
+	// change rebuilds the whole body), so they must NOT go on the class-level
+	// `_disposables` — that leaks one set of listeners per re-render until the tab
+	// closes. These stores are cleared at the top of each table render instead.
+	private readonly _toolRowDisposables = this._register(new DisposableStore());
+	private readonly _serverRowDisposables = this._register(new DisposableStore());
 	private _toolsTableBody: HTMLElement | undefined;
 	private _serversTableBody: HTMLElement | undefined;
 	// P2 UX: filter state for the tools table. `query` is a substring match
@@ -430,6 +436,7 @@ export class EdaToolsTab extends Disposable {
 		const prevScrollTop = scrollEl?.scrollTop ?? 0;
 
 		dom.clearNode(this._toolsTableBody);
+		this._toolRowDisposables.clear(); // dispose the previous rows' listeners
 
 		// Apply current filter + sort (P2 UX). Default sort = status puts
 		// READY tools first (less anxiety-inducing than missing-first).
@@ -499,7 +506,7 @@ export class EdaToolsTab extends Disposable {
 		const cb = dom.append(selCell, dom.$('input')) as HTMLInputElement;
 		cb.type = 'checkbox';
 		cb.checked = this._selectedTools.has(r.tool_name);
-		this._disposables.add(dom.addDisposableListener(cb, 'change', () => {
+		this._toolRowDisposables.add(dom.addDisposableListener(cb, 'change', () => {
 			if (cb.checked) { this._selectedTools.add(r.tool_name); }
 			else { this._selectedTools.delete(r.tool_name); }
 			this._updateBulkButtonOnly();
@@ -517,7 +524,7 @@ export class EdaToolsTab extends Disposable {
 		const sourceBtn = dom.append(sourceCell, dom.$('button.chipos-btn-link'));
 		sourceBtn.textContent = userSource;
 		sourceBtn.title = localize('chipos.edaTools.editSource', 'Change source for {0} (currently: {1})', r.tool_name, userSource);
-		this._disposables.add(dom.addDisposableListener(sourceBtn, 'click', () => {
+		this._toolRowDisposables.add(dom.addDisposableListener(sourceBtn, 'click', () => {
 			this._openSourcePicker(r.tool_name);
 		}));
 
@@ -548,7 +555,7 @@ export class EdaToolsTab extends Disposable {
 		const menuBtn = dom.append(actionCell, dom.$('button.chipos-btn-icon'));
 		menuBtn.textContent = '⋯';
 		menuBtn.title = localize('chipos.edaTools.toolActions', 'Tool actions');
-		this._disposables.add(dom.addDisposableListener(menuBtn, 'click', () => {
+		this._toolRowDisposables.add(dom.addDisposableListener(menuBtn, 'click', () => {
 			this._openToolActionsMenu(r, menuBtn);
 		}));
 	}
@@ -722,6 +729,7 @@ export class EdaToolsTab extends Disposable {
 	private _renderServersTable(payload: McpServerListResult): void {
 		if (!this._serversTableBody) { return; }
 		dom.clearNode(this._serversTableBody);
+		this._serverRowDisposables.clear(); // dispose the previous rows' listeners
 		if (payload.servers.length === 0) {
 			const empty = dom.append(this._serversTableBody, dom.$('tr'));
 			const cell = dom.append(empty, dom.$('td.chipos-eda-empty')) as HTMLTableCellElement;
@@ -783,7 +791,7 @@ export class EdaToolsTab extends Disposable {
 		const actionCell = dom.append(tr, dom.$('td'));
 		const menuBtn = dom.append(actionCell, dom.$('button.chipos-btn-icon'));
 		menuBtn.textContent = '⋯';
-		this._disposables.add(dom.addDisposableListener(menuBtn, 'click', async () => {
+		this._serverRowDisposables.add(dom.addDisposableListener(menuBtn, 'click', async () => {
 			const picked = await this._quickInput.pick([
 				{ label: localize('chipos.edaTools.server.test', 'Test connection') },
 				{ label: localize('chipos.edaTools.server.copyInfo', 'Copy server info') },
