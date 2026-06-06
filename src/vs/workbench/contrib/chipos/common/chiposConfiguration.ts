@@ -236,6 +236,12 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.hooks.disabled.desc', 'Scope-qualified ids ("workspace:<file>"/"user:<file>") of hook files that are disabled. A disabled hook file stays on disk but its hooks are not registered. Managed from the Hooks settings tab.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+		'chipos.mcp.disabled': {
+			type: 'object',
+			default: {},
+			description: localize('chipos.mcp.disabled.desc', 'Disabled worker-side MCP servers, stored as { name: serverConfig }. Disabling a server removes it from the worker (so it stops running) but stashes its config here so it can be re-enabled. Managed from the EDA Tools settings tab.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 
 		// ── Plugins ──
 		'chipos.plugins.disabled': {

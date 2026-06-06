@@ -821,8 +821,10 @@ export class EdaToolsTab extends Disposable {
 	private _renderServersTable(payload: McpServerListResult): void {
 		if (!this._serversTableBody) { return; }
 		dom.clearNode(this._serversTableBody);
-		this._serverRowDisposables.clear(); // dispose the previous rows' listeners
-		if (payload.servers.length === 0) {
+		this._serverRowDisposables.clear();
+		const disabled = Object.values(this._getDisabledMcp());
+		const activeNames = new Set(payload.servers.map(srv => srv.name));
+		if (payload.servers.length === 0 && disabled.length === 0) {
 			const empty = dom.append(this._serversTableBody, dom.$('tr'));
 			const cell = dom.append(empty, dom.$('td.chipos-eda-empty')) as HTMLTableCellElement;
 			cell.colSpan = 5;
@@ -831,73 +833,134 @@ export class EdaToolsTab extends Disposable {
 			return;
 		}
 		for (const srv of payload.servers) {
-			this._renderServerRow(this._serversTableBody, srv);
+			this._renderServerRow(this._serversTableBody, srv, false);
+		}
+		for (const srv of disabled) {
+			if (!activeNames.has(srv.name)) {
+				this._renderServerRow(this._serversTableBody, srv, true);
+			}
 		}
 	}
 
-	private _renderServerRow(parent: HTMLElement, srv: McpServerConfig): void {
+	/** Disabled worker MCP servers stashed in `chipos.mcp.disabled` (name -> config). */
+	private _getDisabledMcp(): Record<string, McpServerConfig> {
+		const raw = this._configService.getValue<Record<string, McpServerConfig>>('chipos.mcp.disabled');
+		return (raw && typeof raw === 'object') ? raw : {};
+	}
+
+	/**
+	 * Real, worker-backed enable/disable. Disable removes the server from the
+	 * worker (so it stops running) and stashes its config in `chipos.mcp.disabled`;
+	 * enable re-adds the stashed config. The worker has no soft-disable flag, so
+	 * this remove+stash+re-add is the honest mechanism (not a cosmetic toggle).
+	 */
+	private async _setMcpEnabled(srv: McpServerConfig, enable: boolean): Promise<void> {
+		const map = { ...this._getDisabledMcp() };
+		try {
+			if (enable) {
+				const stashed = map[srv.name] ?? srv;
+				const res = await this._toolManager.addMcpServer(stashed);
+				if (!res.success) {
+					this._notif.error(localize('chipos.edaTools.enableFailed', 'Could not enable {0}: {1}', srv.name, res.error ?? res.message ?? ''));
+					return;
+				}
+				delete map[srv.name];
+			} else {
+				const res = await this._toolManager.removeMcpServer(srv.name);
+				if (!res.success) {
+					this._notif.error(localize('chipos.edaTools.disableFailed', 'Could not disable {0}: {1}', srv.name, res.error ?? res.message ?? ''));
+					return;
+				}
+				map[srv.name] = { name: srv.name, command: srv.command, args: srv.args, env: srv.env, cwd: srv.cwd, transport: srv.transport };
+			}
+			await this._configService.updateValue('chipos.mcp.disabled', map, ConfigurationTarget.USER);
+		} catch (err) {
+			this._notif.error(localize('chipos.edaTools.mcpToggleErr', 'MCP toggle failed: {0}', String(err)));
+		}
+		await this._refreshLiveData();
+	}
+
+	private _renderServerRow(parent: HTMLElement, srv: McpServerConfig, disabled: boolean): void {
 		const tr = dom.append(parent, dom.$('tr'));
+		if (disabled) {
+			tr.style.opacity = '0.55';
+		}
 		dom.append(tr, dom.$('td', undefined, srv.name));
 		dom.append(tr, dom.$('td', undefined, srv.transport ?? 'stdio'));
-		// P0 UX #11: 4-way status from background health probe.
 		const statusCell = dom.append(tr, dom.$('td'));
-		const health = srv.health?.status ?? 'unknown';
 		const provides = srv.provides ?? [];
 		const span = dom.append(statusCell, dom.$('span'));
-		switch (health) {
-			case 'connected':
-				span.classList.add('chipos-status-ok');
-				span.textContent = localize('chipos.edaTools.serverStatus.connected', '✓ connected');
-				if (srv.health?.latency_ms != null) {
-					span.textContent += ` (${srv.health.latency_ms}ms)`;
-				}
-				break;
-			case 'no_tools':
-				span.classList.add('chipos-status-warn');
-				span.textContent = localize('chipos.edaTools.serverStatus.noTools', '⚠ no tools discovered');
-				break;
-			case 'handshake_failed':
-				span.classList.add('chipos-status-err');
-				span.textContent = localize('chipos.edaTools.serverStatus.handshake', '✗ handshake failed');
-				if (srv.health?.error) {
-					span.title = srv.health.error;
-				}
-				break;
-			case 'unreachable':
-				span.classList.add('chipos-status-err');
-				span.textContent = localize('chipos.edaTools.serverStatus.unreachable', '✗ unreachable');
-				if (srv.health?.error) {
-					span.title = srv.health.error;
-				}
-				break;
-			default:
-				span.classList.add('chipos-status-unknown');
-				span.textContent = localize('chipos.edaTools.serverStatus.unknown', '? probing…');
+		if (disabled) {
+			span.classList.add('chipos-status-unknown');
+			span.textContent = localize('chipos.edaTools.serverStatus.disabled', '⊘ disabled');
+		} else {
+			const health = srv.health?.status ?? 'unknown';
+			switch (health) {
+				case 'connected':
+					span.classList.add('chipos-status-ok');
+					span.textContent = localize('chipos.edaTools.serverStatus.connected', '✓ connected');
+					if (srv.health?.latency_ms != null) {
+						span.textContent += ` (${srv.health.latency_ms}ms)`;
+					}
+					break;
+				case 'no_tools':
+					span.classList.add('chipos-status-warn');
+					span.textContent = localize('chipos.edaTools.serverStatus.noTools', '⚠ no tools discovered');
+					break;
+				case 'handshake_failed':
+					span.classList.add('chipos-status-err');
+					span.textContent = localize('chipos.edaTools.serverStatus.handshake', '✗ handshake failed');
+					if (srv.health?.error) { span.title = srv.health.error; }
+					break;
+				case 'unreachable':
+					span.classList.add('chipos-status-err');
+					span.textContent = localize('chipos.edaTools.serverStatus.unreachable', '✗ unreachable');
+					if (srv.health?.error) { span.title = srv.health.error; }
+					break;
+				default:
+					span.classList.add('chipos-status-unknown');
+					span.textContent = localize('chipos.edaTools.serverStatus.unknown', '? probing…');
+			}
 		}
 		dom.append(tr, dom.$('td', undefined,
-			provides.length > 0
+			(!disabled && provides.length > 0)
 				? `${provides.length}: ${provides.slice(0, 3).join(', ')}${provides.length > 3 ? '…' : ''}`
 				: '—'));
 
-		// Action: ⋯ → Test / Copy info / Remove
 		const actionCell = dom.append(tr, dom.$('td'));
 		const menuBtn = dom.append(actionCell, dom.$('button.chipos-btn-icon'));
 		menuBtn.textContent = '⋯';
 		this._serverRowDisposables.add(dom.addDisposableListener(menuBtn, 'click', async () => {
-			const picked = await this._quickInput.pick([
-				{ label: localize('chipos.edaTools.server.test', 'Test connection') },
-				{ label: localize('chipos.edaTools.server.copyInfo', 'Copy server info') },
-				{ label: localize('chipos.edaTools.server.remove', 'Remove') },
-			], { title: localize('chipos.edaTools.server.menuTitle', '{0} — actions', srv.name) });
+			const items = disabled
+				? [
+					{ id: 'enable', label: localize('chipos.edaTools.server.enable', 'Enable') },
+					{ id: 'remove', label: localize('chipos.edaTools.server.remove', 'Remove') },
+				]
+				: [
+					{ id: 'test', label: localize('chipos.edaTools.server.test', 'Test connection') },
+					{ id: 'copy', label: localize('chipos.edaTools.server.copyInfo', 'Copy server info') },
+					{ id: 'disable', label: localize('chipos.edaTools.server.disable', 'Disable') },
+					{ id: 'remove', label: localize('chipos.edaTools.server.remove', 'Remove') },
+				];
+			const picked = await this._quickInput.pick(items, { title: localize('chipos.edaTools.server.menuTitle2', '{0} actions', srv.name) });
 			if (!picked) { return; }
 			const args = { $treeItemHandle: `worker-mcp:${srv.name}` };
-			if (picked.label.startsWith('Test') || picked.label.includes('Test')) {
-				await this._commandService.executeCommand('chipos.eda.server.test', args);
-			} else if (picked.label.includes('Copy')) {
-				await this._commandService.executeCommand('chipos.eda.server.copyInfo', args);
-			} else {
-				await this._commandService.executeCommand('chipos.workerTools.removeMcpServer', args);
-				await this._refreshLiveData();
+			switch (picked.id) {
+				case 'enable': await this._setMcpEnabled(srv, true); break;
+				case 'disable': await this._setMcpEnabled(srv, false); break;
+				case 'test': await this._commandService.executeCommand('chipos.eda.server.test', args); break;
+				case 'copy': await this._commandService.executeCommand('chipos.eda.server.copyInfo', args); break;
+				case 'remove':
+					if (disabled) {
+						const map = { ...this._getDisabledMcp() };
+						delete map[srv.name];
+						await this._configService.updateValue('chipos.mcp.disabled', map, ConfigurationTarget.USER);
+						await this._refreshLiveData();
+					} else {
+						await this._commandService.executeCommand('chipos.workerTools.removeMcpServer', args);
+						await this._refreshLiveData();
+					}
+					break;
 			}
 		}));
 	}
