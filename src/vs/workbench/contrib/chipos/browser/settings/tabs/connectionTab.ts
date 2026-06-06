@@ -23,6 +23,11 @@ export class ConnectionTab extends Disposable {
 	private _modeSpecificContainer: HTMLElement | undefined;
 	private _modeSpecificTitleEl: HTMLElement | undefined;
 	private readonly _disposables = this._register(new DisposableStore());
+	// The mode-specific inputs (InputBoxes + their listeners) are re-created every
+	// time the backend mode changes (`_renderModeSpecificSettings` clearNodes +
+	// rebuilds). They must NOT go on `_disposables` — that leaks a full set of
+	// InputBox widgets per mode change. This store is cleared on each rebuild.
+	private readonly _modeSettingsDisposables = this._register(new DisposableStore());
 	private readonly _contextViewProvider: IContextViewProvider | undefined;
 
 	constructor(
@@ -262,6 +267,7 @@ export class ConnectionTab extends Disposable {
 			return;
 		}
 		dom.clearNode(container);
+		this._modeSettingsDisposables.clear(); // dispose the previous mode's inputs
 
 		const mode = this._configurationService.getValue<string>('chipos.backend.mode') ?? 'auto';
 		this._updateModeSpecificTitle(mode);
@@ -322,7 +328,7 @@ export class ConnectionTab extends Disposable {
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+		const inputBox = this._modeSettingsDisposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'https://reasoning.chipos.ai',
 			inputBoxStyles: defaultInputBoxStyles,
 			validationOptions: {
@@ -342,7 +348,7 @@ export class ConnectionTab extends Disposable {
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.backend.reasoningUrl') || '';
 
-		this._disposables.add(inputBox.onDidChange(value => {
+		this._modeSettingsDisposables.add(inputBox.onDidChange(value => {
 			if (!value) {
 				this._configurationService.updateValue('chipos.backend.reasoningUrl', value, ConfigurationTarget.USER);
 				return;
@@ -364,7 +370,7 @@ export class ConnectionTab extends Disposable {
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+		const inputBox = this._modeSettingsDisposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'reasoning.chipos.ai:50051',
 			inputBoxStyles: defaultInputBoxStyles,
 			validationOptions: {
@@ -386,7 +392,7 @@ export class ConnectionTab extends Disposable {
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.backend.grpcAddress') || '';
 
-		this._disposables.add(inputBox.onDidChange(value => {
+		this._modeSettingsDisposables.add(inputBox.onDidChange(value => {
 			if (!value) {
 				this._configurationService.updateValue('chipos.backend.grpcAddress', value, ConfigurationTarget.USER);
 				return;
@@ -407,7 +413,7 @@ export class ConnectionTab extends Disposable {
 			localize('chipos.settings.websiteUrl.desc', 'Required for OAuth login and token refresh. Example: http://121.89.82.122')));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+		const inputBox = this._modeSettingsDisposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'http://121.89.82.122',
 			inputBoxStyles: defaultInputBoxStyles,
 			validationOptions: {
@@ -428,7 +434,7 @@ export class ConnectionTab extends Disposable {
 			}
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.auth.websiteUrl') || '';
-		this._disposables.add(inputBox.onDidChange(value => {
+		this._modeSettingsDisposables.add(inputBox.onDidChange(value => {
 			if (!value) {
 				this._configurationService.updateValue('chipos.auth.websiteUrl', value, ConfigurationTarget.USER);
 				return;
@@ -451,13 +457,13 @@ export class ConnectionTab extends Disposable {
 			localize('chipos.settings.workerApiKey.desc', 'Independent API key for Worker → Reasoner gRPC authentication. Separate from user login token.')));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, undefined, {
+		const inputBox = this._modeSettingsDisposables.add(new InputBox(inputContainer, undefined, {
 			type: 'password',
 			placeholder: localize('chipos.settings.workerApiKey.placeholder', 'Worker API key (optional for local mode)'),
 			inputBoxStyles: defaultInputBoxStyles,
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.worker.apiKey') ?? '';
-		this._disposables.add(inputBox.onDidChange(value => {
+		this._modeSettingsDisposables.add(inputBox.onDidChange(value => {
 			this._configurationService.updateValue('chipos.worker.apiKey', value, ConfigurationTarget.USER);
 		}));
 	}
@@ -470,14 +476,14 @@ export class ConnectionTab extends Disposable {
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+		const inputBox = this._modeSettingsDisposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'eyJhbGciOiJIUzI1NiIs...',
 			type: 'password',
 			inputBoxStyles: defaultInputBoxStyles,
 		}));
 		inputBox.value = this._configurationService.getValue<string>('chipos.backend.token') || '';
 
-		this._disposables.add(inputBox.onDidChange(value => {
+		this._modeSettingsDisposables.add(inputBox.onDidChange(value => {
 			this._configurationService.updateValue('chipos.backend.token', value, ConfigurationTarget.USER);
 		}));
 	}
@@ -502,7 +508,7 @@ export class ConnectionTab extends Disposable {
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+		const inputBox = this._modeSettingsDisposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: localize('chipos.settings.workerHttpPortRange.placeholder', 'e.g. 50000-50099 (empty = kernel-assigned)'),
 			inputBoxStyles: defaultInputBoxStyles,
 			validationOptions: {
@@ -608,7 +614,7 @@ export class ConnectionTab extends Disposable {
 		// 首次渲染
 		renderImpact(initialValue, false);
 
-		this._disposables.add(inputBox.onDidChange(value => {
+		this._modeSettingsDisposables.add(inputBox.onDidChange(value => {
 			const trimmed = (value || '').trim();
 			// Only persist when format is valid OR explicitly empty (clear it).
 			if (!trimmed) {
@@ -641,7 +647,7 @@ export class ConnectionTab extends Disposable {
 		));
 
 		const inputContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		const inputBox = this._disposables.add(new InputBox(inputContainer, this._contextViewProvider, {
+		const inputBox = this._modeSettingsDisposables.add(new InputBox(inputContainer, this._contextViewProvider, {
 			placeholder: 'http://127.0.0.1:8081',
 			inputBoxStyles: defaultInputBoxStyles,
 			validationOptions: {
@@ -687,7 +693,7 @@ export class ConnectionTab extends Disposable {
 		};
 		renderImpact(inputBox.value);
 
-		this._disposables.add(inputBox.onDidChange(value => {
+		this._modeSettingsDisposables.add(inputBox.onDidChange(value => {
 			renderImpact(value);
 			if (!value) {
 				this._configurationService.updateValue('chipos.backend.workerHttpUrl', value, ConfigurationTarget.USER);
@@ -713,7 +719,7 @@ export class ConnectionTab extends Disposable {
 	private _renderTlsEnabled(parent: HTMLElement): void {
 		const row = dom.append(parent, dom.$('.chipos-setting-row-horizontal'));
 
-		const checkbox = this._disposables.add(new Checkbox(
+		const checkbox = this._modeSettingsDisposables.add(new Checkbox(
 			localize('chipos.settings.tlsEnabled', 'Enable TLS for gRPC'),
 			this._configurationService.getValue<boolean>('chipos.backend.tlsEnabled') ?? false,
 			defaultCheckboxStyles,
@@ -725,7 +731,7 @@ export class ConnectionTab extends Disposable {
 			localize('chipos.settings.tlsEnabled.desc', 'Enable TLS encryption for gRPC connections between Worker and Reasoner.')
 		));
 
-		this._disposables.add(checkbox.onChange(() => {
+		this._modeSettingsDisposables.add(checkbox.onChange(() => {
 			this._configurationService.updateValue('chipos.backend.tlsEnabled', checkbox.checked, ConfigurationTarget.USER);
 		}));
 	}

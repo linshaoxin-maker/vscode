@@ -23,7 +23,7 @@
  */
 
 import * as dom from '../../../../../../base/browser/dom.js';
-import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../../nls.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -70,6 +70,10 @@ export class EdaToolsTab extends Disposable {
 	// closes. These stores are cleared at the top of each table render instead.
 	private readonly _toolRowDisposables = this._register(new DisposableStore());
 	private readonly _serverRowDisposables = this._register(new DisposableStore());
+	// The in-app menu popover: holds the open popover's element-removal +
+	// listeners. Opening a new one (or disposing the tab) disposes the previous,
+	// so menu opens don't leak item/dismiss listeners.
+	private readonly _popover = this._register(new MutableDisposable<DisposableStore>());
 	private _toolsTableBody: HTMLElement | undefined;
 	private _serversTableBody: HTMLElement | undefined;
 	// P2 UX: filter state for the tools table. `query` is a substring match
@@ -647,7 +651,8 @@ export class EdaToolsTab extends Disposable {
 	 */
 	private _showInAppPopover(anchor: HTMLElement, items: { label: string; danger?: boolean; run: () => Promise<void> }[]): void {
 		// Remove any prior popover (only one open at a time)
-		document.querySelectorAll('.chipos-eda-popover').forEach(el => el.remove());
+		// Close any popover already open (disposes its listeners + removes it).
+		this._popover.clear();
 
 		const host = document.querySelector('.monaco-workbench') || document.body;
 		const rect = anchor.getBoundingClientRect();
@@ -661,40 +666,35 @@ export class EdaToolsTab extends Disposable {
 		pop.style.minWidth = `${POPOVER_WIDTH}px`;
 		pop.style.zIndex = '10000';
 
+		// Everything tied to this popover lives in one store; disposing it removes
+		// the element + every listener (no per-open leak; a tab dispose cleans it).
+		const store = new DisposableStore();
+		this._popover.value = store;
+		store.add(toDisposable(() => pop.remove()));
+		const close = () => this._popover.clear();
+
 		for (const item of items) {
 			const row = dom.append(pop, dom.$('.chipos-eda-popover-item'));
 			if (item.danger) { row.classList.add('danger'); }
 			row.textContent = item.label;
-			const close = () => {
-				pop.remove();
-				document.removeEventListener('mousedown', outsideClickHandler, true);
-				document.removeEventListener('keydown', keyHandler, true);
-			};
-			this._disposables.add(dom.addDisposableListener(row, 'click', async () => {
+			store.add(dom.addDisposableListener(row, 'click', async () => {
 				close();
 				try { await item.run(); } catch (e) { this._log.warn('[EdaToolsTab] menu action threw:', String(e)); }
 			}));
 		}
 
-		// Dismiss handlers — outside click + Escape
+		// Dismiss on outside click / Escape. Deferred attach so the opening
+		// click doesn't immediately close it.
 		const outsideClickHandler = (e: MouseEvent) => {
-			if (!pop.contains(e.target as Node) && e.target !== anchor) {
-				pop.remove();
-				document.removeEventListener('mousedown', outsideClickHandler, true);
-				document.removeEventListener('keydown', keyHandler, true);
-			}
+			if (!pop.contains(e.target as Node) && e.target !== anchor) { close(); }
 		};
 		const keyHandler = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') {
-				pop.remove();
-				document.removeEventListener('mousedown', outsideClickHandler, true);
-				document.removeEventListener('keydown', keyHandler, true);
-			}
+			if (e.key === 'Escape') { close(); }
 		};
-		// Defer attach so the click that opened the menu doesn't immediately close it
 		setTimeout(() => {
-			document.addEventListener('mousedown', outsideClickHandler, true);
-			document.addEventListener('keydown', keyHandler, true);
+			if (this._popover.value !== store) { return; } // already closed/replaced
+			store.add(dom.addDisposableListener(document, 'mousedown', outsideClickHandler, true));
+			store.add(dom.addDisposableListener(document, 'keydown', keyHandler, true));
 		}, 0);
 	}
 
