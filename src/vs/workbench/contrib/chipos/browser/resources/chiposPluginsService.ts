@@ -151,6 +151,12 @@ export class ChiposPluginsService {
 		await this._fileService.createFolder(cloneParent);
 		const tempDir = URI.joinPath(cloneParent, generateUuid());
 		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 });
+		// Drop the cloned `.git` history so it is not copied into the install.
+		try {
+			await this._fileService.del(URI.joinPath(tempDir, '.git'), { recursive: true, useTrash: false });
+		} catch {
+			// best-effort: a plugin still installs fine if .git is absent / undeletable
+		}
 		return tempDir;
 	}
 
