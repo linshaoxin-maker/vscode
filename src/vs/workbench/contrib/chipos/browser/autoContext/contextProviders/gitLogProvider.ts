@@ -6,6 +6,33 @@
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ContextSourceType, IContextItem, IContextProvider } from '../../../../../../workbench/contrib/chipos/browser/autoContext/contextTypes.js';
 
+/**
+ * `git log` needs Node, which the browser layer doesn't type. We use the bare
+ * global `require` Electron's renderer injects (the same binding editorEffects.ts
+ * / gitImport.ts rely on; `globalThis.require` is a DIFFERENT, undefined binding),
+ * declared locally so the browser tsconfig (no `@types/node`) type-checks, with a
+ * hand-typed slice of `child_process` and a literal-specifier helper. Resolves to
+ * undefined outside Electron, where collect() degrades to no git-log context.
+ */
+declare const require: ((moduleName: string) => unknown) | undefined;
+
+/** The slice of Node's `child_process` we use, typed locally to avoid node types. */
+interface INodeChildProcess {
+	exec(
+		command: string,
+		options: { readonly cwd?: string; readonly timeout?: number },
+		callback: (error: Error | null, stdout: string, stderr: string) => void,
+	): void;
+}
+
+function requireChildProcess(): INodeChildProcess | undefined {
+	try {
+		return typeof require === 'function' ? (require('child_process') as INodeChildProcess) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 const MAX_COMMITS = 5;
 
 export class GitLogProvider implements IContextProvider {
@@ -44,8 +71,12 @@ export class GitLogProvider implements IContextProvider {
 
 	private _execGitLog(cwd: string): Promise<string | undefined> {
 		return new Promise((resolve) => {
+			const cp = requireChildProcess();
+			if (!cp) {
+				resolve(undefined);
+				return;
+			}
 			try {
-				const cp: typeof import('child_process') = require('child_process');
 				cp.exec(
 					`git log --oneline --no-decorate -n ${MAX_COMMITS}`,
 					{ cwd, timeout: 5000 },
