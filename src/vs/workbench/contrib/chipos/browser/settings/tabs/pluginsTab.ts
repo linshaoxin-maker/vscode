@@ -10,6 +10,7 @@ import { IInstantiationService } from '../../../../../../platform/instantiation/
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IDialogService } from '../../../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
+import { IProgressService, ProgressLocation } from '../../../../../../platform/progress/common/progress.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { ChiposPluginsService, PluginContributionSummary } from '../../resources/chiposPluginsService.js';
 import { ChiposPluginCatalogService, CatalogEntry } from '../../resources/catalogClient.js';
@@ -24,6 +25,14 @@ import { ChiposPluginCatalogService, CatalogEntry } from '../../resources/catalo
 export class PluginsTab extends Disposable {
 
 	private readonly _disposables = this._register(new DisposableStore());
+	// Listeners for the installed-list rows live here and are cleared on every
+	// reload — the rows are re-created on each refresh, so registering their
+	// listeners on the class-level store would leak them until the tab closes.
+	private readonly _listDisposables = this._register(new DisposableStore());
+	// Monotonic token so a slower reload that resolves after a newer one can't
+	// append stale rows (the scan is async — fast refreshes would otherwise
+	// duplicate rows).
+	private _listEpoch = 0;
 	private _listContainer: HTMLElement | undefined;
 	private _catalogContainer: HTMLElement | undefined;
 
@@ -33,6 +42,7 @@ export class PluginsTab extends Disposable {
 		@ICommandService private readonly _commandService: ICommandService,
 		@IDialogService private readonly _dialogService: IDialogService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IProgressService private readonly _progressService: IProgressService,
 	) {
 		super();
 		this._render();
@@ -146,7 +156,14 @@ export class PluginsTab extends Disposable {
 				return;
 			}
 			try {
-				const result = await this._service().installFromGit(entry.repo);
+				const result = await this._progressService.withProgress(
+					{
+						location: ProgressLocation.Notification,
+						title: localize('chipos.plugins.catalog.installing', 'Installing "{0}" from the catalog…', entry.name),
+						cancellable: false,
+					},
+					() => this._service().installFromGit(entry.repo),
+				);
 				this._notificationService.info(localize('chipos.plugins.catalog.done', 'Installed plugin "{0}".', result.manifest.name));
 			} catch (err) {
 				this._notificationService.error(localize('chipos.plugins.catalog.failed', 'Could not install "{0}": {1}', entry.name, err instanceof Error ? err.message : String(err)));
@@ -156,24 +173,29 @@ export class PluginsTab extends Disposable {
 	}
 
 	private _refresh(): void {
-		// Guard against tab dispose between the install await and the re-render.
+		// _loadPlugins clears the list itself after its async scan (guarded by the
+		// epoch token), so two fast refreshes can't append duplicate rows.
 		if (this._listContainer?.isConnected) {
-			dom.clearNode(this._listContainer);
 			this._loadPlugins(this._listContainer);
 		}
 	}
 
 	private async _loadPlugins(container: HTMLElement): Promise<void> {
+		const epoch = ++this._listEpoch;
 		let summaries: PluginContributionSummary[];
 		try {
 			summaries = await this._service().getInstalledPluginSummaries();
 		} catch {
 			summaries = [];
 		}
-		// The scan above is async — the tab may have been disposed meanwhile.
-		if (!container.isConnected) {
+		// Bail if a newer reload started while we awaited (else fast refreshes
+		// duplicate rows), or the tab was disposed.
+		if (epoch !== this._listEpoch || !container.isConnected) {
 			return;
 		}
+		// Latest reload wins: dispose the previous rows' listeners + clear the DOM.
+		this._listDisposables.clear();
+		dom.clearNode(container);
 		if (summaries.length === 0) {
 			dom.append(container, dom.$('.chipos-setting-description', undefined,
 				localize('chipos.plugins.empty', 'No plugins installed. Use "Install from Local…" to add one from a folder.')));
@@ -228,7 +250,7 @@ export class PluginsTab extends Disposable {
 		toggleBtn.textContent = summary.enabled
 			? localize('chipos.plugins.disable', 'Disable')
 			: localize('chipos.plugins.enable', 'Enable');
-		this._disposables.add(dom.addDisposableListener(toggleBtn, 'click', async () => {
+		this._listDisposables.add(dom.addDisposableListener(toggleBtn, 'click', async () => {
 			try {
 				await this._service().setPluginEnabled(summary.manifest.id, !summary.enabled);
 			} catch (err) {
@@ -239,7 +261,7 @@ export class PluginsTab extends Disposable {
 
 		const uninstallBtn = dom.append(actions, dom.$('button.chipos-btn-secondary.chipos-btn-danger'));
 		uninstallBtn.textContent = localize('chipos.plugins.uninstall', 'Uninstall');
-		this._disposables.add(dom.addDisposableListener(uninstallBtn, 'click', async () => {
+		this._listDisposables.add(dom.addDisposableListener(uninstallBtn, 'click', async () => {
 			const confirmed = await this._dialogService.confirm({
 				message: localize('chipos.plugins.uninstall.confirm', 'Uninstall plugin "{0}"?', summary.manifest.name),
 				detail: localize('chipos.plugins.uninstall.detail', 'This permanently deletes the plugin folder under ~/.chipos-ide/plugins/. This cannot be undone.'),
