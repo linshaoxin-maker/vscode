@@ -80,10 +80,18 @@ export function cloneGitRepo(url: string, destDir: string, opts?: { readonly ref
 	args.push('--', url, destDir);
 	return new Promise<void>((resolve, reject) => {
 		cp.execFile('git', args, { timeout: opts?.timeoutMs ?? 60000, windowsHide: true }, (error, _stdout, stderr) => {
-			if (error) {
-				reject(new Error(`git clone failed: ${(stderr || '').trim() || error.message}`));
-			} else {
+			if (!error) {
 				resolve();
+				return;
+			}
+			const code = (error as { code?: string }).code;
+			const killed = (error as { killed?: boolean }).killed;
+			if (code === 'ENOENT') {
+				reject(new Error('Git is not installed or not on PATH. Install Git to import plugins from a Git URL.'));
+			} else if (killed || code === 'ETIMEDOUT') {
+				reject(new Error('git clone timed out — check the URL and your network connection.'));
+			} else {
+				reject(new Error(`git clone failed: ${(stderr || '').trim() || error.message}`));
 			}
 		});
 	});

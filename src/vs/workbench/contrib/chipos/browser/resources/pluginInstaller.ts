@@ -75,6 +75,12 @@ export function parsePluginManifest(jsonText: string, source: PluginManifestSour
 		throw new PluginManifestError('plugin.json is missing the required "version" field');
 	}
 	const id = typeof obj.id === 'string' && obj.id.trim() ? obj.id.trim() : name;
+	// The id becomes the install folder name (`<pluginsRoot>/<id>/`), so it must
+	// be a single safe path segment — otherwise a hostile manifest (e.g.
+	// `"id": "../../.."`) could escape the plugins root (path traversal).
+	if (id.includes('/') || id.includes('\\') || id.includes('\0') || id === '.' || id === '..') {
+		throw new PluginManifestError(`plugin.json id "${id}" is not a valid install folder name — it must not contain path separators, NUL, or "..".`);
+	}
 	return {
 		id,
 		name,

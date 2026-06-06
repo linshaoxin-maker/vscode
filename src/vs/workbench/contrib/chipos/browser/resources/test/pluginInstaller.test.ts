@@ -40,6 +40,13 @@ suite('pluginInstaller', () => {
 			const m = parsePluginManifest('{"name":"c","version":"0.1.0"}', 'cursor');
 			assert.strictEqual(m.source, 'cursor');
 		});
+
+		test('a path-traversal id/name is rejected (security)', () => {
+			assert.throws(() => parsePluginManifest('{"name":"ok","version":"1.0.0","id":"../../evil"}'), PluginManifestError);
+			assert.throws(() => parsePluginManifest('{"name":"../../../etc/evil","version":"1.0.0"}'), PluginManifestError);
+			assert.throws(() => parsePluginManifest('{"name":"a/b","version":"1.0.0"}'), PluginManifestError);
+			assert.throws(() => parsePluginManifest('{"name":"..","version":"1.0.0"}'), PluginManifestError);
+		});
 	});
 
 	suite('installLocalPlugin', () => {

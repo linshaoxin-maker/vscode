@@ -2050,6 +2050,7 @@ registerAction2(class InstallPluginFromGitAction extends Action2 {
 		const dialogService = accessor.get(IDialogService);
 		const notificationService = accessor.get(INotificationService);
 		const instantiationService = accessor.get(IInstantiationService);
+		const progressService = accessor.get(IProgressService);
 
 		const url = await quickInputService.input({
 			title: localize('chipos.plugins.installFromGit.title', 'Import Plugin from Git URL'),
@@ -2078,7 +2079,14 @@ registerAction2(class InstallPluginFromGitAction extends Action2 {
 		}
 
 		try {
-			const result = await instantiationService.createInstance(ChiposPluginsService).installFromGit(trimmed);
+			const result = await progressService.withProgress(
+				{
+					location: ProgressLocation.Notification,
+					title: localize('chipos.plugins.installFromGit.progress', 'Cloning plugin from {0}…', trimmed),
+					cancellable: false,
+				},
+				() => instantiationService.createInstance(ChiposPluginsService).installFromGit(trimmed),
+			);
 			notificationService.info(localize(
 				'chipos.plugins.installFromGit.done',
 				'Installed plugin "{0}" v{1} from Git.',
