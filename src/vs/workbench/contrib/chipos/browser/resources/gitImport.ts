@@ -6,11 +6,12 @@
 /**
  * Git clone helper for installing agent plugins from a Git URL (FEAT-002b).
  *
- * Running git needs Node, which the browser layer does not type. Rather than the
- * `require('child_process')` form used elsewhere (which trips the layer check's
- * node-type errors), we reach `globalThis.require` through a manually-typed
- * escape hatch — no `@types/node` reference, so this stays layer-check clean and
- * degrades gracefully (returns undefined) outside Electron.
+ * Running git needs Node, which the browser layer does not type. We use the
+ * bare global `require` (the binding Electron's renderer actually injects — the
+ * same one gitLogProvider.ts / editorEffects.ts rely on; `globalThis.require` is
+ * NOT the same binding and does not resolve), declared locally so the browser
+ * tsconfig (no `@types/node`) still type-checks without the node-module errors
+ * that form triggers. Degrades to undefined outside Electron.
  *
  * Security: {@link isAllowedGitUrl} restricts the host to a configured allow-list
  * before any clone, and {@link cloneGitRepo} uses `execFile` (no shell) with an
@@ -28,13 +29,13 @@ interface INodeChildProcess {
 	): void;
 }
 
+// Electron's renderer injects a global `require`; declare it locally (type-only,
+// erased at runtime) so this file type-checks without @types/node.
+declare const require: ((moduleName: string) => unknown) | undefined;
+
 function requireChildProcess(): INodeChildProcess | undefined {
-	const req = (globalThis as unknown as { require?: (moduleName: string) => unknown }).require;
-	if (typeof req !== 'function') {
-		return undefined;
-	}
 	try {
-		return req('child_process') as INodeChildProcess;
+		return typeof require === 'function' ? (require('child_process') as INodeChildProcess) : undefined;
 	} catch {
 		return undefined;
 	}

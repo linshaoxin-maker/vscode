@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { isAllowedGitUrl } from '../gitImport.js';
+import { isAllowedGitUrl, cloneGitRepo } from '../gitImport.js';
 
 suite('gitImport', () => {
 	suite('isAllowedGitUrl', () => {
@@ -41,6 +41,20 @@ suite('gitImport', () => {
 			assert.strictEqual(isAllowedGitUrl('https://GitLab.com/x', domains), true);
 			assert.strictEqual(isAllowedGitUrl('https://github.com:443/x', domains), true);
 			assert.strictEqual(isAllowedGitUrl('https://bitbucket.org/x', domains), false);
+		});
+	});
+
+	suite('cloneGitRepo', () => {
+		test('the require escape hatch resolves child_process (regression guard for the globalThis.require bug)', async () => {
+			// Drives the REAL requireChildProcess in the Electron test env via a
+			// local non-repo path so git fails fast without network. The only
+			// assertion is that the rejection is a git/exec error — NOT "Git is
+			// not available", which is what the earlier globalThis.require form
+			// (which does not resolve in the renderer) wrongly produced.
+			await assert.rejects(
+				cloneGitRepo('/chipos/no/such/local/repo-xyz', '/tmp/chipos-git-probe-dest-xyz', { timeoutMs: 8000 }),
+				(err: Error) => err instanceof Error && !/not available/i.test(err.message),
+			);
 		});
 	});
 });
