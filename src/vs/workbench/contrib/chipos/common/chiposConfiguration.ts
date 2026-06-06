@@ -204,6 +204,39 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		// ── Resource enable/disable (rules / commands / skills / hooks) ──
+		// Each holds scope-qualified ids ("workspace:<name>" / "user:<name>") of
+		// resources that stay on disk but are filtered out of the agent's per-turn
+		// scan. Managed from the matching settings tab. Mirrors chipos.plugins.disabled.
+		'chipos.rules.disabled': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.rules.disabled.desc', 'Scope-qualified ids ("workspace:<name>"/"user:<name>") of rules that are disabled. A disabled rule stays on disk but is not sent to the agent. Managed from the Rules settings tab.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.commands.disabled': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.commands.disabled.desc', 'Scope-qualified ids ("workspace:<name>"/"user:<name>") of slash commands that are disabled. A disabled command stays on disk but is not offered to the agent. Managed from the Commands settings tab.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.skills.disabled': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.skills.disabled.desc', 'Scope-qualified ids ("workspace:<name>"/"user:<name>") of skills that are disabled. A disabled skill stays on disk but is not shown to the agent. Managed from the Skills settings tab.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+		'chipos.hooks.disabled': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.hooks.disabled.desc', 'Scope-qualified ids ("workspace:<file>"/"user:<file>") of hook files that are disabled. A disabled hook file stays on disk but its hooks are not registered. Managed from the Hooks settings tab.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Plugins ──
 		'chipos.plugins.disabled': {
 			type: 'array',

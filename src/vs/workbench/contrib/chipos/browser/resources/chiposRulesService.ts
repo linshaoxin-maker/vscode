@@ -3,71 +3,62 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { URI } from '../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { IPathService } from '../../../../services/path/common/pathService.js';
 import { parseRuleFile } from './frontmatterParser.js';
 import { RuleDescriptor } from './promptResourceAttachmentCollector.js';
-
-const RULE_FILE_RE = /\.(mdc|md|txt)$/i;
+import { RESOURCE_LAYOUTS, resourcePlanes, scanResourcePlane, isResourceEnabled } from './chiposResourceScopes.js';
 
 /**
- * Indexes workspace rule files for the prompt-resource collector (FEAT-001a/b).
+ * Indexes rule files for the prompt-resource collector (FEAT-001a/b).
  *
- * v1 scans each workspace folder's `.chipos/rules/*.{mdc,md,txt}` — the existing
- * project-rules convention (see rulesTab) — parses frontmatter, and returns
- * {@link RuleDescriptor}s. The user-global `~/.chipos-ide/rules/` plane and a
- * cached file-watcher are follow-ups; today this reads on demand per turn (the
- * collector is cheap and the file set is small).
+ * Scans both the project plane (each workspace folder's `.chipos/rules/`) and
+ * the user-global plane (`~/.chipos-ide/rules/`), parses frontmatter, and returns
+ * {@link RuleDescriptor}s tagged with their true scope (`source`). A rule
+ * disabled from the Rules tab (`chipos.rules.disabled`) is filtered out here so
+ * it drops from the next invoke with no other wiring. Workspace rules take
+ * precedence over a user-global rule of the same name (project overrides user).
  */
 export class ChiposRulesService {
 	constructor(
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
+		@IPathService private readonly _pathService: IPathService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) { }
 
 	/**
-	 * Scan all workspace folders' `.chipos/rules/` and return parsed rule
-	 * descriptors. Returns `[]` when no workspace / no rules dir. A single
-	 * unreadable or malformed file is skipped, never failing the whole scan
-	 * (P3-design §5 — isolate per-rule failures).
+	 * Scan the project + user-global rule planes and return parsed, enabled rule
+	 * descriptors. A single unreadable or malformed file is skipped, never failing
+	 * the whole scan (P3-design §5 — isolate per-rule failures).
 	 */
 	async getRules(): Promise<RuleDescriptor[]> {
 		const folders = this._workspaceService.getWorkspace().folders;
-		if (folders.length === 0) {
-			return [];
-		}
+		const planes = await resourcePlanes(this._pathService, folders.map(f => f.uri), 'rules');
 
 		const rules: RuleDescriptor[] = [];
-		for (const folder of folders) {
-			const rulesDir = URI.joinPath(folder.uri, '.chipos', 'rules');
-			let children;
-			try {
-				const stat = await this._fileService.resolve(rulesDir);
-				children = stat.children;
-			} catch {
-				continue; // no .chipos/rules/ in this folder
-			}
-			if (!children) {
-				continue;
-			}
-
-			for (const child of children) {
-				if (child.isDirectory || !RULE_FILE_RE.test(child.name)) {
+		const seen = new Set<string>(); // workspace precedence: planes are workspace-first
+		for (const plane of planes) {
+			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.rules);
+			for (const r of scanned) {
+				if (!isResourceEnabled(this._configurationService, 'rules', r.scope, r.name) || seen.has(r.name)) {
 					continue;
 				}
 				try {
-					const content = await this._fileService.readFile(child.resource);
+					const content = await this._fileService.readFile(r.editFile);
 					const parsed = parseRuleFile(content.value.toString());
 					rules.push({
-						name: child.name.replace(RULE_FILE_RE, ''),
-						source: 'workspace',
-						sourceRef: child.resource.path,
+						name: r.name,
+						source: r.scope === 'workspace' ? 'workspace' : 'user',
+						sourceRef: r.editFile.path,
 						ruleType: parsed.ruleType,
 						globs: parsed.globs,
 						body: parsed.body,
 						description: parsed.description,
 					});
+					seen.add(r.name);
 				} catch {
 					// skip unreadable / malformed rule file — do not fail the scan
 				}

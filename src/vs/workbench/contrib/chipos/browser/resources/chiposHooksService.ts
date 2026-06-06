@@ -3,12 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { URI } from '../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { IPathService } from '../../../../services/path/common/pathService.js';
 import { ReasonerHookAction, ReasonerHookDefinition, ReasonerHookPoint } from '../chatAgent/statelessInvoke/types.js';
-
-const HOOK_FILE_RE = /\.json$/i;
+import { RESOURCE_LAYOUTS, resourcePlanes, scanResourcePlane, isResourceEnabled } from './chiposResourceScopes.js';
 
 /** Max hooks sent per turn — mirrors the reasoner `InvokeRequest.hooks` cap. */
 export const MAX_HOOKS = 100;
@@ -25,7 +25,7 @@ const VALID_POINTS: ReadonlySet<string> = new Set<ReasonerHookPoint>([
  * Coerce one parsed JSON value into a {@link ReasonerHookDefinition}, or
  * `undefined` if it isn't a structurally valid hook (unknown/absent `point`).
  */
-function toHookDefinition(raw: unknown, sourceRef: string): ReasonerHookDefinition | undefined {
+function toHookDefinition(raw: unknown, sourceRef: string, source: NonNullable<ReasonerHookDefinition['source']>): ReasonerHookDefinition | undefined {
 	if (!raw || typeof raw !== 'object') {
 		return undefined;
 	}
@@ -38,7 +38,7 @@ function toHookDefinition(raw: unknown, sourceRef: string): ReasonerHookDefiniti
 	const hook: ReasonerHookDefinition = {
 		point: point as ReasonerHookPoint,
 		action,
-		source: 'workspace',
+		source,
 		source_ref: sourceRef,
 	};
 	if (typeof obj.tool_name === 'string') {
@@ -56,7 +56,7 @@ function toHookDefinition(raw: unknown, sourceRef: string): ReasonerHookDefiniti
  * JSON or invalid entries yield `[]` / are dropped, never throwing — so one bad
  * file can't fail the whole scan.
  */
-export function parseHookFileContent(text: string, sourceRef: string): ReasonerHookDefinition[] {
+export function parseHookFileContent(text: string, sourceRef: string, source: NonNullable<ReasonerHookDefinition['source']> = 'workspace'): ReasonerHookDefinition[] {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
@@ -66,7 +66,7 @@ export function parseHookFileContent(text: string, sourceRef: string): ReasonerH
 	const entries = Array.isArray(parsed) ? parsed : [parsed];
 	const hooks: ReasonerHookDefinition[] = [];
 	for (const entry of entries) {
-		const hook = toHookDefinition(entry, sourceRef);
+		const hook = toHookDefinition(entry, sourceRef, source);
 		if (hook) {
 			hooks.push(hook);
 		}
@@ -89,41 +89,32 @@ export class ChiposHooksService {
 	constructor(
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
+		@IPathService private readonly _pathService: IPathService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) { }
 
 	/**
-	 * Scan all workspace folders' `.chipos/hooks/` and return validated hook
-	 * definitions (capped at {@link MAX_HOOKS}). Returns `[]` when no workspace /
-	 * no hooks dir. A single unreadable, malformed, or invalid file is skipped,
-	 * never failing the whole scan.
+	 * Scan the project + user-global hook planes and return validated, enabled
+	 * hook definitions (capped at {@link MAX_HOOKS}). A single unreadable,
+	 * malformed, or invalid file is skipped, never failing the whole scan. A hook
+	 * file disabled from the Hooks tab (`chipos.hooks.disabled`, per-file like
+	 * Cursor) is filtered out.
 	 */
 	async getHooks(): Promise<ReasonerHookDefinition[]> {
 		const folders = this._workspaceService.getWorkspace().folders;
-		if (folders.length === 0) {
-			return [];
-		}
+		const planes = await resourcePlanes(this._pathService, folders.map(f => f.uri), 'hooks');
 
 		const hooks: ReasonerHookDefinition[] = [];
-		for (const folder of folders) {
-			const hooksDir = URI.joinPath(folder.uri, '.chipos', 'hooks');
-			let children;
-			try {
-				const stat = await this._fileService.resolve(hooksDir);
-				children = stat.children;
-			} catch {
-				continue; // no .chipos/hooks/ in this folder
-			}
-			if (!children) {
-				continue;
-			}
-
-			for (const child of children) {
-				if (child.isDirectory || !HOOK_FILE_RE.test(child.name)) {
-					continue;
+		for (const plane of planes) {
+			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.hooks);
+			for (const h of scanned) {
+				if (!isResourceEnabled(this._configurationService, 'hooks', h.scope, h.name)) {
+					continue; // per-file disable (id = `<scope>:<filename>`)
 				}
 				try {
-					const content = await this._fileService.readFile(child.resource);
-					hooks.push(...parseHookFileContent(content.value.toString(), child.resource.path));
+					const content = await this._fileService.readFile(h.editFile);
+					const source = h.scope === 'workspace' ? 'workspace' : 'user';
+					hooks.push(...parseHookFileContent(content.value.toString(), h.editFile.path, source));
 				} catch {
 					// skip unreadable hook file — do not fail the scan
 				}
