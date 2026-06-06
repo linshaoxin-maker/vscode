@@ -18,9 +18,11 @@ import { ChipOSSettingsEditorInput, ChipOSSettingsTab, IChipOSSettingsEditorOpti
 import { ModelsTab } from './tabs/modelsTab.js';
 import { FeaturesTab } from './tabs/featuresTab.js';
 import { ConnectionTab } from './tabs/connectionTab.js';
-import { RulesTab } from './tabs/rulesTab.js';
-import { SkillsTab } from './tabs/skillsTab.js';
-import { HooksTab } from './tabs/hooksTab.js';
+import { ResourceListTab } from './tabs/resourceListTab.js';
+import { RULES_RESOURCE_SPEC } from './tabs/rulesTab.js';
+import { COMMANDS_RESOURCE_SPEC } from './tabs/commandsTab.js';
+import { SKILLS_RESOURCE_SPEC } from './tabs/skillsTab.js';
+import { HOOKS_RESOURCE_SPEC } from './tabs/hooksTab.js';
 import { PluginsTab } from './tabs/pluginsTab.js';
 import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
@@ -50,8 +52,9 @@ const CATEGORY_GROUPS: ICategoryDef[][] = [
 	[
 		{ id: 'models', label: localize('chipos.cat.models', 'Models'), icon: Codicon.hubot, searchableTerms: ['provider', 'api key', 'model', 'base url', 'zhipu', 'openai', 'anthropic', 'deepseek'] },
 		{ id: 'features', label: localize('chipos.cat.features', 'Features'), icon: Codicon.extensions, searchableTerms: ['thinking', 'context', 'tools', 'skills', 'approve', 'chat mode', 'token budget'] },
-		{ id: 'rules', label: localize('chipos.cat.rules', 'Rules'), icon: Codicon.law, searchableTerms: ['rules', 'global', 'project', 'mdc', 'always', 'glob'] },
-		{ id: 'skills', label: localize('chipos.cat.skills', 'Skills'), icon: Codicon.lightbulb, searchableTerms: ['skills', 'skill', 'capability', 'lazy', 'read_skill_body'] },
+		{ id: 'rules', label: localize('chipos.cat.rules', 'Rules'), icon: Codicon.law, searchableTerms: ['rules', 'global', 'project', 'mdc', 'always', 'glob', 'import'] },
+		{ id: 'commands', label: localize('chipos.cat.commands', 'Commands'), icon: Codicon.terminal, searchableTerms: ['commands', 'command', 'slash', 'prompt', 'import'] },
+		{ id: 'skills', label: localize('chipos.cat.skills', 'Skills'), icon: Codicon.lightbulb, searchableTerms: ['skills', 'skill', 'capability', 'lazy', 'read_skill_body', 'import'] },
 		{ id: 'hooks', label: localize('chipos.cat.hooks', 'Hooks'), icon: Codicon.shield, searchableTerms: ['hooks', 'hook', 'deny', 'observe', 'block', 'tool', 'guard', 'security'] },
 		{ id: 'plugins', label: localize('chipos.cat.plugins', 'Plugins'), icon: Codicon.package, searchableTerms: ['plugins', 'install', 'agent', 'bundle', 'marketplace', 'rules', 'commands', 'skills', 'cursor'] },
 	],
@@ -349,13 +352,16 @@ export class ChipOSSettingsEditor extends EditorPane {
 					store.add(this._instantiationService.createInstance(ConnectionTab, inner));
 					break;
 				case 'rules':
-					store.add(this._instantiationService.createInstance(RulesTab, inner));
+					store.add(this._instantiationService.createInstance(ResourceListTab, inner, RULES_RESOURCE_SPEC));
+					break;
+				case 'commands':
+					store.add(this._instantiationService.createInstance(ResourceListTab, inner, COMMANDS_RESOURCE_SPEC));
 					break;
 				case 'skills':
-					store.add(this._instantiationService.createInstance(SkillsTab, inner));
+					store.add(this._instantiationService.createInstance(ResourceListTab, inner, SKILLS_RESOURCE_SPEC));
 					break;
 				case 'hooks':
-					store.add(this._instantiationService.createInstance(HooksTab, inner));
+					store.add(this._instantiationService.createInstance(ResourceListTab, inner, HOOKS_RESOURCE_SPEC));
 					break;
 				case 'plugins':
 					store.add(this._instantiationService.createInstance(PluginsTab, inner));
