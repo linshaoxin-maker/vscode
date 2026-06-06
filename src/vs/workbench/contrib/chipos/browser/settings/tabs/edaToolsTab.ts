@@ -30,6 +30,8 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../../../pl
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../../../platform/quickinput/common/quickInput.js';
+import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { IFileDialogService } from '../../../../../../platform/dialogs/common/dialogs.js';
 import {
 	EdaResolutionsResponse,
 	EdaToolResolution,
@@ -96,6 +98,8 @@ export class EdaToolsTab extends Disposable {
 		@ICommandService private readonly _commandService: ICommandService,
 		@IQuickInputService private readonly _quickInput: IQuickInputService,
 		@ILogService private readonly _log: ILogService,
+		@IFileService private readonly _fileService: IFileService,
+		@IFileDialogService private readonly _fileDialogService: IFileDialogService,
 	) {
 		super();
 		this._render();
@@ -713,6 +717,10 @@ export class EdaToolsTab extends Disposable {
 			await this._refreshLiveData();
 		}));
 
+		const importBtn = dom.append(header, dom.$('button.chipos-btn-secondary'));
+		importBtn.textContent = localize('chipos.edaTools.importMcp', 'Import from mcp.json…');
+		this._disposables.add(dom.addDisposableListener(importBtn, 'click', () => this._importMcpJson()));
+
 		const desc = dom.append(section, dom.$('.chipos-setting-description'));
 		desc.textContent = localize('chipos.edaTools.serversDesc',
 			'MCP servers launched by the Worker process. Each server\'s advertised tools auto-populate the table above (impl=mcp).');
@@ -724,6 +732,90 @@ export class EdaToolsTab extends Disposable {
 			dom.append(headRow, dom.$('th', undefined, col));
 		}
 		this._serversTableBody = dom.append(table, dom.$('tbody'));
+	}
+
+	/**
+	 * Import MCP servers from a Cursor/Claude-format `mcp.json`
+	 * (`{ "mcpServers": { name: { command, args, env } } }`, or a bare map).
+	 * stdio entries (those with a `command`) are added via the worker; url-only
+	 * entries and names that already exist are skipped and reported. This is the
+	 * MCP analogue of "Import from Local…" for the other resource tabs.
+	 */
+	private async _importMcpJson(): Promise<void> {
+		const picks = await this._fileDialogService.showOpenDialog({
+			title: localize('chipos.edaTools.importMcpTitle', 'Import MCP Servers from mcp.json'),
+			canSelectFiles: true,
+			canSelectFolders: false,
+			canSelectMany: false,
+			filters: [{ name: localize('chipos.edaTools.importMcpFilter', 'JSON'), extensions: ['json'] }],
+		});
+		if (!picks || picks.length === 0) {
+			return;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse((await this._fileService.readFile(picks[0])).value.toString());
+		} catch {
+			this._notif.error(localize('chipos.edaTools.importMcpBadJson', 'Could not parse the selected file as JSON.'));
+			return;
+		}
+		// Accept { mcpServers: {...} } (Cursor/Claude) or a bare { name: {...} } map.
+		const root = (parsed && typeof parsed === 'object') ? parsed as Record<string, unknown> : {};
+		const mapRaw = (root.mcpServers && typeof root.mcpServers === 'object') ? root.mcpServers as Record<string, unknown> : root;
+
+		let existing: ReadonlySet<string>;
+		try {
+			existing = new Set((await this._toolManager.listMcpServers()).servers.map(s => s.name));
+		} catch {
+			existing = new Set();
+		}
+
+		const asStringArray = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+		const asStringMap = (v: unknown): Record<string, string> => {
+			const out: Record<string, string> = {};
+			if (v && typeof v === 'object') {
+				for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+					if (typeof val === 'string') { out[k] = val; }
+				}
+			}
+			return out;
+		};
+
+		const added: string[] = [];
+		const skipped: string[] = [];
+		for (const [name, raw] of Object.entries(mapRaw)) {
+			if (!name || existing.has(name) || !raw || typeof raw !== 'object') {
+				skipped.push(name);
+				continue;
+			}
+			const entry = raw as Record<string, unknown>;
+			if (typeof entry.command !== 'string' || !entry.command) {
+				// url-only / transport-only entry — the worker config is stdio-shaped.
+				skipped.push(name);
+				continue;
+			}
+			const config: McpServerConfig = {
+				name,
+				command: entry.command,
+				args: asStringArray(entry.args),
+				env: asStringMap(entry.env),
+			};
+			if (typeof entry.cwd === 'string') { config.cwd = entry.cwd; }
+			if (typeof entry.transport === 'string') { config.transport = entry.transport; }
+			try {
+				const res = await this._toolManager.addMcpServer(config);
+				if (res.success) { added.push(name); } else { skipped.push(name); }
+			} catch {
+				skipped.push(name);
+			}
+		}
+
+		if (added.length > 0) {
+			this._notif.info(localize('chipos.edaTools.importMcpDone', 'Imported {0} MCP server(s){1}.', added.length, skipped.length > 0 ? localize('chipos.edaTools.importMcpSkipped', ' ({0} skipped: already present or non-stdio)', skipped.length) : ''));
+		} else {
+			this._notif.info(localize('chipos.edaTools.importMcpNone', 'No MCP servers imported ({0} skipped: already present or non-stdio).', skipped.length));
+		}
+		await this._refreshLiveData();
 	}
 
 	private _renderServersTable(payload: McpServerListResult): void {
