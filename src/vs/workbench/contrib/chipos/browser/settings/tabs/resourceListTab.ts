@@ -19,7 +19,7 @@ import { IPathService } from '../../../../../services/path/common/pathService.js
 import { IEditorService } from '../../../../../services/editor/common/editorService.js';
 import {
 	ResourceKind, ResourceScope, RESOURCE_LAYOUTS, ScannedResource,
-	workspaceResourceDir, userGlobalResourceDir, scanResourcePlane,
+	workspaceResourceDir, userGlobalResourceDir, scanResourcePlane, resourcePlanes,
 	isResourceEnabled, setResourceEnabled, findImportableResources, copyResourceEntry,
 } from '../../resources/chiposResourceScopes.js';
 import { isAllowedGitUrl, cloneGitRepo } from '../../resources/gitImport.js';
@@ -147,11 +147,10 @@ export class ResourceListTab extends Disposable {
 	private async _loadList(container: HTMLElement): Promise<void> {
 		const epoch = ++this._epoch;
 		const folder = this._workspaceFolder();
-		const planes: { dir: URI; scope: ResourceScope }[] = [];
-		if (folder) {
-			planes.push({ dir: workspaceResourceDir(folder, this._spec.kind), scope: 'workspace' });
-		}
-		planes.push({ dir: await userGlobalResourceDir(this._pathService, this._spec.kind), scope: 'user' });
+		// Use the SAME plane resolution as the per-turn services (resourcePlanes) so
+		// the tab also lists ecosystem resources (.cursor / .claude), not just
+		// .chipos / ~/.chipos-ide. Keeps tab display and the agent's view in sync.
+		const planes = await resourcePlanes(this._pathService, folder ? [folder] : [], this._spec.kind);
 
 		const rows: RowModel[] = [];
 		for (const plane of planes) {
