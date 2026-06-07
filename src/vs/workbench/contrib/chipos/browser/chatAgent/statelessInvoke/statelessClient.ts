@@ -372,6 +372,55 @@ export class StatelessClient {
 	}
 
 	/**
+	 * POST /api/v1/hook_result/{trace_id}/{eval_id} — reverse-channel reply to a
+	 * ``hook_eval`` SSE event (FEAT-004 / H-1). The IDE ran the plugin function
+	 * hook and POSTs the decision (``{decision, amended_args?, agent_message?}``).
+	 *
+	 * Status semantics mirror ``postToolResult`` (the underlying reasoner uses the
+	 * same future-resolution machinery, keyed on ``eval_id``):
+	 *   - 202 → ``{accepted: true}`` (reasoner resolved the pending eval future)
+	 *   - 404 → ``{error: 'eval_not_found', ...}`` — benign: the reasoner's eval
+	 *     already timed out (it fails closed/open by its own posture) or this is a
+	 *     duplicate POST after the loop moved on. IDE should silently drop.
+	 *   - 400 / 5xx → throws ``StatelessHttpError``.
+	 */
+	async postHookResult(
+		traceId: string,
+		evalId: string,
+		body: Record<string, unknown>,
+	): Promise<{ accepted: boolean } | { error: string;[k: string]: unknown }> {
+		const url = `${this._baseUrl}/api/v1/hook_result/${encodeURIComponent(traceId)}/${encodeURIComponent(evalId)}`;
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		Object.assign(headers, await this._authHeaders());
+		const { controller, clear } = this._timeoutSignal(undefined);
+		try {
+			const resp = await this._fetch(url, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(body),
+				signal: controller.signal,
+			});
+			if (resp.status === 202 || resp.status === 200) {
+				// 202 success: reasoner may return empty body or a small JSON
+				// envelope. Normalize either case to {accepted: true}.
+				try { await resp.text(); } catch { /* best-effort */ }
+				return { accepted: true };
+			}
+			if (resp.status === 404) {
+				const parsed = await this._parseJsonSafe(resp);
+				if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+					return parsed as { error: string;[k: string]: unknown };
+				}
+				return { error: 'eval_not_found' };
+			}
+			const parsed = await this._parseJsonSafe(resp);
+			throw new StatelessHttpError(resp.status, parsed);
+		} finally {
+			clear();
+		}
+	}
+
+	/**
 	 * POST /api/v1/confirm_response/{trace_id}/{request_id} — reverse-channel
 	 * reply to a ``confirm_request`` SSE event (PHASE-1-PROTOCOL-SPEC §2.5).
 	 *

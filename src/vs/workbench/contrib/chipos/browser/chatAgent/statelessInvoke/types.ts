@@ -351,6 +351,21 @@ export interface ReasonerHookDefinition {
 	source?: 'user' | 'workspace' | 'plugin';
 	/** Plugin id / file path that contributed it, <=256 chars. */
 	source_ref?: string | null;
+	// Tier-2 *function* (executable) hook fields (FEAT-004 / H-1). Optional +
+	// additive: declarative hooks omit them and behave exactly as before. When
+	// `kind === 'function'` the reasoner bridges to the IDE reverse channel
+	// (`hook_eval` → POST /hook_result), and the IDE loads `module`/`export` to
+	// run the plugin hook. Mirrors backend_v2 ReasonerHookDefinition extras.
+	/** `'function'` marks an executable hook the IDE must run; absent ⇒ declarative. */
+	kind?: 'function';
+	/** Module path the IDE loads to run the hook (function hooks only). */
+	module?: string;
+	/** Named export within `module` to invoke (function hooks only). */
+	export?: string;
+	/** Per-eval timeout in ms; reasoner clamps + falls closed on overrun. */
+	timeout_ms?: number;
+	/** On eval failure/timeout: deny (true, default) vs proceed (false). */
+	fail_closed?: boolean;
 }
 
 // =============================================================================
@@ -373,6 +388,11 @@ export interface ReasonerHookDefinition {
  *   - `confirm_request`      — Phase 1: reverse-channel call for chipos_user_confirm.
  *                              IDE renders confirm card, user clicks, IDE POSTs to
  *                              /confirm_response/{trace_id}/{request_id}.
+ *   - `hook_eval`            — FEAT-004/H-1: reverse-channel call to RUN a plugin
+ *                              function hook at a lifecycle point. IDE loads the
+ *                              module/export, runs it, POSTs the decision to
+ *                              /hook_result/{trace_id}/{eval_id}. Reasoner blocks
+ *                              awaiting that POST.
  *
  * ChipOS specific:
  *   - `thinking_delta`
@@ -409,6 +429,7 @@ export type InvokeEventType =
 	| 'tool_result'
 	| 'ide_tool_call'
 	| 'confirm_request'
+	| 'hook_eval'
 	| 'thinking_delta'
 	| 'round_progress'
 	| 'trace_link'
@@ -805,6 +826,31 @@ export interface IdeToolCallData {
 	tool_name: string;
 	args: Record<string, unknown>;
 	timeout_ms?: number;
+}
+
+/**
+ * Payload of `hook_eval` SSE event (reverse channel — function-hook evaluation,
+ * FEAT-004 / H-1). The reasoner asks the IDE to RUN a plugin-contributed
+ * executable hook at lifecycle `point` and blocks awaiting the decision.
+ *
+ * IDE handler: load `module` / invoke `export`, run the hook against
+ * `args` (+ `tool_name` / `call_id` context), then POST the decision to
+ * `/api/v1/hook_result/{trace_id}/{eval_id}` (eval_id from this payload).
+ * Mirrors `reverse_channel.call_hook_eval`'s emitted `data` dict.
+ */
+export interface HookEvalData {
+	eval_id: string;
+	point: string;
+	tool_name?: string | null;
+	call_id?: string | null;
+	args: Record<string, unknown>;
+	plugin_ids?: string[];
+	/** Module path the IDE loads to run the hook (function hooks). */
+	module?: string | null;
+	/** Named export within `module` to invoke. */
+	export?: string | null;
+	timeout_ms?: number;
+	fail_closed?: boolean;
 }
 
 /**

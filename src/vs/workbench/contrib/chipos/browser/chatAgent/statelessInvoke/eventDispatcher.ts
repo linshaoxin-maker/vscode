@@ -36,6 +36,7 @@ import { StatelessHttpError, StatelessReplayExpiredError } from './statelessClie
 import type {
 	CheckpointData,
 	ConfirmRequestData,
+	HookEvalData,
 	IdeToolCallData,
 	InvokeEvent,
 	KeepaliveData,
@@ -101,6 +102,25 @@ export interface DispatchResult {
 	// Phase 1 additions (ADR-018 §2 D7 + D8 + D10 + D14):
 	/** Reverse channel: IDE must execute this tool + POST result back. */
 	ideToolCall?: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number };
+	/**
+	 * Reverse channel (FEAT-004 / H-1): the reasoner asked the IDE to RUN a
+	 * plugin-contributed function hook at a lifecycle `point` and is blocking on
+	 * the decision. The caller loads `module` / invokes `export` against `args`
+	 * (+ `toolName` / `callId` context), then POSTs the decision to
+	 * `/api/v1/hook_result/{trace_id}/{evalId}`. Mirrors `ideToolCall` shape.
+	 */
+	hookEval?: {
+		evalId: string;
+		point: string;
+		toolName?: string;
+		callId?: string;
+		args: Record<string, unknown>;
+		module?: string;
+		export?: string;
+		pluginIds?: string[];
+		timeoutMs?: number;
+		failClosed?: boolean;
+	};
 	/** Reverse channel: IDE must render confirm card + POST user choice back. */
 	confirmRequest?: { requestId: string; cardType: string; cardData: Record<string, unknown>; title?: string; buttons?: string[] };
 	/** Keepalive heartbeat — reset client-side idle timer; usually no-op render. */
@@ -332,6 +352,31 @@ export function dispatchStatelessEvent(
 					toolName: data.tool_name,
 					args: data.args,
 					timeoutMs: typeof data.timeout_ms === 'number' ? data.timeout_ms : undefined,
+				},
+			};
+		}
+
+		case 'hook_eval': {
+			// FEAT-004 / H-1 reverse channel — the reasoner asked the IDE to RUN a
+			// plugin-contributed function hook at a lifecycle `point` and is blocking
+			// awaiting POST /hook_result/{trace_id}/{eval_id}. Mirrors ide_tool_call:
+			// flushText so any pending assistant text renders before the eval runs,
+			// and surface the structured payload (module/export carrier + plugin_ids
+			// + timeout/fail-closed posture) so the caller can load + invoke it.
+			const data = (event.data ?? {}) as unknown as HookEvalData;
+			return {
+				flushText: true,
+				hookEval: {
+					evalId: data.eval_id,
+					point: data.point,
+					toolName: typeof data.tool_name === 'string' ? data.tool_name : undefined,
+					callId: typeof data.call_id === 'string' ? data.call_id : undefined,
+					args: data.args,
+					module: typeof data.module === 'string' ? data.module : undefined,
+					export: typeof data.export === 'string' ? data.export : undefined,
+					pluginIds: Array.isArray(data.plugin_ids) ? data.plugin_ids : undefined,
+					timeoutMs: typeof data.timeout_ms === 'number' ? data.timeout_ms : undefined,
+					failClosed: typeof data.fail_closed === 'boolean' ? data.fail_closed : undefined,
 				},
 			};
 		}

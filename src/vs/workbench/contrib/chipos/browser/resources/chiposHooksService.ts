@@ -47,6 +47,25 @@ function toHookDefinition(raw: unknown, sourceRef: string, source: NonNullable<R
 	if (typeof obj.reason === 'string') {
 		hook.reason = obj.reason.slice(0, 512);
 	}
+	// Tier-2 *function* (executable) hook carrier (FEAT-004 / H-1). Additive:
+	// declarative hooks (no `kind`) are untouched and behave exactly as before.
+	// When the file marks `kind: "function"` we copy the module/export the IDE
+	// loads to run the hook plus the eval-timeout / fail-closed posture, each
+	// type-guarded (and string/number clamped) so a malformed field is dropped
+	// rather than poisoning the wire payload.
+	if (obj.kind === 'function') {
+		hook.kind = 'function';
+		if (typeof obj.module === 'string') {
+			hook.module = obj.module.slice(0, 512);
+		}
+		if (typeof obj.export === 'string') {
+			hook.export = obj.export.slice(0, 512);
+		}
+		if (typeof obj.timeout_ms === 'number' && Number.isFinite(obj.timeout_ms)) {
+			hook.timeout_ms = Math.min(60000, Math.max(100, Math.round(obj.timeout_ms)));
+		}
+		hook.fail_closed = typeof obj.fail_closed === 'boolean' ? obj.fail_closed : true;
+	}
 	return hook;
 }
 
