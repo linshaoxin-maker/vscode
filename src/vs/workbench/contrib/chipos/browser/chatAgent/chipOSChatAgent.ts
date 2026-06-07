@@ -93,6 +93,7 @@ import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposSkillsService } from '../resources/chiposSkillsService.js';
 import { ChiposPluginsService } from '../resources/chiposPluginsService.js';
 import { ChiposPluginHookHost } from './chiposPluginHookHost.js';
+import { IChiposPluginHookService } from '../../common/chiposPluginHookService.js';
 import { buildIdeMcpTools, shapeMcpToolResult, IdeMcpToolInfo } from './ideToolCatalog.js';
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
@@ -7365,7 +7366,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const plugins = this._instantiationService.createInstance(ChiposPluginsService);
 		const moduleUri = await plugins.resolvePluginFile(pluginId, hookEval.module);
 		if (!moduleUri) { await post(denyOrProceed, { agent_message: 'plugin hook module not found' }); return; }
-		this._pluginHookHost = this._pluginHookHost ?? new ChiposPluginHookHost();
+		// Resolve the (desktop-only) hook runner service — the electron-browser impl
+		// forwards hook evaluation to the main-process node child. Absent on web (no
+		// fork there); the host then fail-closes. Resolved safely since the service
+		// is registered only in the Electron entrypoint.
+		if (!this._pluginHookHost) {
+			let hookService: IChiposPluginHookService | undefined;
+			try {
+				hookService = this._instantiationService.invokeFunction(acc => acc.get(IChiposPluginHookService));
+			} catch {
+				// not registered (e.g. web) — host fail-closes
+			}
+			this._pluginHookHost = new ChiposPluginHookHost(hookService);
+		}
 		this._pluginHookHost.grantConsent(pluginId);
 		const result = await this._pluginHookHost.evaluate({ evalId: hookEval.evalId, pluginId, modulePath: moduleUri.fsPath, exportName: hookEval.export, ctx: { point: hookEval.point, toolName: hookEval.toolName, callId: hookEval.callId, args: hookEval.args, pluginId }, timeoutMs: hookEval.timeoutMs ?? 5000, failClosed });
 		// ask -> bridge to a user confirm; resolve to proceed/deny.

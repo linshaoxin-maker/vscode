@@ -22,6 +22,7 @@ import { URI } from '../../base/common/uri.js';
 import { generateUuid } from '../../base/common/uuid.js';
 import { registerContextMenuListener } from '../../base/parts/contextmenu/electron-main/contextmenu.js';
 import { registerSidecarIpcHandlers } from '../../platform/chipos/electron-main/sidecarManagerMain.js';
+import { registerPluginHookIpcHandlers } from '../../platform/chipos/electron-main/chiposPluginHookMain.js';
 import { getDelayedChannel, ProxyChannel, StaticRouter } from '../../base/parts/ipc/common/ipc.js';
 import { Server as ElectronIPCServer } from '../../base/parts/ipc/electron-main/ipc.electron.js';
 import { Client as MessagePortClient } from '../../base/parts/ipc/electron-main/ipc.mp.js';
@@ -547,6 +548,11 @@ export class CodeApplication extends Disposable {
 		// renderer-side SidecarManagerElectron orchestrates and calls into here
 		// for the Node-API mechanics. Idempotent — safe to call repeatedly.
 		registerSidecarIpcHandlers();
+
+		// ChipOS — tier-2 executable-hook IPC (FEAT, H-3). Runs a consented plugin's
+		// hook in an isolated node child HERE in main; the sandboxed renderer cannot
+		// fork (no `require`). Renderer reaches it via ChiposPluginHookElectron.
+		registerPluginHookIpcHandlers();
 
 		//#endregion
 	}

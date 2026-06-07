@@ -11,6 +11,13 @@ import { SidecarManagerElectron } from '../../../../workbench/contrib/chipos/ele
 // Web IDE 模式仍使用 SidecarManagerBrowser（在 workbench.web.main.ts 中注册）。
 registerSingleton(ISidecarManagerService, SidecarManagerElectron, InstantiationType.Delayed);
 
+// FEAT H-3: executable-hook runner. Desktop forwards hook evaluation to the
+// main-process node child via IPC (the sandboxed renderer cannot fork). No web
+// impl — the host treats an absent service as fail-closed.
+import { IChiposPluginHookService } from '../../../../workbench/contrib/chipos/common/chiposPluginHookService.js';
+import { ChiposPluginHookElectron } from '../../../../workbench/contrib/chipos/electron-browser/chiposPluginHookElectron.js';
+registerSingleton(IChiposPluginHookService, ChiposPluginHookElectron, InstantiationType.Delayed);
+
 // Phase 1 Unified Auth: register auth services
 import { IChipOSTokenManager, ChipOSTokenManager } from '../../../../workbench/contrib/chipos/browser/auth/chiposTokenManager.js';
 import { IChipOSAuthService, ChipOSAuthService } from '../../../../workbench/contrib/chipos/browser/auth/chiposAuthService.js';
