@@ -3102,6 +3102,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// which is just the card type, not the file. Showing the path
 			// makes the header chip actually informative.
 			case 'file_edit': subject = pick('file_path'); break;
+			// P1-5 — worktree_apply (parallel_generate.py:332) ships {module_name,
+			// tracks}; the chip shows the module under review.
+			case 'worktree_apply': subject = pick('module_name'); break;
 			// verification_pipeline.py:{530,1213}
 			case 'VERIFICATION_GROUP_REVIEW': subject = pick('stage_group'); break;
 			case 'VERIFICATION_HUMAN_CHECK': subject = pick('stage'); break;
@@ -3153,6 +3156,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		'spec_confirm', 'arch_confirm', 'hook_confirm', 'file_edit', 'agent_ask',
 		'VERIFICATION_GROUP_REVIEW', 'VERIFICATION_HUMAN_CHECK',
 		'sim_report', 'lint_report', 'coverage_report',
+		// P1-5: parallel-generate worktree review — render per-track rich diff
+		// instead of the default JSON dump / bare title.
+		'worktree_apply',
 	]);
 
 	// ── FEAT-29: Render rich confirm message based on card_type ──
@@ -3373,6 +3379,59 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					}
 				}
 				return lines.length > 0 ? lines.join('\n') : (p.message ?? 'Coverage report.');
+			}
+
+			// P1-5 (IDE-MIGRATION-GAPS §1.5) — parallel-generate worktree review.
+			// card_data (parallel_generate.py:332) = { module_name, tracks: [{ name,
+			// branch, files:[{path,action,additions,deletions}], diff_text, additions,
+			// deletions, error }] }. Render each track with its branch, ± stats,
+			// changed-file list and a colored unified diff so the reviewer can judge
+			// what to apply — instead of the default JSON dump (the card carries no
+			// `message`, so without this it showed only a bare title + buttons).
+			// (`<details>` collapse isn't available — the chat markdown sanitizer
+			// strips raw HTML — but the preview slot is height-capped + scrollable.)
+			case 'worktree_apply': {
+				const tracks = Array.isArray(data?.tracks) ? data.tracks as Array<Record<string, unknown>> : [];
+				const sections: string[] = [];
+				const moduleName = typeof data?.module_name === 'string' ? data.module_name : undefined;
+				if (moduleName) { sections.push(`**Module:** \`${moduleName}\``); }
+				if (tracks.length === 0) {
+					return sections.length > 0 ? sections.join('\n\n') : (p.message ?? 'Review the parallel results and choose what to apply.');
+				}
+				for (const t of tracks) {
+					const name = typeof t.name === 'string' && t.name ? t.name : 'Track';
+					const branch = typeof t.branch === 'string' ? t.branch : '';
+					const add = typeof t.additions === 'number' ? t.additions : 0;
+					const del = typeof t.deletions === 'number' ? t.deletions : 0;
+					const error = typeof t.error === 'string' ? t.error : '';
+					const branchSeg = branch ? ` · \`${branch}\`` : '';
+					const statSeg = error ? ' · ✗ failed' : ` · +${add} / -${del}`;
+					sections.push(`#### ${name}${branchSeg}${statSeg}`);
+					if (error) {
+						sections.push(`> ⚠ ${error.replace(/\n/g, ' ').slice(0, 300)}`);
+						continue;
+					}
+					const files = Array.isArray(t.files) ? t.files as Array<Record<string, unknown>> : [];
+					if (files.length > 0) {
+						const fileLines = files.slice(0, 20).map(f => {
+							const path = typeof f.path === 'string' ? f.path : '';
+							const actionRaw = typeof f.action === 'string' ? f.action : '';
+							const actionIcon = actionRaw === 'A' ? '＋' : actionRaw === 'D' ? '－' : '∼';
+							const fa = typeof f.additions === 'number' ? f.additions : undefined;
+							const fd = typeof f.deletions === 'number' ? f.deletions : undefined;
+							const perFile = (fa !== undefined || fd !== undefined) ? ` (+${fa ?? 0} / -${fd ?? 0})` : '';
+							return `- ${actionIcon} \`${path}\`${perFile}`;
+						});
+						sections.push(fileLines.join('\n'));
+						if (files.length > 20) { sections.push(`_… ${files.length - 20} more file(s) …_`); }
+					}
+					const diffText = typeof t.diff_text === 'string' ? t.diff_text : '';
+					if (diffText.trim().length > 0) {
+						const clipped = diffText.length > 4000 ? diffText.slice(0, 4000) + '\n... [truncated]' : diffText;
+						sections.push('```diff\n' + clipped + '\n```');
+					}
+				}
+				return sections.join('\n\n');
 			}
 
 			default:
@@ -6721,6 +6780,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.subagentEvent) {
 				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, resumeSubagentCardState);
+			}
+			if (handled.edaParts || handled.markdownContents || handled.taskSummary) {
+				// [ChipOS] Fusion: rich EDA report cards on the resume path too
+				// (parity with the live loop above).
+				this._renderStatelessEdaParts(handled, progress);
 			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
