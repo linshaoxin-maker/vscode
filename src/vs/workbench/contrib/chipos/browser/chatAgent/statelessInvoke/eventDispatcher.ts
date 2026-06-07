@@ -43,6 +43,19 @@ import type {
 	ResumedBufferDrainedData,
 	TokenUsage,
 } from './types.js';
+import type {
+	IChatEdaCoverageReport,
+	IChatEdaLintError,
+	IChatEdaLintReport,
+	IChatEdaNegotiationView,
+	IChatEdaParallelProgress,
+	IChatEdaPpaReport,
+	IChatEdaProgress,
+	IChatEdaSimReport,
+	IChatEdaSimTestResult,
+	IChatEdaSpecReview,
+} from '../../../../chat/common/chatEdaTypes.js';
+import type { ITaskSummaryPayload } from '../../eventStream/eventTypes.js';
 
 /**
  * What the dispatcher's caller should do after processing one event.
@@ -161,6 +174,35 @@ export interface DispatchResult {
 		message: string;
 		retryable?: boolean;
 	};
+	/**
+	 * [ChipOS] Fusion: rich EDA report cards (sim test table, lint error table,
+	 * coverage, PPA comparison, multi-agent negotiation, parallel-track progress,
+	 * spec review). The agent_core / composite-tools path emits these as
+	 * `sim_report` / `lint_report` / `coverage_report` / `ppa_report` /
+	 * `negotiation_view` / `parallel_progress` / `spec_review` events; the
+	 * dispatcher parses the backend payload (whose keys differ from the legacy
+	 * WebSocket shape) into the native `IChatEda*` content parts. The caller emits
+	 * them via its `progress(...)` channel — flush any pending assistant text
+	 * FIRST (cases below set `flushText: true`) so the card lands after the prose
+	 * it summarizes, not before. Mirrors the legacy `_handleAgentEvent` path so a
+	 * prod (stateless) turn shows the same rich cards the WebSocket path did.
+	 */
+	edaParts?: IChatEdaProgress[];
+	/**
+	 * [ChipOS] Markdown blocks to render (each via the caller's `_markdown`
+	 * helper). Used for `diff_preview` (a fenced ```diff``` block), which legacy
+	 * rendered as markdown rather than a dedicated card.
+	 */
+	markdownContents?: string[];
+	/**
+	 * [ChipOS] End-of-turn structured summary. Replaces the Phase-0 single-line
+	 * progress downgrade: the caller renders the full `_formatTaskSummary` card
+	 * (verdict badge + KV table + generated files + next steps), matching legacy.
+	 * `structured_data` is already JSON-parsed (the subagent_tracker path ships it
+	 * as a `structured_data_json` string; the agent_core SummaryAssembler ships a
+	 * `structured_data` object).
+	 */
+	taskSummary?: ITaskSummaryPayload;
 }
 
 /**
@@ -428,11 +470,260 @@ export function dispatchStatelessEvent(
 			};
 		}
 
+		// ── [ChipOS] Fusion: rich EDA report cards ─────────────────────────
+		// The composite-tools / agent_core path emits these report events via
+		// deps.emit (bridged onto the wire by SSEEmitSink). Phase 0 dropped them
+		// (no case → `default: {}`), so a prod stateless turn lost every rich EDA
+		// card the legacy WebSocket path rendered. Map each onto the native
+		// `IChatEda*` content part. IMPORTANT: payload keys follow what the
+		// BACKEND `safe_emit`s (see composite_tools/*), which differs from the
+		// legacy WebSocket payload — e.g. lint errors carry `column` (not `col`),
+		// negotiation arrives as per-round `perspectives` / `challenges`, coverage
+		// `gaps` are plain strings. Each case flushes pending assistant text first
+		// so the card lands after the prose it summarizes.
+
+		case 'sim_report': {
+			// sim_debug_loop emits {tests:[{name,status,message}], summary:{total,passed,failed}};
+			// coverage_boost's internal simulate emits {round, result} (no tests) →
+			// an empty table (parity with legacy, which normalized the same way).
+			const data = (event.data ?? {}) as {
+				tests?: Array<{ name?: string; status?: string; message?: string; duration_ms?: number }>;
+				summary?: { total?: number; passed?: number; failed?: number; errors?: number };
+			};
+			const tests: IChatEdaSimTestResult[] = Array.isArray(data.tests)
+				? data.tests.map(t => ({
+					name: typeof t.name === 'string' ? t.name : '',
+					status: (t.status === 'pass' || t.status === 'fail' || t.status === 'error' || t.status === 'skip') ? t.status : 'error',
+					message: typeof t.message === 'string' ? t.message : undefined,
+					duration_ms: typeof t.duration_ms === 'number' ? t.duration_ms : undefined,
+				}))
+				: [];
+			const s = data.summary;
+			const summary = (s && typeof s === 'object' && typeof s.total === 'number')
+				? { total: s.total, passed: s.passed ?? 0, failed: s.failed ?? 0, errors: s.errors }
+				: {
+					total: tests.length,
+					passed: tests.filter(t => t.status === 'pass').length,
+					failed: tests.filter(t => t.status === 'fail').length,
+					errors: tests.filter(t => t.status === 'error').length || undefined,
+				};
+			return { flushText: true, edaParts: [{ kind: 'edaSimReport', tests, summary } satisfies IChatEdaSimReport] };
+		}
+
+		case 'coverage_report': {
+			// coverage_boost: {line_cov?, branch_cov?, overall_cov?, gaps: string[], ...}.
+			// The text-fallback path omits line_cov/branch_cov (only overall_cov) and
+			// `gaps` are formatted strings ("file:line [kind] body"), not objects.
+			const data = (event.data ?? {}) as {
+				line_cov?: number; branch_cov?: number; overall_cov?: number;
+				gaps?: unknown[];
+			};
+			const lineCov = typeof data.line_cov === 'number' ? data.line_cov
+				: typeof data.overall_cov === 'number' ? data.overall_cov : 0;
+			const branchCov = typeof data.branch_cov === 'number' ? data.branch_cov : 0;
+			const rawGaps = Array.isArray(data.gaps) ? data.gaps : [];
+			const gaps = rawGaps.length
+				? rawGaps.map(g => {
+					if (typeof g === 'string') { return { file: '', lines: g }; }
+					const o = (g ?? {}) as { file?: string; lines?: string | number; type?: string };
+					return {
+						file: typeof o.file === 'string' ? o.file : '',
+						lines: typeof o.lines === 'string' ? o.lines : String(o.lines ?? ''),
+						type: typeof o.type === 'string' ? o.type : undefined,
+					};
+				})
+				: undefined;
+			return { flushText: true, edaParts: [{ kind: 'edaCoverageReport', line_cov: lineCov, branch_cov: branchCov, gaps } satisfies IChatEdaCoverageReport] };
+		}
+
+		case 'lint_report': {
+			// lint_fix_loop: {round, errors:[{file,line,column,rule,message,severity}]}
+			// — note `column`, not the IDE's `col`.
+			const data = (event.data ?? {}) as {
+				errors?: Array<{ file?: string; line?: number; col?: number; column?: number; severity?: string; message?: string; rule?: string; auto_fixable?: boolean }>;
+				auto_fixable?: number; tool?: string;
+			};
+			const errors: IChatEdaLintError[] = Array.isArray(data.errors)
+				? data.errors.map(e => ({
+					file: typeof e.file === 'string' ? e.file : '',
+					line: typeof e.line === 'number' ? e.line : 0,
+					col: typeof e.col === 'number' ? e.col : (typeof e.column === 'number' ? e.column : undefined),
+					severity: (e.severity === 'error' || e.severity === 'warning' || e.severity === 'info') ? e.severity : 'error',
+					message: typeof e.message === 'string' ? e.message : '',
+					rule: typeof e.rule === 'string' ? e.rule : undefined,
+					auto_fixable: typeof e.auto_fixable === 'boolean' ? e.auto_fixable : undefined,
+				}))
+				: [];
+			return {
+				flushText: true,
+				edaParts: [{
+					kind: 'edaLintReport',
+					errors,
+					auto_fixable: typeof data.auto_fixable === 'number' ? data.auto_fixable : undefined,
+					tool: typeof data.tool === 'string' ? data.tool : undefined,
+				} satisfies IChatEdaLintReport],
+			};
+		}
+
+		case 'ppa_report': {
+			// ppa_optimize_loop emits per-stage payloads that already match the
+			// IDE part's fields 1:1 (stage / round / *_ppa / improvement / …).
+			const data = (event.data ?? {}) as Partial<IChatEdaPpaReport> & { stage?: string };
+			const stage: IChatEdaPpaReport['stage'] =
+				(data.stage === 'baseline' || data.stage === 'eval_round' || data.stage === 'improved' || data.stage === 'not_improved')
+					? data.stage : 'eval_round';
+			return {
+				flushText: true,
+				edaParts: [{
+					kind: 'edaPpaReport',
+					stage,
+					round: data.round,
+					ppa: data.ppa,
+					baseline_ppa: data.baseline_ppa,
+					previous_best_ppa: data.previous_best_ppa,
+					current_ppa: data.current_ppa,
+					best_ppa: data.best_ppa,
+					improvement: data.improvement,
+					strategy: data.strategy,
+					sta_report: data.sta_report,
+					power_report: data.power_report,
+					pareto_front_size: data.pareto_front_size,
+				} satisfies IChatEdaPpaReport],
+			};
+		}
+
+		case 'negotiation_view': {
+			// multi_agent_debate emits three distinct per-round shapes:
+			//   round 1 → {perspectives:[{role,analysis,confidence}]}
+			//   round 2 → {challenges:[{role,response,revised_confidence}]}
+			//   synth   → {recommendation, consensus_reached}
+			// plus the graph/subagent_tracker shape {issue, perspectives, recommendation}.
+			// Fold perspectives + challenges into the IDE's {agent,position,reasoning}.
+			const data = (event.data ?? {}) as {
+				issue?: string; recommendation?: string;
+				perspectives?: Array<{ role?: string; agent?: string; analysis?: string; position?: string; claim?: string; confidence?: number | string; reasoning?: string }>;
+				challenges?: Array<{ role?: string; response?: string; revised_confidence?: number | string }>;
+			};
+			const fromPerspectives = Array.isArray(data.perspectives)
+				? data.perspectives.map(p => ({
+					agent: typeof p.agent === 'string' ? p.agent : (typeof p.role === 'string' ? p.role : ''),
+					position: p.position ?? p.analysis ?? p.claim ?? '',
+					reasoning: String(p.reasoning ?? p.confidence ?? ''),
+				}))
+				: [];
+			const fromChallenges = Array.isArray(data.challenges)
+				? data.challenges.map(c => ({
+					agent: typeof c.role === 'string' ? c.role : '',
+					position: typeof c.response === 'string' ? c.response : '',
+					reasoning: String(c.revised_confidence ?? ''),
+				}))
+				: [];
+			const perspectives = [...fromPerspectives, ...fromChallenges];
+			const recommendation = typeof data.recommendation === 'string' ? data.recommendation : '';
+			// A bare round marker with nothing to show → drop (no empty shell).
+			if (!perspectives.length && !recommendation) {
+				return {};
+			}
+			return {
+				flushText: true,
+				edaParts: [{
+					kind: 'edaNegotiationView',
+					issue: typeof data.issue === 'string' ? data.issue : '',
+					perspectives,
+					recommendation,
+				} satisfies IChatEdaNegotiationView],
+			};
+		}
+
+		case 'parallel_progress': {
+			// parallel_generate / parallel_check: {phase, tracks:[{name,status,current_step,files?}], conflicts?}.
+			// Track `status` is a free-form backend string ("worktree_created",
+			// "review", …); preserve it raw (cast) so the renderer can show it,
+			// matching legacy's straight passthrough.
+			const data = (event.data ?? {}) as {
+				phase?: string;
+				tracks?: Array<{ name?: string; status?: string; progress?: number; file?: string; files?: string[] }>;
+				conflicts?: string[];
+			};
+			const tracks = (Array.isArray(data.tracks) ? data.tracks : []).map(t => ({
+				name: typeof t.name === 'string' ? t.name : '',
+				status: typeof t.status === 'string' ? t.status : 'running',
+				progress: typeof t.progress === 'number' ? t.progress : undefined,
+				file: typeof t.file === 'string' ? t.file : (Array.isArray(t.files) && t.files.length ? t.files[0] : undefined),
+			})) as IChatEdaParallelProgress['tracks'];
+			return {
+				flushText: true,
+				edaParts: [{
+					kind: 'edaParallelProgress',
+					phase: typeof data.phase === 'string' ? data.phase : '',
+					tracks,
+					conflicts: Array.isArray(data.conflicts) ? data.conflicts : undefined,
+				} satisfies IChatEdaParallelProgress],
+			};
+		}
+
+		case 'spec_review': {
+			// subagent_tracker: {spec_path, spec_name, summary, files} — 1:1.
+			const data = (event.data ?? {}) as { spec_path?: string; spec_name?: string; summary?: string; files?: string[] };
+			return {
+				flushText: true,
+				edaParts: [{
+					kind: 'edaSpecReview',
+					spec_path: typeof data.spec_path === 'string' ? data.spec_path : '',
+					spec_name: typeof data.spec_name === 'string' ? data.spec_name : '',
+					summary: typeof data.summary === 'string' ? data.summary : '',
+					files: Array.isArray(data.files) ? data.files : undefined,
+				} satisfies IChatEdaSpecReview],
+			};
+		}
+
+		case 'diff_preview': {
+			// {file_path, hunks:[{header, lines:[{type:'add'|'del'|'ctx', content}]}]}.
+			// Legacy rendered this as a fenced ```diff``` markdown block (no card).
+			const data = (event.data ?? {}) as { file_path?: string; hunks?: Array<{ header?: string; lines?: Array<{ type?: string; content?: string }> }> };
+			const filePath = typeof data.file_path === 'string' ? data.file_path : '';
+			const hunks = (Array.isArray(data.hunks) ? data.hunks : []).map(h => {
+				const lines = (Array.isArray(h.lines) ? h.lines : []).map(l => {
+					const content = typeof l.content === 'string' ? l.content : '';
+					if (l.type === 'add') { return `+ ${content}`; }
+					if (l.type === 'del') { return `- ${content}`; }
+					return `  ${content}`;
+				}).join('\n');
+				return `${typeof h.header === 'string' ? h.header : ''}\n${lines}`;
+			}).join('\n\n');
+			return { flushText: true, markdownContents: [`**Diff: \`${filePath}\`**\n\`\`\`diff\n${hunks}\n\`\`\``] };
+		}
+
 		case 'task_summary': {
-			// End-of-turn structured summary → a progress line carrying the verdict.
-			const data = (event.data ?? {}) as { verdict?: string; task_type?: string };
-			const bits = [data.task_type, data.verdict].filter(v => typeof v === 'string' && v);
-			return bits.length ? { flushText: true, progressMessage: { content: bits.join(' · ') } } : {};
+			// End-of-turn structured summary → the full `_formatTaskSummary` card
+			// (verdict badge + KV table + files + next steps), NOT the Phase-0
+			// single-line downgrade. The agent_core SummaryAssembler ships
+			// {task_type, verdict, rendered_markdown, structured_data:{…}}; the
+			// subagent_tracker path ships {task_type, structured_data_json:"…"}.
+			const data = (event.data ?? {}) as {
+				task_type?: string;
+				structured_data?: Record<string, unknown>;
+				structured_data_json?: string;
+			};
+			let structured: Record<string, unknown> = {};
+			if (data.structured_data && typeof data.structured_data === 'object') {
+				structured = data.structured_data;
+			} else if (typeof data.structured_data_json === 'string' && data.structured_data_json) {
+				try {
+					const parsed = JSON.parse(data.structured_data_json);
+					if (parsed && typeof parsed === 'object') {
+						structured = parsed as Record<string, unknown>;
+					}
+				} catch {
+					// malformed JSON — render the verdict-only card from task_type alone.
+				}
+			}
+			const taskType = typeof data.task_type === 'string' ? data.task_type : '';
+			// Nothing to render → drop (forward-compat with bare/empty summaries).
+			if (!taskType && Object.keys(structured).length === 0) {
+				return {};
+			}
+			return { flushText: true, taskSummary: { task_type: taskType, structured_data: structured } };
 		}
 
 		case 'todo': {

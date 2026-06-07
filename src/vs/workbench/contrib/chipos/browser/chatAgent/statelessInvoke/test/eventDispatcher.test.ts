@@ -408,12 +408,128 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('subagent_event', {})), {});
 	});
 
-	test('task_summary → flushText + progressMessage verdict line', () => {
+	test('task_summary → flushText + rich taskSummary card (not the single-line downgrade)', () => {
+		// agent_core SummaryAssembler shape: structured_data object.
 		assert.deepStrictEqual(
-			dispatchStatelessEvent(ev('task_summary', { task_type: 'rtl', verdict: 'ok' })),
-			{ flushText: true, progressMessage: { content: 'rtl · ok' } },
+			dispatchStatelessEvent(ev('task_summary', {
+				task_type: 'rtl_generation',
+				verdict: 'ok',
+				structured_data: { verdict_badge: '✅', task_description: 'gen counter' },
+			})),
+			{ flushText: true, taskSummary: { task_type: 'rtl_generation', structured_data: { verdict_badge: '✅', task_description: 'gen counter' } } },
 		);
+		// subagent_tracker shape: structured_data_json string → parsed.
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('task_summary', { task_type: 'lint_fix', structured_data_json: '{"rounds":2}' })),
+			{ flushText: true, taskSummary: { task_type: 'lint_fix', structured_data: { rounds: 2 } } },
+		);
+		// task_type only (empty structured_data) still renders a minimal card.
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('task_summary', { task_type: 'rtl' })),
+			{ flushText: true, taskSummary: { task_type: 'rtl', structured_data: {} } },
+		);
+		// Nothing to render → dropped.
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('task_summary', {})), {});
+		// Malformed JSON → falls back to verdict-only card (no throw).
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('task_summary', { task_type: 'x', structured_data_json: '{not json' })),
+			{ flushText: true, taskSummary: { task_type: 'x', structured_data: {} } },
+		);
+	});
+
+	// ── [ChipOS] Fusion: rich EDA report cards ────────────────────────────────
+	// Payload keys mirror what the BACKEND composite_tools safe_emit (NOT the
+	// legacy WebSocket shape) — see eventDispatcher.ts case comments.
+
+	test('sim_report → edaSimReport (sim_debug_loop tests+summary, coverage_boost empty)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('sim_report', {
+				tests: [{ name: 't1', status: 'pass', message: '' }, { name: 't2', status: 'fail', message: 'x' }],
+				summary: { total: 2, passed: 1, failed: 1 },
+			})),
+			{ flushText: true, edaParts: [{ kind: 'edaSimReport', tests: [{ name: 't1', status: 'pass', message: '', duration_ms: undefined }, { name: 't2', status: 'fail', message: 'x', duration_ms: undefined }], summary: { total: 2, passed: 1, failed: 1, errors: undefined } }] },
+		);
+		// coverage_boost's {round, result} (no tests) → empty table derived from tests.
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('sim_report', { round: 0, result: {} })),
+			{ flushText: true, edaParts: [{ kind: 'edaSimReport', tests: [], summary: { total: 0, passed: 0, failed: 0, errors: undefined } }] },
+		);
+	});
+
+	test('coverage_report → edaCoverageReport (overall_cov fallback + string gaps)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('coverage_report', { line_cov: 88, branch_cov: 72, gaps: ['rtl.v:12 [toggle] sig'] })),
+			{ flushText: true, edaParts: [{ kind: 'edaCoverageReport', line_cov: 88, branch_cov: 72, gaps: [{ file: '', lines: 'rtl.v:12 [toggle] sig' }] }] },
+		);
+		// Text-fallback path: only overall_cov, no line/branch.
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('coverage_report', { overall_cov: 65, gaps: [] })),
+			{ flushText: true, edaParts: [{ kind: 'edaCoverageReport', line_cov: 65, branch_cov: 0, gaps: undefined }] },
+		);
+	});
+
+	test('lint_report → edaLintReport (backend `column` mapped to `col`)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('lint_report', {
+				round: 1,
+				errors: [{ file: 'a.v', line: 3, column: 5, rule: 'X', message: 'oops', severity: 'warning' }],
+			})),
+			{ flushText: true, edaParts: [{ kind: 'edaLintReport', errors: [{ file: 'a.v', line: 3, col: 5, severity: 'warning', message: 'oops', rule: 'X', auto_fixable: undefined }], auto_fixable: undefined, tool: undefined }] },
+		);
+	});
+
+	test('ppa_report → edaPpaReport (stage passthrough)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('ppa_report', { stage: 'improved', round: 2, improvement: { area: 0.1 }, strategy: 'r1' })),
+			{ flushText: true, edaParts: [{ kind: 'edaPpaReport', stage: 'improved', round: 2, ppa: undefined, baseline_ppa: undefined, previous_best_ppa: undefined, current_ppa: undefined, best_ppa: undefined, improvement: { area: 0.1 }, strategy: 'r1', sta_report: undefined, power_report: undefined, pareto_front_size: undefined }] },
+		);
+		// Unknown stage → defaulted to eval_round.
+		assert.strictEqual((dispatchStatelessEvent(ev('ppa_report', { stage: 'bogus' })).edaParts?.[0] as { stage: string }).stage, 'eval_round');
+	});
+
+	test('negotiation_view → edaNegotiationView (perspectives + challenges folded)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('negotiation_view', { round: 1, perspectives: [{ role: 'rtl-coder', analysis: 'use FSM', confidence: 0.8 }] })),
+			{ flushText: true, edaParts: [{ kind: 'edaNegotiationView', issue: '', perspectives: [{ agent: 'rtl-coder', position: 'use FSM', reasoning: '0.8' }], recommendation: '' }] },
+		);
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('negotiation_view', { round: 2, challenges: [{ role: 'tb-agent', response: 'edge cases', revised_confidence: 0.9 }] })),
+			{ flushText: true, edaParts: [{ kind: 'edaNegotiationView', issue: '', perspectives: [{ agent: 'tb-agent', position: 'edge cases', reasoning: '0.9' }], recommendation: '' }] },
+		);
+		// Synthesize round: recommendation only.
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('negotiation_view', { round: 2, recommendation: '推荐采用 rtl-coder 方案', consensus_reached: true })),
+			{ flushText: true, edaParts: [{ kind: 'edaNegotiationView', issue: '', perspectives: [], recommendation: '推荐采用 rtl-coder 方案' }] },
+		);
+		// Bare round marker (nothing to show) → dropped.
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('negotiation_view', { round: 1 })), {});
+	});
+
+	test('parallel_progress → edaParallelProgress (raw status preserved, files[0]→file)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('parallel_progress', {
+				task_id: 'pg-counter', phase: 'review',
+				tracks: [{ name: 'RTL Agent', status: 'review', current_step: '等待用户审核', files: ['rtl/counter.v'] }],
+			})),
+			{ flushText: true, edaParts: [{ kind: 'edaParallelProgress', phase: 'review', tracks: [{ name: 'RTL Agent', status: 'review', progress: undefined, file: 'rtl/counter.v' }], conflicts: undefined }] },
+		);
+	});
+
+	test('spec_review → edaSpecReview (1:1)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('spec_review', { spec_path: 's/p.md', spec_name: 'P', summary: 'ok', files: ['a.v'] })),
+			{ flushText: true, edaParts: [{ kind: 'edaSpecReview', spec_path: 's/p.md', spec_name: 'P', summary: 'ok', files: ['a.v'] }] },
+		);
+	});
+
+	test('diff_preview → markdownContents (fenced diff block)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('diff_preview', {
+				file_path: 'rtl/x.v',
+				hunks: [{ header: '@@ -1 +1 @@', lines: [{ type: 'del', content: 'old' }, { type: 'add', content: 'new' }] }],
+			})),
+			{ flushText: true, markdownContents: ['**Diff: `rtl/x.v`**\n```diff\n@@ -1 +1 @@\n- old\n+ new\n```'] },
+		);
 	});
 
 	test('todo → progressMessage count (full widget stays on toolInvocation path)', () => {
@@ -449,6 +565,9 @@ suite('dispatchStatelessEvent', () => {
 			'round_start', 'status', 'chat', 'model_output',
 			'model_turn_start', 'model_turn_end', 'subagent_event',
 			'task_summary', 'todo',
+			// Fusion EDA report cards must also tolerate missing data.
+			'sim_report', 'lint_report', 'coverage_report', 'ppa_report',
+			'negotiation_view', 'parallel_progress', 'spec_review', 'diff_preview',
 		];
 		const results = types.map(t => {
 			const evNoData = { type: t, sequence_id: 1, data: undefined } as unknown as InvokeEvent;

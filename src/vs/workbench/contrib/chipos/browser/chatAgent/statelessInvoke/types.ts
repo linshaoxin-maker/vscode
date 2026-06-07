@@ -423,6 +423,19 @@ export type InvokeEventType =
 	| 'subagent_event'
 	| 'task_summary'
 	| 'todo'
+	// [ChipOS] Fusion: rich EDA report cards emitted by composite_tools
+	// (sim_debug_loop / lint_fix_loop / coverage_boost / ppa_optimize_loop /
+	// multi_agent_debate / parallel_generate) + graph/subagent_tracker paths.
+	// Mirrors shared/contracts/invoke.py InvokeEvent.type. The dispatcher maps
+	// each onto the native IChatEda* content parts (was: dropped to default {}).
+	| 'sim_report'
+	| 'lint_report'
+	| 'coverage_report'
+	| 'ppa_report'
+	| 'negotiation_view'
+	| 'parallel_progress'
+	| 'spec_review'
+	| 'diff_preview'
 	| 'keepalive'
 	| 'checkpoint'
 	| 'resumed_buffer_drained'
