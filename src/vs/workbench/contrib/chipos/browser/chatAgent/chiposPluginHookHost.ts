@@ -8,7 +8,8 @@
  *
  * Runs a consented plugin's hook export in an isolated node child so untrusted
  * plugin code never executes on the IDE renderer thread. The child is plain
- * CommonJS ({@link pluginHookChild.js}), forked in node mode via
+ * CommonJS (embedded below as {@link CHILD_SOURCE}, written to a temp file at
+ * runtime), forked in node mode via
  * `ELECTRON_RUN_AS_NODE=1` over the Electron binary (the fork-as-node precedent
  * from customEndpointTelemetryService.ts), with an automatic IPC channel.
  *
@@ -26,7 +27,50 @@
  * undefined and every evaluate degrades to the fail-closed default.
  */
 
-import { FileAccess } from '../../../../../base/common/network.js';
+// The tier-2 hook child is a standalone CommonJS script run via fork() in node
+// mode. It is EMBEDDED here as a source string (NOT a separate .js file) so it
+// ships in EVERY build — the production bundler does not copy loose .js, which
+// would otherwise leave executable hooks broken in a packaged app. At runtime we
+// write it to a temp file and fork that. Single source of truth: keep this in
+// sync with the IPC protocol in evaluate() / _onMessage(). It MUST NOT import any
+// VS Code module — it is the untrusted sandbox in which a consented plugin's hook
+// runs, process-isolated from the renderer. Every failure path replies "deny"
+// (fail-closed).
+const CHILD_SOURCE = `'use strict';
+const _cache = new Map();
+function normalize(d) {
+	const raw = d && d.decision;
+	const decision = (raw === 'deny' || raw === 'ask' || raw === 'amend') ? raw : 'proceed';
+	const result = { decision: decision };
+	if (d && typeof d.amendedArgs === 'object' && d.amendedArgs !== null) { result.amended_args = d.amendedArgs; }
+	if (d && typeof d.agentMessage === 'string') { result.agent_message = d.agentMessage; }
+	if (d && typeof d.userMessage === 'string') { result.user_message = d.userMessage; }
+	return result;
+}
+process.on('message', async (msg) => {
+	const { evalId, modulePath, exportName, ctx } = msg;
+	try {
+		let mod = _cache.get(modulePath);
+		if (!mod) { mod = require(modulePath); _cache.set(modulePath, mod); }
+		const fn = mod && (mod[exportName] || (mod.default && mod.default[exportName]));
+		if (typeof fn !== 'function') { process.send({ evalId: evalId, decision: 'deny', error: 'export ' + exportName + ' is not a function' }); return; }
+		const out = await fn(Object.freeze(ctx));
+		process.send(Object.assign({ evalId: evalId }, normalize(out)));
+	} catch (e) { process.send({ evalId: evalId, decision: 'deny', error: String((e && e.message) || e) }); }
+});
+`;
+
+/** Minimal Node module slices we use via the bare-require idiom (browser tsconfig has no @types/node). */
+interface INodeFs { writeFileSync(path: string, data: string): void; }
+interface INodeOs { tmpdir(): string; }
+interface INodePath { join(...parts: string[]): string; }
+function nodeMod<T>(name: string): T | undefined {
+	try {
+		return typeof require === 'function' ? (require(name) as T) : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /** The slice of Node's `child_process.ChildProcess` we use, typed locally to avoid node types. */
 interface IChildProcess {
@@ -108,14 +152,17 @@ interface IPendingEval {
 export class ChiposPluginHookHost {
 
 	private readonly _forkImpl: ForkFn | undefined;
-	private readonly _childPath: string;
+	private readonly _childPath: string | undefined;
+	private _childScriptPath: string | undefined;
 	private readonly _consented = new Set<string>();
 	private readonly _pending = new Map<string, IPendingEval>();
 	private _child: IChildProcess | undefined;
 
 	constructor(forkImpl?: ForkFn, childPath?: string) {
 		this._forkImpl = forkImpl ?? defaultFork();
-		this._childPath = childPath ?? FileAccess.asFileUri('vs/workbench/contrib/chipos/browser/chatAgent/pluginHookChild.js').fsPath;
+		// Injected childPath (tests) wins; otherwise the embedded CHILD_SOURCE is
+		// written to a temp file lazily in _ensureChild, so it ships in every build.
+		this._childPath = childPath;
 	}
 
 	/** Record that the user has consented to running `pluginId`'s executable hooks. */
@@ -170,6 +217,31 @@ export class ChiposPluginHookHost {
 		this._kill();
 	}
 
+	/** Write the embedded child script to a temp file once and return its path (or
+	 * the injected override). Returns undefined when Node fs/os/path are missing. */
+	private _resolveChildScript(): string | undefined {
+		if (this._childPath) {
+			return this._childPath;
+		}
+		if (this._childScriptPath) {
+			return this._childScriptPath;
+		}
+		const fs = nodeMod<INodeFs>('fs');
+		const os = nodeMod<INodeOs>('os');
+		const path = nodeMod<INodePath>('path');
+		if (!fs || !os || !path) {
+			return undefined;
+		}
+		try {
+			const file = path.join(os.tmpdir(), 'chipos-plugin-hook-child.js');
+			fs.writeFileSync(file, CHILD_SOURCE);
+			this._childScriptPath = file;
+			return file;
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** Lazily spawn the child and wire its IPC + lifecycle handlers. */
 	private _ensureChild(): IChildProcess | undefined {
 		if (this._child) {
@@ -178,8 +250,12 @@ export class ChiposPluginHookHost {
 		if (!this._forkImpl) {
 			return undefined;
 		}
+		const childPath = this._resolveChildScript();
+		if (!childPath) {
+			return undefined;
+		}
 
-		const child = this._forkImpl(this._childPath, [], {
+		const child = this._forkImpl(childPath, [], {
 			env: {
 				...(typeof process !== 'undefined' ? process.env : {}),
 				ELECTRON_RUN_AS_NODE: '1',
