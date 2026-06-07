@@ -66,6 +66,32 @@ export class ChiposPluginsService {
 	}
 
 	/**
+	 * Resolve `relPath` inside an installed plugin's dir to an absolute on-disk
+	 * URI, traversal-guarded (FEAT-004 / H-3 executable hooks). Used by the H-3
+	 * caller to locate a plugin's hook module before handing it to the isolated
+	 * subprocess host. Returns `undefined` when:
+	 *   - the resolved path escapes `~/.chipos-ide/plugins/<pluginId>/` (a `..`
+	 *     segment tried to climb out — SECURITY: never load such a file), or
+	 *   - the target does not exist on disk.
+	 * This is the ONLY sanctioned way to turn an untrusted `module` carrier from
+	 * a `hook_eval` event into a path the host may fork.
+	 */
+	async resolvePluginFile(pluginId: string, relPath: string): Promise<URI | undefined> {
+		const root = await this._pluginsRoot();
+		const pluginDir = URI.joinPath(root, pluginId);
+		const segs = relPath.split(/[\\/]+/).filter(s => s && s !== '.');
+		const target = URI.joinPath(pluginDir, ...segs);
+		// TRAVERSAL GUARD: a `..` segment escaped the plugin dir — reject.
+		if (!(target.path === pluginDir.path || target.path.startsWith(pluginDir.path + '/'))) {
+			return undefined;
+		}
+		if (!(await this._fileService.exists(target))) {
+			return undefined;
+		}
+		return target;
+	}
+
+	/**
 	 * Scan the install root and return each plugin whose manifest parses. A dir
 	 * without a valid `.chipos-plugin/plugin.json` (or Cursor `.cursor-plugin/`)
 	 * is skipped — an invalid manifest never fails the whole scan here (the

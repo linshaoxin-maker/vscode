@@ -20,6 +20,7 @@ import { CommandsRegistry, ICommandService } from '../../../../../platform/comma
 import { ConfigurationTarget, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalService, ITerminalChatService } from '../../../terminal/browser/terminal.js';
@@ -91,6 +92,7 @@ import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposSkillsService } from '../resources/chiposSkillsService.js';
 import { ChiposPluginsService } from '../resources/chiposPluginsService.js';
+import { ChiposPluginHookHost } from './chiposPluginHookHost.js';
 import { buildIdeMcpTools, shapeMcpToolResult, IdeMcpToolInfo } from './ideToolCatalog.js';
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
@@ -367,6 +369,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IChatTodoListService private readonly _todoListService: IChatTodoListService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IWorkspaceTrustManagementService private readonly _workspaceTrustService: IWorkspaceTrustManagementService,
 		@IChatEditingService private readonly _chatEditingService: IChatEditingService,
 		@IChatService private readonly _chatService: IChatService,
 		@INotificationService private readonly _notificationService: INotificationService,
@@ -5752,6 +5755,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	private _statelessClient: StatelessClient | undefined;
 	private _statelessClientBaseUrl: string | undefined;
+	/**
+	 * FEAT-004 / H-3: lazily-spawned isolated subprocess host for executable
+	 * plugin hooks. Created on first consented function-hook eval; disposed in
+	 * {@link dispose}.
+	 */
+	private _pluginHookHost: ChiposPluginHookHost | undefined;
+	/** Plugin ids the user has consented to run executable hooks for, this session (H-3). */
+	private readonly _consentedHookPlugins = new Set<string>();
 	private readonly _statelessChatSessionIds = new ResourceMap<string>();
 	private readonly _statelessTraces = new ResourceMap<{
 		traceId: string;
@@ -6089,7 +6100,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// FEAT-002a/004: also surface hooks contributed by installed plugins
 			// (plugins/<id>/hooks/*.json), tagged source=plugin.
 			const pluginHooks = await this._instantiationService.createInstance(ChiposPluginsService).getPluginHooks();
-			const allHooks = pluginHooks.length ? [...hooks, ...pluginHooks] : hooks;
+			let allHooks = pluginHooks.length ? [...hooks, ...pluginHooks] : hooks;
+			// Tier-2 executable (function) hooks only flow when the user opted in via
+			// chipos.hooks.executablePlugins; otherwise drop them so an installed
+			// plugin's function hook stays fully inert (it must never block or alter a
+			// tool when the feature is off). Declarative deny/observe hooks are unaffected.
+			if (this._configurationService.getValue<boolean>('chipos.hooks.executablePlugins') !== true) {
+				allHooks = allHooks.filter(h => (h as { kind?: string }).kind !== 'function');
+			}
 			if (allHooks.length) {
 				invokeReq.hooks = allHooks;
 			}
@@ -6254,6 +6272,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				const call = handled.ideToolCall;
 				void this._handleStatelessIdeToolCall(client, traceId, request.sessionResource, call, progress, token).catch(err => {
 					this._logService.error('[ChipOS Stateless] ide_tool_call handler failed:', String(err));
+				});
+			}
+			// FEAT-004 / H-3 reverse channel: hook_eval → run the plugin function
+			// hook (gated + isolated) + POST decision back. Fire-and-forget like
+			// ide_tool_call so the SSE loop keeps draining while the eval runs; the
+			// reasoner's agent loop is blocked awaiting our /hook_result POST.
+			if (handled.hookEval) {
+				const hookEval = handled.hookEval;
+				void this._handleStatelessHookEval(client, traceId, request.sessionResource, hookEval, token).catch(err => {
+					this._logService.error('[ChipOS Stateless] hook_eval handler failed:', String(err));
 				});
 			}
 			// Phase 1 reverse channel: confirm_request → render card + POST user
@@ -6846,6 +6874,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					this._logService.error('[ChipOS Stateless] resume ide_tool_call handler failed:', String(err));
 				});
 			}
+			if (handled.hookEval) {
+				const hookEval = handled.hookEval;
+				void this._handleStatelessHookEval(client, traceId, request.sessionResource, hookEval, token).catch(err => {
+					this._logService.error('[ChipOS Stateless] resume hook_eval handler failed:', String(err));
+				});
+			}
 			if (handled.confirmRequest) {
 				const confirm = handled.confirmRequest;
 				this._statelessObs.confirmShown(confirm.cardType);  // §5.2 client mirror
@@ -7258,6 +7292,62 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				call.callId, String(err),
 			);
 		}
+	}
+
+	/**
+	 * FEAT-004 / H-3 reverse channel: the reasoner asked the IDE to RUN a
+	 * plugin-contributed executable function hook and is BLOCKING on the decision.
+	 *
+	 * SECURITY-CRITICAL — this is the gate that runs untrusted plugin code:
+	 *   - every early exit MUST POST a decision so the reasoner's pending eval
+	 *     future resolves (it has its own timeout, but we never want to rely on
+	 *     it). The fail-closed default is `deny` (the reasoner sets
+	 *     `fail_closed: true` for security-relevant points); a hook that opts out
+	 *     (`fail_closed: false`) degrades to `proceed` instead.
+	 *   - the gate order is FLAG → WORKSPACE-TRUST → per-plugin CONSENT, and ALL
+	 *     of them are checked BEFORE we resolve any module path or spawn the host.
+	 *   - module resolution is traversal-guarded ({@link ChiposPluginsService.resolvePluginFile})
+	 *     so a `..` carrier cannot load a file outside the plugin dir.
+	 *   - the host runs the export in an isolated node child (never on the
+	 *     renderer thread) and is itself fail-closed on timeout / crash.
+	 * An `ask` decision is bridged to a user confirm and collapsed to
+	 * proceed/deny (the reasoner only understands terminal decisions here).
+	 */
+	private async _handleStatelessHookEval(client: StatelessClient, traceId: string, sessionResource: URI, hookEval: { evalId: string; point: string; toolName?: string; callId?: string; args: Record<string, unknown>; module?: string; export?: string; pluginIds?: string[]; timeoutMs?: number; failClosed?: boolean }, token: CancellationToken): Promise<void> {
+		const failClosed = hookEval.failClosed !== false;
+		const post = async (decision: string, extra?: { amended_args?: object; agent_message?: string; user_message?: string }) => {
+			try { await client.postHookResult(traceId, hookEval.evalId, { eval_id: hookEval.evalId, decision, ...(extra ?? {}) }); }
+			catch (err) { this._logService.warn('[ChipOS Stateless] POST /hook_result failed for eval_id=%s: %s', hookEval.evalId, String(err)); }
+		};
+		const denyOrProceed = failClosed ? 'deny' : 'proceed';
+		// Gate 1: master flag (default off). Flag off = the user disabled executable
+		// hooks, so the hook is INERT (not a deny): proceed, so a stray eval (e.g. the
+		// flag was flipped off mid-turn) can never block a tool. The send-side filter
+		// normally prevents function hooks from being sent at all when off.
+		if (this._configurationService.getValue<boolean>('chipos.hooks.executablePlugins') !== true) { await post('proceed', { agent_message: 'executable plugin hooks are disabled' }); return; }
+		// Gate 2: workspace trust.
+		if (!this._workspaceTrustService.isWorkspaceTrusted()) { await post(denyOrProceed, { agent_message: 'workspace is not trusted' }); return; }
+		const pluginId = hookEval.pluginIds && hookEval.pluginIds[0];
+		if (!pluginId || !hookEval.module || !hookEval.export) { await post(denyOrProceed, { agent_message: 'malformed function hook' }); return; }
+		// Gate 3: per-plugin one-time consent (this session).
+		if (!this._consentedHookPlugins.has(pluginId)) {
+			const { confirmed } = await this._dialogService.confirm({ type: 'warning', message: localize('chipos.hooks.consent', 'Allow plugin \'{0}\' to run an executable hook ({1})? It runs code on your machine in an isolated process.', pluginId, hookEval.export), primaryButton: localize('chipos.hooks.consent.allow', 'Allow for this session') });
+			if (!confirmed) { await post(denyOrProceed, { agent_message: 'user declined to run the plugin hook' }); return; }
+			this._consentedHookPlugins.add(pluginId);
+		}
+		// Resolve the plugin module (traversal-guarded).
+		const plugins = this._instantiationService.createInstance(ChiposPluginsService);
+		const moduleUri = await plugins.resolvePluginFile(pluginId, hookEval.module);
+		if (!moduleUri) { await post(denyOrProceed, { agent_message: 'plugin hook module not found' }); return; }
+		this._pluginHookHost = this._pluginHookHost ?? new ChiposPluginHookHost();
+		this._pluginHookHost.grantConsent(pluginId);
+		const result = await this._pluginHookHost.evaluate({ evalId: hookEval.evalId, pluginId, modulePath: moduleUri.fsPath, exportName: hookEval.export, ctx: { point: hookEval.point, toolName: hookEval.toolName, callId: hookEval.callId, args: hookEval.args, pluginId }, timeoutMs: hookEval.timeoutMs ?? 5000, failClosed });
+		// ask -> bridge to a user confirm; resolve to proceed/deny.
+		if (result.decision === 'ask') {
+			const { confirmed } = await this._dialogService.confirm({ type: 'warning', message: result.userMessage || localize('chipos.hooks.ask', 'A plugin hook asks to proceed with {0}. Allow?', hookEval.toolName || 'this tool') });
+			await post(confirmed ? 'proceed' : 'deny', { agent_message: result.agentMessage }); return;
+		}
+		await post(result.decision, { amended_args: result.amendedArgs, agent_message: result.agentMessage, user_message: result.userMessage });
 	}
 
 	/**
@@ -7689,6 +7779,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 		this._connectionBanners.clear();
 		this._renderedConfirmsByTrace.clear();
+		// FEAT-004 / H-3: kill the executable-hook subprocess host (if it was ever
+		// spawned) so a forked plugin-hook child cannot outlive the agent.
+		this._pluginHookHost?.dispose();
 		super.dispose();
 	}
 }
