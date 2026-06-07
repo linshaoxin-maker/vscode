@@ -233,6 +233,42 @@
 	margin: 6px 0 4px;
 }
 
+/* ── Free-form note (P1-4) ──────────────────────────────────────────────────── */
+/* Optional per-card note box rendered above the buttons on confirm cards that
+ * carry a `comment` sink. Mirrors vscode-extension confirmCard.js .confirm-input. */
+
+.chipos-permission-comment {
+	margin: 2px 0 0;
+}
+
+.chipos-permission-comment-input {
+	box-sizing: border-box;
+	width: 100%;
+	resize: vertical;
+	min-height: 2.4em;
+	padding: 5px 8px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-input-border, rgba(127, 127, 127, 0.3));
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-family: var(--vscode-font-family);
+	font-size: 12px;
+	line-height: 1.4;
+}
+
+.chipos-permission-comment-input::placeholder {
+	color: var(--vscode-input-placeholderForeground, rgba(127, 127, 127, 0.7));
+}
+
+.chipos-permission-comment-input:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.chipos-permission-comment-input:disabled {
+	opacity: 0.6;
+}
+
 /* ── Buttons row ────────────────────────────────────────────────────────────── */
 
 .chipos-permission-buttons {

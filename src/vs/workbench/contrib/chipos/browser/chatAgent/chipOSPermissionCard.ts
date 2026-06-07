@@ -247,6 +247,25 @@ export function isChipOSCardData(data: unknown): data is IChipOSPermissionCardDa
 	return isChipOSPermissionCardData(data) || isChipOSTerminalConfirmCardData(data) || isChipOSHookConfirmCardData(data) || isChipOSGenericConfirmCardData(data) || isChipOSAgentAskCardData(data);
 }
 
+/**
+ * P1-4 (IDE-MIGRATION-GAPS §1.4): which confirm cards get the free-form note
+ * box. Only cards whose decision travels to the reasoner via
+ * `sendConfirmResponse` / `POST /confirm_response` (generic + hook + stateless
+ * backend ConfirmRequest cards) carry a `comment` field end-to-end, so only
+ * those get a box — a note the user can attach when approving OR rejecting.
+ * Excluded: worker permission asks (resolve to a local `worker.decide()` with no
+ * comment slot), terminal-command confirms (resolve a local Deferred), and
+ * agent_ask cards (their radio form already JSON-encodes the structured answer
+ * into the `comment` field).
+ */
+export function confirmCardSupportsFreeformComment(
+	data: IChipOSPermissionCardData | IChipOSTerminalConfirmCardData | IChipOSHookConfirmCardData | IChipOSGenericConfirmCardData | IChipOSAgentAskCardData,
+): boolean {
+	return !isChipOSPermissionCardData(data)
+		&& !isChipOSTerminalConfirmCardData(data)
+		&& !isChipOSAgentAskCardData(data);
+}
+
 // ── Content part ──────────────────────────────────────────────────────────────
 
 export class ChipOSPermissionCardContentPart extends Disposable implements IChatContentPart {
@@ -260,6 +279,15 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 	 * the card is already responded/used (retire is then a no-op).
 	 */
 	private _retireToSupersededPill?: (reason?: ChipOSConfirmRetireReason) => void;
+
+	/**
+	 * P1-4: the optional free-form note box rendered on confirm cards that flow
+	 * to `sendConfirmResponse` (see `confirmCardSupportsFreeformComment`). Its
+	 * value is read in `_buildButtons.sendAction` and attached to the decision
+	 * (the stateless command's 4th arg, or `data.comment` on the legacy path).
+	 * Undefined for card types with no comment sink / their own structured input.
+	 */
+	private _commentTextarea?: HTMLTextAreaElement;
 
 	constructor(
 		private readonly confirmation: IChatConfirmation,
@@ -442,6 +470,26 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 		const hasFollowUpRequest = elementIdx >= 0 && items!.slice(elementIdx + 1).some(item => !isResponseVM(item));
 		const isPending = !!responseVM && !!responseVM.model?.isPendingConfirmation?.get();
 
+		// ── Free-form note (P1-4) ─────────────────────────────────────────────
+		// Rendered above the buttons, only on actionable confirm cards that carry
+		// a `comment` sink (generic / hook / stateless backend confirms). Mirrors
+		// vscode-extension confirmCard.js:193-199 (always-on per-card note). The
+		// _buildButtons keydown handler already ignores 1-4/Esc while a TEXTAREA
+		// is focused, so typing here never triggers a decision.
+		const wantsComment = !confirmation.isUsed && isPending && !hasFollowUpRequest && !!responseVM
+			&& confirmCardSupportsFreeformComment(data);
+		if (wantsComment) {
+			const commentWrap = dom.$('.chipos-permission-comment');
+			const textarea = document.createElement('textarea');
+			textarea.className = 'chipos-permission-comment-input';
+			textarea.rows = 2;
+			textarea.placeholder = localize('chipos.card.commentPlaceholder', 'Add an optional note (sent with your decision)…');
+			textarea.setAttribute('aria-label', localize('chipos.card.commentAria', 'Optional note to attach to your decision'));
+			commentWrap.appendChild(textarea);
+			card.appendChild(commentWrap);
+			this._commentTextarea = textarea;
+		}
+
 		const buttonsRow = dom.$('.chipos-permission-buttons');
 		card.appendChild(buttonsRow);
 
@@ -517,6 +565,10 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 				btn.disabled = disabled;
 				btn.classList.toggle('chipos-btn-used', disabled);
 			}
+			// P1-4: lock the note box too while a decision is in flight / responded.
+			if (this._commentTextarea) {
+				this._commentTextarea.disabled = disabled;
+			}
 		};
 
 		// Replace the action-button row with a pill showing WHICH action the
@@ -588,6 +640,10 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			inFlight = true;
 			setDisabled(true);
 
+			// P1-4: the free-form note the user typed (if any), attached to BOTH
+			// resolve paths so a reviewer can append a reason on approve or reject.
+			const comment = this._commentTextarea?.value.trim() || undefined;
+
 			// PERMISSION-DECOUPLE: stateless confirm cards can't resolve through
 			// the chat re-entry (sendRequest) path — the originating turn is
 			// still in-flight, so the chat session is busy and sendRequest is
@@ -603,6 +659,7 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 						statelessReqId,
 						opt.action_id ?? opt.label,
 						selections,
+						comment,
 					);
 					this.confirmation.isUsed = true;
 					swapToRespondedPill(opt);
@@ -611,6 +668,13 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 					setDisabled(false);
 				}
 				return;
+			}
+
+			// Legacy path: the chipOSChatAgent accept handler reads the note off
+			// `acceptedConfirmationData[0].comment` (same object reference flows
+			// through, mirroring how agent_ask mutates `selections`).
+			if (comment) {
+				(this.confirmation.data as { comment?: string }).comment = comment;
 			}
 
 			const prompt = `${opt.label}: "${this.confirmation.title}"`;

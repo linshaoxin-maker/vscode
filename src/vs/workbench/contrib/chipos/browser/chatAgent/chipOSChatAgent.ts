@@ -447,8 +447,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Request then POSTs /confirm_response (the proven timeout path).
 		this._register(CommandsRegistry.registerCommand(
 			'_chipos.resolveStatelessConfirm',
-			(_accessor, requestId: string, action: string, selections?: Record<string, string>) =>
-				this._resolveStatelessConfirm(requestId, action, selections),
+			(_accessor, requestId: string, action: string, selections?: Record<string, string>, comment?: string) =>
+				this._resolveStatelessConfirm(requestId, action, selections, comment),
 		));
 
 		// ADR-018 resume-from-break: the error card's PRIMARY "继续 (从中断处)" button
@@ -471,17 +471,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * the chat re-entry path that deadlocks while the originating turn is
 	 * in-flight. Returns true if a pending confirm matched.
 	 */
-	private _resolveStatelessConfirm(requestId: string, action: string, selections?: Record<string, string>): boolean {
+	private _resolveStatelessConfirm(requestId: string, action: string, selections?: Record<string, string>, comment?: string): boolean {
 		const pending = this._pendingStatelessConfirms.get(requestId);
 		if (!pending) {
 			this._logService.warn('[ChipOS Stateless] resolve: no pending confirm for request_id=%s', requestId);
 			return false;
 		}
 		this._logService.info(
-			'[ChipOS Stateless] confirm resolved via card click: trace=%s request_id=%s action=%s',
-			pending.traceId, requestId, action,
+			'[ChipOS Stateless] confirm resolved via card click: trace=%s request_id=%s action=%s comment=%s',
+			pending.traceId, requestId, action, comment ? '<note>' : '<none>',
 		);
-		pending.resolve({ action, selections, comment: undefined });
+		// P1-4: forward the user's free-form note — `_handleStatelessConfirmRequest`
+		// already POSTs `result.comment` to /confirm_response, so threading it here
+		// is the only missing link.
+		pending.resolve({ action, selections, comment });
 		this._pendingStatelessConfirms.delete(requestId);
 		return true;
 	}
@@ -1045,6 +1048,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					} catch (err) {
 						this._logService.warn('[ChipOS Agent] agent_ask: failed to JSON.stringify selections:', String(err));
 					}
+				}
+			} else {
+				// P1-4 (IDE-MIGRATION-GAPS §1.4): a non-agent_ask confirm card may carry
+				// the user's free-form note — ChipOSPermissionCardContentPart stamps it
+				// onto the confirmation data before re-entry. Forward it as the comment
+				// so the reasoner sees the human's reason on approve OR reject.
+				const note = (data as { comment?: string }).comment;
+				if (typeof note === 'string' && note.length > 0) {
+					confirmComment = note;
 				}
 			}
 			this._logService.info('[ChipOS Agent] Confirm response (accepted):', data.requestId, action, 'session:', confirmSessionId, 'comment:', confirmComment ?? '<none>');
@@ -4020,6 +4032,32 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		} satisfies IChatAgentError]);
 	}
 
+	/**
+	 * [ChipOS] Fusion: render the rich EDA report directives a dispatched
+	 * event produced (sim/lint/coverage/PPA/negotiation/parallel/spec cards,
+	 * diff-preview markdown, and the end-of-turn task-summary card). Shared by
+	 * the live `_invokeStateless` loop and the `_resumeStateless` loop so both
+	 * surface the same cards the legacy WebSocket path did — the Phase-0
+	 * dispatcher dropped all of these (`default: {}`).
+	 */
+	private _renderStatelessEdaParts(
+		handled: DispatchResult,
+		progress: (parts: IChatProgress[]) => void,
+	): void {
+		if (handled.edaParts && handled.edaParts.length > 0) {
+			progress(handled.edaParts);
+		}
+		if (handled.markdownContents) {
+			for (const md of handled.markdownContents) {
+				progress([this._markdown(md)]);
+			}
+		}
+		if (handled.taskSummary) {
+			progress([this._progress('$(output) Task Summary')]);
+			progress([this._markdown(ChipOSChatAgent._formatTaskSummary(handled.taskSummary))]);
+		}
+	}
+
 	private _renderStatelessSubagentEvent(
 		evt: NonNullable<DispatchResult['subagentEvent']>,
 		progress: (parts: IChatProgress[]) => void,
@@ -6081,6 +6119,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				trackFirstProgress();
 				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, subagentCardState);
 			}
+			if (handled.edaParts || handled.markdownContents || handled.taskSummary) {
+				// [ChipOS] Fusion: rich EDA report cards (sim/lint/coverage/PPA/
+				// negotiation/parallel/spec) + diff-preview markdown + task-summary
+				// card. Phase 0 dropped all of these (`default: {}`) so a prod
+				// stateless turn showed only tool rows; restore the legacy cards.
+				trackFirstProgress();
+				this._renderStatelessEdaParts(handled, progress);
+			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
 			}
@@ -6439,6 +6485,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				timings: { totalElapsed, firstProgress: firstProgressTime },
 			};
 		}
+		// P1-2 (IDE-MIGRATION-GAPS §1.2): trailing copyable trace_id pill on the
+		// completed assistant bubble — parity with the legacy WS path (TaskComplete
+		// / Done sites both call `_buildTracePillMarkdown`). The prod stateless path
+		// used to drop it, so a user reporting an AI4RTL issue had no in-bubble way
+		// to hand ops the trace. `traceId` is IDE-generated per turn (the reasoner
+		// stream is keyed by it) so it is always present here; the pill's hover shows
+		// the full id and a click copies it via the existing `chipos.trace.copyId`
+		// command. Emitted only on success — failures surface the trace in
+		// `_statelessFailureCard`.
+		progress([{ kind: 'markdownContent', content: _buildTracePillMarkdown(traceId) }]);
 		return {
 			metadata: resultMetadata,
 			timings: { totalElapsed, firstProgress: firstProgressTime },
@@ -6797,6 +6853,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		if (errorResult) {
 			return { ...errorResult, timings };
 		}
+		// P1-2: same trailing trace_id pill as the primary `_invokeStateless` path,
+		// so an IDE-restart-resumed turn ends with the copyable trace too.
+		progress([{ kind: 'markdownContent', content: _buildTracePillMarkdown(traceId) }]);
 		return {
 			metadata: { usage: usage ?? null, trace_id: traceId, chipos_chat_session_id: chatSessionId },
 			timings,
