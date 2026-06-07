@@ -326,9 +326,11 @@ export type ReasonerHookPoint =
 /**
  * What a configured hook asks the reasoner to do when it matches (mirrors
  * ReasonerHookAction). `deny` is only honoured at deny-capable points (Beta-1:
- * `tool.before_dispatch`); elsewhere it degrades to `observe`.
+ * `tool.before_dispatch`); elsewhere it degrades to `observe`. `amend` and `ask`
+ * are additive — accepted by the schema but honoured only where wired on the
+ * reasoner side; everywhere else they too degrade to `observe`.
  */
-export type ReasonerHookAction = 'observe' | 'deny';
+export type ReasonerHookAction = 'observe' | 'deny' | 'amend' | 'ask';
 
 /**
  * A user/workspace/plugin-configured reasoner hook (FEAT-004). Mirrors

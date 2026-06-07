@@ -211,6 +211,13 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.hooks.executablePlugins': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.hooks.executablePlugins.desc', 'Allow installed plugins to run executable hook functions in an isolated subprocess. Off by default; each plugin still requires explicit one-time consent and workspace trust.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Resource enable/disable (rules / commands / skills / hooks) ──
 		// Each holds scope-qualified ids ("workspace:<name>" / "user:<name>") of
 		// resources that stay on disk but are filtered out of the agent's per-turn

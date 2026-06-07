@@ -34,7 +34,7 @@ function toHookDefinition(raw: unknown, sourceRef: string, source: NonNullable<R
 	if (typeof point !== 'string' || !VALID_POINTS.has(point)) {
 		return undefined;
 	}
-	const action: ReasonerHookAction = obj.action === 'deny' ? 'deny' : 'observe';
+	const action: ReasonerHookAction = (obj.action === 'deny' || obj.action === 'amend' || obj.action === 'ask') ? obj.action : 'observe';
 	const hook: ReasonerHookDefinition = {
 		point: point as ReasonerHookPoint,
 		action,
