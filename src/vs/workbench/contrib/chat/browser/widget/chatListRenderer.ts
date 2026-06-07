@@ -1859,8 +1859,10 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 			} else if (content.kind === 'workspaceEdit') {
 				return this.instantiationService.createInstance(ChatWorkspaceEditContentPart, content, context, this.chatContentMarkdownRenderer);
 			} else {
-				// Try custom content part registry (EDA parts, etc.)
-				const customPart = this.contentPartRegistry.tryCreateContentPart(content, this.instantiationService);
+				// Try custom content part registry (EDA parts, etc.). Pass the render
+				// context so parts that re-enter the agent (e.g. the Spec Review
+				// card's Build button) can resolve their owning chat session.
+				const customPart = this.contentPartRegistry.tryCreateContentPart(content, this.instantiationService, context);
 				if (customPart) {
 					return customPart;
 				}

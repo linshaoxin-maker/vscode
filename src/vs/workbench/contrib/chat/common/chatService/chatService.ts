@@ -1062,6 +1062,7 @@ export {
 	type IChatEdaNegotiationPerspective,
 	type IChatEdaNegotiationView,
 	type IChatEdaSpecReview,
+	type IChatEdaSpecReviewAction,
 	type IChatRoundProgress,
 	type IChatAgentError,
 	type IChatChiposTodoCard,

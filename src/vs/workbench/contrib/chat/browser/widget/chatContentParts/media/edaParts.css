@@ -263,6 +263,47 @@
 	font-family: var(--vscode-editor-font-family);
 }
 
+/* ── Spec Review action buttons (P1-1) ──────────────────────────────────────── */
+
+.eda-spec-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 10px;
+}
+
+.eda-spec-btn {
+	padding: 4px 12px;
+	font-size: 12px;
+	cursor: pointer;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.eda-spec-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.eda-spec-btn-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.eda-spec-btn-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.eda-spec-btn:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
+.eda-spec-btn-used::after {
+	content: ' ✓';
+}
+
 /* ── Agent Error Card ───────────────────────────────────────────────────────── */
 
 .chat-agent-error {

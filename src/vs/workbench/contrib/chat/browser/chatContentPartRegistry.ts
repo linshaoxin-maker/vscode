@@ -9,7 +9,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IChatContentPart } from './widget/chatContentParts/chatContentParts.js';
+import { IChatContentPart, IChatContentPartRenderContext } from './widget/chatContentParts/chatContentParts.js';
 import { IChatRendererContent } from '../common/model/chatViewModel.js';
 
 export const IChatContentPartRegistry = createDecorator<IChatContentPartRegistry>('chatContentPartRegistry');
@@ -17,8 +17,12 @@ export const IChatContentPartRegistry = createDecorator<IChatContentPartRegistry
 /**
  * Factory function that creates a content part for a given content kind.
  * Returns undefined if the factory cannot handle the content.
+ *
+ * `context` (the render context for this row) is optional so existing factories
+ * can ignore it; parts that need the owning chat session / response element
+ * (e.g. the Spec Review card's Build button, which re-enters the agent) read it.
  */
-export type ChatContentPartFactory = (content: IChatRendererContent, instantiationService: IInstantiationService) => IChatContentPart | undefined;
+export type ChatContentPartFactory = (content: IChatRendererContent, instantiationService: IInstantiationService, context?: IChatContentPartRenderContext) => IChatContentPart | undefined;
 
 export interface IChatContentPartRegistry {
 	readonly _serviceBrand: undefined;
@@ -34,7 +38,7 @@ export interface IChatContentPartRegistry {
 	 * Try to create a content part for the given content.
 	 * Returns undefined if no factory is registered for the content's kind.
 	 */
-	tryCreateContentPart(content: IChatRendererContent, instantiationService: IInstantiationService): IChatContentPart | undefined;
+	tryCreateContentPart(content: IChatRendererContent, instantiationService: IInstantiationService, context?: IChatContentPartRenderContext): IChatContentPart | undefined;
 
 	/**
 	 * Check if a factory is registered for the given kind.
@@ -51,10 +55,10 @@ export class ChatContentPartRegistry implements IChatContentPartRegistry {
 		this._factories.set(kind, factory);
 	}
 
-	tryCreateContentPart(content: IChatRendererContent, instantiationService: IInstantiationService): IChatContentPart | undefined {
+	tryCreateContentPart(content: IChatRendererContent, instantiationService: IInstantiationService, context?: IChatContentPartRenderContext): IChatContentPart | undefined {
 		const factory = this._factories.get(content.kind);
 		if (factory) {
-			return factory(content, instantiationService);
+			return factory(content, instantiationService, context);
 		}
 		return undefined;
 	}

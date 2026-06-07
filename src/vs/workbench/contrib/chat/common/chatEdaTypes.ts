@@ -83,12 +83,29 @@ export interface IChatEdaNegotiationView {
 
 // ── EDA Spec Review ─────────────────────────────────────────────────────────
 
+/**
+ * P1-1: an action button on the Spec Review card. The IDE renders the default
+ * View Plan / Regenerate / Build trio when `actions` is absent (parity with
+ * vscode-extension specCard.js:86-88); the field exists so the reasoner can
+ * later override / restrict the set per card.
+ */
+export interface IChatEdaSpecReviewAction {
+	id: 'view' | 'regenerate' | 'build';
+	label: string;
+}
+
 export interface IChatEdaSpecReview {
 	kind: 'edaSpecReview';
 	spec_path: string;
 	spec_name: string;
 	summary: string;
 	files?: string[];
+	/**
+	 * P1-1: optional action set. `view` opens the spec file; `regenerate` asks the
+	 * agent to redo the design; `build` drives the next agent round on the approved
+	 * spec (the spec→build closed loop). Absent → IDE defaults to all three.
+	 */
+	actions?: ReadonlyArray<IChatEdaSpecReviewAction>;
 }
 
 // ── Agent Round Progress ────────────────────────────────────────────────────

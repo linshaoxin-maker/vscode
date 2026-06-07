@@ -1308,7 +1308,9 @@ class ChipOSContribution extends Disposable {
 		registry.registerContentPart('edaLintReport', (content, inst) => inst.createInstance(ChatEdaLintReportContentPart, content as any));
 		registry.registerContentPart('edaParallelProgress', (content, inst) => inst.createInstance(ChatEdaParallelProgressContentPart, content as any));
 		registry.registerContentPart('edaNegotiationView', (content, inst) => inst.createInstance(ChatEdaNegotiationViewContentPart, content as any));
-		registry.registerContentPart('edaSpecReview', (content, inst) => inst.createInstance(ChatEdaSpecReviewContentPart, content as any));
+		// P1-1: Spec Review carries action buttons (View Plan / Regenerate / Build);
+		// the part needs the render context to resolve its chat session for Build.
+		registry.registerContentPart('edaSpecReview', (content, inst, context) => inst.createInstance(ChatEdaSpecReviewContentPart, content as any, context));
 		registry.registerContentPart('roundProgress', (content, inst) => inst.createInstance(ChatRoundProgressContentPart, content as any));
 		registry.registerContentPart('agentError', (content, inst) => inst.createInstance(ChatAgentErrorContentPart, content as any));
 		registry.registerContentPart('edaPpaReport', (content, inst) => inst.createInstance(ChatEdaPpaReportContentPart, content as any));
