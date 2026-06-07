@@ -82,6 +82,7 @@ import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryService.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
+import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposSlashCommandCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposInlineCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposEdaSnippetPicker.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposModelQuickPick.js';
