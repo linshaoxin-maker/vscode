@@ -85,6 +85,7 @@ import type {
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
+import { substituteCommandArgs } from '../resources/commandSubstitution.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposSkillsService } from '../resources/chiposSkillsService.js';
@@ -6013,14 +6014,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// typing `/<name>` inline in the prompt (kept in `request.message`).
 			// Accept both so collection is robust to how the input is parsed.
 			const explicitCommand = (request as { command?: string }).command;
-			const inlineMatch = /(?:^|\s)\/([\w-]+)/.exec(request.message ?? '');
-			const commandName = explicitCommand || inlineMatch?.[1];
+			const inlineMatch = /(?:^|\s)\/(?<name>[\w-]+)(?:[ \t]+(?<args>[^\n]*))?/.exec(request.message ?? '');
+			const commandName = explicitCommand || inlineMatch?.groups?.name;
 			if (commandName) {
 				const commands = await this._instantiationService.createInstance(ChiposCommandsService).getCommands();
 				// FEAT-002a: also match commands contributed by installed plugins.
 				const pluginCommands = await this._instantiationService.createInstance(ChiposPluginsService).getPluginCommands();
 				const command = [...commands, ...pluginCommands].find(c => c.name === commandName);
 				if (command) {
+					// FEAT-001: substitute $ARGUMENTS / $N / $name with the user's
+					// arguments (the text after `/<name>`) before send — the reasoner
+					// renders payload.body verbatim, so this must happen IDE-side. For a
+					// framework-parsed command the `/<name>` prefix is stripped, so the
+					// whole message is the argument string.
+					let rawArgs = inlineMatch?.groups?.args ?? '';
+					if (!rawArgs && explicitCommand) {
+						rawArgs = request.message ?? '';
+					}
+					const body = substituteCommandArgs(command.body, rawArgs.trim(), command.argumentNames);
 					const attachment: PromptResourceAttachment = {
 						kind: 'command',
 						name: command.name,
@@ -6028,7 +6039,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						source_ref: command.sourceRef,
 						reason: 'slash',
 						priority: 0,
-						payload: { body: command.body },
+						payload: { body },
 					};
 					invokeReq.prompt_resource_attachments = [...(invokeReq.prompt_resource_attachments ?? []), attachment];
 				}
