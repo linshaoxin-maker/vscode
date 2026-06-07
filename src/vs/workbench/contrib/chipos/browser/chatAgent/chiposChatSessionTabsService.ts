@@ -234,7 +234,6 @@ export class ChipOSChatSessionTabsContribution extends Disposable implements IWo
 		// closing the only *visible* tab kept the session, never returning to
 		// the welcome view).
 		const visibleRemaining = this._openTabs.filter(u => this._hasRealTitle(u));
-		this._logService.info(`[ChipOS Tabs] _removeTab closed=${uri.toString()} rawRemaining=${this._openTabs.length} visibleRemaining=${visibleRemaining.length} closedWasOnScreen=${closedWasOnScreen} hasWidget=${!!w}`);
 
 		if (visibleRemaining.length === 0) {
 			// No visible tabs left — reset the chat widget to the welcome state.
