@@ -48,6 +48,24 @@ export const RESOURCE_LAYOUTS: Readonly<Record<ResourceKind, ResourceLayout>> = 
 	skills: { kind: 'skills', shape: 'skill', markerFile: 'SKILL.md', stripExt: false },
 };
 
+/**
+ * Extra ecosystem sub-directories scanned for each kind, on top of the chipos
+ * `.chipos/` / `~/.chipos-ide/` planes — so resources authored for Cursor or
+ * Claude Code are picked up too (full-ecosystem compat). Each entry is a path
+ * segment list resolved relative to a workspace folder OR the user home. These
+ * planes always come AFTER the chipos plane so chipos keeps precedence under the
+ * callers' first-wins dedupe. Same on-disk layout as {@link RESOURCE_LAYOUTS}:
+ * Cursor `.mdc` rules share our frontmatter, command files are plain `.md`, and
+ * Agent Skills are a `SKILL.md` per sub-directory. Hooks have no compatible
+ * ecosystem form (Claude/Cursor encode them in `settings.json`), so none.
+ */
+export const ECOSYSTEM_RESOURCE_DIRS: Readonly<Record<ResourceKind, ReadonlyArray<readonly string[]>>> = {
+	rules: [['.cursor', 'rules']],
+	commands: [['.claude', 'commands'], ['.cursor', 'commands']],
+	skills: [['.claude', 'skills']],
+	hooks: [],
+};
+
 // --- Plane resolution ---------------------------------------------------------
 
 /** `<folder>/.chipos/<kind>/` — the project (workspace) plane for a folder. */
@@ -68,14 +86,33 @@ export interface ResourcePlane {
 }
 
 /**
- * The ordered planes to scan for `kind`: every workspace folder (scope
- * `workspace`) first, then the single user-global plane (scope `user`). The
- * order matters — callers that dedupe by name give workspace precedence (project
- * overrides user, matching Cursor).
+ * The ordered planes to scan for `kind`. Per workspace folder: the chipos
+ * `.chipos/<kind>` plane (scope `workspace`) followed by any ecosystem planes
+ * from {@link ECOSYSTEM_RESOURCE_DIRS} (Cursor / Claude Code dirs, also scope
+ * `workspace`); then the user-global `~/.chipos-ide/<kind>` plane (scope `user`)
+ * followed by its ecosystem planes under the home dir (scope `user`).
+ *
+ * The order matters — callers dedupe by name with FIRST-wins, so all workspace
+ * planes precede all user planes (project overrides user, matching Cursor) and,
+ * within each scope, the chipos plane precedes the ecosystem planes so a chipos
+ * resource always wins over a same-named Cursor/Claude one. A kind with no
+ * ecosystem dirs (hooks) adds no extra planes; absent dirs are a no-op
+ * ({@link scanResourcePlane} returns `[]`), so no config gate is needed.
  */
 export async function resourcePlanes(pathService: IPathService, workspaceFolders: readonly URI[], kind: ResourceKind): Promise<ResourcePlane[]> {
-	const planes: ResourcePlane[] = workspaceFolders.map(folder => ({ dir: workspaceResourceDir(folder, kind), scope: 'workspace' as const }));
+	const ecosystem = ECOSYSTEM_RESOURCE_DIRS[kind];
+	const planes: ResourcePlane[] = [];
+	for (const folder of workspaceFolders) {
+		planes.push({ dir: workspaceResourceDir(folder, kind), scope: 'workspace' });
+		for (const segments of ecosystem) {
+			planes.push({ dir: URI.joinPath(folder, ...segments), scope: 'workspace' });
+		}
+	}
 	planes.push({ dir: await userGlobalResourceDir(pathService, kind), scope: 'user' });
+	const home = await pathService.userHome();
+	for (const segments of ecosystem) {
+		planes.push({ dir: URI.joinPath(home, ...segments), scope: 'user' });
+	}
 	return planes;
 }
 
