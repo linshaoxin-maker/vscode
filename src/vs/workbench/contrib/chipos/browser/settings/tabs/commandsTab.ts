@@ -10,6 +10,7 @@ import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IQuickInputService } from '../../../../../../platform/quickinput/common/quickInput.js';
 import { ScannedResource } from '../../resources/chiposResourceScopes.js';
 import { ResourceTabSpec } from './resourceListTab.js';
+import { parseCommandFile } from '../../resources/frontmatterParser.js';
 
 /**
  * Commands tab (FEAT-001) spec for the generic {@link ResourceListTab}: workspace
@@ -27,11 +28,16 @@ export const COMMANDS_RESOURCE_SPEC: ResourceTabSpec = {
 	importFilter: { name: localize('chipos.commands.filter', 'Command files'), extensions: ['md', 'txt'] },
 
 	async metaForRow(fileService: IFileService, r: ScannedResource): Promise<string> {
-		// Show the first meaningful line of the body as a hint, prefixed by the invocation.
-		const body = (await fileService.readFile(r.editFile)).value.toString();
-		const firstLine = body.split('\n').map(l => l.replace(/^#+\s*/, '').trim()).find(l => l.length > 0) ?? '';
+		// Prefer the frontmatter `description`; otherwise the first meaningful line of
+		// the frontmatter-stripped body. Prefixed by the invocation. (Reading the raw
+		// body would surface the leading `---` frontmatter delimiter as the hint.)
+		const content = (await fileService.readFile(r.editFile)).value.toString();
+		const parsed = parseCommandFile(content);
+		const hint = parsed.description
+			?? parsed.body.split('\n').map(l => l.replace(/^#+\s*/, '').trim()).find(l => l.length > 0)
+			?? '';
 		const usage = localize('chipos.commands.usage', 'Run with /{0}', r.name);
-		return firstLine ? `${usage} — ${firstLine.slice(0, 80)}` : usage;
+		return hint ? `${usage} — ${hint.slice(0, 80)}` : usage;
 	},
 
 	async createNew(fileService: IFileService, quickInput: IQuickInputService, destDir: URI): Promise<URI | undefined> {
