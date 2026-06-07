@@ -11,6 +11,8 @@ import { parseRuleFile } from './frontmatterParser.js';
 import { RuleDescriptor } from './promptResourceAttachmentCollector.js';
 import { CommandDescriptor } from './chiposCommandsService.js';
 import { SkillHeader } from './chiposSkillsService.js';
+import { parseHookFileContent } from './chiposHooksService.js';
+import { ReasonerHookDefinition } from '../chatAgent/statelessInvoke/types.js';
 import { PLUGIN_MANIFEST_DIRS, PluginManifest, parsePluginManifest, installLocalPlugin, IPluginInstallResult } from './pluginInstaller.js';
 import { isAllowedGitUrl, cloneGitRepo } from './gitImport.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
@@ -384,5 +386,42 @@ export class ChiposPluginsService {
 			}
 		}
 		return skills;
+	}
+
+	/**
+	 * Decompose every **enabled** plugin's `hooks/*.json` into
+	 * {@link ReasonerHookDefinition}s (source=plugin, source_ref=plugin id). The
+	 * caller merges these with the workspace hooks before the FEAT-004 invoke, so
+	 * the reasoner registers them as per-turn dispatcher subscribers. Each file
+	 * holds one hook object or an array of them. Disabled plugins (FEAT-002c) are
+	 * skipped so their hooks drop from the invoke.
+	 */
+	async getPluginHooks(): Promise<ReasonerHookDefinition[]> {
+		const plugins = await this._getEnabledPlugins();
+		const hooks: ReasonerHookDefinition[] = [];
+		for (const plugin of plugins) {
+			const hooksDir = URI.joinPath(plugin.root, 'hooks');
+			let children;
+			try {
+				children = (await this._fileService.resolve(hooksDir)).children;
+			} catch {
+				continue; // plugin contributes no hooks
+			}
+			if (!children) {
+				continue;
+			}
+			for (const child of children) {
+				if (child.isDirectory || !/\.json$/i.test(child.name)) {
+					continue;
+				}
+				try {
+					const content = await this._fileService.readFile(child.resource);
+					hooks.push(...parseHookFileContent(content.value.toString(), plugin.manifest.id, 'plugin'));
+				} catch {
+					// skip unreadable / malformed hook file — never fail the scan
+				}
+			}
+		}
+		return hooks;
 	}
 }

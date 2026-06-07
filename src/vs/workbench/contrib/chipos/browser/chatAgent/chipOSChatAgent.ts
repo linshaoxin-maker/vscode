@@ -6086,8 +6086,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Best-effort: a failure here must never block the turn.
 		try {
 			const hooks = await this._instantiationService.createInstance(ChiposHooksService).getHooks();
-			if (hooks.length) {
-				invokeReq.hooks = hooks;
+			// FEAT-002a/004: also surface hooks contributed by installed plugins
+			// (plugins/<id>/hooks/*.json), tagged source=plugin.
+			const pluginHooks = await this._instantiationService.createInstance(ChiposPluginsService).getPluginHooks();
+			const allHooks = pluginHooks.length ? [...hooks, ...pluginHooks] : hooks;
+			if (allHooks.length) {
+				invokeReq.hooks = allHooks;
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] hook collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
