@@ -3457,6 +3457,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		run_lint: '代码检查',
 		read_file: '读取文件',
 		read_skill_body: '加载技能',
+		read_rule_body: '加载规则',
 		write_file: '写入文件',
 		edit_file: '编辑文件',
 		file_edit: '编辑文件',
@@ -4735,6 +4736,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					// FEAT-003 (ADR-004): lazy-load a skill body on the model's request.
 					const skillId = typeof args.skill_id === 'string' ? args.skill_id : '';
 					const res = await this._instantiationService.createInstance(ChiposSkillsService).readBody(skillId);
+					content = res.content;
+					isError = res.isError;
+					break;
+				}
+				case 'read_rule_body': {
+					// FEAT-001b/c: lazy-load an agent rule's body on the model's request
+					// (rule-side mirror of read_skill_body — agent rules ship header-only).
+					const ruleId = typeof args.rule_id === 'string' ? args.rule_id : '';
+					const res = await this._instantiationService.createInstance(ChiposRulesService).readBody(ruleId);
 					content = res.content;
 					isError = res.isError;
 					break;
@@ -7199,6 +7209,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					skill_id: { type: 'string', description: 'The skill name/id exactly as shown in the Available Skills catalog.' },
 				},
 				required: ['skill_id'],
+			},
+			chipos_source: 'ide_builtin',
+		});
+
+		// IDE builtin — read_rule_body (FEAT-001b/c): the model loads an agent
+		// rule's full body on demand after seeing its header (name + description)
+		// in the attached rules. Header-only attachments keep prompts small.
+		tools.push({
+			name: 'read_rule_body',
+			description: 'Load the full body of an agent-requested rule by its name.',
+			input_schema: {
+				type: 'object',
+				properties: {
+					rule_id: { type: 'string', description: 'The rule name/id exactly as shown in the attached agent rule header.' },
+				},
+				required: ['rule_id'],
 			},
 			chipos_source: 'ide_builtin',
 		});

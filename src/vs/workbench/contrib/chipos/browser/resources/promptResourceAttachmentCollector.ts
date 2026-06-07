@@ -65,6 +65,11 @@ function ruleApplies(rule: RuleDescriptor, input: CollectInput): boolean {
 			}
 			return rule.globs.some(g => match(g, file));
 		}
+		case 'agent':
+			// Agent rules are always collected as header-only attachments (FEAT-001b/c):
+			// only their name + description ship in-band; the model pulls the body on
+			// demand via the `read_rule_body` IDE tool when it judges the rule relevant.
+			return true;
 		default:
 			return false;
 	}
@@ -78,12 +83,18 @@ function ruleReason(rule: RuleDescriptor): string {
 			return `glob:${(rule.globs ?? []).join(',')}`;
 		case 'manual':
 			return 'manual';
+		case 'agent':
+			return 'agent-requested';
 		default:
 			return '';
 	}
 }
 
 function toAttachment(rule: RuleDescriptor): PromptResourceAttachment {
+	// Agent rules ship header-only (FEAT-001b/c): the description travels in-band
+	// but the body is empty until the model lazy-loads it via `read_rule_body`.
+	// Every other rule type keeps its body inline exactly as before.
+	const body = rule.ruleType === 'agent' ? '' : rule.body;
 	return {
 		kind: 'rule',
 		name: rule.name,
@@ -92,7 +103,7 @@ function toAttachment(rule: RuleDescriptor): PromptResourceAttachment {
 		source_ref: rule.sourceRef,
 		reason: ruleReason(rule),
 		priority: rule.priority ?? 0,
-		payload: { body: rule.body }
+		payload: { body }
 	};
 }
 
@@ -123,7 +134,10 @@ export function collectPromptResources(rules: readonly RuleDescriptor[], input: 
 			omitted.push({ name: rule.name, reason: 'maxCount' });
 			continue;
 		}
-		const cost = encoder.encode(rule.body).length;
+		// Agent rules ship header-only (body lazy-loaded via read_rule_body), so cost
+		// their description, not the full body — else a large agent rule could be
+		// dropped by the byte cap despite shipping cheap.
+		const cost = encoder.encode(rule.ruleType === 'agent' ? (rule.description ?? '') : rule.body).length;
 		if (bytes + cost > maxBytes) {
 			omitted.push({ name: rule.name, reason: 'maxBytes' });
 			continue;

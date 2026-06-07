@@ -79,6 +79,45 @@ export class ChiposRulesService {
 	}
 
 	/**
+	 * Lazy-load an `agent` rule's body on the model's request (FEAT-001b/c), the
+	 * rule-side mirror of {@link ChiposSkillsService.readBody}. `agent` rules ship
+	 * header-only in `prompt_resource_attachments` (description, empty body); when
+	 * the model decides one is relevant it calls the `read_rule_body` IDE tool to
+	 * pull the full instructions.
+	 *
+	 * Scans the same rule planes as {@link getRules} (project folders first, then
+	 * the user-global plane — workspace precedence), finds the first enabled rule
+	 * whose name === `ruleId`, parses it, and returns `{ content: body, isError:
+	 * false }`. A missing / disabled / unreadable rule yields `{ content: 'Rule
+	 * not found: <id>', isError: true }`. Never throws — per-rule failures are
+	 * isolated exactly as in `getRules`.
+	 */
+	async readBody(ruleId: string): Promise<{ content: string; isError: boolean }> {
+		try {
+			const folders = this._workspaceService.getWorkspace().folders;
+			const planes = await resourcePlanes(this._pathService, folders.map(f => f.uri), 'rules');
+			for (const plane of planes) {
+				const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.rules);
+				for (const r of scanned) {
+					if (r.name !== ruleId || !isResourceEnabled(this._configurationService, 'rules', r.scope, r.name)) {
+						continue;
+					}
+					try {
+						const content = await this._fileService.readFile(r.editFile);
+						const parsed = parseRuleFile(content.value.toString());
+						return { content: parsed.body, isError: false };
+					} catch {
+						// found by name but unreadable — fall through to the not-found result
+					}
+				}
+			}
+		} catch {
+			// scan failure — fall through to the not-found result, never throw
+		}
+		return { content: `Rule not found: ${ruleId}`, isError: true };
+	}
+
+	/**
 	 * Discover AGENTS.md / CLAUDE.md files along the directory chain from the
 	 * workspace-folder root that contains `anchorDir` down to `anchorDir` itself
 	 * (inclusive). Files nearer to `anchorDir` get a higher `priority` so the
