@@ -10,6 +10,32 @@
 
 ---
 
+## 方案 0（推荐）: 一键脚本
+
+仓库自带一键安装 + 检测脚本，省去手敲下面的多步命令：
+
+```bash
+# 在目标机(Linux x86_64)上：
+#   auto = Ubuntu 22.04 走预编译 .deb(快)，其余走源码编译
+scripts/eda/install-openroad.sh                       # 一键装
+scripts/eda/install-openroad.sh --method deb          # 强制走预编译 .deb
+scripts/eda/install-openroad.sh --method build -j 16  # 强制编译
+
+# 装完(或任何时候)检测全套 EDA 工具是否就绪：
+scripts/eda/check-eda-tools.sh
+```
+
+`install-openroad.sh` 幂等(已装直接退出)、自带 PATH 持久化 + `openroad -version`
+自检 + clone ORFS flow 设 `FLOW_HOME`。脚本不在仓库里时可直接 scp / curl 那两个
+文件过去单独跑(自包含，只依赖 bash)。
+
+`check-eda-tools.sh` 输出与 worker 启动时 emit 的 `[EdaEnv] check ...` 同格式，
+退出码 0=必需工具齐全 / 1=有缺失，可塞进 CI 或部署前检查。
+
+> 想了解每条命令在做什么、或脚本路径不可用时，看下面的手动三方案。
+
+---
+
 ## 方案选择
 
 ChipOS 支持三种安装方式：
