@@ -5996,7 +5996,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					? activeResource.path.slice(workspaceRoot.length + 1)
 					: activeResource.path)
 				: undefined;
-			const collected = collectPromptResources(allRules, { activeFile });
+			// FEAT-001: a user can manually attach a `manual` rule by typing
+			// `@<name>` in the prompt; pass those ids so the collector attaches a
+			// rule whose name matches. Safe vs chipos's `@`-file context
+			// (chiposAtContextCompletions): the collector only attaches ids that
+			// match a known rule name, so file-derived `@basename` ids that don't
+			// name a rule are simply ignored. A dedicated rule `@`-completion menu
+			// is a follow-up (selector UI).
+			const manualRuleIds = Array.from((request.message ?? '').matchAll(/(?:^|\s)@(?<id>[\w-]+)/g), m => m.groups!.id);
+			const collected = collectPromptResources(allRules, manualRuleIds.length ? { activeFile, manualRuleIds } : { activeFile });
 			if (collected.attachments.length) {
 				invokeReq.prompt_resource_attachments = collected.attachments;
 			}
