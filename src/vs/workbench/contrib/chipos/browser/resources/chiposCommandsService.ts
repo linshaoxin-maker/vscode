@@ -7,6 +7,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../services/path/common/pathService.js';
+import { parseCommandFile } from './frontmatterParser.js';
 import { RESOURCE_LAYOUTS, resourcePlanes, scanResourcePlane, isResourceEnabled } from './chiposResourceScopes.js';
 
 /**
@@ -22,6 +23,14 @@ export interface CommandDescriptor {
 	readonly source: 'workspace' | 'user' | 'plugin';
 	/** File path, or the plugin id for a plugin-contributed command. */
 	readonly sourceRef: string;
+	/** Frontmatter `description` — a one-line summary for the `/<name>` picker. */
+	readonly description?: string;
+	/** Frontmatter `argument-hint` — placeholder shown after `/<name>`. */
+	readonly argumentHint?: string;
+	/** Frontmatter `argument-names` — names for `$name` substitution (FEAT-001). */
+	readonly argumentNames?: string[];
+	/** Frontmatter `allowed-tools` — tools this command may use. */
+	readonly allowedTools?: string[];
 }
 
 /**
@@ -61,11 +70,16 @@ export class ChiposCommandsService {
 				}
 				try {
 					const content = await this._fileService.readFile(c.editFile);
+					const parsed = parseCommandFile(content.value.toString());
 					commands.push({
 						name: c.name,
-						body: content.value.toString(),
+						body: parsed.body,
 						source: c.scope === 'workspace' ? 'workspace' : 'user',
 						sourceRef: c.editFile.path,
+						description: parsed.description,
+						argumentHint: parsed.argumentHint,
+						argumentNames: parsed.argumentNames,
+						allowedTools: parsed.allowedTools,
 					});
 					seen.add(c.name);
 				} catch {

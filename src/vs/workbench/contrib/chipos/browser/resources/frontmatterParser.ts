@@ -45,13 +45,59 @@ export function parseRuleFile(content: string): ParsedRuleFile {
 		ruleType = 'glob';
 	} else if (manual) {
 		ruleType = 'manual';
+	} else if (fields.get('description')) {
+		// Has a description but no explicit trigger and not manual → an agent rule
+		// the model attaches by relevance. Lazy rendering of agent rules is handled
+		// in a later (backend) batch.
+		ruleType = 'agent';
 	} else {
-		// Frontmatter present but no trigger declared → default to manual so it
+		// Truly empty frontmatter (no trigger declared) → default to manual so it
 		// never auto-injects without an explicit attach.
 		ruleType = 'manual';
 	}
 
 	return { description: fields.get('description'), globs, alwaysApply, ruleType, body };
+}
+
+/**
+ * A slash-command file (`.md` / `.txt`) split into its frontmatter-derived
+ * metadata and its body (FEAT-001). Cursor/Claude-Code-compatible keys:
+ * `description`, `argument-hint`, `argument-names`, `allowed-tools`. All fields
+ * are optional and parsing NEVER throws on unknown/missing keys.
+ */
+export interface ParsedCommandFile {
+	readonly description?: string;
+	readonly argumentHint?: string;
+	readonly argumentNames?: string[];
+	readonly allowedTools?: string[];
+	readonly body: string;
+}
+
+/**
+ * Parse a command file's content into {@link ParsedCommandFile}. Pure — no I/O,
+ * trivially unit-testable. Tolerant of missing frontmatter: with no `---` block
+ * the whole content is the body and every metadata field is `undefined`.
+ * `argument-names` / `allowed-tools` accept a comma- and/or whitespace-separated
+ * list or a bracketed YAML list. Keys are matched case-insensitively, and both
+ * the kebab-case (`argument-hint`) and camelCase (`argumentNames`) spellings are
+ * accepted.
+ */
+export function parseCommandFile(content: string): ParsedCommandFile {
+	const m = FRONTMATTER_RE.exec(content);
+	if (!m) {
+		// No frontmatter → the whole file is the command body.
+		return { body: content.trim() };
+	}
+
+	const fields = parseFrontmatterFields(m[1]);
+	const body = content.slice(m[0].length).trim();
+	return {
+		description: fields.get('description'),
+		argumentHint: fields.get('argument-hint') ?? fields.get('argumenthint'),
+		argumentNames: parseList(fields.get('argument-names') ?? fields.get('argumentnames')),
+		allowedTools: parseList(fields.get('allowed-tools') ?? fields.get('allowedtools')),
+		body,
+	};
 }
 
 function parseFrontmatterFields(frontmatter: string): Map<string, string> {
@@ -79,6 +125,20 @@ function parseGlobs(raw: string | undefined): string[] | undefined {
 	const cleaned = raw.replace(/^\[/, '').replace(/\]$/, '');
 	const parts = cleaned
 		.split(',')
+		.map(s => s.trim().replace(/^['"]|['"]$/g, ''))
+		.filter(Boolean);
+	return parts.length ? parts : undefined;
+}
+
+function parseList(raw: string | undefined): string[] | undefined {
+	if (!raw) {
+		return undefined;
+	}
+	// Accepts `Read Grep`, `Read, Grep`, `[Read, Grep]`, or `"Read"` — split on
+	// commas and/or whitespace, strip brackets and quotes.
+	const cleaned = raw.replace(/^\[/, '').replace(/\]$/, '');
+	const parts = cleaned
+		.split(/[\s,]+/)
 		.map(s => s.trim().replace(/^['"]|['"]$/g, ''))
 		.filter(Boolean);
 	return parts.length ? parts : undefined;

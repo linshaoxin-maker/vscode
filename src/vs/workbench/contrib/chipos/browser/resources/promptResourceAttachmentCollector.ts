@@ -7,9 +7,11 @@ import { match } from '../../../../../base/common/glob.js';
 import { PromptResourceAttachment } from '../chatAgent/statelessInvoke/types.js';
 
 /**
- * How a rule decides whether it applies to a turn (FEAT-001b/c).
+ * How a rule decides whether it applies to a turn (FEAT-001b/c). `agent` rules
+ * are attached by the model on relevance; their lazy rendering is handled in a
+ * later (backend) batch, so the pure collector treats them like `manual` for now.
  */
-export type RuleType = 'always' | 'glob' | 'manual';
+export type RuleType = 'always' | 'glob' | 'manual' | 'agent';
 
 /**
  * A rule as indexed by the (future) RulesService. The collector is pure: it
