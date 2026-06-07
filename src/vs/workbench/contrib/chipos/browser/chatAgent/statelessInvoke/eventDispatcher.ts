@@ -511,16 +511,17 @@ export function dispatchStatelessEvent(
 		}
 
 		case 'coverage_report': {
-			// coverage_boost: {line_cov?, branch_cov?, overall_cov?, gaps: string[], ...}.
-			// The text-fallback path omits line_cov/branch_cov (only overall_cov) and
+			// coverage_boost: {line_cov?, branch_cov?, toggle_cov?, overall_cov?,
+			// target?, gaps: string[], ...} (values are 0-100 percentages). The
+			// text-fallback path omits line_cov/branch_cov (only overall_cov) and
 			// `gaps` are formatted strings ("file:line [kind] body"), not objects.
+			// P1-3: forward toggle/overall/target so the card shows the full RTL
+			// coverage picture; pass line/branch only when present (the part shows
+			// "N/A" for absent metrics rather than faking them from overall_cov).
 			const data = (event.data ?? {}) as {
-				line_cov?: number; branch_cov?: number; overall_cov?: number;
-				gaps?: unknown[];
+				line_cov?: number; branch_cov?: number; toggle_cov?: number;
+				overall_cov?: number; target?: number; gaps?: unknown[];
 			};
-			const lineCov = typeof data.line_cov === 'number' ? data.line_cov
-				: typeof data.overall_cov === 'number' ? data.overall_cov : 0;
-			const branchCov = typeof data.branch_cov === 'number' ? data.branch_cov : 0;
 			const rawGaps = Array.isArray(data.gaps) ? data.gaps : [];
 			const gaps = rawGaps.length
 				? rawGaps.map(g => {
@@ -533,7 +534,13 @@ export function dispatchStatelessEvent(
 					};
 				})
 				: undefined;
-			return { flushText: true, edaParts: [{ kind: 'edaCoverageReport', line_cov: lineCov, branch_cov: branchCov, gaps } satisfies IChatEdaCoverageReport] };
+			const coverage: IChatEdaCoverageReport = { kind: 'edaCoverageReport', gaps };
+			if (typeof data.line_cov === 'number') { coverage.line_cov = data.line_cov; }
+			if (typeof data.branch_cov === 'number') { coverage.branch_cov = data.branch_cov; }
+			if (typeof data.toggle_cov === 'number') { coverage.toggle_cov = data.toggle_cov; }
+			if (typeof data.overall_cov === 'number') { coverage.overall_cov = data.overall_cov; }
+			if (typeof data.target === 'number') { coverage.target = data.target; }
+			return { flushText: true, edaParts: [coverage] };
 		}
 
 		case 'lint_report': {

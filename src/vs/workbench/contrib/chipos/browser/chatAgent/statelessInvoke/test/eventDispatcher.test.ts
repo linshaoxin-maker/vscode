@@ -456,15 +456,17 @@ suite('dispatchStatelessEvent', () => {
 		);
 	});
 
-	test('coverage_report → edaCoverageReport (overall_cov fallback + string gaps)', () => {
+	test('coverage_report → edaCoverageReport (toggle/overall passthrough + string gaps)', () => {
+		// P1-3: toggle_cov / overall_cov / target now forwarded; line/branch passed
+		// only when present (no faking from overall_cov — the card shows N/A).
 		assert.deepStrictEqual(
-			dispatchStatelessEvent(ev('coverage_report', { line_cov: 88, branch_cov: 72, gaps: ['rtl.v:12 [toggle] sig'] })),
-			{ flushText: true, edaParts: [{ kind: 'edaCoverageReport', line_cov: 88, branch_cov: 72, gaps: [{ file: '', lines: 'rtl.v:12 [toggle] sig' }] }] },
+			dispatchStatelessEvent(ev('coverage_report', { line_cov: 88, branch_cov: 72, toggle_cov: 60, overall_cov: 75, target: 90, gaps: ['rtl.v:12 [toggle] sig'] })),
+			{ flushText: true, edaParts: [{ kind: 'edaCoverageReport', gaps: [{ file: '', lines: 'rtl.v:12 [toggle] sig' }], line_cov: 88, branch_cov: 72, toggle_cov: 60, overall_cov: 75, target: 90 }] },
 		);
-		// Text-fallback path: only overall_cov, no line/branch.
+		// Text-fallback path: only overall_cov, no line/branch → those are omitted.
 		assert.deepStrictEqual(
 			dispatchStatelessEvent(ev('coverage_report', { overall_cov: 65, gaps: [] })),
-			{ flushText: true, edaParts: [{ kind: 'edaCoverageReport', line_cov: 65, branch_cov: 0, gaps: undefined }] },
+			{ flushText: true, edaParts: [{ kind: 'edaCoverageReport', gaps: undefined, overall_cov: 65 }] },
 		);
 	});
 

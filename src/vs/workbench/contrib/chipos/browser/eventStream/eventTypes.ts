@@ -233,6 +233,12 @@ export interface ISimReportPayload {
 export interface ICoverageReportPayload {
 	readonly line_cov: number;
 	readonly branch_cov: number;
+	// P1-3: RTL-specific toggle coverage + aggregate structural coverage + the
+	// run's target threshold, forwarded to the coverage card when the backend
+	// supplies them (coverage_boost emits all of these).
+	readonly toggle_cov?: number;
+	readonly overall_cov?: number;
+	readonly target?: number;
 	readonly gaps?: Array<{ file: string; lines: string; type?: string }>;
 }
 

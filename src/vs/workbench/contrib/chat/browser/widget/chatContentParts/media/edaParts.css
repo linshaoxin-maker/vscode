@@ -148,6 +148,13 @@
 	margin: 4px 0;
 }
 
+/* P1-3: target-threshold caption under the coverage metrics. */
+.eda-coverage-target {
+	margin-top: 6px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
 /* ── Parallel Progress (Cursor tool-progress style) ───────────────────────── */
 
 .eda-parallel-wrapper {

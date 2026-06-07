@@ -2096,6 +2096,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					kind: 'edaCoverageReport',
 					line_cov: p.line_cov,
 					branch_cov: p.branch_cov,
+					// P1-3: forward toggle / overall / target when present so the card
+					// shows the full RTL coverage picture, not just line + branch.
+					toggle_cov: p.toggle_cov,
+					overall_cov: p.overall_cov,
+					target: p.target,
 					gaps: p.gaps,
 				} satisfies IChatEdaCoverageReport]);
 				break;

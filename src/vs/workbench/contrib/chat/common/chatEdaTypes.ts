@@ -26,8 +26,24 @@ export interface IChatEdaSimReport {
 
 export interface IChatEdaCoverageReport {
 	kind: 'edaCoverageReport';
-	line_cov: number;
-	branch_cov: number;
+	/**
+	 * P1-3: coverage values are accepted as EITHER a 0-1 fraction (legacy WS
+	 * payloads) OR a 0-100 percentage (backend_v2 coverage_boost emits *100). The
+	 * part normalizes for display, so emitters may pass whichever they have.
+	 *
+	 * line_cov / branch_cov are optional: the coverage text-fallback path only
+	 * knows overall_cov, so the card shows "N/A" for the metrics it lacks rather
+	 * than a misleading 0% (parity with vscode-extension reportCards.js, which
+	 * prints N/A for null metrics).
+	 */
+	line_cov?: number;
+	branch_cov?: number;
+	/** P1-3: toggle (flip) coverage — RTL-specific (coverage_boost toggle_cov). */
+	toggle_cov?: number;
+	/** P1-3: aggregate structural coverage across all metrics (overall_cov). */
+	overall_cov?: number;
+	/** P1-3: the target coverage the run is driving toward (e.g. 90), for context. */
+	target?: number;
 	gaps?: Array<{ file: string; lines: string; type?: string }>;
 }
 
