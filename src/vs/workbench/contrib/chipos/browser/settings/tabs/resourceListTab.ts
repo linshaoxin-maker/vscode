@@ -10,6 +10,7 @@ import { generateUuid } from '../../../../../../base/common/uuid.js';
 import { localize } from '../../../../../../nls.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { IQuickInputService } from '../../../../../../platform/quickinput/common/quickInput.js';
 import { IDialogService, IFileDialogService } from '../../../../../../platform/dialogs/common/dialogs.js';
@@ -23,6 +24,7 @@ import {
 	isResourceEnabled, setResourceEnabled, findImportableResources, copyResourceEntry,
 } from '../../resources/chiposResourceScopes.js';
 import { isAllowedGitUrl, cloneGitRepo } from '../../resources/gitImport.js';
+import { IChiposGitService } from '../../../common/chiposGitService.js';
 
 /**
  * Per-kind behavior the generic {@link ResourceListTab} needs. Everything else
@@ -81,9 +83,19 @@ export class ResourceListTab extends Disposable {
 		@IProgressService private readonly _progressService: IProgressService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IEditorService private readonly _editorService: IEditorService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 		this._render();
+	}
+
+	/** Resolve the main-process git runner, or undefined when unavailable (web). */
+	private _resolveGitService(): IChiposGitService | undefined {
+		try {
+			return this._instantiationService?.invokeFunction(acc => acc.get(IChiposGitService));
+		} catch {
+			return undefined;
+		}
 	}
 
 	private _render(): void {
@@ -385,7 +397,7 @@ export class ResourceListTab extends Disposable {
 		const parent = URI.joinPath(home, '.chipos-ide', '.cache', 'resource-clones');
 		await this._fileService.createFolder(parent);
 		const tempDir = URI.joinPath(parent, generateUuid());
-		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 });
+		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 }, this._resolveGitService());
 		try {
 			await this._fileService.del(URI.joinPath(tempDir, '.git'), { recursive: true, useTrash: false });
 		} catch { /* best-effort */ }

@@ -45,6 +45,19 @@ class StubWorkspaceContextService {
 	}
 }
 
+class StubFileService {
+	async readFile(_resource: URI): Promise<never> {
+		throw new Error('not implemented in stub');
+	}
+}
+
+/** No git service is registered in tests, so resolution throws → effects degrade. */
+class StubInstantiationService {
+	invokeFunction(): never {
+		throw new Error('no git service in tests');
+	}
+}
+
 function createToolResultEvent(filePath: string): IToolResultEvent {
 	return {
 		event_id: `tool-result:${filePath}`,
@@ -93,6 +106,8 @@ suite('ChipOSEditorEffects', () => {
 			new StubMarkerService() as any,
 			editorService as any,
 			new StubWorkspaceContextService() as any,
+			new StubFileService() as any,
+			new StubInstantiationService() as any,
 		);
 	});
 

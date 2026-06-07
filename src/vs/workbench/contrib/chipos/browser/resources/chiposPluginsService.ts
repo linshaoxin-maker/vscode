@@ -6,6 +6,8 @@
 import { URI } from '../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../../platform/configuration/common/configuration.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IChiposGitService } from '../../common/chiposGitService.js';
 import { IPathService } from '../../../../services/path/common/pathService.js';
 import { parseRuleFile } from './frontmatterParser.js';
 import { RuleDescriptor } from './promptResourceAttachmentCollector.js';
@@ -57,7 +59,21 @@ export class ChiposPluginsService {
 		@IFileService private readonly _fileService: IFileService,
 		@IPathService private readonly _pathService: IPathService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) { }
+
+	/**
+	 * Resolve the main-process git runner, or undefined when unavailable (web /
+	 * no Electron). Optional because there is no `@optional` decorator in this
+	 * fork; clone-from-git then fails with a clear "git is not available".
+	 */
+	private _resolveGitService(): IChiposGitService | undefined {
+		try {
+			return this._instantiationService?.invokeFunction(acc => acc.get(IChiposGitService));
+		} catch {
+			return undefined;
+		}
+	}
 
 	/** `~/.chipos-ide/plugins/` — the user-global install root for agent plugins. */
 	private async _pluginsRoot(): Promise<URI> {
@@ -178,7 +194,7 @@ export class ChiposPluginsService {
 		const cloneParent = URI.joinPath(home, '.chipos-ide', '.cache', 'plugin-clones');
 		await this._fileService.createFolder(cloneParent);
 		const tempDir = URI.joinPath(cloneParent, generateUuid());
-		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 });
+		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 }, this._resolveGitService());
 		// Drop the cloned `.git` history so it is not copied into the install.
 		try {
 			await this._fileService.del(URI.joinPath(tempDir, '.git'), { recursive: true, useTrash: false });

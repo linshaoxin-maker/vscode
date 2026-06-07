@@ -3,43 +3,22 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import type { IChiposGitService } from '../../common/chiposGitService.js';
+
 /**
  * Git clone helper for installing agent plugins from a Git URL (FEAT-002b).
  *
- * Running git needs Node, which the browser layer does not type. We use the
- * bare global `require` (the binding Electron's renderer actually injects — the
- * same one gitLogProvider.ts / editorEffects.ts rely on; `globalThis.require` is
- * NOT the same binding and does not resolve), declared locally so the browser
- * tsconfig (no `@types/node`) still type-checks without the node-module errors
- * that form triggers. Degrades to undefined outside Electron.
+ * Running git needs Node `child_process`, which the sandboxed renderer of a
+ * PACKAGED app does not have (no global `require`). The original bare-`require`
+ * form therefore silently no-op'd in the packaged build. {@link cloneGitRepo}
+ * now runs git in the MAIN process via the injected {@link IChiposGitService}
+ * (an undefined service — e.g. on web — degrades to "git is not available").
  *
  * Security: {@link isAllowedGitUrl} restricts the host to a configured allow-list
- * before any clone, and {@link cloneGitRepo} uses `execFile` (no shell) with an
- * argument array and a `--` terminator, so a hostile URL cannot inject a shell
- * command or extra git flags.
+ * before any clone, and the clone runs as an `execFile` argv (no shell) with a
+ * `--` terminator, so a hostile URL cannot inject a shell command or extra git
+ * flags.
  */
-
-/** The slice of Node's `child_process` we use, typed locally to avoid node types. */
-interface INodeChildProcess {
-	execFile(
-		file: string,
-		args: readonly string[],
-		options: { readonly timeout?: number; readonly windowsHide?: boolean },
-		callback: (error: Error | null, stdout: string, stderr: string) => void,
-	): void;
-}
-
-// Electron's renderer injects a global `require`; declare it locally (type-only,
-// erased at runtime) so this file type-checks without @types/node.
-declare const require: ((moduleName: string) => unknown) | undefined;
-
-function requireChildProcess(): INodeChildProcess | undefined {
-	try {
-		return typeof require === 'function' ? (require('child_process') as INodeChildProcess) : undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 /**
  * Whether `url` is an `https:` Git URL whose host exactly matches one of
@@ -62,37 +41,31 @@ export function isAllowedGitUrl(url: string, allowedDomains: ReadonlyArray<strin
 }
 
 /**
- * Shallow-clone `url` into `destDir` (which must not yet exist; its parent must).
- * Rejects if git is unavailable or the clone fails. Caller is responsible for
+ * Shallow-clone `url` into `destDir` (which must not yet exist; its parent must),
+ * running git in the main process via `gitService`. Rejects if git is unavailable
+ * (no service / not on PATH) or the clone fails. Caller is responsible for
  * validating the URL ({@link isAllowedGitUrl}) and cleaning up `destDir`.
  */
-export function cloneGitRepo(url: string, destDir: string, opts?: { readonly ref?: string; readonly timeoutMs?: number }): Promise<void> {
-	const cp = requireChildProcess();
-	if (!cp) {
-		return Promise.reject(new Error('Git is not available in this environment (no Node child_process access).'));
+export async function cloneGitRepo(url: string, destDir: string, opts?: { readonly ref?: string; readonly timeoutMs?: number }, gitService?: IChiposGitService): Promise<void> {
+	if (!gitService) {
+		throw new Error('Git is not available in this environment (no Node git access).');
 	}
 	const args = ['clone', '--depth', '1', '--single-branch'];
 	if (opts?.ref) {
 		args.push('--branch', opts.ref);
 	}
 	// `--` stops git option parsing so a hostile URL/path cannot inject flags;
-	// execFile (no shell) prevents command injection.
+	// the runner uses execFile (no shell), which prevents command injection.
 	args.push('--', url, destDir);
-	return new Promise<void>((resolve, reject) => {
-		cp.execFile('git', args, { timeout: opts?.timeoutMs ?? 60000, windowsHide: true }, (error, _stdout, stderr) => {
-			if (!error) {
-				resolve();
-				return;
-			}
-			const code = (error as { code?: string }).code;
-			const killed = (error as { killed?: boolean }).killed;
-			if (code === 'ENOENT') {
-				reject(new Error('Git is not installed or not on PATH. Install Git to import plugins from a Git URL.'));
-			} else if (killed || code === 'ETIMEDOUT') {
-				reject(new Error('git clone timed out — check the URL and your network connection.'));
-			} else {
-				reject(new Error(`git clone failed: ${(stderr || '').trim() || error.message}`));
-			}
-		});
-	});
+	const res = await gitService.exec({ args, timeoutMs: opts?.timeoutMs ?? 60000 });
+	if (res.ok) {
+		return;
+	}
+	if (res.code === 'ENOENT') {
+		throw new Error('Git is not installed or not on PATH. Install Git to import plugins from a Git URL.');
+	}
+	if (res.killed || res.code === 'ETIMEDOUT') {
+		throw new Error('git clone timed out — check the URL and your network connection.');
+	}
+	throw new Error(`git clone failed: ${(res.stderr || '').trim() || `git exited with code ${res.code}`}`);
 }

@@ -18,6 +18,13 @@ import { IChiposPluginHookService } from '../../../../workbench/contrib/chipos/c
 import { ChiposPluginHookElectron } from '../../../../workbench/contrib/chipos/electron-browser/chiposPluginHookElectron.js';
 registerSingleton(IChiposPluginHookService, ChiposPluginHookElectron, InstantiationType.Delayed);
 
+// ChipOS git runner. Desktop forwards `git` invocations to the main process via
+// IPC (the sandboxed renderer has no `require('child_process')`). No web impl —
+// callers resolve this service optionally and degrade (no git context / clone).
+import { IChiposGitService } from '../../../../workbench/contrib/chipos/common/chiposGitService.js';
+import { ChiposGitElectron } from '../../../../workbench/contrib/chipos/electron-browser/chiposGitElectron.js';
+registerSingleton(IChiposGitService, ChiposGitElectron, InstantiationType.Delayed);
+
 // Phase 1 Unified Auth: register auth services
 import { IChipOSTokenManager, ChipOSTokenManager } from '../../../../workbench/contrib/chipos/browser/auth/chiposTokenManager.js';
 import { IChipOSAuthService, ChipOSAuthService } from '../../../../workbench/contrib/chipos/browser/auth/chiposAuthService.js';

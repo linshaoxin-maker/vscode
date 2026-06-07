@@ -5,6 +5,21 @@
 
 import assert from 'assert';
 import { isAllowedGitUrl, cloneGitRepo } from '../gitImport.js';
+import type { IChiposGitService } from '../../../common/chiposGitService.js';
+import type { IChiposGitExecArgs, IChiposGitExecResult } from '../../../../../../platform/chipos/common/chiposGit.js';
+
+/** A fake git service that records the args it was called with and returns a canned result. */
+function fakeGit(result: Partial<IChiposGitExecResult>): { service: IChiposGitService; calls: IChiposGitExecArgs[] } {
+	const calls: IChiposGitExecArgs[] = [];
+	const service: IChiposGitService = {
+		_serviceBrand: undefined,
+		async exec(args: IChiposGitExecArgs): Promise<IChiposGitExecResult> {
+			calls.push(args);
+			return { ok: false, stdout: '', stderr: '', code: null, killed: false, ...result };
+		},
+	};
+	return { service, calls };
+}
 
 suite('gitImport', () => {
 	suite('isAllowedGitUrl', () => {
@@ -45,15 +60,48 @@ suite('gitImport', () => {
 	});
 
 	suite('cloneGitRepo', () => {
-		test('the require escape hatch resolves child_process (regression guard for the globalThis.require bug)', async () => {
-			// Drives the REAL requireChildProcess in the Electron test env via a
-			// local non-repo path so git fails fast without network. The only
-			// assertion is that the rejection is a git/exec error — NOT "Git is
-			// not available", which is what the earlier globalThis.require form
-			// (which does not resolve in the renderer) wrongly produced.
+		test('rejects "not available" when no git service is injected (e.g. web)', async () => {
+			// The sandboxed renderer / web has no main-process git runner; the
+			// caller passes undefined and the clone must fail explicitly rather
+			// than silently no-op (the packaged-app bug this replaces).
 			await assert.rejects(
-				cloneGitRepo('/chipos/no/such/local/repo-xyz', '/tmp/chipos-git-probe-dest-xyz', { timeoutMs: 8000 }),
-				(err: Error) => err instanceof Error && !/not available/i.test(err.message),
+				cloneGitRepo('https://github.com/owner/repo.git', '/tmp/dest', { timeoutMs: 8000 }),
+				(err: Error) => /not available/i.test(err.message),
+			);
+		});
+
+		test('builds a hardened shallow-clone argv and resolves on success', async () => {
+			const { service, calls } = fakeGit({ ok: true });
+			await cloneGitRepo('https://github.com/owner/repo.git', '/tmp/dest', { ref: 'main', timeoutMs: 1234 }, service);
+			assert.strictEqual(calls.length, 1);
+			assert.deepStrictEqual(
+				calls[0].args,
+				['clone', '--depth', '1', '--single-branch', '--branch', 'main', '--', 'https://github.com/owner/repo.git', '/tmp/dest'],
+			);
+			assert.strictEqual(calls[0].timeoutMs, 1234);
+		});
+
+		test('maps ENOENT to a "git not installed" error', async () => {
+			const { service } = fakeGit({ ok: false, code: 'ENOENT' });
+			await assert.rejects(
+				cloneGitRepo('https://github.com/owner/repo.git', '/tmp/dest', undefined, service),
+				(err: Error) => /not installed|not on PATH/i.test(err.message),
+			);
+		});
+
+		test('maps a killed/timeout result to a timeout error', async () => {
+			const { service } = fakeGit({ ok: false, killed: true });
+			await assert.rejects(
+				cloneGitRepo('https://github.com/owner/repo.git', '/tmp/dest', undefined, service),
+				(err: Error) => /timed out/i.test(err.message),
+			);
+		});
+
+		test('surfaces git stderr on a generic non-zero exit', async () => {
+			const { service } = fakeGit({ ok: false, code: 128, stderr: 'fatal: repository not found' });
+			await assert.rejects(
+				cloneGitRepo('https://github.com/owner/repo.git', '/tmp/dest', undefined, service),
+				(err: Error) => /git clone failed/i.test(err.message) && /repository not found/i.test(err.message),
 			);
 		});
 	});

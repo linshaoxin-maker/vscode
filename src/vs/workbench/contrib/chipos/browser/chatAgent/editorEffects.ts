@@ -10,8 +10,11 @@ import { isEqual } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IMarkerService, IMarkerData, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { IChiposGitService } from '../../common/chiposGitService.js';
 import {
 	AgentEvent,
 	AgentEventType,
@@ -25,55 +28,14 @@ import {
 import { SkillTreeHandler, type ISkillTreeData, type ISkillDomain, type ISkillItem } from '../../browser/migration/skillTreeHandler.js';
 
 /**
- * Node access for the git/file operations below. The browser layer isn't typed
- * for Node, so we use the bare global `require` that Electron's renderer injects
- * — the same binding gitImport.ts / gitLogProvider.ts rely on (`globalThis.require`
- * is a DIFFERENT binding that is undefined in the renderer). It's declared locally
- * (type-only, erased at runtime) and the Node module slices we touch are typed by
- * hand, so the browser tsconfig (no `@types/node`) still type-checks without the
- * TS2307/TS2591 errors a bare `require('child_process')` otherwise triggers.
- * Resolves to undefined outside Electron, where every caller falls back gracefully.
+ * Git/file effects below run git in the MAIN process via {@link IChiposGitService}
+ * and read files via {@link IFileService}. They previously shelled out through a
+ * bare `require('child_process')` / `require('fs')`, which silently no-op'd in a
+ * PACKAGED app (the sandboxed renderer has no global `require`) — so the working-set
+ * widget showed "+0 -0" and undo-all did nothing in shipped builds. The git service
+ * is resolved optionally; when absent (web), diff stats fall back to IFileService
+ * line counts and undo-all reports git as unavailable.
  */
-declare const require: ((moduleName: string) => unknown) | undefined;
-
-/** The slice of Node's `child_process` we use, typed locally to avoid node types. */
-interface INodeChildProcess {
-	exec(
-		command: string,
-		options: { readonly cwd?: string; readonly timeout?: number },
-		callback: (error: Error | null, stdout: string, stderr: string) => void,
-	): void;
-}
-
-/** The slice of Node's `fs` we use, typed locally to avoid node types. */
-interface INodeFs {
-	statSync(path: string): { isFile(): boolean };
-	readFileSync(path: string, encoding: 'utf8'): string;
-}
-
-/**
- * Load `child_process` through the renderer's bare `require`, returning undefined
- * when Node isn't reachable (non-Electron host) instead of throwing. The module
- * specifier is kept literal — matching gitImport.ts and the original inline call
- * — so the bundler/static analysis treats it exactly as before (a dynamic
- * `require(variable)` would be analysed differently).
- */
-function requireChildProcess(): INodeChildProcess | undefined {
-	try {
-		return typeof require === 'function' ? (require('child_process') as INodeChildProcess) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** As {@link requireChildProcess}, for Node's `fs`. Literal specifier, undefined off-Electron. */
-function requireFs(): INodeFs | undefined {
-	try {
-		return typeof require === 'function' ? (require('fs') as INodeFs) : undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 export interface IFileChangeInfo {
 	path: string;
@@ -104,14 +66,24 @@ export class ChipOSEditorEffects extends Disposable {
 	private readonly _onDidChangeFileChanges = this._register(new Emitter<IFileChangeInfo[]>());
 	readonly onDidChangeFileChanges = this._onDidChangeFileChanges.event;
 
+	/** Main-process git runner; undefined on web, where git ops degrade. */
+	private readonly _gitService: IChiposGitService | undefined;
+
 	constructor(
 		@ILogService private readonly _logService: ILogService,
 		@IMarkerService private readonly _markerService: IMarkerService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IFileService private readonly _fileService: IFileService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		this._projectedSkillTreeHandler = this._register(new SkillTreeHandler(this._logService));
+		try {
+			this._gitService = instantiationService?.invokeFunction(acc => acc.get(IChiposGitService));
+		} catch {
+			// not registered (e.g. web) — git ops degrade to the filesystem fallback
+		}
 	}
 
 	get skillTreeHandler(): SkillTreeHandler { return this._projectedSkillTreeHandler; }
@@ -320,14 +292,14 @@ export class ChipOSEditorEffects extends Disposable {
 				this._autoOpenFile(f.path);
 			}
 		}
-		this._refreshGitDiffStats(sessionResource, state);
+		void this._refreshGitDiffStats(sessionResource, state).catch(err => this._logService.warn('[ChipOS Effects] git diff stats refresh failed:', String(err)));
 	}
 
 	// ── 5. Task complete → refresh git stats (FEAT-38), log summary ────────
 
 	private _handleTaskComplete(sessionResource: URI, state: ISessionEditorEffectsState): void {
 		this._logService.info(`[ChipOS Effects] Task complete. Tracked ${state.trackedFiles.size} files.`);
-		this._refreshGitDiffStats(sessionResource, state);
+		void this._refreshGitDiffStats(sessionResource, state).catch(err => this._logService.warn('[ChipOS Effects] git diff stats refresh failed:', String(err)));
 		state.trackedFiles.clear();
 	}
 
@@ -375,16 +347,16 @@ export class ChipOSEditorEffects extends Disposable {
 		const modified = files.filter(f => f.action === 'modified').map(f => f.path);
 
 		if (modified.length) {
-			const cp = requireChildProcess();
 			try {
-				if (!cp) {
-					throw new Error('Node child_process is not available in this environment.');
+				if (!this._gitService) {
+					throw new Error('Node git is not available in this environment.');
 				}
-				await new Promise<void>((resolve, reject) => {
-					cp.exec(`git checkout HEAD -- ${modified.map(p => `"${p}"`).join(' ')}`, { cwd: workspacePath }, (err) => {
-						if (err) { reject(err); } else { resolve(); }
-					});
-				});
+				// execFile argv (no shell) — the `--` terminator + per-path args
+				// mean a path with spaces or shell metacharacters cannot break out.
+				const res = await this._gitService.exec({ args: ['checkout', 'HEAD', '--', ...modified], cwd: workspacePath });
+				if (!res.ok) {
+					throw new Error((res.stderr || '').trim() || `git checkout exited with code ${res.code}`);
+				}
 			} catch (err) {
 				errors.push(`git checkout failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
@@ -412,77 +384,77 @@ export class ChipOSEditorEffects extends Disposable {
 
 	// ── FEAT-38: Git diff stats refresh ─────────────────────────────────────
 
-	private _refreshGitDiffStats(sessionResource: URI, state: ISessionEditorEffectsState): void {
+	private async _refreshGitDiffStats(sessionResource: URI, state: ISessionEditorEffectsState): Promise<void> {
 		const workspacePath = this._getWorkspacePath();
 		if (!workspacePath || !state.fileChanges.size) {
 			return;
 		}
 
-		const cp = requireChildProcess();
-		if (!cp) {
-			// require('child_process') not available in browser context — try
-			// the filesystem fallback directly so we still produce real line
-			// counts in restricted environments.
-			this._applyFilesystemFallbackStats(sessionResource, state);
+		if (!this._gitService) {
+			// No main-process git runner (web) — use the filesystem fallback
+			// directly so we still produce real line counts.
+			await this._applyFilesystemFallbackStats(sessionResource, state);
 			return;
 		}
 
+		let stdout: string;
 		try {
-			cp.exec('git diff --numstat HEAD', { cwd: workspacePath, timeout: 5000 }, (err, stdout) => {
-				const numstatEmpty = !stdout || !stdout.trim();
-				if (err || numstatEmpty) {
-					// Workspace isn't a git repo, or no tracked changes (the
-					// case for net-new untracked files like sim/report_*.txt).
-					// Without a fallback, additions/deletions stay at 0/0 and
-					// the working-set widget shows the misleading "+0 -0"
-					// label even though the files have real content.
-					this._applyFilesystemFallbackStats(sessionResource, state);
-					return;
-				}
-				let updated = false;
-				const seenPaths = new Set<string>();
-				for (const line of stdout.trim().split('\n')) {
-					const parts = line.split('\t');
-					if (parts.length < 3) { continue; }
-					const additions = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
-					const deletions = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
-					const path = parts[2];
-					seenPaths.add(path);
-					const existing = state.fileChanges.get(path);
-					if (existing && (existing.additions !== additions || existing.deletions !== deletions)) {
-						existing.additions = additions;
-						existing.deletions = deletions;
-						updated = true;
-					}
-				}
-				if (updated) {
-					this._syncProjectionIfActive(sessionResource);
-				}
-				// numstat doesn't report untracked / unindexed files even when
-				// the workspace IS a git repo. Anything still at 0/0 after
-				// the numstat pass needs the filesystem fallback to avoid
-				// the same "+0 -0" rendering bug.
-				const missing: string[] = [];
-				for (const [p, info] of state.fileChanges) {
-					if (!seenPaths.has(p) && info.additions === 0 && info.deletions === 0) {
-						missing.push(p);
-					}
-				}
-				if (missing.length > 0) {
-					this._applyFilesystemFallbackStats(sessionResource, state, missing);
-				}
-			});
+			const res = await this._gitService.exec({ args: ['diff', '--numstat', 'HEAD'], cwd: workspacePath, timeoutMs: 5000 });
+			if (!res.ok || !res.stdout.trim()) {
+				// Workspace isn't a git repo, or no tracked changes (the case for
+				// net-new untracked files like sim/report_*.txt). Without a
+				// fallback, additions/deletions stay at 0/0 and the working-set
+				// widget shows the misleading "+0 -0" label even though the files
+				// have real content.
+				await this._applyFilesystemFallbackStats(sessionResource, state);
+				return;
+			}
+			stdout = res.stdout;
 		} catch {
-			// Defensive: if cp.exec throws synchronously, fall back to the
-			// filesystem line counter so we still avoid the "+0 -0" sentinel.
-			this._applyFilesystemFallbackStats(sessionResource, state);
+			// Defensive: if the git call rejects, fall back to the filesystem line
+			// counter so we still avoid the "+0 -0" sentinel.
+			await this._applyFilesystemFallbackStats(sessionResource, state);
+			return;
+		}
+
+		let updated = false;
+		const seenPaths = new Set<string>();
+		for (const line of stdout.trim().split('\n')) {
+			const parts = line.split('\t');
+			if (parts.length < 3) { continue; }
+			const additions = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
+			const deletions = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
+			const path = parts[2];
+			seenPaths.add(path);
+			const existing = state.fileChanges.get(path);
+			if (existing && (existing.additions !== additions || existing.deletions !== deletions)) {
+				existing.additions = additions;
+				existing.deletions = deletions;
+				updated = true;
+			}
+		}
+		if (updated) {
+			this._syncProjectionIfActive(sessionResource);
+		}
+		// numstat doesn't report untracked / unindexed files even when the
+		// workspace IS a git repo. Anything still at 0/0 after the numstat pass
+		// needs the filesystem fallback to avoid the same "+0 -0" rendering bug.
+		const missing: string[] = [];
+		for (const [p, info] of state.fileChanges) {
+			if (!seenPaths.has(p) && info.additions === 0 && info.deletions === 0) {
+				missing.push(p);
+			}
+		}
+		if (missing.length > 0) {
+			await this._applyFilesystemFallbackStats(sessionResource, state, missing);
 		}
 	}
 
 	/**
 	 * Fallback line counter used when `git diff --numstat HEAD` can't tell us
 	 * how many lines a tracked file gained/lost. Reads each file's current
-	 * content and treats every line as an addition.
+	 * content (via IFileService — renderer-safe in the packaged app, unlike the
+	 * old `require('fs')`) and treats every line as an addition.
 	 *
 	 * This is lossy on modified files (we don't have the prior baseline, so
 	 * the deletions column stays at 0 and additions reflect the new total),
@@ -490,16 +462,11 @@ export class ChipOSEditorEffects extends Disposable {
 	 * shows otherwise. For brand-new files (the common worker-write case
 	 * like sim/report_*.txt) the count is accurate.
 	 */
-	private _applyFilesystemFallbackStats(
+	private async _applyFilesystemFallbackStats(
 		sessionResource: URI,
 		state: ISessionEditorEffectsState,
 		onlyPaths?: readonly string[],
-	): void {
-		const fs = requireFs();
-		if (!fs) {
-			return;
-		}
-
+	): Promise<void> {
 		const targets = onlyPaths
 			? onlyPaths.map(p => state.fileChanges.get(p)).filter((e): e is IFileChangeInfo => !!e)
 			: Array.from(state.fileChanges.values());
@@ -509,13 +476,11 @@ export class ChipOSEditorEffects extends Disposable {
 			if (entry.additions !== 0 || entry.deletions !== 0) {
 				continue;
 			}
-			const absPath = this._resolveFileUri(entry.path).fsPath;
+			const uri = this._resolveFileUri(entry.path);
 			try {
-				const stat = fs.statSync(absPath);
-				if (!stat.isFile()) {
-					continue;
-				}
-				const content = fs.readFileSync(absPath, 'utf8');
+				// readFile throws for a directory / missing / unreadable path,
+				// which the catch swallows (leaving the entry untouched).
+				const content = (await this._fileService.readFile(uri)).value.toString();
 				if (!content.length) {
 					continue;
 				}

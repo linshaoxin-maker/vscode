@@ -23,6 +23,7 @@ import { TerminalProvider } from '../../../../../workbench/contrib/chipos/browse
 import { LinterProvider } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextProviders/linterProvider.js';
 import { ProjectStructureProvider } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextProviders/projectStructureProvider.js';
 import { RecentEditProvider } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextProviders/recentEditProvider.js';
+import { IChiposGitService } from '../../common/chiposGitService.js';
 
 const DEFAULT_TOKEN_BUDGET = 8000;
 
@@ -46,11 +47,21 @@ export class ContextCollector extends Disposable {
 		const recentEditProvider = new RecentEditProvider(editorService);
 		this._register(recentEditProvider);
 
+		// The git runner lives in the main process (no `require` in the sandboxed
+		// renderer). Resolve it optionally — absent on web, where GitLogProvider
+		// then yields no git-log context.
+		let gitService: IChiposGitService | undefined;
+		try {
+			gitService = _instantiationService.invokeFunction(acc => acc.get(IChiposGitService));
+		} catch {
+			// not registered (e.g. web)
+		}
+
 		this._providers = [
 			new ActiveFileProvider(editorService),
 			new SelectionProvider(editorService),
 			new GitDiffProvider(scmService),
-			new GitLogProvider(workspaceContext),
+			new GitLogProvider(workspaceContext, gitService),
 			new TerminalProvider(terminalService),
 			new LinterProvider(markerService, editorService),
 			new ProjectStructureProvider(fileService, workspaceContext),

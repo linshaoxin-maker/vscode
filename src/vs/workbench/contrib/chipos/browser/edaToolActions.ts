@@ -38,11 +38,13 @@ import { CommandsRegistry, ICommandService } from '../../../../platform/commands
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { TreeViewItemHandleArg } from '../../../common/views.js';
 import {
@@ -619,17 +621,13 @@ registerAction2(class ExportEdaSettingsAction extends Action2 {
 		});
 		if (!uri) { return; }
 		try {
-			// Use the FileService through CommandService for cleanliness
-			const commandService = accessor.get(ICommandService);
+			// IFileService is renderer-safe in the packaged app; the previous
+			// `require('fs')` fallback silently failed there (no `require` in the
+			// sandboxed renderer), so export degraded to the broken
+			// `vscode.editFile` command path that never wrote the file.
+			const fileService = accessor.get(IFileService);
 			const json = JSON.stringify(payload, null, 2);
-			// vscode.workspace.fs.writeFile equivalent via command bridge
-			await commandService.executeCommand('vscode.editFile', uri, json).catch(() => {
-				// Fallback: write via plain fetch-like API. Use the file-service
-				// directly through node fs since this is a renderer with file
-				// access in the sandbox preload.
-				const fs = require('fs');
-				fs.writeFileSync(uri.fsPath, json, 'utf-8');
-			});
+			await fileService.writeFile(uri, VSBuffer.fromString(json));
 			notif.info(localize('chipos.eda.exportSettings.done', 'Exported EDA settings to {0}', uri.fsPath));
 		} catch (err) {
 			log.error(`[ChipOS EDA] export failed: ${err}`);
@@ -662,8 +660,11 @@ registerAction2(class ImportEdaSettingsAction extends Action2 {
 		});
 		if (!picked || picked.length === 0) { return; }
 		try {
-			const fs = require('fs');
-			const raw = fs.readFileSync(picked[0].fsPath, 'utf-8');
+			// IFileService.readFile works in the sandboxed packaged renderer; the
+			// old `require('fs').readFileSync` threw "require is not defined" there,
+			// so import always failed in shipped builds.
+			const fileService = accessor.get(IFileService);
+			const raw = (await fileService.readFile(picked[0])).value.toString();
 			const data = JSON.parse(raw);
 			if (data.version !== 1) {
 				notif.warn(localize('chipos.eda.importSettings.versionMismatch', 'Unsupported settings version: {0}', data.version));

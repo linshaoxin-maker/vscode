@@ -35,7 +35,10 @@ suite('ChiposPluginsService', () => {
 		ds.add(fileService.registerProvider(SCHEME, ds.add(new InMemoryFileSystemProvider())));
 		config = new StubConfigurationService();
 		const pathService = { userHome: async () => HOME } as unknown as IPathService;
-		service = new ChiposPluginsService(fileService, pathService, config as unknown as IConfigurationService);
+		// No git service in tests; installFromGit is always driven with an injected
+		// cloneToTemp, so the resolver is never invoked.
+		const instantiationService = { invokeFunction: () => { throw new Error('no git in tests'); } } as any;
+		service = new ChiposPluginsService(fileService, pathService, config as unknown as IConfigurationService, instantiationService);
 	});
 
 	const pluginRoot = (id: string): URI => URI.joinPath(HOME, '.chipos-ide', 'plugins', id);

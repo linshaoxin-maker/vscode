@@ -23,6 +23,7 @@ import { generateUuid } from '../../base/common/uuid.js';
 import { registerContextMenuListener } from '../../base/parts/contextmenu/electron-main/contextmenu.js';
 import { registerSidecarIpcHandlers } from '../../platform/chipos/electron-main/sidecarManagerMain.js';
 import { registerPluginHookIpcHandlers } from '../../platform/chipos/electron-main/chiposPluginHookMain.js';
+import { registerGitIpcHandlers } from '../../platform/chipos/electron-main/chiposGitMain.js';
 import { getDelayedChannel, ProxyChannel, StaticRouter } from '../../base/parts/ipc/common/ipc.js';
 import { Server as ElectronIPCServer } from '../../base/parts/ipc/electron-main/ipc.electron.js';
 import { Client as MessagePortClient } from '../../base/parts/ipc/electron-main/ipc.mp.js';
@@ -553,6 +554,12 @@ export class CodeApplication extends Disposable {
 		// hook in an isolated node child HERE in main; the sandboxed renderer cannot
 		// fork (no `require`). Renderer reaches it via ChiposPluginHookElectron.
 		registerPluginHookIpcHandlers();
+
+		// ChipOS — git IPC. Runs `git` HERE in main; the sandboxed renderer has no
+		// `require('child_process')` in a packaged app, so renderer-side git calls
+		// (clone-from-URL, git-log context, working-set diff stats, undo-all) used
+		// to silently no-op. Renderer reaches it via ChiposGitElectron.
+		registerGitIpcHandlers();
 
 		//#endregion
 	}

@@ -5,34 +5,15 @@
 
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ContextSourceType, IContextItem, IContextProvider } from '../../../../../../workbench/contrib/chipos/browser/autoContext/contextTypes.js';
+import type { IChiposGitService } from '../../../common/chiposGitService.js';
 
 /**
- * `git log` needs Node, which the browser layer doesn't type. We use the bare
- * global `require` Electron's renderer injects (the same binding editorEffects.ts
- * / gitImport.ts rely on; `globalThis.require` is a DIFFERENT, undefined binding),
- * declared locally so the browser tsconfig (no `@types/node`) type-checks, with a
- * hand-typed slice of `child_process` and a literal-specifier helper. Resolves to
- * undefined outside Electron, where collect() degrades to no git-log context.
+ * `git log` needs Node `child_process`, which the sandboxed renderer of a PACKAGED
+ * app does not have (no global `require`). The original bare-`require` form
+ * therefore silently produced no git-log context in the packaged build. We now run
+ * git in the MAIN process via the injected {@link IChiposGitService}; an undefined
+ * service (web / no Electron) degrades to no git-log context.
  */
-declare const require: ((moduleName: string) => unknown) | undefined;
-
-/** The slice of Node's `child_process` we use, typed locally to avoid node types. */
-interface INodeChildProcess {
-	exec(
-		command: string,
-		options: { readonly cwd?: string; readonly timeout?: number },
-		callback: (error: Error | null, stdout: string, stderr: string) => void,
-	): void;
-}
-
-function requireChildProcess(): INodeChildProcess | undefined {
-	try {
-		return typeof require === 'function' ? (require('child_process') as INodeChildProcess) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 const MAX_COMMITS = 5;
 
 export class GitLogProvider implements IContextProvider {
@@ -41,6 +22,7 @@ export class GitLogProvider implements IContextProvider {
 
 	constructor(
 		private readonly _workspaceContext: IWorkspaceContextService,
+		private readonly _gitService?: IChiposGitService,
 	) {}
 
 	async collect(): Promise<IContextItem[]> {
@@ -69,28 +51,19 @@ export class GitLogProvider implements IContextProvider {
 		}
 	}
 
-	private _execGitLog(cwd: string): Promise<string | undefined> {
-		return new Promise((resolve) => {
-			const cp = requireChildProcess();
-			if (!cp) {
-				resolve(undefined);
-				return;
-			}
-			try {
-				cp.exec(
-					`git log --oneline --no-decorate -n ${MAX_COMMITS}`,
-					{ cwd, timeout: 5000 },
-					(err, stdout) => {
-						if (err || !stdout.trim()) {
-							resolve(undefined);
-						} else {
-							resolve(stdout.trim());
-						}
-					},
-				);
-			} catch {
-				resolve(undefined);
-			}
-		});
+	private async _execGitLog(cwd: string): Promise<string | undefined> {
+		if (!this._gitService) {
+			return undefined;
+		}
+		try {
+			const res = await this._gitService.exec({
+				args: ['log', '--oneline', '--no-decorate', '-n', String(MAX_COMMITS)],
+				cwd,
+				timeoutMs: 5000,
+			});
+			return res.ok && res.stdout.trim() ? res.stdout.trim() : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 }
