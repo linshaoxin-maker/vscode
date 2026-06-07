@@ -32,6 +32,7 @@ import {
 	IChatAgentHistoryEntry,
 } from '../../../../contrib/chat/common/participants/chatAgents.js';
 import { URI, type UriComponents } from '../../../../../base/common/uri.js';
+import { dirname } from '../../../../../base/common/resources.js';
 import { Range } from '../../../../../editor/common/core/range.js';
 import { TextEdit } from '../../../../../editor/common/languages.js';
 import {
@@ -5980,7 +5981,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// turn. (glob + manual rules additionally need the active editor + attach
 		// UI; tracked as follow-ups.)
 		try {
-			const rules = await this._instantiationService.createInstance(ChiposRulesService).getRules();
+			// FEAT-001b (AGENTS.md interop): anchor the rule scan at the directory of
+			// the active editor so AGENTS.md / CLAUDE.md files along the chain up to the
+			// workspace root are picked up as always-on rules. Undefined when no editor
+			// is active — then only `.chipos/rules/` always-rules fire.
+			const activeRuleResource = this._editorService.activeEditor?.resource;
+			const ruleAnchor = activeRuleResource ? dirname(activeRuleResource) : undefined;
+			const rules = await this._instantiationService.createInstance(ChiposRulesService).getRules(ruleAnchor);
 			// FEAT-002a: merge rules contributed by installed agent plugins
 			// (~/.chipos-ide/plugins/<id>/rules/) — tagged source=plugin so the
 			// reasoner renders a `[from plugin <id>]` provenance badge.

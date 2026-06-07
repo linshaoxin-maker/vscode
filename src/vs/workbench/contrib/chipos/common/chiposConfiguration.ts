@@ -204,6 +204,13 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.rules.agentsMdInterop': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.rules.agentsMdInterop.desc', 'Also read AGENTS.md / CLAUDE.md files from the active file up to the workspace root as always-on rules.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Resource enable/disable (rules / commands / skills / hooks) ──
 		// Each holds scope-qualified ids ("workspace:<name>" / "user:<name>") of
 		// resources that stay on disk but are filtered out of the agent's per-turn

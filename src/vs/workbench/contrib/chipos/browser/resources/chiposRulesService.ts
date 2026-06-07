@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { URI } from '../../../../../base/common/uri.js';
+import { dirname, isEqualOrParent } from '../../../../../base/common/resources.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
@@ -33,8 +35,13 @@ export class ChiposRulesService {
 	 * Scan the project + user-global rule planes and return parsed, enabled rule
 	 * descriptors. A single unreadable or malformed file is skipped, never failing
 	 * the whole scan (P3-design §5 — isolate per-rule failures).
+	 *
+	 * When `anchorDir` is supplied (and `chipos.rules.agentsMdInterop` is not
+	 * explicitly `false`), AGENTS.md / CLAUDE.md files are additionally discovered
+	 * along the directory chain from the containing workspace-folder root down to
+	 * `anchorDir`, for Claude Code / agents.md cross-tool compatibility.
 	 */
-	async getRules(): Promise<RuleDescriptor[]> {
+	async getRules(anchorDir?: URI): Promise<RuleDescriptor[]> {
 		const folders = this._workspaceService.getWorkspace().folders;
 		const planes = await resourcePlanes(this._pathService, folders.map(f => f.uri), 'rules');
 
@@ -64,6 +71,109 @@ export class ChiposRulesService {
 				}
 			}
 		}
+
+		if (anchorDir && this._configurationService.getValue('chipos.rules.agentsMdInterop') !== false) {
+			rules.push(...await this._discoverAgentsFiles(anchorDir));
+		}
 		return rules;
+	}
+
+	/**
+	 * Discover AGENTS.md / CLAUDE.md files along the directory chain from the
+	 * workspace-folder root that contains `anchorDir` down to `anchorDir` itself
+	 * (inclusive). Files nearer to `anchorDir` get a higher `priority` so the
+	 * collector (which sorts priority DESC) surfaces the nearest context first.
+	 * Best-effort: an unreadable file is skipped, never failing discovery.
+	 */
+	private async _discoverAgentsFiles(anchorDir: URI): Promise<RuleDescriptor[]> {
+		const folder = this._workspaceService.getWorkspace().folders.find(f => isEqualOrParent(anchorDir, f.uri));
+		if (!folder) {
+			return [];
+		}
+		const root = folder.uri;
+
+		// Build the ancestor chain from `anchorDir` upward to the folder root, then
+		// reverse so it is root-first.
+		const chain: URI[] = [];
+		let current = anchorDir;
+		while (isEqualOrParent(current, root)) {
+			chain.push(current);
+			const parent = dirname(current);
+			if (parent.toString() === current.toString()) {
+				break; // reached the filesystem root — stop to avoid an infinite loop
+			}
+			current = parent;
+		}
+		chain.reverse();
+
+		const MARKERS = ['CLAUDE.md', 'AGENTS.md']; // Claude first (same-dir preference) per the full-compat decision
+		const MAX_FILES = 30;
+		const rules: RuleDescriptor[] = [];
+		for (let depthIndex = 0; depthIndex < chain.length; depthIndex++) {
+			const dir = chain[depthIndex];
+			for (const marker of MARKERS) {
+				if (rules.length >= MAX_FILES) {
+					return rules;
+				}
+				const file = URI.joinPath(dir, marker);
+				if (await this._fileService.exists(file)) {
+					try {
+						const content = await this._fileService.readFile(file);
+						const body = await this._resolveAgentsImports(content.value.toString(), dir, new Set([file.toString()]), 0);
+						const rel = dir.path.slice(root.path.length).replace(/^\/+/, '');
+						const name = rel ? `${marker} (${rel})` : marker;
+						rules.push({
+							name,
+							source: 'workspace',
+							sourceRef: file.path,
+							ruleType: 'always',
+							body,
+							priority: depthIndex,
+						});
+					} catch {
+						// skip unreadable AGENTS/CLAUDE file — do not fail discovery
+					}
+				}
+			}
+		}
+		return rules;
+	}
+
+	/**
+	 * Inline Claude Code `@path` imports found on their own line. Each import is
+	 * resolved relative to `baseDir` and recursively expanded (up to `MAX_DEPTH`),
+	 * with a `seen` set guarding against import cycles. Non-import lines and any
+	 * line that fails to resolve are left verbatim. Best-effort: never throws.
+	 */
+	private async _resolveAgentsImports(content: string, baseDir: URI, seen: Set<string>, depth: number): Promise<string> {
+		const MAX_DEPTH = 5;
+		if (depth >= MAX_DEPTH) {
+			return content;
+		}
+		const importLine = /^@(?<path>\S+)\s*$/;
+		const lines = content.split('\n');
+		const resolved: string[] = [];
+		for (const line of lines) {
+			const matched = importLine.exec(line);
+			if (!matched?.groups) {
+				resolved.push(line);
+				continue;
+			}
+			const segments = matched.groups.path.split('/').filter(s => s && s !== '.');
+			const target = URI.joinPath(baseDir, ...segments);
+			const key = target.toString();
+			if (seen.has(key)) {
+				resolved.push(line); // cycle guard — leave the import verbatim
+				continue;
+			}
+			try {
+				const imported = await this._fileService.readFile(target);
+				seen.add(key);
+				resolved.push(await this._resolveAgentsImports(imported.value.toString(), dirname(target), seen, depth + 1));
+			} catch {
+				resolved.push(line); // unresolved import — leave verbatim
+			}
+		}
+		return resolved.join('\n');
 	}
 }
