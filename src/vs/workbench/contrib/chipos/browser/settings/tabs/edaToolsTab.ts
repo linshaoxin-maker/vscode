@@ -32,6 +32,7 @@ import { INotificationService } from '../../../../../../platform/notification/co
 import { IQuickInputService } from '../../../../../../platform/quickinput/common/quickInput.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IFileDialogService } from '../../../../../../platform/dialogs/common/dialogs.js';
+import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
 import {
 	EdaResolutionsResponse,
 	EdaToolResolution,
@@ -39,6 +40,8 @@ import {
 	McpServerConfig,
 	McpServerListResult,
 } from '../../../../../../workbench/contrib/chipos/browser/workerToolManager.js';
+import { ChiposPluginsService } from '../../resources/chiposPluginsService.js';
+import { computePluginMcpSync } from '../../resources/pluginMcpSync.js';
 
 const STRATEGY_OPTIONS: { value: string; label: string; desc: string }[] = [
 	{
@@ -100,6 +103,7 @@ export class EdaToolsTab extends Disposable {
 		@ILogService private readonly _log: ILogService,
 		@IFileService private readonly _fileService: IFileService,
 		@IFileDialogService private readonly _fileDialogService: IFileDialogService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 		this._render();
@@ -127,8 +131,9 @@ export class EdaToolsTab extends Disposable {
 		// ── Section: MCP Servers table ──
 		this._renderServersSection();
 
-		// Initial fetch
-		this._refreshLiveData();
+		// Initial fetch — first register any plugin-contributed MCP servers with the
+		// worker (FEAT-011b), then render the now-complete live data.
+		this._syncPluginMcp().finally(() => this._refreshLiveData());
 	}
 
 	// ── strategy radios ────────────────────────────────────────────────────
@@ -816,6 +821,34 @@ export class EdaToolsTab extends Disposable {
 			this._notif.info(localize('chipos.edaTools.importMcpNone', 'No MCP servers imported ({0} skipped: already present or non-stdio).', skipped.length));
 		}
 		await this._refreshLiveData();
+	}
+
+	/**
+	 * FEAT-011b — register the enabled plugins' contributed MCP servers with the
+	 * worker (and drop stale `plugin.`-tagged ones) via the native add/remove API.
+	 * Idempotent: once synced the reconcile plan is empty, so a later refresh does no
+	 * worker reload. Best-effort — a failure (e.g. worker not yet up) is logged, never
+	 * surfaced as an error; the next tab open retries.
+	 */
+	private async _syncPluginMcp(): Promise<void> {
+		try {
+			const pluginsService = this._instantiationService.createInstance(ChiposPluginsService);
+			const discovered = await pluginsService.getPluginMcp();
+			const existing = (await this._toolManager.listMcpServers()).servers.map(s => s.name);
+			const plan = computePluginMcpSync(discovered, existing);
+			if (!plan.toRegister.length && !plan.toRemove.length) {
+				return; // already in sync — no worker reload
+			}
+			for (const server of plan.toRegister) {
+				await this._toolManager.addMcpServer(server.config as unknown as McpServerConfig);
+			}
+			for (const name of plan.toRemove) {
+				await this._toolManager.removeMcpServer(name);
+			}
+			this._log.info(`[edaTools] plugin MCP sync: +${plan.toRegister.length} / -${plan.toRemove.length}`);
+		} catch (err) {
+			this._log.warn(`[edaTools] plugin MCP sync failed (worker may be down): ${String(err)}`);
+		}
 	}
 
 	private _renderServersTable(payload: McpServerListResult): void {
