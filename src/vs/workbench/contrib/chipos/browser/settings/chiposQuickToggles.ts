@@ -11,6 +11,7 @@ import { IConfigurationService, ConfigurationTarget } from '../../../../../platf
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../../platform/quickinput/common/quickInput.js';
 import { IModelDiscoveryService } from './modelDiscoveryService.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
+import { ShowPromptInputsAction } from './showPromptInputsAction.js';
 
 const CHIPOS_CATEGORY = localize2('chipos.category', 'ChipOS');
 
@@ -125,4 +126,5 @@ export function registerChipOSQuickToggles(): void {
 	registerAction2(ToggleThinkingAction);
 	registerAction2(CycleAutoApproveModeAction);
 	registerAction2(ModelPickerAction);
+	registerAction2(ShowPromptInputsAction); // FEAT-008
 }

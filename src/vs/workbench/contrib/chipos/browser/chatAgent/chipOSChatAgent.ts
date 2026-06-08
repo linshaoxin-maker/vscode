@@ -87,6 +87,7 @@ import type {
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
+import { IChiposPromptInputsService } from './chiposPromptInputsService.js';
 import { substituteCommandArgs } from '../resources/commandSubstitution.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
@@ -387,6 +388,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IFileService private readonly _fileService: IFileService,
 		@IChipOSConfirmRetireService private readonly _confirmRetireService: IChipOSConfirmRetireService,
 		@IEditorService private readonly _editorService: IEditorService,
+		@IChiposPromptInputsService private readonly _promptInputsService: IChiposPromptInputsService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -6037,6 +6039,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (collected.attachments.length) {
 				invokeReq.prompt_resource_attachments = collected.attachments;
 			}
+			// FEAT-008: record this turn's collection (even when empty) so the
+			// "ChipOS: Show Prompt Inputs" command can render what was attached.
+			this._promptInputsService.setLast({ result: collected, activeFile });
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] prompt-resource collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
 		}
