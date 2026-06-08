@@ -5898,6 +5898,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// FEAT-011a: per-turn tool allow-list. chipos.tools.allowlist (default []) — when
 		// non-empty, the reasoner restricts this turn's actionable tools to these names.
 		const allowedTools = this._configurationService.getValue<string[]>('chipos.tools.allowlist');
+		// FEAT-011c: executable skill scripts require BOTH the opt-in flag AND a trusted
+		// workspace; the reasoner drops run_skill_script unless this is true.
+		const skillScriptsEnabled = this._configurationService.getValue<boolean>('chipos.skills.executableScripts') === true
+			&& this._workspaceTrustService.isWorkspaceTrusted();
 
 		// Phase 1 (ADR-018 §2 D8): tools registered out-of-band via
 		// /tools/register, referenced by expected_catalog_version (D9, 412 on
@@ -5924,6 +5928,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			workspace_path: workspace,
 			auto_approve_mode: autoApproveMode,
 			...(Array.isArray(allowedTools) && allowedTools.length ? { allowed_tools: allowedTools } : {}),
+			skill_scripts_enabled: skillScriptsEnabled,
 			metadata: {
 				ide_request_id: request.requestId,
 				ide_session_resource: request.sessionResource.toString(),

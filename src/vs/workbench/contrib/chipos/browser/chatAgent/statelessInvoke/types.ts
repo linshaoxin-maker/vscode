@@ -226,6 +226,8 @@ export interface InvokeRequest {
 	auto_approve_mode?: string;
 	/** FEAT-011a: per-turn tool allow-list (`chipos.tools.allowlist`). Non-empty => the reasoner restricts this turn's actionable IDE + worker tools to these names. Omit/empty = no restriction. */
 	allowed_tools?: string[];
+	/** FEAT-011c: per-turn opt-in for executable skill scripts (`chipos.skills.executableScripts` AND workspace trust). When false/absent the reasoner drops the run_skill_script tool. */
+	skill_scripts_enabled?: boolean;
 	// Open structural editor context for reasoner system prompt
 	// Common keys (all optional): current_file, selection, git_branch, open_files
 	workspace_meta?: Record<string, unknown> | null;
