@@ -105,6 +105,30 @@ suite('ChiposPluginsService', () => {
 		assert.deepStrictEqual(await service.getPluginHooks(), []);
 	});
 
+	test('getPluginMcp reads a plugin mcp_servers.json (tagged by id), skips disabled, tolerates missing/malformed', async () => {
+		// Plugin contributing one MCP server via its mcp_servers.json.
+		const edaRoot = pluginRoot('eda');
+		await write(URI.joinPath(edaRoot, '.chipos-plugin', 'plugin.json'), '{"name":"eda","version":"1.0.0"}');
+		await write(URI.joinPath(edaRoot, 'mcp_servers.json'), JSON.stringify({
+			mcpServers: { vivado: { command: 'vivado-mcp', args: ['--stdio'], transport: 'stdio' } },
+		}));
+		// A plugin with NO mcp_servers.json contributes nothing (and must not throw).
+		const bareRoot = pluginRoot('bare');
+		await write(URI.joinPath(bareRoot, '.chipos-plugin', 'plugin.json'), '{"name":"bare","version":"1.0.0"}');
+		// A plugin with a MALFORMED mcp_servers.json is skipped, never fatal.
+		const badRoot = pluginRoot('bad');
+		await write(URI.joinPath(badRoot, '.chipos-plugin', 'plugin.json'), '{"name":"bad","version":"1.0.0"}');
+		await write(URI.joinPath(badRoot, 'mcp_servers.json'), '{ not valid json');
+
+		assert.deepStrictEqual(await service.getPluginMcp(), [
+			{ pluginId: 'eda', name: 'vivado', config: { command: 'vivado-mcp', args: ['--stdio'], transport: 'stdio' } },
+		]);
+
+		// Disabled (id in chipos.plugins.disabled): contributes no MCP.
+		await service.setPluginEnabled('eda', false);
+		assert.deepStrictEqual(await service.getPluginMcp(), []);
+	});
+
 	test('setPluginEnabled round-trips through config; isPluginEnabled reflects it', async () => {
 		assert.strictEqual(service.isPluginEnabled('p'), true); // default: not disabled
 

@@ -28,6 +28,20 @@ export interface InstalledPlugin {
 	readonly root: URI;
 }
 
+/**
+ * FEAT-011b — an MCP server an enabled plugin contributes via its
+ * `mcp_servers.json` ({@link getPluginMcp}). `config` is the raw entry
+ * (command/args/env/transport/...) kept as a plain record so this service stays
+ * decoupled from the worker-tool layer; the caller maps it to the worker config
+ * shape (prefixing the name with the plugin id to avoid collisions) when it
+ * registers the server with the worker.
+ */
+export interface PluginMcpServer {
+	readonly pluginId: string;
+	readonly name: string;
+	readonly config: Record<string, unknown>;
+}
+
 /** An installed plugin plus a count of the resources it contributes (Plugins tab). */
 export interface PluginContributionSummary {
 	readonly manifest: PluginManifest;
@@ -465,5 +479,43 @@ export class ChiposPluginsService {
 			}
 		}
 		return hooks;
+	}
+
+	/**
+	 * FEAT-011b — MCP servers contributed by enabled plugins. A plugin may ship an
+	 * `mcp_servers.json` ({ mcpServers: { <name>: <config> } } — the worker's native
+	 * format) at its root; this reads them for the enabled plugins, tagged by plugin
+	 * id, for the caller to register with the worker (prefixing the name to avoid
+	 * collisions). Mirrors {@link getPluginHooks}' scan + never-throw posture: a
+	 * missing/malformed file is skipped, never fatal.
+	 */
+	async getPluginMcp(): Promise<PluginMcpServer[]> {
+		const plugins = await this._getEnabledPlugins();
+		const out: PluginMcpServer[] = [];
+		for (const plugin of plugins) {
+			const mcpFile = URI.joinPath(plugin.root, 'mcp_servers.json');
+			let raw: string;
+			try {
+				raw = (await this._fileService.readFile(mcpFile)).value.toString();
+			} catch {
+				continue; // plugin contributes no MCP
+			}
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(raw);
+			} catch {
+				continue; // malformed JSON — skip, never fail the scan
+			}
+			const servers = (parsed as { mcpServers?: unknown })?.mcpServers;
+			if (!servers || typeof servers !== 'object') {
+				continue;
+			}
+			for (const [name, cfg] of Object.entries(servers as Record<string, unknown>)) {
+				if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+					out.push({ pluginId: plugin.manifest.id, name, config: cfg as Record<string, unknown> });
+				}
+			}
+		}
+		return out;
 	}
 }
