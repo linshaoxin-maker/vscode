@@ -89,6 +89,7 @@ import type {
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
 import { IChiposPromptInputsService } from './chiposPromptInputsService.js';
 import { filterHooksForInvoke, redactSensitive } from './hookSecurity.js';
+import { IChiposHookLogService } from './chiposHookLogService.js';
 import { substituteCommandArgs } from '../resources/commandSubstitution.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
@@ -390,6 +391,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChipOSConfirmRetireService private readonly _confirmRetireService: IChipOSConfirmRetireService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IChiposPromptInputsService private readonly _promptInputsService: IChiposPromptInputsService,
+		@IChiposHookLogService private readonly _hookLogService: IChiposHookLogService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -7395,6 +7397,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 		this._pluginHookHost.grantConsent(pluginId);
 		const result = await this._pluginHookHost.evaluate({ evalId: hookEval.evalId, pluginId, modulePath: moduleUri.fsPath, exportName: hookEval.export, ctx: { point: hookEval.point, toolName: hookEval.toolName, callId: hookEval.callId, args: redactSensitive(hookEval.args), pluginId }, timeoutMs: hookEval.timeoutMs ?? 5000, failClosed });
+		// FEAT-004 B6: record the executable-hook decision for the audit log viewer.
+		this._hookLogService.record({ at: Date.now(), pluginId, point: hookEval.point ?? '', toolName: hookEval.toolName ?? '', decision: result.decision, reason: result.reason ?? result.agentMessage });
 		// ask -> bridge to a user confirm; resolve to proceed/deny.
 		if (result.decision === 'ask') {
 			const { confirmed } = await this._dialogService.confirm({ type: 'warning', message: result.userMessage || localize('chipos.hooks.ask', 'A plugin hook asks to proceed with {0}. Allow?', hookEval.toolName || 'this tool') });

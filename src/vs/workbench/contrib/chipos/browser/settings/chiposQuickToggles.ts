@@ -12,6 +12,8 @@ import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../.
 import { IModelDiscoveryService } from './modelDiscoveryService.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { ShowPromptInputsAction } from './showPromptInputsAction.js';
+import { ShowHookLogAction } from './showHookLogAction.js';
+import { TestHookFileAction } from './testHookFileAction.js';
 
 const CHIPOS_CATEGORY = localize2('chipos.category', 'ChipOS');
 
@@ -127,4 +129,6 @@ export function registerChipOSQuickToggles(): void {
 	registerAction2(CycleAutoApproveModeAction);
 	registerAction2(ModelPickerAction);
 	registerAction2(ShowPromptInputsAction); // FEAT-008
+	registerAction2(ShowHookLogAction); // FEAT-004 B6
+	registerAction2(TestHookFileAction); // FEAT-004 B6
 }
