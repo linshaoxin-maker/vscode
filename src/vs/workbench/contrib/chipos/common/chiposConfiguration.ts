@@ -211,6 +211,13 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.promptResources.enabled': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.promptResources.enabled.desc', 'Inject prompt resources (rules and slash commands from .chipos/ and ~/.chipos-ide/) into the agent prompt. Turn off to disable all rule/command injection (rollback / privacy). View what is injected via "ChipOS: Show Prompt Inputs".'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		'chipos.hooks.executablePlugins': {
 			type: 'boolean',
 			default: false,

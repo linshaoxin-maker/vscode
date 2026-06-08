@@ -39,6 +39,18 @@ suite('PromptResourceAttachmentCollector', () => {
 		);
 	});
 
+	test('FEAT-009 B4: enabled:false short-circuits to no attachments (even with an always rule)', () => {
+		const r = rule({ name: 'a', body: 'x' }); // an always rule (always applies when enabled)
+		assert.deepStrictEqual(
+			{
+				on: collectPromptResources([r], { activeFile: 'src/a.ts' }).attachments.length,
+				onDefault: collectPromptResources([r], {}).attachments.length,
+				off: collectPromptResources([r], { enabled: false }).attachments.length,
+			},
+			{ on: 1, onDefault: 1, off: 0 },
+		);
+	});
+
 	test('manual rule included only when attached', () => {
 		const r = rule({ name: 'm', ruleType: 'manual', body: 'x' });
 		assert.strictEqual(collectPromptResources([r], {}).attachments.length, 0);

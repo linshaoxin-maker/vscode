@@ -41,6 +41,13 @@ export interface CollectInput {
 	readonly manualRuleIds?: readonly string[];
 	readonly maxCount?: number;
 	readonly maxBytes?: number;
+	/**
+	 * FEAT-009: the `chipos.promptResources.enabled` feature flag. When explicitly
+	 * `false`, collection short-circuits to empty (no prompt resources attached) so
+	 * the agent behaves as if the capability were absent — the off-switch / rollback.
+	 * `undefined`/`true` keep the default on (backward-compatible).
+	 */
+	readonly enabled?: boolean;
 }
 
 export interface CollectResult {
@@ -126,6 +133,12 @@ function toAttachment(rule: RuleDescriptor): PromptResourceAttachment {
  * priority DESC, then name ASC.
  */
 export function collectPromptResources(rules: readonly RuleDescriptor[], input: CollectInput): CollectResult {
+	// FEAT-009: the off-switch. When the feature flag is explicitly disabled, attach
+	// nothing — the prompt is identical to one with the capability absent (rollback).
+	if (input.enabled === false) {
+		return { attachments: [], omitted: [] };
+	}
+
 	const maxCount = input.maxCount ?? DEFAULT_MAX_COUNT;
 	const maxBytes = input.maxBytes ?? DEFAULT_MAX_BYTES;
 

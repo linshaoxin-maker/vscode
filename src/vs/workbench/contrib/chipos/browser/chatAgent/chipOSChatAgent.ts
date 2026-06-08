@@ -6035,7 +6035,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// name a rule are simply ignored. A dedicated rule `@`-completion menu
 			// is a follow-up (selector UI).
 			const manualRuleIds = Array.from((request.message ?? '').matchAll(/(?:^|\s)@(?<id>[\w-]+)/g), m => m.groups!.id);
-			const collected = collectPromptResources(allRules, manualRuleIds.length ? { activeFile, manualRuleIds } : { activeFile });
+			// FEAT-009: honor the prompt-resources feature flag (off => attach nothing).
+			const promptResourcesEnabled = this._configurationService.getValue<boolean>('chipos.promptResources.enabled') !== false;
+			const collected = collectPromptResources(allRules, {
+				activeFile,
+				enabled: promptResourcesEnabled,
+				...(manualRuleIds.length ? { manualRuleIds } : {}),
+			});
 			if (collected.attachments.length) {
 				invokeReq.prompt_resource_attachments = collected.attachments;
 			}
