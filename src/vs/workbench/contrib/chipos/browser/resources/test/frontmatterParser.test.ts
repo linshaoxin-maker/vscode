@@ -32,8 +32,13 @@ suite('frontmatterParser', () => {
 		assert.deepStrictEqual(r.globs, ['**/*.sv', '**/*.v']);
 	});
 
-	test('frontmatter present but no trigger declared → manual (never auto-injects)', () => {
+	test('FEAT-001c B3: description but no trigger → agent (model attaches by relevance)', () => {
 		const r = parseRuleFile('---\ndescription: just docs\n---\nx');
+		assert.strictEqual(r.ruleType, 'agent');
+	});
+
+	test('frontmatter with no trigger and no description → manual (never auto-injects)', () => {
+		const r = parseRuleFile('---\nfoo: bar\n---\nx');
 		assert.strictEqual(r.ruleType, 'manual');
 	});
 });

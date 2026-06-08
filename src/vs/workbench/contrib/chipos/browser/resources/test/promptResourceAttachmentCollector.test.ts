@@ -25,6 +25,20 @@ suite('PromptResourceAttachmentCollector', () => {
 		assert.strictEqual(collectPromptResources([r], {}).attachments.length, 0);
 	});
 
+	test('FEAT-001c B2: exclude glob ("!" prefix) removes matched files (exclude wins over include)', () => {
+		const incExc = rule({ name: 'ts', ruleType: 'glob', globs: ['**/*.ts', '!vendor/**'], body: 'x' });
+		const onlyExc = rule({ name: 'ex', ruleType: 'glob', globs: ['!vendor/**'], body: 'x' });
+		assert.deepStrictEqual(
+			{
+				incMatched: collectPromptResources([incExc], { activeFile: 'src/a.ts' }).attachments.length,
+				incExcluded: collectPromptResources([incExc], { activeFile: 'vendor/b.ts' }).attachments.length,
+				onlyExcKept: collectPromptResources([onlyExc], { activeFile: 'src/a.ts' }).attachments.length,
+				onlyExcDropped: collectPromptResources([onlyExc], { activeFile: 'vendor/b.ts' }).attachments.length,
+			},
+			{ incMatched: 1, incExcluded: 0, onlyExcKept: 1, onlyExcDropped: 0 },
+		);
+	});
+
 	test('manual rule included only when attached', () => {
 		const r = rule({ name: 'm', ruleType: 'manual', body: 'x' });
 		assert.strictEqual(collectPromptResources([r], {}).attachments.length, 0);

@@ -63,7 +63,16 @@ function ruleApplies(rule: RuleDescriptor, input: CollectInput): boolean {
 			if (!file || !rule.globs?.length) {
 				return false;
 			}
-			return rule.globs.some(g => match(g, file));
+			// FEAT-001c B2: a leading '!' marks an exclude glob; an excluded file is
+			// dropped even if an include glob also matches (exclude wins). Base
+			// `match()` has no '!' negation, so we split and apply it ourselves.
+			const excludes = rule.globs.filter(g => g.startsWith('!')).map(g => g.slice(1));
+			if (excludes.some(g => match(g, file))) {
+				return false;
+			}
+			const includes = rule.globs.filter(g => !g.startsWith('!'));
+			// All-exclude globs (no positive pattern) apply everywhere not excluded.
+			return includes.length === 0 || includes.some(g => match(g, file));
 		}
 		case 'agent':
 			// Agent rules are always collected as header-only attachments (FEAT-001b/c):
