@@ -6,9 +6,12 @@
 import { URI } from '../../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IPathService } from '../../../../services/path/common/pathService.js';
 import { parseRuleFile } from './frontmatterParser.js';
+import { ChiposPluginsService } from './chiposPluginsService.js';
 import { RESOURCE_LAYOUTS, resourcePlanes, scanResourcePlane, isResourceEnabled, userGlobalResourceDir } from './chiposResourceScopes.js';
 
 /** Default skill-body byte cap (FEAT-003 NFR-8): `chipos.skills.maxBodySize`. */
@@ -47,6 +50,8 @@ export class ChiposSkillsService {
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@IPathService private readonly _pathService: IPathService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IWorkspaceTrustManagementService private readonly _workspaceTrustService: IWorkspaceTrustManagementService,
 	) { }
 
 	/**
@@ -102,24 +107,52 @@ export class ChiposSkillsService {
 			return { content: `Invalid skill id: ${JSON.stringify(skillId)}`, isError: true };
 		}
 		const maxBytes = this._configurationService.getValue<number>('chipos.skills.maxBodySize') ?? DEFAULT_MAX_BODY_BYTES;
+
+		// 1) Project + user-global planes (the user's own skills — no trust gate).
 		const candidates = this._workspaceService.getWorkspace().folders
 			.map(folder => URI.joinPath(folder.uri, '.chipos', 'skills', skillId, 'SKILL.md'));
 		candidates.push(URI.joinPath(await userGlobalResourceDir(this._pathService, 'skills'), skillId, 'SKILL.md'));
 		for (const skillMd of candidates) {
-			try {
-				const content = await this._fileService.readFile(skillMd);
-				const parsed = parseRuleFile(content.value.toString());
-				let body = parsed.body;
-				const bytes = new TextEncoder().encode(body).length;
-				if (bytes > maxBytes) {
-					// Approximate cap by characters (>= bytes for non-ASCII), then mark.
-					body = body.slice(0, maxBytes) + '\n\n[truncated: skill body exceeds maxBodySize]';
-				}
-				return { content: body, isError: false };
-			} catch {
-				continue; // not in this plane — try the next
+			const capped = await this._readCapped(skillMd, maxBytes);
+			if (capped) {
+				return capped;
 			}
 		}
+
+		// 2) Plugin-contributed skills (FEAT-003 BDD-003-04): third-party content —
+		// require workspace trust before loading the body ("untrusted plugin").
+		// getPluginSkills already excludes disabled plugins, so a disabled plugin's
+		// skill simply falls through to "not found".
+		const plugins = this._instantiationService.createInstance(ChiposPluginsService);
+		const match = (await plugins.getPluginSkills()).find(s => s.name === skillId);
+		if (match?.source_ref) {
+			if (!this._workspaceTrustService.isWorkspaceTrusted()) {
+				return { content: `Skill '${skillId}' is contributed by a plugin; trust this workspace to load it (Plugins tab).`, isError: true };
+			}
+			const uri = await plugins.resolvePluginFile(match.source_ref, `skills/${skillId}/SKILL.md`);
+			if (uri) {
+				const capped = await this._readCapped(uri, maxBytes);
+				if (capped) {
+					return capped;
+				}
+			}
+		}
+
 		return { content: `Skill not found: ${skillId}`, isError: true };
+	}
+
+	/** Read a SKILL.md body capped at `maxBytes` (truncated + marker); `undefined` if unreadable. */
+	private async _readCapped(skillMd: URI, maxBytes: number): Promise<{ content: string; isError: boolean } | undefined> {
+		try {
+			const content = await this._fileService.readFile(skillMd);
+			let body = parseRuleFile(content.value.toString()).body;
+			// Approximate cap by characters (>= bytes for non-ASCII), then mark.
+			if (new TextEncoder().encode(body).length > maxBytes) {
+				body = body.slice(0, maxBytes) + '\n\n[truncated: skill body exceeds maxBodySize]';
+			}
+			return { content: body, isError: false };
+		} catch {
+			return undefined;
+		}
 	}
 }

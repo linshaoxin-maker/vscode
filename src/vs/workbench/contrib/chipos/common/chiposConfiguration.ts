@@ -250,6 +250,12 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.skills.disabled.desc', 'Scope-qualified ids ("workspace:<name>"/"user:<name>") of skills that are disabled. A disabled skill stays on disk but is not shown to the agent. Managed from the Skills settings tab.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+		'chipos.skills.maxBodySize': {
+			type: 'number',
+			default: 102400,
+			description: localize('chipos.skills.maxBodySize.desc', 'Maximum byte size of a skill body loaded on demand via read_skill_body. Larger bodies are truncated with a marker. (FEAT-003)'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 		'chipos.hooks.disabled': {
 			type: 'array',
 			items: { type: 'string' },
