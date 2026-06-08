@@ -88,6 +88,7 @@ import type {
 } from './statelessInvoke/types.js';
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
 import { IChiposPromptInputsService } from './chiposPromptInputsService.js';
+import { filterHooksForInvoke, redactSensitive } from './hookSecurity.js';
 import { substituteCommandArgs } from '../resources/commandSubstitution.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
@@ -6122,16 +6123,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// FEAT-002a/004: also surface hooks contributed by installed plugins
 			// (plugins/<id>/hooks/*.json), tagged source=plugin.
 			const pluginHooks = await this._instantiationService.createInstance(ChiposPluginsService).getPluginHooks();
-			let allHooks = pluginHooks.length ? [...hooks, ...pluginHooks] : hooks;
-			// Tier-2 executable (function) hooks only flow when the user opted in via
-			// chipos.hooks.executablePlugins; otherwise drop them so an installed
-			// plugin's function hook stays fully inert (it must never block or alter a
-			// tool when the feature is off). Declarative deny/observe hooks are unaffected.
-			if (this._configurationService.getValue<boolean>('chipos.hooks.executablePlugins') !== true) {
-				allHooks = allHooks.filter(h => (h as { kind?: string }).kind !== 'function');
-			}
-			if (allHooks.length) {
-				invokeReq.hooks = allHooks;
+			const allHooks = pluginHooks.length ? [...hooks, ...pluginHooks] : hooks;
+			// FEAT-004 B6: chipos.hooks.disable is the global kill switch (attach no
+			// hooks at all, declarative or executable); tier-2 function hooks
+			// additionally require the chipos.hooks.executablePlugins opt-in so an
+			// installed plugin's function hook stays inert until enabled. See
+			// filterHooksForInvoke.
+			const toAttach = filterHooksForInvoke(allHooks, {
+				executablePlugins: this._configurationService.getValue<boolean>('chipos.hooks.executablePlugins') === true,
+				disable: this._configurationService.getValue<boolean>('chipos.hooks.disable') === true,
+			});
+			if (toAttach.length) {
+				invokeReq.hooks = toAttach;
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] hook collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
@@ -7391,7 +7394,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._pluginHookHost = new ChiposPluginHookHost(hookService);
 		}
 		this._pluginHookHost.grantConsent(pluginId);
-		const result = await this._pluginHookHost.evaluate({ evalId: hookEval.evalId, pluginId, modulePath: moduleUri.fsPath, exportName: hookEval.export, ctx: { point: hookEval.point, toolName: hookEval.toolName, callId: hookEval.callId, args: hookEval.args, pluginId }, timeoutMs: hookEval.timeoutMs ?? 5000, failClosed });
+		const result = await this._pluginHookHost.evaluate({ evalId: hookEval.evalId, pluginId, modulePath: moduleUri.fsPath, exportName: hookEval.export, ctx: { point: hookEval.point, toolName: hookEval.toolName, callId: hookEval.callId, args: redactSensitive(hookEval.args), pluginId }, timeoutMs: hookEval.timeoutMs ?? 5000, failClosed });
 		// ask -> bridge to a user confirm; resolve to proceed/deny.
 		if (result.decision === 'ask') {
 			const { confirmed } = await this._dialogService.confirm({ type: 'warning', message: result.userMessage || localize('chipos.hooks.ask', 'A plugin hook asks to proceed with {0}. Allow?', hookEval.toolName || 'this tool') });

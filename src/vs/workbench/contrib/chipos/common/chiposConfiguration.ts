@@ -263,6 +263,12 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.hooks.disabled.desc', 'Scope-qualified ids ("workspace:<file>"/"user:<file>") of hook files that are disabled. A disabled hook file stays on disk but its hooks are not registered. Managed from the Hooks settings tab.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+		'chipos.hooks.disable': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.hooks.disable.desc', 'Global kill switch: when on, NO hooks (declarative or executable) are sent to the agent this turn, regardless of per-file enablement. Use to quickly stop all hook behavior. (FEAT-004)'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 		'chipos.mcp.disabled': {
 			type: 'object',
 			default: {},
