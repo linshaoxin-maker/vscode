@@ -224,6 +224,8 @@ export interface InvokeRequest {
 	// Workspace + EXECUTION binding
 	workspace_path: string;
 	auto_approve_mode?: string;
+	/** FEAT-011a: per-turn tool allow-list (`chipos.tools.allowlist`). Non-empty => the reasoner restricts this turn's actionable IDE + worker tools to these names. Omit/empty = no restriction. */
+	allowed_tools?: string[];
 	// Open structural editor context for reasoner system prompt
 	// Common keys (all optional): current_file, selection, git_branch, open_files
 	workspace_meta?: Record<string, unknown> | null;

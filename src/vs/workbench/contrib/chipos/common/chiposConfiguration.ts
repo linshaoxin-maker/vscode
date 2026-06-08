@@ -276,6 +276,13 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.agents.disabled.desc', 'Scope-qualified ids ("workspace:<name>"/"user:<name>") of subagents that are disabled. A disabled subagent stays on disk but is hidden from the agent. Managed from the Subagents settings tab. (FEAT-005 Stage A)'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+		'chipos.tools.allowlist': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.tools.allowlist.desc', 'Per-turn tool allow-list: when non-empty, ONLY these tool names are made available to the agent each turn (the reasoner restricts the actionable IDE + worker tool catalog to this list; reasoner-internal planning tools stay available). Empty = no restriction. Use to lock the agent down to a known-safe tool set. (FEAT-011a)'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 		'chipos.mcp.disabled': {
 			type: 'object',
 			default: {},
