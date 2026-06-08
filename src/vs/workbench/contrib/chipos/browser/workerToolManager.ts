@@ -87,6 +87,12 @@ export interface McpServerConfig {
 	cwd?: string;
 	transport?: string;
 	/**
+	 * FEAT-010 native soft-disable. `false` => the worker skips this server at load
+	 * time (its tools never register) yet keeps its config, so the IDE toggles it
+	 * here instead of removing + stashing + re-adding. Absent/`true` => enabled.
+	 */
+	enabled?: boolean;
+	/**
 	 * Auto-discovered EDA tool names this server advertises via the MCP
 	 * `tools/list` RPC. Populated by lifecycle.list_mcp_servers using
 	 * mcp_loader.group_tools_by_server on the live ManagedMcpTool list.

@@ -833,9 +833,14 @@ export class EdaToolsTab extends Disposable {
 			return;
 		}
 		for (const srv of payload.servers) {
-			this._renderServerRow(this._serversTableBody, srv, false);
+			// FEAT-010: a server now stays in the worker config when disabled
+			// (enabled:false) instead of being removed, so honor the native flag.
+			this._renderServerRow(this._serversTableBody, srv, srv.enabled === false);
 		}
 		for (const srv of disabled) {
+			// Legacy: pre-FEAT-010 servers stashed in chipos.mcp.disabled (removed
+			// from the worker). Still shown so they're not lost; toggling migrates
+			// them into the native scheme.
 			if (!activeNames.has(srv.name)) {
 				this._renderServerRow(this._serversTableBody, srv, true);
 			}
@@ -849,31 +854,29 @@ export class EdaToolsTab extends Disposable {
 	}
 
 	/**
-	 * Real, worker-backed enable/disable. Disable removes the server from the
-	 * worker (so it stops running) and stashes its config in `chipos.mcp.disabled`;
-	 * enable re-adds the stashed config. The worker has no soft-disable flag, so
-	 * this remove+stash+re-add is the honest mechanism (not a cosmetic toggle).
+	 * Real, worker-backed enable/disable via the FEAT-010 native `enabled` flag: an
+	 * upsert (add_mcp_server) carrying `enabled:false`/`true`. The worker keeps the
+	 * config but skips a disabled server at load time, so the server survives a toggle
+	 * without the old remove + stash + re-add. Any legacy `chipos.mcp.disabled` stash
+	 * entry for this server is migrated away on the toggle.
 	 */
 	private async _setMcpEnabled(srv: McpServerConfig, enable: boolean): Promise<void> {
-		const map = { ...this._getDisabledMcp() };
 		try {
-			if (enable) {
-				const stashed = map[srv.name] ?? srv;
-				const res = await this._toolManager.addMcpServer(stashed);
-				if (!res.success) {
-					this._notif.error(localize('chipos.edaTools.enableFailed', 'Could not enable {0}: {1}', srv.name, res.error ?? res.message ?? ''));
-					return;
-				}
-				delete map[srv.name];
-			} else {
-				const res = await this._toolManager.removeMcpServer(srv.name);
-				if (!res.success) {
-					this._notif.error(localize('chipos.edaTools.disableFailed', 'Could not disable {0}: {1}', srv.name, res.error ?? res.message ?? ''));
-					return;
-				}
-				map[srv.name] = { name: srv.name, command: srv.command, args: srv.args, env: srv.env, cwd: srv.cwd, transport: srv.transport };
+			const res = await this._toolManager.addMcpServer({ ...srv, enabled: enable });
+			if (!res.success) {
+				this._notif.error(enable
+					? localize('chipos.edaTools.enableFailed', 'Could not enable {0}: {1}', srv.name, res.error ?? res.message ?? '')
+					: localize('chipos.edaTools.disableFailed', 'Could not disable {0}: {1}', srv.name, res.error ?? res.message ?? ''));
+				return;
 			}
-			await this._configService.updateValue('chipos.mcp.disabled', map, ConfigurationTarget.USER);
+			// Migrate any legacy pre-FEAT-010 stash entry into the native scheme — the
+			// server now lives in the worker config (enabled flag) either way.
+			const stash = this._getDisabledMcp();
+			if (stash[srv.name]) {
+				const migrated = { ...stash };
+				delete migrated[srv.name];
+				await this._configService.updateValue('chipos.mcp.disabled', migrated, ConfigurationTarget.USER);
+			}
 		} catch (err) {
 			this._notif.error(localize('chipos.edaTools.mcpToggleErr', 'MCP toggle failed: {0}', String(err)));
 		}
