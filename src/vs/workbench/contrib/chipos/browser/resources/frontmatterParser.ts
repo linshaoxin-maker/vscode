@@ -17,6 +17,8 @@ export interface ParsedRuleFile {
 	readonly alwaysApply: boolean;
 	readonly ruleType: RuleType;
 	readonly body: string;
+	/** FEAT-011c: a skill's bundled executable command (SKILL.md `script:` frontmatter). Only meaningful for skills. */
+	readonly script?: string;
 }
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -56,7 +58,7 @@ export function parseRuleFile(content: string): ParsedRuleFile {
 		ruleType = 'manual';
 	}
 
-	return { description: fields.get('description'), globs, alwaysApply, ruleType, body };
+	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script') };
 }
 
 /**

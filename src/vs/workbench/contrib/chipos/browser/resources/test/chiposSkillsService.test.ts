@@ -89,3 +89,62 @@ suite('ChiposSkillsService.readBody (FEAT-003 / B5)', () => {
 		);
 	});
 });
+
+/**
+ * FEAT-011c — ChiposSkillsService.getSkillScript: trust-gated resolution of a skill's
+ * `script:` frontmatter (opt-in chipos.skills.executableScripts + workspace trust both
+ * required), and getSkills surfacing hasScript.
+ */
+suite('ChiposSkillsService.getSkillScript + hasScript (FEAT-011c)', () => {
+	const ds = ensureNoDisposablesAreLeakedInTestSuite();
+	const SCHEME = 'test-skills-11c';
+	const HOME = URI.from({ scheme: SCHEME, path: '/home/user' });
+	const ROOT = URI.from({ scheme: SCHEME, path: '/ws' });
+	let fileService: FileService;
+
+	setup(() => {
+		fileService = ds.add(new FileService(new NullLogService()));
+		ds.add(fileService.registerProvider(SCHEME, ds.add(new InMemoryFileSystemProvider())));
+	});
+
+	const write = (uri: URI, c: string): Promise<unknown> => fileService.writeFile(uri, VSBuffer.fromString(c));
+	const makeService = (opts: { trusted: boolean; config?: Record<string, unknown> }): ChiposSkillsService => {
+		const config = new StubConfig(opts.config) as unknown as IConfigurationService;
+		const workspaceService = { getWorkspace: () => ({ folders: [{ uri: ROOT }] }) } as unknown as IWorkspaceContextService;
+		const pathService = { userHome: async () => HOME } as unknown as IPathService;
+		const trust = { isWorkspaceTrusted: () => opts.trusted } as unknown as IWorkspaceTrustManagementService;
+		const plugins = new ChiposPluginsService(fileService, pathService, config, {} as IInstantiationService);
+		const insta = { createInstance: (ctor: unknown) => { if (ctor === ChiposPluginsService) { return plugins; } throw new Error('unexpected createInstance'); } } as unknown as IInstantiationService;
+		return new ChiposSkillsService(fileService, workspaceService, pathService, config, insta, trust);
+	};
+	const ON = { 'chipos.skills.executableScripts': true };
+
+	test('getSkillScript: inert by default, inert when untrusted, resolves only when opted-in + trusted', async () => {
+		await write(URI.joinPath(ROOT, '.chipos', 'skills', 'gen', 'SKILL.md'), '---\ndescription: d\nscript: ./run.sh\n---\nbody');
+		const ok = await makeService({ trusted: true, config: ON }).getSkillScript('gen');
+		assert.deepStrictEqual(
+			{
+				flagOff: await makeService({ trusted: true }).getSkillScript('gen'),
+				untrusted: await makeService({ trusted: false, config: ON }).getSkillScript('gen'),
+				okScript: ok?.script,
+				okCwdEndsWith: !!ok?.cwd.endsWith('/skills/gen'),
+				traversal: await makeService({ trusted: true, config: ON }).getSkillScript('../evil'),
+			},
+			{ flagOff: undefined, untrusted: undefined, okScript: './run.sh', okCwdEndsWith: true, traversal: undefined },
+		);
+	});
+
+	test('getSkillScript: a skill without a script: frontmatter is undefined even when enabled+trusted; getSkills surfaces hasScript', async () => {
+		await write(URI.joinPath(ROOT, '.chipos', 'skills', 'gen', 'SKILL.md'), '---\ndescription: d\nscript: ./run.sh\n---\nbody');
+		await write(URI.joinPath(ROOT, '.chipos', 'skills', 'plain', 'SKILL.md'), '---\ndescription: d\n---\nbody');
+		const byName = new Map((await makeService({ trusted: true }).getSkills()).map(s => [s.name, s.hasScript]));
+		assert.deepStrictEqual(
+			{
+				plainScript: await makeService({ trusted: true, config: ON }).getSkillScript('plain'),
+				genHasScript: byName.get('gen'),
+				plainHasScript: byName.get('plain'),
+			},
+			{ plainScript: undefined, genHasScript: true, plainHasScript: false },
+		);
+	});
+});

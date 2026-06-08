@@ -31,6 +31,8 @@ export interface SkillHeader {
 	readonly description: string;
 	readonly source: 'builtin' | 'user' | 'plugin';
 	readonly source_ref?: string;
+	/** FEAT-011c: true when SKILL.md declares a `script:` (a runnable skill). Awareness only — execution is gated by chipos.skills.executableScripts + workspace trust. */
+	readonly hasScript?: boolean;
 }
 
 /**
@@ -81,6 +83,7 @@ export class ChiposSkillsService {
 						description: parsed.description ?? '',
 						source: 'user',
 						source_ref: s.editFile.path,
+						hasScript: !!parsed.script,
 					});
 					seen.add(s.name);
 				} catch {
@@ -151,6 +154,58 @@ export class ChiposSkillsService {
 				body = body.slice(0, maxBytes) + '\n\n[truncated: skill body exceeds maxBodySize]';
 			}
 			return { content: body, isError: false };
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * FEAT-011c — resolve a skill's bundled executable command, trust-gated. Returns
+	 * `{ script, cwd }` ONLY when ALL hold: the chipos.skills.executableScripts opt-in
+	 * is on, the workspace is trusted, the skill exists, and its SKILL.md declares a
+	 * `script:`. Otherwise `undefined` (the script stays inert). `cwd` is the skill
+	 * directory so the worker runs the script relative to it (sandboxed).
+	 */
+	async getSkillScript(skillId: string): Promise<{ script: string; cwd: string } | undefined> {
+		if (!skillId || /[\\/]|\.\./.test(skillId)) {
+			return undefined;
+		}
+		// Opt-in + workspace trust are BOTH required to even resolve a script.
+		if (this._configurationService.getValue<boolean>('chipos.skills.executableScripts') !== true) {
+			return undefined;
+		}
+		if (!this._workspaceTrustService.isWorkspaceTrusted()) {
+			return undefined;
+		}
+		// Project + user-global planes, then plugin-contributed (already trust-gated above).
+		const candidates = this._workspaceService.getWorkspace().folders
+			.map(folder => URI.joinPath(folder.uri, '.chipos', 'skills', skillId, 'SKILL.md'));
+		candidates.push(URI.joinPath(await userGlobalResourceDir(this._pathService, 'skills'), skillId, 'SKILL.md'));
+		for (const skillMd of candidates) {
+			const script = await this._readScript(skillMd);
+			if (script) {
+				return { script, cwd: URI.joinPath(skillMd, '..').fsPath };
+			}
+		}
+		const plugins = this._instantiationService.createInstance(ChiposPluginsService);
+		const match = (await plugins.getPluginSkills()).find(s => s.name === skillId);
+		if (match?.source_ref) {
+			const uri = await plugins.resolvePluginFile(match.source_ref, `skills/${skillId}/SKILL.md`);
+			if (uri) {
+				const script = await this._readScript(uri);
+				if (script) {
+					return { script, cwd: URI.joinPath(uri, '..').fsPath };
+				}
+			}
+		}
+		return undefined;
+	}
+
+	/** Lift the `script:` frontmatter from a SKILL.md; `undefined` if none/unreadable. */
+	private async _readScript(skillMd: URI): Promise<string | undefined> {
+		try {
+			const content = await this._fileService.readFile(skillMd);
+			return parseRuleFile(content.value.toString()).script;
 		} catch {
 			return undefined;
 		}

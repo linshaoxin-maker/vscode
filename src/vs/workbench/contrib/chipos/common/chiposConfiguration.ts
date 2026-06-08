@@ -256,6 +256,12 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.skills.maxBodySize.desc', 'Maximum byte size of a skill body loaded on demand via read_skill_body. Larger bodies are truncated with a marker. (FEAT-003)'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+		'chipos.skills.executableScripts': {
+			type: 'boolean',
+			default: false,
+			description: localize('chipos.skills.executableScripts.desc', 'Allow a skill to run a bundled executable script (its "script:" frontmatter field) on the worker, sandboxed. OFF by default: a skill script stays fully inert until you opt in AND the workspace is trusted. Mirrors chipos.hooks.executablePlugins. (FEAT-011c)'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 		'chipos.hooks.disabled': {
 			type: 'array',
 			items: { type: 'string' },
