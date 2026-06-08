@@ -90,7 +90,19 @@ suite('chiposResourceScopes', () => {
 				commands: [['.claude', 'commands'], ['.cursor', 'commands']],
 				skills: [['.claude', 'skills']],
 				hooks: [],
+				agents: [['.claude', 'agents']],
 			});
+		});
+
+		test('FEAT-005 Stage A: agents resolve chipos + .claude/agents under both scopes', async () => {
+			const folder = URI.from({ scheme: SCHEME, path: '/ws' });
+			const agents = await resourcePlanes(fakePathService, [folder], 'agents');
+			assert.deepStrictEqual(agents.map(p => [p.scope, p.dir.path]), [
+				['workspace', '/ws/.chipos/agents'],
+				['workspace', '/ws/.claude/agents'],
+				['user', '/home/u/.chipos-ide/agents'],
+				['user', '/home/u/.claude/agents'],
+			]);
 		});
 	});
 

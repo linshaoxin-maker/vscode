@@ -269,6 +269,13 @@ configurationRegistry.registerConfiguration({
 			description: localize('chipos.hooks.disable.desc', 'Global kill switch: when on, NO hooks (declarative or executable) are sent to the agent this turn, regardless of per-file enablement. Use to quickly stop all hook behavior. (FEAT-004)'),
 			scope: ConfigurationScope.APPLICATION,
 		},
+		'chipos.agents.disabled': {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			description: localize('chipos.agents.disabled.desc', 'Scope-qualified ids ("workspace:<name>"/"user:<name>") of subagents that are disabled. A disabled subagent stays on disk but is hidden from the agent. Managed from the Subagents settings tab. (FEAT-005 Stage A)'),
+			scope: ConfigurationScope.APPLICATION,
+		},
 		'chipos.mcp.disabled': {
 			type: 'object',
 			default: {},

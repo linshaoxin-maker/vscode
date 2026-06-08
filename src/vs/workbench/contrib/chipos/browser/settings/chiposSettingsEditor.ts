@@ -23,6 +23,7 @@ import { RULES_RESOURCE_SPEC } from './tabs/rulesTab.js';
 import { COMMANDS_RESOURCE_SPEC } from './tabs/commandsTab.js';
 import { SKILLS_RESOURCE_SPEC } from './tabs/skillsTab.js';
 import { HOOKS_RESOURCE_SPEC } from './tabs/hooksTab.js';
+import { AGENTS_RESOURCE_SPEC } from './tabs/subagentsTab.js';
 import { PluginsTab } from './tabs/pluginsTab.js';
 import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
@@ -56,6 +57,7 @@ const CATEGORY_GROUPS: ICategoryDef[][] = [
 		{ id: 'commands', label: localize('chipos.cat.commands', 'Commands'), icon: Codicon.terminal, searchableTerms: ['commands', 'command', 'slash', 'prompt', 'import'] },
 		{ id: 'skills', label: localize('chipos.cat.skills', 'Skills'), icon: Codicon.lightbulb, searchableTerms: ['skills', 'skill', 'capability', 'lazy', 'read_skill_body', 'import'] },
 		{ id: 'hooks', label: localize('chipos.cat.hooks', 'Hooks'), icon: Codicon.shield, searchableTerms: ['hooks', 'hook', 'deny', 'observe', 'block', 'tool', 'guard', 'security'] },
+		{ id: 'agents', label: localize('chipos.cat.agents', 'Subagents'), icon: Codicon.organization, searchableTerms: ['subagents', 'agents', 'agent', 'staged', 'role', 'delegate'] },
 		{ id: 'plugins', label: localize('chipos.cat.plugins', 'Plugins'), icon: Codicon.package, searchableTerms: ['plugins', 'install', 'agent', 'bundle', 'marketplace', 'rules', 'commands', 'skills', 'cursor'] },
 	],
 	[
@@ -362,6 +364,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 					break;
 				case 'hooks':
 					store.add(this._instantiationService.createInstance(ResourceListTab, inner, HOOKS_RESOURCE_SPEC));
+					break;
+				case 'agents':
+					store.add(this._instantiationService.createInstance(ResourceListTab, inner, AGENTS_RESOURCE_SPEC));
 					break;
 				case 'plugins':
 					store.add(this._instantiationService.createInstance(PluginsTab, inner));

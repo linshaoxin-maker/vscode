@@ -20,7 +20,7 @@ import { IPathService } from '../../../../services/path/common/pathService.js';
  * from VS Code extensions and from agent plugins (`~/.chipos-ide/plugins/`).
  */
 
-export type ResourceKind = 'rules' | 'commands' | 'skills' | 'hooks';
+export type ResourceKind = 'rules' | 'commands' | 'skills' | 'hooks' | 'agents';
 
 /** Where a resource lives: the project workspace, or the user-global plane. */
 export type ResourceScope = 'workspace' | 'user';
@@ -46,6 +46,10 @@ export const RESOURCE_LAYOUTS: Readonly<Record<ResourceKind, ResourceLayout>> = 
 	commands: { kind: 'commands', shape: 'flat', fileRe: /\.(md|txt)$/i, stripExt: true },
 	hooks: { kind: 'hooks', shape: 'flat', fileRe: /\.json$/i, stripExt: false },
 	skills: { kind: 'skills', shape: 'skill', markerFile: 'SKILL.md', stripExt: false },
+	// FEAT-005 Stage A: a user subagent is a flat `.chipos/agents/<name>.md` with
+	// frontmatter (name/description). Runtime dispatch is staged (Stage B) — these
+	// are authored + listed only for now.
+	agents: { kind: 'agents', shape: 'flat', fileRe: /\.md$/i, stripExt: true },
 };
 
 /**
@@ -64,6 +68,7 @@ export const ECOSYSTEM_RESOURCE_DIRS: Readonly<Record<ResourceKind, ReadonlyArra
 	commands: [['.claude', 'commands'], ['.cursor', 'commands']],
 	skills: [['.claude', 'skills']],
 	hooks: [],
+	agents: [['.claude', 'agents']],
 };
 
 // --- Plane resolution ---------------------------------------------------------
