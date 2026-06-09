@@ -15,11 +15,11 @@
  */
 
 export interface IWorkerAutoRestartOptions {
-	/** First-attempt delay (ms), doubled each subsequent attempt. Default 1000. */
+	/** First-attempt delay (ms), doubled each subsequent attempt. Default 2000. */
 	readonly baseMs?: number;
-	/** Upper bound on a single attempt's delay (ms). Default 16000. */
+	/** Upper bound on a single attempt's delay (ms). Default 30000. */
 	readonly capMs?: number;
-	/** Stop auto-restarting (return null) once this many attempts were scheduled. Default 5. */
+	/** Stop auto-restarting (return null) once this many attempts were scheduled. Default 10. */
 	readonly maxAttempts?: number;
 }
 
@@ -36,9 +36,14 @@ export interface IWorkerAutoRestartPlan {
  * affordance). Pure + deterministic so the backoff is unit-testable.
  */
 export function planWorkerAutoRestart(attemptsSoFar: number, options?: IWorkerAutoRestartOptions): IWorkerAutoRestartPlan | null {
-	const base = options?.baseMs ?? 1000;
-	const cap = options?.capMs ?? 16000;
-	const max = options?.maxAttempts ?? 5;
+	// Defaults: a *patient* schedule. A worker killed mid-session can take tens of
+	// seconds before restartWorker() can actually re-spawn it cleanly (the old pid's
+	// instance.json / port must settle), so the budget must span well past that —
+	// giving up too early (e.g. 5 attempts in ~30s) leaves the worker dead. With
+	// these: 2s,4s,8s,16s,30s,30s,30s,30s,30s,30s ≈ a 3.5-min self-heal window.
+	const base = options?.baseMs ?? 2000;
+	const cap = options?.capMs ?? 30000;
+	const max = options?.maxAttempts ?? 10;
 	if (attemptsSoFar >= max) {
 		return null;
 	}

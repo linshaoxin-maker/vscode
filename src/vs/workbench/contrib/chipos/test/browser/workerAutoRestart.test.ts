@@ -24,10 +24,10 @@ suite('workerAutoRestart', () => {
 		);
 	});
 
-	test('defaults are 1s base / 16s cap / 5 attempts', () => {
+	test('defaults are patient: 2s base / 30s cap / 10 attempts', () => {
 		assert.deepStrictEqual(
-			{ first: planWorkerAutoRestart(0), capped: planWorkerAutoRestart(4), exhausted: planWorkerAutoRestart(5) },
-			{ first: { delayMs: 1000, nextAttempt: 1 }, capped: { delayMs: 16000, nextAttempt: 5 }, exhausted: null },
+			{ first: planWorkerAutoRestart(0), capped: planWorkerAutoRestart(4), exhausted: planWorkerAutoRestart(10) },
+			{ first: { delayMs: 2000, nextAttempt: 1 }, capped: { delayMs: 30000, nextAttempt: 5 }, exhausted: null },
 		);
 	});
 });
