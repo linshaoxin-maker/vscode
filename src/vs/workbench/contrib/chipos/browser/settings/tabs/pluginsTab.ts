@@ -14,6 +14,7 @@ import { IProgressService, ProgressLocation } from '../../../../../../platform/p
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { ChiposPluginsService, PluginContributionSummary } from '../../resources/chiposPluginsService.js';
 import { ChiposPluginCatalogService, CatalogEntry } from '../../resources/catalogClient.js';
+import { renderCatalogBrowser } from '../components/catalogBrowser.js';
 
 /**
  * Plugins settings tab (FEAT-002a). Lists the agent plugins installed under
@@ -116,60 +117,34 @@ export class PluginsTab extends Disposable {
 				localize('chipos.plugins.catalog.empty', 'No plugins in the catalog yet.')));
 			return;
 		}
-		for (const entry of entries) {
-			this._renderCatalogRow(container, entry);
-		}
+		renderCatalogBrowser(container, entries, { install: e => this._installCatalogEntry(e) }, this._disposables);
 	}
 
-	private _renderCatalogRow(parent: HTMLElement, entry: CatalogEntry): void {
-		const row = dom.append(parent, dom.$('.chipos-rule-item'));
-
-		const nameCell = dom.append(row, dom.$('.chipos-rule-name'));
-		dom.append(nameCell, dom.$('span', undefined, entry.name));
-		const meta = dom.append(nameCell, dom.$('span'));
-		meta.style.marginLeft = '8px';
-		meta.style.fontSize = '11px';
-		meta.style.color = 'var(--vscode-descriptionForeground)';
-		const parts: string[] = [];
-		if (entry.author) {
-			parts.push(localize('chipos.plugins.catalog.by', 'by {0}', entry.author));
+	/** FEAT-002b install of a catalog entry — confirm (trust gate) then git-clone. */
+	private async _installCatalogEntry(entry: CatalogEntry): Promise<void> {
+		const confirmed = await this._dialogService.confirm({
+			message: localize('chipos.plugins.catalog.confirm', 'Install "{0}" from the catalog?', entry.name),
+			detail: localize('chipos.plugins.catalog.confirmDetail', '{0}\n\nThis clones the plugin from its Git repository. Only install plugins you trust.', entry.repo),
+			primaryButton: localize('chipos.plugins.catalog.confirmButton', 'Clone & Install'),
+			type: 'warning',
+		});
+		if (!confirmed.confirmed) {
+			return;
 		}
-		if (entry.verified) {
-			parts.push(localize('chipos.plugins.catalog.verified', 'verified'));
+		try {
+			const result = await this._progressService.withProgress(
+				{
+					location: ProgressLocation.Notification,
+					title: localize('chipos.plugins.catalog.installing', 'Installing "{0}" from the catalog…', entry.name),
+					cancellable: false,
+				},
+				() => this._service().installFromGit(entry.repo),
+			);
+			this._notificationService.info(localize('chipos.plugins.catalog.done', 'Installed plugin "{0}".', result.manifest.name));
+		} catch (err) {
+			this._notificationService.error(localize('chipos.plugins.catalog.failed', 'Could not install "{0}": {1}', entry.name, err instanceof Error ? err.message : String(err)));
 		}
-		if (entry.description) {
-			parts.push(entry.description);
-		}
-		meta.textContent = parts.join(' · ');
-
-		const actions = dom.append(row, dom.$('.chipos-rule-actions'));
-		const installBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
-		installBtn.textContent = localize('chipos.plugins.catalog.install', 'Install');
-		this._disposables.add(dom.addDisposableListener(installBtn, 'click', async () => {
-			const confirmed = await this._dialogService.confirm({
-				message: localize('chipos.plugins.catalog.confirm', 'Install "{0}" from the catalog?', entry.name),
-				detail: localize('chipos.plugins.catalog.confirmDetail', '{0}\n\nThis clones the plugin from its Git repository. Only install plugins you trust.', entry.repo),
-				primaryButton: localize('chipos.plugins.catalog.confirmButton', 'Clone & Install'),
-				type: 'warning',
-			});
-			if (!confirmed.confirmed) {
-				return;
-			}
-			try {
-				const result = await this._progressService.withProgress(
-					{
-						location: ProgressLocation.Notification,
-						title: localize('chipos.plugins.catalog.installing', 'Installing "{0}" from the catalog…', entry.name),
-						cancellable: false,
-					},
-					() => this._service().installFromGit(entry.repo),
-				);
-				this._notificationService.info(localize('chipos.plugins.catalog.done', 'Installed plugin "{0}".', result.manifest.name));
-			} catch (err) {
-				this._notificationService.error(localize('chipos.plugins.catalog.failed', 'Could not install "{0}": {1}', entry.name, err instanceof Error ? err.message : String(err)));
-			}
-			this._refresh();
-		}));
+		this._refresh();
 	}
 
 	private _refresh(): void {

@@ -24,6 +24,8 @@ export interface CatalogEntry {
 	readonly name: string;
 	readonly repo: string;
 	readonly description?: string;
+	/** FEAT-006b: free-text category for the browser filter; absent ⇒ Uncategorized. */
+	readonly category?: string;
 	readonly author?: string;
 	readonly ref?: string;
 	readonly verified?: boolean;
@@ -70,12 +72,46 @@ export function parseCatalogEntries(jsonText: string): CatalogEntry[] {
 			name,
 			repo,
 			description: typeof o.description === 'string' ? o.description : undefined,
+			category: typeof o.category === 'string' && o.category.trim() ? o.category.trim() : undefined,
 			author: typeof o.author === 'string' ? o.author : undefined,
 			ref: typeof o.ref === 'string' ? o.ref : undefined,
 			verified: o.verified === true,
 		});
 	}
 	return out;
+}
+
+/** Bucket label for entries with no `category`. */
+export const UNCATEGORIZED = 'Uncategorized';
+
+/** Distinct categories present in the catalog, sorted (Uncategorized last). Pure. */
+export function catalogCategories(entries: readonly CatalogEntry[]): string[] {
+	const set = new Set<string>();
+	for (const e of entries) {
+		set.add(e.category?.trim() || UNCATEGORIZED);
+	}
+	return [...set].sort((a, b) => (a === UNCATEGORIZED ? 1 : b === UNCATEGORIZED ? -1 : a.localeCompare(b)));
+}
+
+/**
+ * Filter the catalog by a free-text query (matched case-insensitively against
+ * name / description / author) and an optional exact category. Empty query + no
+ * category returns everything. Pure (no I/O) — unit-testable.
+ */
+export function filterCatalogEntries(entries: readonly CatalogEntry[], query: string, category?: string): CatalogEntry[] {
+	const q = query.trim().toLowerCase();
+	const cat = category?.trim();
+	return entries.filter(e => {
+		if (cat && cat !== (e.category?.trim() || UNCATEGORIZED)) {
+			return false;
+		}
+		if (!q) {
+			return true;
+		}
+		return e.name.toLowerCase().includes(q)
+			|| (e.description?.toLowerCase().includes(q) ?? false)
+			|| (e.author?.toLowerCase().includes(q) ?? false);
+	});
 }
 
 const CACHE_KEY = 'chipos.plugins.catalog.payload';
