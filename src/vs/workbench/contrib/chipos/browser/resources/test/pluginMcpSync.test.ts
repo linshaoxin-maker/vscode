@@ -35,7 +35,14 @@ suite('pluginMcpSync (FEAT-011b)', () => {
 		);
 	});
 
-	test('worker name is plugin.<id>.<name>', () => {
-		assert.strictEqual(pluginMcpWorkerName('eda', 'vivado'), `${PLUGIN_MCP_PREFIX}eda.vivado`);
+	test('worker name encodes dotted segments so (a.b,c) and (a,b.c) cannot collide', () => {
+		assert.deepStrictEqual(
+			{
+				plain: pluginMcpWorkerName('eda', 'vivado'),
+				distinct: pluginMcpWorkerName('a.b', 'c') !== pluginMcpWorkerName('a', 'b.c'),
+				encoded: pluginMcpWorkerName('a.b', 'c'),
+			},
+			{ plain: `${PLUGIN_MCP_PREFIX}eda.vivado`, distinct: true, encoded: 'plugin.a%2Eb.c' },
+		);
 	});
 });

@@ -749,11 +749,17 @@ export class WorkerToolsViewDataProvider extends Disposable implements ITreeView
 
 	private _toMcpServerItem(server: McpServerConfig): IMcpServerItem {
 		const cmd = [server.command, ...(server.args ?? [])].join(' ').trim();
+		// FEAT-010: a soft-disabled server (enabled:false) isn't loaded, so the health
+		// probe reports invalid_config → would render as a red '✗ handshake failed'.
+		// Show a neutral '⊘ disabled' badge + gray icon instead (mirrors EdaToolsTab).
+		const disabled = server.enabled === false;
 		// P0 UX #11: health-aware status icon/description
 		const healthStatus = server.health?.status ?? 'unknown';
-		const healthBadge = this._formatHealthBadge(healthStatus, server);
+		const healthBadge = disabled
+			? localize('chipos.workerTools.mcp.badgeDisabled', '⊘ disabled')
+			: this._formatHealthBadge(healthStatus, server);
 		const description = healthBadge + (cmd ? ` · ${cmd.slice(0, 40)}${cmd.length > 40 ? '…' : ''}` : '');
-		const icon = this._iconForHealth(healthStatus);
+		const icon = this._iconForHealth(disabled ? 'unknown' : healthStatus);
 		const tooltipLines = [
 			`${localize('chipos.workerTools.mcp.healthStatus', 'Status')}: ${healthStatus}`,
 		];

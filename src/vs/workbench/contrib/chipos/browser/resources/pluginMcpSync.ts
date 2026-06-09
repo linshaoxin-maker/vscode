@@ -12,12 +12,23 @@ import { PluginMcpServer } from './chiposPluginsService.js';
  * driver (which talks to the worker) stays a thin caller.
  */
 
-/** Worker-side name prefix for a plugin-contributed MCP server. */
+/**
+ * Worker-side name prefix for a plugin-contributed MCP server. This is a RESERVED
+ * namespace — a user-added worker server should not start with it (the reconcile
+ * below only manages `plugin.`-prefixed names).
+ */
 export const PLUGIN_MCP_PREFIX = 'plugin.';
 
-/** Collision-safe worker name for a plugin server: `plugin.<pluginId>.<name>`. */
+/** Dot-encode a segment so a plugin id / server name containing '.' cannot make two
+ * distinct (id, name) pairs collide onto one worker name (e.g. ('a.b','c') vs
+ * ('a','b.c')). '%' is escaped first so the encoding is reversible/unambiguous. */
+function encodeSeg(s: string): string {
+	return s.replace(/%/g, '%25').replace(/\./g, '%2E');
+}
+
+/** Collision-safe worker name for a plugin server: `plugin.<enc(pluginId)>.<enc(name)>`. */
 export function pluginMcpWorkerName(pluginId: string, name: string): string {
-	return `${PLUGIN_MCP_PREFIX}${pluginId}.${name}`;
+	return `${PLUGIN_MCP_PREFIX}${encodeSeg(pluginId)}.${encodeSeg(name)}`;
 }
 
 export interface PluginMcpSyncPlan {
