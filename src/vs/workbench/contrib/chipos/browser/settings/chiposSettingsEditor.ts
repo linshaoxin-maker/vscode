@@ -10,6 +10,7 @@ import { ITelemetryService } from '../../../../../platform/telemetry/common/tele
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IEditorGroup } from '../../../../services/editor/common/editorGroupsService.js';
 import { IEditorOpenContext } from '../../../../common/editor.js';
 import { IEditorOptions } from '../../../../../platform/editor/common/editor.js';
@@ -29,6 +30,7 @@ import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
 import { EdaToolsTab } from './tabs/edaToolsTab.js';
 import { GeneralTab } from './tabs/generalTab.js';
+import { isExtensionSystemEnabled, EXTENSION_SYSTEM_TAB_IDS } from '../../common/extensionsBeta.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import * as dom from '../../../../../base/browser/dom.js';
@@ -101,6 +103,7 @@ export class ChipOSSettingsEditor extends EditorPane {
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super(ChipOSSettingsEditor.ID, group, telemetryService, themeService, storageService);
 	}
@@ -130,11 +133,20 @@ export class ChipOSSettingsEditor extends EditorPane {
 		});
 
 		const navItemsContainer = dom.append(this._navList, dom.$('.chipos-settings-nav-items'));
+		// FEAT-006c: when the extension system (chipos.extensions.beta) is off, hide its
+		// capability tabs so the editor returns to the baseline set.
+		const hiddenTabs = isExtensionSystemEnabled(this._configurationService.getValue('chipos.extensions.beta'))
+			? undefined
+			: new Set<string>(EXTENSION_SYSTEM_TAB_IDS);
 		CATEGORY_GROUPS.forEach((group, groupIdx) => {
+			const visible = hiddenTabs ? group.filter(cat => !hiddenTabs.has(cat.id)) : group;
+			if (visible.length === 0) {
+				return;
+			}
 			if (groupIdx > 0) {
 				dom.append(navItemsContainer, dom.$('.chipos-settings-nav-divider'));
 			}
-			for (const cat of group) {
+			for (const cat of visible) {
 				const item = dom.append(navItemsContainer, dom.$('.chipos-settings-nav-item'));
 				item.dataset.category = cat.id;
 				// Tooltip surfaces the label when the nav collapses to icons-only.

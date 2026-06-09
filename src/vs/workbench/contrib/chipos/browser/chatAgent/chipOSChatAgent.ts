@@ -87,6 +87,7 @@ import type {
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
+import { isExtensionSystemEnabled } from '../../common/extensionsBeta.js';
 import { IChiposPromptInputsService } from './chiposPromptInputsService.js';
 import { filterHooksForInvoke, redactSensitive } from './hookSecurity.js';
 import { IChiposHookLogService } from './chiposHookLogService.js';
@@ -6048,15 +6049,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// is a follow-up (selector UI).
 			const manualRuleIds = Array.from((request.message ?? '').matchAll(/(?:^|\s)@(?<id>[\w-]+)/g), m => m.groups!.id);
 			// FEAT-009: honor the prompt-resources feature flag (off => attach nothing).
+			// FEAT-006c: AND the chipos.extensions.beta master switch — off returns to
+			// the baseline (no injection), with no residual state.
 			const promptResourcesEnabled = this._configurationService.getValue<boolean>('chipos.promptResources.enabled') !== false;
+			const extensionSystemEnabled = isExtensionSystemEnabled(this._configurationService.getValue('chipos.extensions.beta'));
 			const collected = collectPromptResources(allRules, {
 				activeFile,
-				enabled: promptResourcesEnabled,
+				enabled: promptResourcesEnabled && extensionSystemEnabled,
 				...(manualRuleIds.length ? { manualRuleIds } : {}),
 			});
 			if (collected.attachments.length) {
 				invokeReq.prompt_resource_attachments = collected.attachments;
 			}
+			// FEAT-006c: content-free usage telemetry (count/bytes; redaction lives in
+			// buildExtensionTelemetry — the raw payload is consumed only to size it).
+			this._statelessObs.extensionUsage({
+				attachments: collected.attachments.map(a => ({ content: JSON.stringify(a.payload ?? {}) })),
+			});
 			// FEAT-008: record this turn's collection (even when empty) so the
 			// "ChipOS: Show Prompt Inputs" command can render what was attached.
 			this._promptInputsService.setLast({ result: collected, activeFile });

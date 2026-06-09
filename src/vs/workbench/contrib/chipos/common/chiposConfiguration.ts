@@ -342,6 +342,13 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.extensions.beta': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.extensions.beta.desc', 'Master switch for the ChipOS extension system (Rules, Commands, Skills, Hooks, Subagents, Plugins, and the prompt-resource injection that feeds them to the reasoner). On by default; turn off to return to the baseline IDE — the extension settings tabs hide and the per-turn injection stops, with no residual state.'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── FEAT-X.3.2 — auto-open RTL files created externally ──
 		'chipos.editor.autoOpenRtlOnCreate': {
 			type: 'boolean',

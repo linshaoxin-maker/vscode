@@ -21,6 +21,7 @@
  */
 
 import { ITelemetryService } from '../../../../../../platform/telemetry/common/telemetry.js';
+import { buildExtensionTelemetry, IExtensionTelemetryInput } from '../../../common/extensionTelemetry.js';
 
 type StatelessObserveEvent = {
 	metric: string;
@@ -34,6 +35,32 @@ type StatelessObserveClassification = {
 	metric: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Which counter: turn_error / confirm_shown / resume_triggered / resume_outcome.' };
 	label: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Bucket for the metric, e.g. error category, resume outcome, or trigger reason.' };
 	count: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Value (1 for a plain counter; resume retry attempt count for resume_outcome).'; isMeasurement: true };
+};
+
+// FEAT-006c — extension-system usage per turn. All fields are measurements; the
+// payload is produced by `buildExtensionTelemetry` (count/bytes/status, never content).
+type ChiposExtensionUsageEvent = {
+	attachmentCount: number;
+	attachmentBytes: number;
+	autoContextCount: number;
+	autoContextBytes: number;
+	hookTriggers: number;
+	hookDenied: number;
+	cacheCreationTokens: number;
+	cacheReadTokens: number;
+};
+
+type ChiposExtensionUsageClassification = {
+	owner: 'chipos';
+	comment: 'FEAT-006c extension-system usage per turn — count/bytes/status only, never capability content.';
+	attachmentCount: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Prompt-resource attachments sent this turn.'; isMeasurement: true };
+	attachmentBytes: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Total bytes of those attachments.'; isMeasurement: true };
+	autoContextCount: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Auto-context pieces injected this turn.'; isMeasurement: true };
+	autoContextBytes: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Total bytes of auto-context.'; isMeasurement: true };
+	hookTriggers: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Hooks that fired this turn.'; isMeasurement: true };
+	hookDenied: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Of those, how many denied/blocked.'; isMeasurement: true };
+	cacheCreationTokens: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Prompt-cache write tokens (reasoner usage).'; isMeasurement: true };
+	cacheReadTokens: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Prompt-cache read/hit tokens (reasoner usage).'; isMeasurement: true };
 };
 
 /**
@@ -76,5 +103,18 @@ export class StatelessObservability {
 	 */
 	resumeOutcome(outcome: string, attempts: number): void {
 		this._emit('resume_outcome', outcome, attempts);
+	}
+
+	/**
+	 * FEAT-006c: report extension-system usage for the turn. Content-free —
+	 * `buildExtensionTelemetry` reduces the raw capability objects (which carry
+	 * rule bodies / paths) to counts/bytes/status before anything is emitted.
+	 * Async via the standard telemetry pipeline; no-ops with no backend.
+	 */
+	extensionUsage(input: IExtensionTelemetryInput): void {
+		this._telemetryService.publicLog2<ChiposExtensionUsageEvent, ChiposExtensionUsageClassification>(
+			'chipos.extensions.usage',
+			buildExtensionTelemetry(input),
+		);
 	}
 }
