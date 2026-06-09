@@ -43,6 +43,9 @@ import { app, BrowserWindow } from 'electron';
 // `validatedIpcMain` adds sender + origin validation that bare `ipcMain` lacks;
 // the layer-checker forbids the bare import in electron-main code.
 import { validatedIpcMain } from '../../../base/parts/ipc/electron-main/ipcMain.js';
+// Shared standalone-folder / legacy single-file resolution (also used by the
+// REH spawn path) so the worker cache layout is interpreted identically.
+import { resolveWorkerBinary } from '../node/workerBinaryLayout.js';
 
 // ── per-window managed processes ────────────────────────────────────────────
 
@@ -655,22 +658,24 @@ export function registerSidecarIpcHandlers(): void {
 		const name = args.binaryName || defaultBinaryName();
 		const workersDir = path.join(chiposHome(), 'workers');
 
-		// Pinned version path.
+		// Pinned version path. resolveWorkerBinary handles both the standalone
+		// folder layout (<ver>/<name>/<name>) and the legacy single-file cache.
 		if (args.version) {
-			const p = path.join(workersDir, args.version, name);
-			return fs.existsSync(p) ? p : null;
+			const resolved = resolveWorkerBinary(path.join(workersDir, args.version), name);
+			// Best-effort exec bit (cache may have been moved between users).
+			if (resolved) { try { fs.chmodSync(resolved, 0o755); } catch { /* ignore */ } }
+			return resolved;
 		}
 
 		// Latest available.
 		if (!fs.existsSync(workersDir)) { return null; }
 		try {
 			const versions = fs.readdirSync(workersDir)
-				.filter(d => {
-					try { return fs.existsSync(path.join(workersDir, d, name)); } catch { return false; }
-				})
+				.filter(d => resolveWorkerBinary(path.join(workersDir, d), name) !== null)
 				.sort(compareVersionsDesc);
 			if (versions.length === 0) { return null; }
-			const found = path.join(workersDir, versions[0], name);
+			const found = resolveWorkerBinary(path.join(workersDir, versions[0]), name);
+			if (!found) { return null; }
 			// Best-effort exec bit (cache may have been moved between users).
 			try { fs.chmodSync(found, 0o755); } catch { /* ignore */ }
 			return found;
@@ -708,16 +713,22 @@ export function registerSidecarIpcHandlers(): void {
 			}
 
 			const dir = path.join(chiposHome(), 'workers', version);
-			const binaryPath = path.join(dir, binaryName);
-			if (fs.existsSync(binaryPath)) { return binaryPath; }
+			// Already cached? resolveWorkerBinary handles both the standalone
+			// folder layout (<ver>/<name>/<name>) and legacy single-file caches.
+			const cachedBinary = resolveWorkerBinary(dir, binaryName);
+			if (cachedBinary) { return cachedBinary; }
 
+			// Release asset is `.zip` on Windows (the standalone folder zipped),
+			// `.tar.gz` everywhere else. The asset BASE name is unchanged from the
+			// onefile era, so pinned release URLs keep resolving.
+			const archiveExt = tag.startsWith('win32') ? 'zip' : 'tar.gz';
 			const url =
 				args.downloadUrl ||
 				process.env['CHIPOS_WORKER_DOWNLOAD_URL'] ||
-				`https://github.com/${args.repo}/releases/download/v${version}/${binaryName}.tar.gz`;
+				`https://github.com/${args.repo}/releases/download/v${version}/${binaryName}.${archiveExt}`;
 
 			const cacheDir = path.join(chiposHome(), 'cache');
-			const archivePath = path.join(cacheDir, `${binaryName}-v${version}.tar.gz`);
+			const archivePath = path.join(cacheDir, `${binaryName}-v${version}.${archiveExt}`);
 			fs.mkdirSync(dir, { recursive: true });
 			fs.mkdirSync(cacheDir, { recursive: true });
 
@@ -755,10 +766,18 @@ export function registerSidecarIpcHandlers(): void {
 				});
 			} catch { /* ignore */ }
 
-			// Extract via tar — every supported platform ships tar in PATH.
-			cp.execSync(`tar xzf "${archivePath}" -C "${dir}"`, { timeout: 60000 });
-			if (fs.existsSync(binaryPath)) {
-				fs.chmodSync(binaryPath, 0o755);
+			// Clean any half-extracted prior attempt, then extract. Win10+
+			// ships bsdtar which also unpacks `.zip`; `.tar.gz` everywhere
+			// else. The standalone folder (~399 MB / ~2400 files) extracts
+			// much slower than a single onefile, so bump the budget to 120s.
+			try { fs.rmSync(path.join(dir, binaryName), { recursive: true, force: true }); } catch { /* ignore */ }
+			const extractCmd = archivePath.endsWith('.zip')
+				? `tar -xf "${archivePath}" -C "${dir}"`
+				: `tar xzf "${archivePath}" -C "${dir}"`;
+			cp.execSync(extractCmd, { timeout: 120000 });
+			const extractedBinary = resolveWorkerBinary(dir, binaryName);
+			if (extractedBinary) {
+				fs.chmodSync(extractedBinary, 0o755);
 			}
 			try { fs.unlinkSync(archivePath); } catch { /* ignore */ }
 
@@ -770,7 +789,7 @@ export function registerSidecarIpcHandlers(): void {
 				});
 			} catch { /* ignore */ }
 
-			return fs.existsSync(binaryPath) ? binaryPath : null;
+			return extractedBinary;
 		} catch (err) {
 			console.error('[ChipOS Sidecar] downloadBinary failed:', err);
 			try {

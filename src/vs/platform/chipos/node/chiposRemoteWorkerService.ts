@@ -31,6 +31,7 @@ import * as crypto from 'crypto';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { ILogService } from '../../log/common/log.js';
 import { IChiposRemoteWorkerService, IEnsureRemoteWorkerArgs, IEnsureRemoteWorkerResult, IReleaseRemoteWorkerArgs } from '../common/chiposRemoteWorker.js';
+import { resolveWorkerBinary } from './workerBinaryLayout.js';
 
 const LOG_PREFIX = '[ChipOS Worker REH]';
 
@@ -135,22 +136,28 @@ function findCachedBinary(preferredVersion?: string): { binaryPath: string; vers
 		return undefined;
 	}
 
+	// resolveWorkerBinary handles both the standalone folder layout
+	// (<ver>/<name>/<name>) and the legacy single-file cache.
 	if (preferredVersion) {
-		const explicit = path.join(workersDir, preferredVersion, name);
-		if (fs.existsSync(explicit)) {
+		const explicit = resolveWorkerBinary(path.join(workersDir, preferredVersion), name);
+		if (explicit) {
 			return { binaryPath: explicit, version: preferredVersion };
 		}
 	}
 
 	const versions = fs.readdirSync(workersDir)
-		.filter(d => fs.existsSync(path.join(workersDir, d, name)))
+		.filter(d => resolveWorkerBinary(path.join(workersDir, d), name) !== null)
 		.sort()
 		.reverse();
 	if (versions.length === 0) {
 		return undefined;
 	}
 	const latest = versions[0];
-	return { binaryPath: path.join(workersDir, latest, name), version: latest };
+	const resolved = resolveWorkerBinary(path.join(workersDir, latest), name);
+	if (!resolved) {
+		return undefined;
+	}
+	return { binaryPath: resolved, version: latest };
 }
 
 export class ChiposRemoteWorkerService extends Disposable implements IChiposRemoteWorkerService {
