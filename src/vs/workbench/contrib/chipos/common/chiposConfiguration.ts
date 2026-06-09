@@ -164,6 +164,13 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		'chipos.worker.autoRestart': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.worker.autoRestart.desc', 'Automatically restart the local ChipOS worker (exponential backoff ~1s/2s/4s/8s/16s) if it drops mid-session, before falling back to the manual "Worker: Reconnect" status-bar button. Applies to IDE-spawned local workers only. (worker self-heal)'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		'chipos.autoContext': {
 			type: 'boolean',
 			default: true,

@@ -58,6 +58,7 @@ import {
 	BackendMode,
 	WorkerState,
 } from '../common/sidecarService.js';
+import { planWorkerAutoRestart } from '../common/workerAutoRestart.js';
 
 export class SidecarManagerElectron extends Disposable implements ISidecarManagerService {
 
@@ -76,6 +77,12 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	private _state: SidecarState = SidecarState.NotStarted;
 	private _workerState: WorkerState = WorkerState.NotStarted;
 	private _mode: BackendMode;
+	// FEAT worker self-heal: auto-restart a dropped Local worker with exponential
+	// backoff (planWorkerAutoRestart) before falling back to the manual
+	// "Worker: Reconnect" button. Reset on Connected, cleared on dispose.
+	private _autoRestartAttempts = 0;
+	private _autoRestartTimer: ReturnType<typeof setTimeout> | undefined;
+	private _disposed = false;
 	// Phase 2 Worker JWT auto-refresh: timer fires before the current
 	// worker_token expires so we can mint a new one + respawn the Worker
 	// before Reasoner starts rejecting on UNAUTHENTICATED.
@@ -1033,6 +1040,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	}
 
 	override dispose(): void {
+		this._disposed = true;
+		this._clearAutoRestartTimer();
 		this._clearWorkerTokenRefreshTimer();
 		this._stopHealthWatch();
 
@@ -1529,6 +1538,50 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		if (this._workerState !== s) {
 			this._workerState = s;
 			this._onDidChangeWorkerState.fire(s);
+			// FEAT worker self-heal — Connected clears the backoff budget; an
+			// unexpected drop (Disconnected/Error, NOT the intentional NotStarted
+			// from stopBackend) schedules an auto-restart.
+			if (s === WorkerState.Connected) {
+				this._autoRestartAttempts = 0;
+				this._clearAutoRestartTimer();
+			} else if (s === WorkerState.Disconnected || s === WorkerState.Error) {
+				this._maybeScheduleAutoRestart();
+			}
+		}
+	}
+
+	/**
+	 * Schedule an automatic worker restart with exponential backoff. Local mode
+	 * only (the IDE owns the process); one timer in flight at a time; gives up
+	 * after the attempt budget, leaving the manual "Worker: Reconnect" button.
+	 */
+	private _maybeScheduleAutoRestart(): void {
+		if (this._disposed || this._mode !== BackendMode.Local || this._autoRestartTimer) {
+			return;
+		}
+		if (this._configurationService.getValue<boolean>('chipos.worker.autoRestart') === false) {
+			return;
+		}
+		const plan = planWorkerAutoRestart(this._autoRestartAttempts);
+		if (!plan) {
+			this._logService.warn(`[ChipOS SidecarElectron] worker auto-restart exhausted after ${this._autoRestartAttempts} attempts — leaving manual "Worker: Reconnect".`);
+			return;
+		}
+		this._autoRestartAttempts = plan.nextAttempt;
+		this._logService.info(`[ChipOS SidecarElectron] worker dropped — auto-restart attempt ${plan.nextAttempt} in ${plan.delayMs}ms`);
+		this._autoRestartTimer = setTimeout(() => {
+			this._autoRestartTimer = undefined;
+			if (this._disposed || this._workerState === WorkerState.Connected) {
+				return;
+			}
+			this.restartWorker().catch(err => this._logService.error('[ChipOS SidecarElectron] auto-restart failed:', String(err)));
+		}, plan.delayMs);
+	}
+
+	private _clearAutoRestartTimer(): void {
+		if (this._autoRestartTimer) {
+			clearTimeout(this._autoRestartTimer);
+			this._autoRestartTimer = undefined;
 		}
 	}
 }
