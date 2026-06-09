@@ -359,6 +359,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private readonly _fullTracer!: FullTracer;
 	/** PHASE-1-CUTOVER §5: client-observable stateless ramp counters (DI). */
 	private readonly _statelessObs!: StatelessObservability;
+	/** FEAT-006c: per-turn extension-usage accumulator — auto-context @ collect,
+	 * attachments/hooks @ assemble, cache @ round-end; emitted once at terminate. */
+	private _pendingExtTelemetry: { autoContext: { content?: string }[]; attachments: { content?: string }[]; hooks: { status?: string }[] } | undefined;
 	private _editorEffects: ChipOSEditorEffects | undefined;
 	private _contextCollector: ContextCollector | undefined;
 	private _sessionCounter = 0;
@@ -1205,6 +1208,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		let mentions = this._extractMentions(request);
 
 		// ── FEAT-25: Auto context collection ──
+		// FEAT-006c: reset the per-turn extension-usage accumulator at turn start.
+		this._pendingExtTelemetry = { autoContext: [], attachments: [], hooks: [] };
 		const autoContextEnabled = this._configurationService.getValue<boolean>('chipos.autoContext') ?? true;
 		if (autoContextEnabled) {
 			try {
@@ -1220,6 +1225,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						content: item.content,
 					}));
 				mentions = [...mentions, ...autoMentions];
+				if (this._pendingExtTelemetry) { this._pendingExtTelemetry.autoContext = autoMentions.map(m => ({ content: m.content })); }
 				this._logService.info('[ChipOS Agent] Auto context:', autoMentions.length, 'items,', result.totalTokens, 'tokens');
 			} catch (err) {
 				this._logService.warn('[ChipOS Agent] Auto context failed, continuing without:', String(err));
@@ -6061,11 +6067,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (collected.attachments.length) {
 				invokeReq.prompt_resource_attachments = collected.attachments;
 			}
-			// FEAT-006c: content-free usage telemetry (count/bytes; redaction lives in
-			// buildExtensionTelemetry — the raw payload is consumed only to size it).
-			this._statelessObs.extensionUsage({
-				attachments: collected.attachments.map(a => ({ content: JSON.stringify(a.payload ?? {}) })),
-			});
+			// FEAT-006c: stash this turn's attachments for the round-end usage telemetry.
+			if (this._pendingExtTelemetry) {
+				this._pendingExtTelemetry.attachments = collected.attachments.map(a => ({ content: JSON.stringify(a.payload ?? {}) }));
+			}
 			// FEAT-008: record this turn's collection (even when empty) so the
 			// "ChipOS: Show Prompt Inputs" command can render what was attached.
 			this._promptInputsService.setLast({ result: collected, activeFile });
@@ -6155,6 +6160,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			});
 			if (toAttach.length) {
 				invokeReq.hooks = toAttach;
+			}
+			// FEAT-006c: stash hook count for the round-end usage telemetry.
+			if (this._pendingExtTelemetry) {
+				this._pendingExtTelemetry.hooks = toAttach.map(() => ({}));
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] hook collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
@@ -6304,6 +6313,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Fusion: settle any sub-agent cards still open at round
 				// end (no `complete` frame exists on this path) so none spins on.
 				this._finalizeStatelessSubagents(progress, subagentCardState);
+				// FEAT-006c: emit the per-turn extension-usage telemetry (content-free).
+				if (this._pendingExtTelemetry) {
+					this._statelessObs.extensionUsage({
+						...this._pendingExtTelemetry,
+						cacheCreationTokens: usage?.cache_creation_input_tokens,
+						cacheReadTokens: usage?.cache_read_input_tokens,
+					});
+					this._pendingExtTelemetry = undefined;
+				}
 			}
 			if (handled.finalMessages !== undefined) {
 				lastFinalMessages = handled.finalMessages;
