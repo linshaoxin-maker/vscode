@@ -6116,6 +6116,33 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						payload: { body },
 					};
 					invokeReq.prompt_resource_attachments = [...(invokeReq.prompt_resource_attachments ?? []), attachment];
+				} else {
+					// FEAT-003/P2.7: no direct/plugin command matched — a skill may DECLARE
+					// this slash command (SKILL.md `command:`). Eager-load its body + inject
+					// it as the command so the model applies the skill this turn. Direct +
+					// plugin commands win (checked first), so a skill can't shadow them.
+					const skillsSvc = this._instantiationService.createInstance(ChiposSkillsService);
+					const skill = (await skillsSvc.getSkills()).find(s => s.command === commandName);
+					if (skill) {
+						const bodyRes = await skillsSvc.readBody(skill.name);
+						if (!bodyRes.isError && bodyRes.content) {
+							let rawArgs = inlineMatch?.groups?.args ?? '';
+							if (!rawArgs && explicitCommand) {
+								rawArgs = request.message ?? '';
+							}
+							const body = substituteCommandArgs(bodyRes.content, rawArgs.trim(), undefined);
+							const attachment: PromptResourceAttachment = {
+								kind: 'command',
+								name: commandName,
+								source: skill.source === 'plugin' ? 'plugin' : 'user',
+								source_ref: skill.source_ref,
+								reason: 'slash',
+								priority: 0,
+								payload: { body },
+							};
+							invokeReq.prompt_resource_attachments = [...(invokeReq.prompt_resource_attachments ?? []), attachment];
+						}
+					}
 				}
 			}
 		} catch (err) {

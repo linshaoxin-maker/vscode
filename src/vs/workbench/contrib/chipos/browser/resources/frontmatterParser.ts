@@ -19,6 +19,8 @@ export interface ParsedRuleFile {
 	readonly body: string;
 	/** FEAT-011c: a skill's bundled executable command (SKILL.md `script:` frontmatter). Only meaningful for skills. */
 	readonly script?: string;
+	/** FEAT-003/P2.7: a skill's declared slash command name (SKILL.md `command:` or `slash:` frontmatter), without the leading `/`. Only meaningful for skills. */
+	readonly command?: string;
 }
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -58,7 +60,21 @@ export function parseRuleFile(content: string): ParsedRuleFile {
 		ruleType = 'manual';
 	}
 
-	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script') };
+	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script'), command: normalizeCommandName(fields.get('command') ?? fields.get('slash')) };
+}
+
+/**
+ * FEAT-003 — normalize a skill's declared command name: strip a leading `/`,
+ * trim, and keep it only if it is a single `[\w-]+` token (matching the slash
+ * parser in chipOSChatAgent). Returns `undefined` for empty/invalid values so a
+ * malformed `command:` never produces a phantom command.
+ */
+function normalizeCommandName(raw: string | undefined): string | undefined {
+	if (!raw) {
+		return undefined;
+	}
+	const name = raw.trim().replace(/^\/+/, '');
+	return /^[\w-]+$/.test(name) ? name : undefined;
 }
 
 /**

@@ -41,4 +41,17 @@ suite('frontmatterParser', () => {
 		const r = parseRuleFile('---\nfoo: bar\n---\nx');
 		assert.strictEqual(r.ruleType, 'manual');
 	});
+
+	test('FEAT-003/P2.7: skill command/slash frontmatter parsed + normalized', () => {
+		assert.deepStrictEqual(
+			{
+				command: parseRuleFile('---\ncommand: /review\n---\nbody').command,
+				slash: parseRuleFile('---\nslash: deploy\n---\nbody').command,
+				commandWinsOverSlash: parseRuleFile('---\ncommand: a\nslash: b\n---\nbody').command,
+				invalidDropped: parseRuleFile('---\ncommand: bad name!\n---\nbody').command,
+				absent: parseRuleFile('---\ndescription: x\n---\nbody').command,
+			},
+			{ command: 'review', slash: 'deploy', commandWinsOverSlash: 'a', invalidDropped: undefined, absent: undefined },
+		);
+	});
 });

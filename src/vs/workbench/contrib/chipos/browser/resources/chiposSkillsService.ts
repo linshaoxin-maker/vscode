@@ -33,6 +33,8 @@ export interface SkillHeader {
 	readonly source_ref?: string;
 	/** FEAT-011c: true when SKILL.md declares a `script:` (a runnable skill). Awareness only — execution is gated by chipos.skills.executableScripts + workspace trust. */
 	readonly hasScript?: boolean;
+	/** FEAT-003/P2.7: the skill's declared slash command name (SKILL.md `command:`/`slash:`), without the leading `/`. When set, typing `/<command>` eagerly injects this skill's body for the turn. */
+	readonly command?: string;
 }
 
 /**
@@ -84,6 +86,7 @@ export class ChiposSkillsService {
 						source: 'user',
 						source_ref: s.editFile.path,
 						hasScript: !!parsed.script,
+						command: parsed.command,
 					});
 					seen.add(s.name);
 				} catch {
