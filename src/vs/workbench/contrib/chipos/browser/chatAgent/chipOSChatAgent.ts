@@ -95,6 +95,7 @@ import { substituteCommandArgs } from '../resources/commandSubstitution.js';
 import { ChiposRulesService } from '../resources/chiposRulesService.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposSkillsService } from '../resources/chiposSkillsService.js';
+import { ChiposAgentsService } from '../resources/chiposAgentsService.js';
 import { ChiposPluginsService } from '../resources/chiposPluginsService.js';
 import { ChiposPluginHookHost } from './chiposPluginHookHost.js';
 import { IChiposPluginHookService } from '../../common/chiposPluginHookService.js';
@@ -6147,6 +6148,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		} catch (err) {
 			this._logService.warn('[ChipOS Stateless] command collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
+		}
+
+		// FEAT-005 Stage B: route the turn to a user-defined subagent when the user
+		// types `@<name>` and a matching enabled agent exists (.chipos/agents/<name>.md
+		// or the user-global plane). The reasoner applies the agent instructions as a
+		// persona overlay for this turn. Best-effort — never blocks the turn.
+		try {
+			const agentMatch = /(?:^|\s)@(?<agent>[\w-]+)/.exec(request.message ?? '');
+			const agentName = agentMatch?.groups?.agent;
+			if (agentName) {
+				const def = await this._instantiationService.createInstance(ChiposAgentsService).getAgentDefinition(agentName);
+				if (def) {
+					invokeReq.selected_agent = { name: def.name, instructions: def.instructions, ...(def.description ? { description: def.description } : {}) };
+				}
+			}
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] @agent resolution failed (continuing): %s', err instanceof Error ? err.message : String(err));
 		}
 
 		// FEAT-003: attach the workspace skill catalog headers (.chipos/skills/<id>/SKILL.md)
