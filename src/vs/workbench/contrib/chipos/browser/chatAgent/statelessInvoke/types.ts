@@ -309,6 +309,52 @@ export interface ClientCapabilities {
 	supports_resume?: boolean;
 }
 
+// =============================================================================
+// Resolved invoke context (SERVER-DERIVED — /invoke v1.1 S2 / §5)
+// =============================================================================
+//
+// ⚠️ R1 SECURITY RED LINE: these three shapes are produced SERVER-SIDE by the
+// reasoner's CapabilityResolver from the JWT + session + registry. The client
+// NEVER constructs, sends, or self-reports them — they are NOT fields of
+// InvokeRequest. A client self-reporting `scopes` / `identity` / `allowed_tools`
+// would be privilege spoofing, and the resolver explicitly IGNORES any such key
+// smuggled into the request body (ClientCapabilities is extra="allow").
+//
+// They are mirrored here ONLY so a shared client SDK / CLI can PARSE a
+// server-emitted resolved context if one is ever surfaced read-only. Treat them
+// as inbound/read-only. Mirrors
+// `backend_v2/packages/shared/src/shared/contracts/invoke.py`
+// Identity / AllowedTools / ResolvedInvokeContext.
+
+/** Authenticated actor for a turn — JWT/chiops derived, NEVER client-reported (R1). */
+export interface Identity {
+	user_id: string;
+	workspace_id: string;
+	/** Authorization scopes — server-derived (R1), never a client claim. */
+	scopes: string[];
+}
+
+/** The scope-clamped single-catalog tool view for a turn — server-derived (R1/R5). */
+export interface AllowedTools {
+	/** worker-executed tools (registry × scopes). */
+	worker: string[];
+	/** IDE/MCP-executed tools (registry × scopes). */
+	mcp: string[];
+	/** Host operations the surface may be asked to perform (host_tools ∩ scope-allowed). */
+	surface: string[];
+}
+
+/**
+ * Server-internal resolved context (§5) — client never sees or reports this (R1).
+ * `effective_capabilities` is preset ⊕ request ⊕ registry-clamped; downstream
+ * reads only it (never `client_type`, R4).
+ */
+export interface ResolvedInvokeContext {
+	identity: Identity;
+	allowed_tools: AllowedTools;
+	effective_capabilities: ClientCapabilities;
+}
+
 /**
  * Kind of a prompt resource (ADR-001 narrow scope: Beta-1 only `rule` + `command`).
  */
@@ -428,7 +474,36 @@ export interface ReasonerHookDefinition {
 // =============================================================================
 
 /**
- * SSE event type literal — covers Anthropic 流式事件 + ChipOS 自定义事件。
+ * The 8 stable event families (/invoke v1.1 S5 / §8). A surface routes on the
+ * stable `family` band — NEVER on the open `type` (which a newer reasoner may
+ * extend). Mirrors `EVENT_FAMILIES` in
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py`.
+ *
+ *   stream    — Anthropic content: message_start / content_block_* / message_delta / …
+ *   tool      — tool_start / tool_result / tool_call_emitted / ide_tool_call / …
+ *   control   — round_start / round_progress / checkpoint / keepalive / heartbeat / …
+ *   render    — ⭐ rich cards (sim / lint / ppa / diff / spec / …); `data` is a RenderEnvelope
+ *   confirm   — confirm_request / confirm_auto_resolved
+ *   subagent  — subagent_event
+ *   custom    — ⭐ escape hatch: an event not (yet) classified; route generically
+ *   terminal  — round_end (with FinalResult) / error
+ */
+export type EventFamily =
+	| 'stream'
+	| 'tool'
+	| 'control'
+	| 'render'
+	| 'confirm'
+	| 'subagent'
+	| 'custom'
+	| 'terminal';
+
+/**
+ * SSE event type literal — covers Anthropic 流式事件 + ChipOS 自定义事件.
+ *
+ * NOTE (/invoke v1.1 S5 / §8): this union is kept for reference, but {@link InvokeEvent}
+ * types `type` as a plain `string` for forward-compat — a newer reasoner may add events
+ * an older client doesn't know. Route on the stable `family` band, NOT on `type`.
  *
  * Anthropic 对齐:
  *   - `message_start` / `content_block_start` / `content_block_delta` /
@@ -527,19 +602,99 @@ export type InvokeEventType =
  * 每个 invoke 的 HTTP response 是一个 SSE stream, 里面是若干 `InvokeEvent`。
  * `sequence_id` 跨 invoke 单调递增, 断线后用于 replay 端点续传。
  *
- * - `type`: 事件类型字面量
+ * - `type`: One of {@link InvokeEventType}; OPEN string for forward-compat (§8). Route on `family`.
+ * - `family`: stable routing band (/invoke v1.1 S5 / §8). The reasoner sets it (derived
+ *   from `type`, "custom" when unmapped); a surface routes on THIS, not `type`. Optional
+ *   here so frames from an older reasoner that omits it still parse.
  * - `sequence_id`: 跨 invoke 单调; replay 用
  * - `data`: 事件 payload（每个 type 有自己的 shape, opaque dict）
  *     - 对于 `type=message_delta`: `data` 应包含 `usage: TokenUsage` (P0-3)
  *     - 对于 `type=error`: `data` 应包含 `category` / `error_code` / `message`,
  *       且 emit error 后 reasoner 必须紧跟着 emit `round_end{reason:"error"}` 再
  *       关闭 SSE (P0-4 严格顺序)
+ *     - 对于 `family === 'render'`: `data` 是一个 {@link RenderEnvelope}
+ *       (kind/schema_version/payload/fallback), 未知卡 kind 经 mandatory fallback 降级 (D10) 而非丢弃
  */
 export interface InvokeEvent {
-	type: InvokeEventType;
+	/** One of {@link InvokeEventType}; OPEN string for forward-compat (§8). Route on `family`. */
+	type: string;
+	/**
+	 * Stable routing band (/invoke v1.1 S5 / §8). The reasoner sets it (derived
+	 * from `type`, "custom" when unmapped); a surface routes on THIS, not `type`.
+	 * Optional here so frames from an older reasoner that omits it still parse.
+	 */
+	family?: EventFamily;
 	/** 跨 invoke 单调; replay 用 */
 	sequence_id: number;
 	data: Record<string, unknown>;
+}
+
+/**
+ * The uniform shell for every `family === 'render'` card (/invoke v1.1 S5 / §8).
+ * Mirrors `RenderEnvelope` in
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py`. The reasoner wraps
+ * each rich card in this at the SSEEmitSink boundary; a surface does the three-layer
+ * degrade:
+ *   - `kind` known & `schema_version` ≤ its max → render `payload` richly
+ *   - `kind` unknown / schema too new            → render `fallback` (never dropped)
+ *   - `kind === 'ui_spec'` (supports_generative_ui) → generic declarative render
+ *     (D-1: contract placeholder — Beta-1 does NOT implement this third layer)
+ */
+export interface RenderEnvelope {
+	/** Open card kind — 'sim_report' | 'lint_report' | … | future | 'ui_spec'. */
+	kind: string;
+	/** Schema version of THIS kind's `payload` (default 1). */
+	schema_version: number;
+	/** The rich render data (rendered when the surface knows `kind`). */
+	payload: Record<string, unknown>;
+	/**
+	 * REQUIRED (D10) — what the surface shows when it cannot richly render the card
+	 * (unknown kind / schema too new). Canonical shapes: `{ text: string }` or
+	 * `{ artifact_ref: ArtifactRef }`.
+	 */
+	fallback: { text: string } | { artifact_ref: ArtifactRef } | Record<string, unknown>;
+}
+
+/**
+ * A pointer to a turn-produced artifact (report / patch / waveform / …).
+ * Mirrors `backend_v2/packages/shared/src/shared/contracts/invoke.py` ArtifactRef
+ * (/invoke v1.1 S4, §7). `uri` is a reference (worker-relative / trace-store path),
+ * not the bytes.
+ */
+export interface ArtifactRef {
+	/** 'report' | 'patch' | 'waveform' | 'trace' | … (open string) */
+	kind: string;
+	/** worker-relative or trace-store path */
+	uri: string;
+	/** optional one-line human description */
+	summary?: string;
+}
+
+/**
+ * Structured outcome of one turn — the CLI exit-code / `--json` basis.
+ * Mirrors `backend_v2/packages/shared/src/shared/contracts/invoke.py` FinalResult
+ * (/invoke v1.1 S4, §7). Assembled by the reasoner at the round_end boundary and
+ * carried on the terminal `round_end` frame (additive — `extra="allow"`, no
+ * protocol_version break). `verdict` is produced by the agent that ENDS the turn
+ * (D-4: main-agent if it finishes; the sub-agent if a sub finishes).
+ */
+export interface FinalResult {
+	/** terminal disposition — drives the CLI exit code */
+	status: 'success' | 'stopped' | 'cancelled' | 'error' | 'needs_input';
+	/** one-line conclusion (D-4: from the turn-ending agent) */
+	verdict?: string;
+	/** workspace files the turn modified (best-effort) */
+	changed_files?: string[];
+	/** structured pointers to produced artifacts */
+	artifacts?: ArtifactRef[];
+	/** failure records — `{category, code, message}` */
+	errors?: Array<Record<string, unknown>>;
+	/** suggested next steps */
+	followups?: string[];
+	/** the invoke's trace_id (correlates with the event stream) */
+	trace_id: string;
+	/** cumulative token usage for the turn, if known */
+	usage?: TokenUsage;
 }
 
 // =============================================================================
@@ -672,10 +827,14 @@ export function isImageBlock(b: ContentBlock): b is ImageBlock {
  * - `reason`: spec-defined termination reason or unknown string (forward-compat)
  * - `final_messages`: assistant + tool_result messages added during this turn
  *                     (NOT including the original input messages — IDE already has those)
+ * - `final_result`: structured turn outcome (/invoke v1.1 S4, §7). Carried on the
+ *                   SAME terminal frame as `reason` + `final_messages`; optional so
+ *                   older reasoners (v1.0) that omit it don't break this client.
  */
 export interface RoundEndData {
 	reason: 'end_turn' | 'max_iterations' | 'max_tokens' | 'error' | 'cancelled' | 'interrupted' | string;
 	final_messages?: Message[];
+	final_result?: FinalResult;
 }
 
 /** Predicate: is this event a `round_end` terminator? */
