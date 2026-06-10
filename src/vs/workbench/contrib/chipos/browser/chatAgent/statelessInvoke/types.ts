@@ -258,6 +258,55 @@ export interface InvokeRequest {
 	hooks?: ReasonerHookDefinition[];
 	// Protocol version handshake — bump when wire format breaks
 	protocol_version?: number;
+	// Surface capability declaration (/invoke v1.1 S1). Additive + optional; the
+	// reasoner uses it for render/confirm degradation. Mirrors backend_v2
+	// shared.contracts.invoke.ClientCapabilities — NO identity/scopes (R1).
+	client_capabilities?: ClientCapabilities;
+}
+
+/**
+ * One event `kind` a surface can natively render + the schema version it knows.
+ * Mirrors `backend_v2/packages/shared/src/shared/contracts/invoke.py`
+ * RenderCapability. `kind` is an OPEN string (not an enum), so a new EDA card is
+ * a new registry entry with the wire contract unchanged (/invoke v1.1 S1 / §4).
+ */
+export interface RenderCapability {
+	/** Event kind the surface renders natively, e.g. 'sim_report' | 'lint_report' | future. */
+	kind: string;
+	/** Highest payload schema version the surface knows for this kind. Default 1. */
+	max_schema_version?: number;
+}
+
+/**
+ * A surface's self-declared capability facts (/invoke v1.1 S1 / §4). Mirrors
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py` ClientCapabilities.
+ *
+ * Purely capability facts — NO identity / scopes / user_id / workspace_id /
+ * allowed_tools (R1): those are derived server-side from the JWT + session +
+ * registry, never reported by the client. Per R4 the reasoner never branches
+ * behaviour on `client_type` (telemetry + preset selection only).
+ */
+export interface ClientCapabilities {
+	/** 'ide' | 'extension' | 'cli' — telemetry + preset selection ONLY (R4). Open string. */
+	client_type: string;
+	/** Surface build version (telemetry). */
+	client_version: string;
+	/** Registry of natively renderable kinds (NOT an enum). */
+	renders?: RenderCapability[];
+	/** Can render a `ui_spec` kind. Contract placeholder — Beta-1 does NOT implement it (D-1). */
+	supports_generative_ui?: boolean;
+	/** Host operations the surface can execute, e.g. 'apply_edit' / 'open_diff' / 'terminal' / 'waveform_viewer'. */
+	host_tools?: string[];
+	/** How confirm/permission prompts are presented: 'cards' (rich) | 'stdin' (CLI) | 'none' (headless). */
+	confirm_ui?: 'cards' | 'stdin' | 'none';
+	/** Whether the surface can execute reasoner reverse-channel `ide_tool_call` events. */
+	supports_reverse_channel?: boolean;
+	/** Stable machine-output contract for CLI/CI: 'none' | 'json' | 'ndjson'. */
+	machine_output?: 'none' | 'json' | 'ndjson';
+	/** Whether the surface needs a process exit code (CLI/CI). */
+	requires_exit_code?: boolean;
+	/** Whether the surface can resume an in-flight turn after an SSE disconnect. */
+	supports_resume?: boolean;
 }
 
 /**
