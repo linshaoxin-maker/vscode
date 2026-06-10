@@ -19,6 +19,7 @@ export interface SelectedAgentDefinition {
 	readonly name: string;
 	readonly instructions: string;
 	readonly description?: string;
+	readonly mode?: string;
 }
 
 /**
@@ -59,7 +60,7 @@ export class ChiposAgentsService {
 				const content = await this._fileService.readFile(match.editFile);
 				const parsed = parseRuleFile(content.value.toString());
 				if (parsed.body) {
-					return { name, instructions: parsed.body, description: parsed.description };
+					return { name, instructions: parsed.body, description: parsed.description, mode: parsed.mode };
 				}
 			} catch {
 				// unreadable definition — try the next plane

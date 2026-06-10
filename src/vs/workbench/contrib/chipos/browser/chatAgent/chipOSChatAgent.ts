@@ -6177,7 +6177,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (agentName) {
 				const def = await this._instantiationService.createInstance(ChiposAgentsService).getAgentDefinition(agentName);
 				if (def) {
-					invokeReq.selected_agent = { name: def.name, instructions: def.instructions, ...(def.description ? { description: def.description } : {}) };
+					invokeReq.selected_agent = { name: def.name, instructions: def.instructions, ...(def.description ? { description: def.description } : {}), ...(def.mode ? { mode: def.mode } : {}) };
 				}
 			}
 		} catch (err) {

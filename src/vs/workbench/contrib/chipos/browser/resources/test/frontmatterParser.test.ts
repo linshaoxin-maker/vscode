@@ -60,4 +60,9 @@ suite('frontmatterParser', () => {
 		assert.strictEqual(parseRuleFile('---\ndescription: x\n---\nbody').priority, undefined);
 		assert.strictEqual(parseRuleFile('---\npriority: high\n---\nbody').priority, undefined);
 	});
+
+	test('FEAT-005: parses agent mode frontmatter (subagent vs default)', () => {
+		assert.strictEqual(parseRuleFile('---\nmode: subagent\n---\nbody').mode, 'subagent');
+		assert.strictEqual(parseRuleFile('---\ndescription: x\n---\nbody').mode, undefined);
+	});
 });
