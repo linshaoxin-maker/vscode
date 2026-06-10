@@ -85,6 +85,7 @@ export class ChipOSSettingsEditor extends EditorPane {
 	private _pendingTab: ChipOSSettingsTab | undefined;
 	private _navItems = new Map<ChipOSSettingsTab, HTMLElement>();
 	private _navBadges = new Map<ChipOSSettingsTab, HTMLElement>();
+	private _navItemsContainer: HTMLElement | undefined;
 	private _tabInstances = new DisposableStore();
 	private _activeTabDisposable: IDisposable | undefined;
 	private _searchInput: HTMLInputElement | undefined;
@@ -132,39 +133,25 @@ export class ChipOSSettingsEditor extends EditorPane {
 			this._filterCurrentTab();
 		});
 
-		const navItemsContainer = dom.append(this._navList, dom.$('.chipos-settings-nav-items'));
-		// FEAT-006c: when the extension system (chipos.extensions.beta) is off, hide its
-		// capability tabs so the editor returns to the baseline set.
-		const hiddenTabs = isExtensionSystemEnabled(this._configurationService.getValue('chipos.extensions.beta'))
-			? undefined
-			: new Set<string>(EXTENSION_SYSTEM_TAB_IDS);
-		CATEGORY_GROUPS.forEach((group, groupIdx) => {
-			const visible = hiddenTabs ? group.filter(cat => !hiddenTabs.has(cat.id)) : group;
-			if (visible.length === 0) {
+		this._navItemsContainer = dom.append(this._navList, dom.$('.chipos-settings-nav-items'));
+		this._renderNavItems();
+		// FEAT-006c: live-toggle — if chipos.extensions.beta flips while the editor is open,
+		// rebuild the nav so the capability tabs appear/disappear without a reopen.
+		this._ownDisposables.add(this._configurationService.onDidChangeConfiguration(e => {
+			if (!e.affectsConfiguration('chipos.extensions.beta')) {
 				return;
 			}
-			if (groupIdx > 0) {
-				dom.append(navItemsContainer, dom.$('.chipos-settings-nav-divider'));
+			this._renderNavItems();
+			this._updateSearchBadges();
+			if (this._activeTab && !this._navItems.has(this._activeTab)) {
+				// the active tab just got hidden — fall back to a baseline tab.
+				this._activeTab = undefined;
+				this._switchTab('general');
+			} else if (this._activeTab) {
+				// still visible: re-apply the highlight on the rebuilt nav item.
+				this._navItems.get(this._activeTab)?.classList.add('active');
 			}
-			for (const cat of visible) {
-				const item = dom.append(navItemsContainer, dom.$('.chipos-settings-nav-item'));
-				item.dataset.category = cat.id;
-				// Tooltip surfaces the label when the nav collapses to icons-only.
-				item.title = cat.label;
-
-				const iconEl = dom.append(item, dom.$('.chipos-settings-nav-icon'));
-				iconEl.classList.add(...ThemeIcon.asClassNameArray(cat.icon));
-
-				dom.append(item, dom.$('.chipos-settings-nav-label', undefined, cat.label));
-
-				const badge = dom.append(item, dom.$('.chipos-settings-nav-badge'));
-				badge.style.display = 'none';
-				this._navBadges.set(cat.id, badge);
-
-				item.addEventListener('click', () => this._switchTab(cat.id));
-				this._navItems.set(cat.id, item);
-			}
-		});
+		}));
 
 		// Right: content area
 		this._contentArea = dom.append(body, dom.$('.chipos-settings-content'));
@@ -303,6 +290,49 @@ export class ChipOSSettingsEditor extends EditorPane {
 		if (requested) {
 			this._switchTab(requested);
 		}
+	}
+
+	/** (Re)build the left-nav tab items, honoring the chipos.extensions.beta gate. Safe to call repeatedly. */
+	private _renderNavItems(): void {
+		const container = this._navItemsContainer;
+		if (!container) {
+			return;
+		}
+		dom.clearNode(container);
+		this._navItems.clear();
+		this._navBadges.clear();
+		// FEAT-006c: when the extension system (chipos.extensions.beta) is off, hide its
+		// capability tabs so the editor returns to the baseline set.
+		const hiddenTabs = isExtensionSystemEnabled(this._configurationService.getValue('chipos.extensions.beta'))
+			? undefined
+			: new Set<string>(EXTENSION_SYSTEM_TAB_IDS);
+		CATEGORY_GROUPS.forEach((group, groupIdx) => {
+			const visible = hiddenTabs ? group.filter(cat => !hiddenTabs.has(cat.id)) : group;
+			if (visible.length === 0) {
+				return;
+			}
+			if (groupIdx > 0) {
+				dom.append(container, dom.$('.chipos-settings-nav-divider'));
+			}
+			for (const cat of visible) {
+				const item = dom.append(container, dom.$('.chipos-settings-nav-item'));
+				item.dataset.category = cat.id;
+				// Tooltip surfaces the label when the nav collapses to icons-only.
+				item.title = cat.label;
+
+				const iconEl = dom.append(item, dom.$('.chipos-settings-nav-icon'));
+				iconEl.classList.add(...ThemeIcon.asClassNameArray(cat.icon));
+
+				dom.append(item, dom.$('.chipos-settings-nav-label', undefined, cat.label));
+
+				const badge = dom.append(item, dom.$('.chipos-settings-nav-badge'));
+				badge.style.display = 'none';
+				this._navBadges.set(cat.id, badge);
+
+				item.addEventListener('click', () => this._switchTab(cat.id));
+				this._navItems.set(cat.id, item);
+			}
+		});
 	}
 
 	private _switchTab(tab: ChipOSSettingsTab): void {
