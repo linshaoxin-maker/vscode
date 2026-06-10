@@ -6150,6 +6150,23 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._logService.warn('[ChipOS Stateless] command collection failed (continuing): %s', err instanceof Error ? err.message : String(err));
 		}
 
+			// FEAT-008: the slash-command attachment is appended AFTER the rules
+			// snapshot is recorded above; fold the full per-turn set (rules + command)
+			// back into the snapshot so "ChipOS: Show Prompt Inputs" reflects everything
+			// actually sent, not rules only. Best-effort — never blocks the turn.
+			try {
+				const recorded = this._promptInputsService.getLast();
+				const full = invokeReq.prompt_resource_attachments ?? [];
+				if (recorded && full.length !== recorded.result.attachments.length) {
+					this._promptInputsService.setLast({
+						result: { attachments: full, omitted: recorded.result.omitted },
+						activeFile: recorded.activeFile,
+					});
+				}
+			} catch {
+				// observability only — must never affect the turn
+			}
+
 		// FEAT-005 Stage B: route the turn to a user-defined subagent when the user
 		// types `@<name>` and a matching enabled agent exists (.chipos/agents/<name>.md
 		// or the user-global plane). The reasoner applies the agent instructions as a

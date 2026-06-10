@@ -64,6 +64,7 @@ export class ChiposRulesService {
 						globs: parsed.globs,
 						body: parsed.body,
 						description: parsed.description,
+						priority: parsed.priority,
 					});
 					seen.add(r.name);
 				} catch {

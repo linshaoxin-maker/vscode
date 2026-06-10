@@ -71,4 +71,20 @@ suite('PromptResourceAttachmentCollector', () => {
 		assert.strictEqual(a.source, 'plugin');
 		assert.strictEqual(a.source_ref, 'ai-dev');
 	});
+
+	test('FEAT-001c: maxBytes cap omits over-budget rules (reason=maxBytes)', () => {
+		const small = rule({ name: 'small', body: 'x' });
+		const big = rule({ name: 'big', body: 'y'.repeat(1000) });
+		const res = collectPromptResources([small, big], { maxBytes: 200 });
+		assert.strictEqual(res.attachments.length, 1);
+		assert.strictEqual(res.attachments[0].name, 'small');
+		assert.deepStrictEqual({ name: res.omitted[0]?.name, reason: res.omitted[0]?.reason }, { name: 'big', reason: 'maxBytes' });
+	});
+
+	test('FEAT-001c: higher priority sorts earlier (collector sorts priority DESC)', () => {
+		const lo = rule({ name: 'lo', priority: 1 });
+		const hi = rule({ name: 'hi', priority: 9 });
+		const res = collectPromptResources([lo, hi], {});
+		assert.deepStrictEqual(res.attachments.map(a => a.name), ['hi', 'lo']);
+	});
 });

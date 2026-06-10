@@ -54,4 +54,10 @@ suite('frontmatterParser', () => {
 			{ command: 'review', slash: 'deploy', commandWinsOverSlash: 'a', invalidDropped: undefined, absent: undefined },
 		);
 	});
+
+	test('FEAT-001c: parses priority frontmatter as a number; missing/invalid -> undefined', () => {
+		assert.strictEqual(parseRuleFile('---\npriority: 7\n---\nbody').priority, 7);
+		assert.strictEqual(parseRuleFile('---\ndescription: x\n---\nbody').priority, undefined);
+		assert.strictEqual(parseRuleFile('---\npriority: high\n---\nbody').priority, undefined);
+	});
 });

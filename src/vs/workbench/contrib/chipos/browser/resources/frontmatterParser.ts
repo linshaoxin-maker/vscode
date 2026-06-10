@@ -21,6 +21,8 @@ export interface ParsedRuleFile {
 	readonly script?: string;
 	/** FEAT-003/P2.7: a skill's declared slash command name (SKILL.md `command:` or `slash:` frontmatter), without the leading `/`. Only meaningful for skills. */
 	readonly command?: string;
+	/** FEAT-001c: optional ordering hint (`priority:` frontmatter); higher sorts first. */
+	readonly priority?: number;
 }
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -60,7 +62,7 @@ export function parseRuleFile(content: string): ParsedRuleFile {
 		ruleType = 'manual';
 	}
 
-	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script'), command: normalizeCommandName(fields.get('command') ?? fields.get('slash')) };
+	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script'), priority: parsePriority(fields.get('priority')), command: normalizeCommandName(fields.get('command') ?? fields.get('slash')) };
 }
 
 /**
@@ -75,6 +77,19 @@ function normalizeCommandName(raw: string | undefined): string | undefined {
 	}
 	const name = raw.trim().replace(/^\/+/, '');
 	return /^[\w-]+$/.test(name) ? name : undefined;
+}
+
+/**
+ * FEAT-001c — parse a rule's `priority:` frontmatter into a finite number. A
+ * higher priority sorts earlier (the collector sorts priority DESC). Returns
+ * `undefined` for missing/non-numeric values so collection is unaffected.
+ */
+function parsePriority(raw: string | undefined): number | undefined {
+	if (raw === undefined || raw.trim() === '') {
+		return undefined;
+	}
+	const n = Number(raw.trim());
+	return Number.isFinite(n) ? n : undefined;
 }
 
 /**
