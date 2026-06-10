@@ -232,6 +232,19 @@ configurationRegistry.registerConfiguration({
 			scope: ConfigurationScope.APPLICATION,
 		},
 
+		// ── Resource import master switch (FEAT-012) ──
+		// Total gate for the Import-from-Local / Import-from-Git actions on the
+		// Rules/Commands/Skills/Hooks tabs. On by default; turn off to hide the
+		// Import buttons (the "+ New" authoring + per-row enable/disable stay
+		// available). Pure UI gate — no residual state, flipping it back on
+		// restores the buttons. Rollback knob for the Cursor-parity import round.
+		'chipos.resources.import.enabled': {
+			type: 'boolean',
+			default: true,
+			description: localize('chipos.resources.import.enabled.desc', 'Allow importing rules, commands, skills and hooks from a local folder or a Git URL on the matching settings tab. On by default; turn off to hide the Import buttons (authoring with "+ New" and per-resource enable/disable stay available). (FEAT-012)'),
+			scope: ConfigurationScope.APPLICATION,
+		},
+
 		// ── Resource enable/disable (rules / commands / skills / hooks) ──
 		// Each holds scope-qualified ids ("workspace:<name>" / "user:<name>") of
 		// resources that stay on disk but are filtered out of the agent's per-turn

@@ -114,12 +114,16 @@ export class ResourceListTab extends Disposable {
 		const newBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
 		newBtn.textContent = this._spec.newLabel;
 		this._disposables.add(dom.addDisposableListener(newBtn, 'click', () => this._createNew()));
-		const importBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
-		importBtn.textContent = localize('chipos.resource.importLocal', 'Import from Local…');
-		this._disposables.add(dom.addDisposableListener(importBtn, 'click', () => this._importFromLocal()));
-		const gitBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
-		gitBtn.textContent = localize('chipos.resource.importGit', 'Import from Git…');
-		this._disposables.add(dom.addDisposableListener(gitBtn, 'click', () => this._importFromGit()));
+		// FEAT-012: `chipos.resources.import.enabled` master switch — off hides the
+		// Import buttons ("+ New" authoring + per-row enable/disable stay available).
+		if (this._configurationService.getValue<boolean>('chipos.resources.import.enabled') !== false) {
+			const importBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
+			importBtn.textContent = localize('chipos.resource.importLocal', 'Import from Local…');
+			this._disposables.add(dom.addDisposableListener(importBtn, 'click', () => this._importFromLocal()));
+			const gitBtn = dom.append(actions, dom.$('button.chipos-btn-secondary'));
+			gitBtn.textContent = localize('chipos.resource.importGit', 'Import from Git…');
+			this._disposables.add(dom.addDisposableListener(gitBtn, 'click', () => this._importFromGit()));
+		}
 
 		dom.append(section, dom.$('.chipos-setting-description', undefined, this._spec.description));
 
