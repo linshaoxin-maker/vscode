@@ -65,4 +65,10 @@ suite('frontmatterParser', () => {
 		assert.strictEqual(parseRuleFile('---\nmode: subagent\n---\nbody').mode, 'subagent');
 		assert.strictEqual(parseRuleFile('---\ndescription: x\n---\nbody').mode, undefined);
 	});
+
+	test('FEAT-005 slice 2: parses agent tools allow-list (list / bracketed / absent)', () => {
+		assert.deepStrictEqual(parseRuleFile('---\ntools: read_file, ls, grep\n---\nbody').tools, ['read_file', 'ls', 'grep']);
+		assert.deepStrictEqual(parseRuleFile('---\ntools: [read_file, grep]\n---\nbody').tools, ['read_file', 'grep']);
+		assert.strictEqual(parseRuleFile('---\nmode: subagent\n---\nbody').tools, undefined);
+	});
 });

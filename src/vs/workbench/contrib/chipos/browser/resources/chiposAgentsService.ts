@@ -20,6 +20,8 @@ export interface SelectedAgentDefinition {
 	readonly instructions: string;
 	readonly description?: string;
 	readonly mode?: string;
+	/** FEAT-005 slice 2: per-agent tool allow-list (`tools:` frontmatter). The reasoner enforces it at dispatch for a `mode: subagent` sub-role; absent → full catalog. */
+	readonly tools?: string[];
 }
 
 /**
@@ -60,7 +62,7 @@ export class ChiposAgentsService {
 				const content = await this._fileService.readFile(match.editFile);
 				const parsed = parseRuleFile(content.value.toString());
 				if (parsed.body) {
-					return { name, instructions: parsed.body, description: parsed.description, mode: parsed.mode };
+					return { name, instructions: parsed.body, description: parsed.description, mode: parsed.mode, tools: parsed.tools };
 				}
 			} catch {
 				// unreadable definition — try the next plane

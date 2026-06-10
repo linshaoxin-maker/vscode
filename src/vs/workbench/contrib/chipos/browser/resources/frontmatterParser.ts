@@ -25,6 +25,8 @@ export interface ParsedRuleFile {
 	readonly priority?: number;
 	/** FEAT-005: agent-only — `mode: subagent` = isolated delegation (reasoner drops parent conversation). */
 	readonly mode?: string;
+	/** FEAT-005 slice 2: agent-only — `tools:` frontmatter, the per-agent tool allow-list the reasoner enforces at dispatch. Empty/absent → full catalog. */
+	readonly tools?: string[];
 }
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -64,7 +66,7 @@ export function parseRuleFile(content: string): ParsedRuleFile {
 		ruleType = 'manual';
 	}
 
-	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script'), priority: parsePriority(fields.get('priority')), mode: fields.get('mode'), command: normalizeCommandName(fields.get('command') ?? fields.get('slash')) };
+	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script'), priority: parsePriority(fields.get('priority')), mode: fields.get('mode'), tools: parseList(fields.get('tools')), command: normalizeCommandName(fields.get('command') ?? fields.get('slash')) };
 }
 
 /**
