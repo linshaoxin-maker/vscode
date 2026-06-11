@@ -1286,7 +1286,28 @@ export function registerSidecarIpcHandlers(): void {
 			const target = args.mcpConfigPath.startsWith('~/')
 				? path.join(os.homedir(), args.mcpConfigPath.slice(2))
 				: args.mcpConfigPath;
-			if (fs.existsSync(target)) { return { existed: true, path: target }; }
+			if (fs.existsSync(target)) {
+				// Heal a stale config. An older onefile-era install wrote the EDA
+				// server `command` as the worker binary path `<ver>/<name>`. The
+				// onefile->standalone switch turned that path into a DIRECTORY (the
+				// binary moved to `<ver>/<name>/<name>`), so spawning `<dir> mcp-server`
+				// fails with EACCES and the worker silently loads 0 EDA tools
+				// (verilog_lint etc. vanish). The current default below uses 'python'
+				// — version/layout-agnostic — so regenerate only when the existing
+				// command is an absolute path that resolves to a directory (which can
+				// never exec). Leave any other (custom / valid / unreadable) config alone.
+				let stale = false;
+				try {
+					const existing = JSON.parse(fs.readFileSync(target, 'utf-8')) as { mcpServers?: Record<string, { command?: unknown }> };
+					const cmd = existing?.mcpServers?.['coderust-eda-tools']?.command;
+					stale = typeof cmd === 'string' && cmd !== 'python' && cmd !== 'python3'
+						&& path.isAbsolute(cmd) && fs.existsSync(cmd) && fs.statSync(cmd).isDirectory();
+				} catch {
+					// Unreadable / not JSON — don't clobber a file we can't parse.
+				}
+				if (!stale) { return { existed: true, path: target }; }
+				console.log(`[ChipOS Sidecar] Regenerating stale EDA MCP config at ${target} (command pointed at a directory)`);
+			}
 			fs.mkdirSync(path.dirname(target), { recursive: true });
 			const defaultConfig = JSON.stringify({
 				mcpServers: {
