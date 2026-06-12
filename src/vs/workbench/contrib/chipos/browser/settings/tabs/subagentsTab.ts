@@ -26,7 +26,7 @@ export const AGENTS_RESOURCE_SPEC: ResourceTabSpec = {
 	kind: 'agents',
 	icon: 'organization',
 	title: localize('chipos.agents.title', 'Subagents'),
-	description: localize('chipos.agents.desc', '⚠️ Staged (FEAT-005 Stage A): subagents are authored and listed here from .chipos/agents/ (project) or ~/.chipos-ide/agents/ (global). Each file is a subagent definition (frontmatter name/description + instructions). Runtime dispatch — routing @agent to the subagent — arrives in Stage B; for now this is authoring + management only.'),
+	description: localize('chipos.agents.desc', '⚠️ Staged (FEAT-005 Stage A): subagents are authored and listed here from .chipos/agents/ (project) or ~/.chipos/agents/ (global). Each file is a subagent definition (frontmatter name/description + instructions). Runtime dispatch — routing @agent to the subagent — arrives in Stage B; for now this is authoring + management only.'),
 	newLabel: localize('chipos.agents.newAgent', '+ New Subagent'),
 	emptyMessage: localize('chipos.agents.empty', 'No subagents yet. Click "+ New Subagent" to define one (.chipos/agents/<name>.md). Note: runtime dispatch is staged (Stage B).'),
 	importFilter: { name: localize('chipos.agents.filter', 'Subagent files'), extensions: ['md'] },

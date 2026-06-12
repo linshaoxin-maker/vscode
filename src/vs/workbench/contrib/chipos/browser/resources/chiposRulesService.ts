@@ -17,7 +17,7 @@ import { RESOURCE_LAYOUTS, resourcePlanes, scanResourcePlane, isResourceEnabled 
  * Indexes rule files for the prompt-resource collector (FEAT-001a/b).
  *
  * Scans both the project plane (each workspace folder's `.chipos/rules/`) and
- * the user-global plane (`~/.chipos-ide/rules/`), parses frontmatter, and returns
+ * the user-global plane (`~/.chipos/rules/`), parses frontmatter, and returns
  * {@link RuleDescriptor}s tagged with their true scope (`source`). A rule
  * disabled from the Rules tab (`chipos.rules.disabled`) is filtered out here so
  * it drops from the next invoke with no other wiring. Workspace rules take

@@ -22,7 +22,7 @@ export const SKILLS_RESOURCE_SPEC: ResourceTabSpec = {
 	kind: 'skills',
 	icon: 'lightbulb',
 	title: localize('chipos.skills.title', 'Skills'),
-	description: localize('chipos.skills.desc', 'Skills are loaded from .chipos/skills/<name>/SKILL.md (project) or ~/.chipos-ide/skills/ (global). The frontmatter "description" is shown to the agent as a menu; the body loads on demand only when the agent uses the skill. Import a folder that contains a SKILL.md, or a Git repo of skills. Skills from installed plugins appear via the Plugins tab.'),
+	description: localize('chipos.skills.desc', 'Skills are loaded from .chipos/skills/<name>/SKILL.md (project) or ~/.chipos/skills/ (global). The frontmatter "description" is shown to the agent as a menu; the body loads on demand only when the agent uses the skill. Import a folder that contains a SKILL.md, or a Git repo of skills. Skills from installed plugins appear via the Plugins tab.'),
 	newLabel: localize('chipos.skills.new', '+ New Skill'),
 	emptyMessage: localize('chipos.skills.empty', 'No skills yet. Click "+ New Skill", or import an existing SKILL.md folder with "Import from Local…".'),
 

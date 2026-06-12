@@ -12,7 +12,7 @@ import { RESOURCE_LAYOUTS, resourcePlanes, scanResourcePlane, isResourceEnabled 
 
 /**
  * A slash command authored under `.chipos/commands/` (project) or
- * `~/.chipos-ide/commands/` (user-global) (FEAT-001). Unlike an always-apply
+ * `~/.chipos/commands/` (user-global) (FEAT-001). Unlike an always-apply
  * rule, a command is injected on demand — when the user invokes `/<name>` — so
  * the collector matches `name` against the typed token.
  */
@@ -37,7 +37,7 @@ export interface CommandDescriptor {
  * Indexes command files for the prompt-resource collector (FEAT-001).
  *
  * Scans both the project plane (each workspace folder's `.chipos/commands/`) and
- * the user-global plane (`~/.chipos-ide/commands/`) and returns
+ * the user-global plane (`~/.chipos/commands/`) and returns
  * {@link CommandDescriptor}s. The reasoner renders the matched command into the
  * synthetic instruction message (ADR-002), the same path as rules but with
  * `kind: 'command'`. A command disabled from the Commands tab

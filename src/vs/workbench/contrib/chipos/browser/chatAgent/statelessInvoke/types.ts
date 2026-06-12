@@ -238,7 +238,7 @@ export interface InvokeRequest {
 	metadata?: Record<string, unknown> | null;
 	// Prompt resources (rules/commands) — marketplace v5 extension system.
 	// Additive + backward compatible: reasoner defaults to [] when absent (ADR-008).
-	// The collector (FEAT-001a) populates this from ~/.chipos-ide/{rules,commands};
+	// The collector (FEAT-001a) populates this from ~/.chipos/{rules,commands};
 	// the reasoner renders them into a synthetic user message at the head of
 	// `messages` (ADR-002). Mirrors backend_v2 shared.contracts.invoke.
 	prompt_resource_attachments?: PromptResourceAttachment[];

@@ -6035,7 +6035,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const ruleAnchor = activeRuleResource ? dirname(activeRuleResource) : undefined;
 			const rules = await this._instantiationService.createInstance(ChiposRulesService).getRules(ruleAnchor);
 			// FEAT-002a: merge rules contributed by installed agent plugins
-			// (~/.chipos-ide/plugins/<id>/rules/) — tagged source=plugin so the
+			// (~/.chipos/plugins/<id>/rules/) — tagged source=plugin so the
 			// reasoner renders a `[from plugin <id>]` provenance badge.
 			const pluginRules = await this._instantiationService.createInstance(ChiposPluginsService).getPluginRules();
 			const allRules = pluginRules.length ? [...rules, ...pluginRules] : rules;

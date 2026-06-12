@@ -23,7 +23,7 @@ export const RULES_RESOURCE_SPEC: ResourceTabSpec = {
 	kind: 'rules',
 	icon: 'book',
 	title: localize('chipos.rules.title', 'Rules'),
-	description: localize('chipos.rules.desc', 'Rules are loaded from .chipos/rules/ (project) or ~/.chipos-ide/rules/ (global). Frontmatter controls when each applies: "alwaysApply: true" every turn, "globs: src/**/*.ts" when the active file matches, otherwise manual. Import existing .mdc/.md rules from a folder or a Git repo.'),
+	description: localize('chipos.rules.desc', 'Rules are loaded from .chipos/rules/ (project) or ~/.chipos/rules/ (global). Frontmatter controls when each applies: "alwaysApply: true" every turn, "globs: src/**/*.ts" when the active file matches, otherwise manual. Import existing .mdc/.md rules from a folder or a Git repo.'),
 	newLabel: localize('chipos.rules.newRule', '+ New Rule'),
 	emptyMessage: localize('chipos.rules.empty', 'No rules yet. Click "+ New Rule", or import existing rules with "Import from Local…".'),
 	importFilter: { name: localize('chipos.rules.filter', 'Rule files'), extensions: ['mdc', 'md', 'txt'] },

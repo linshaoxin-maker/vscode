@@ -101,7 +101,7 @@ export function parseHookFileContent(text: string, sourceRef: string, source: No
  * {@link ReasonerHookDefinition}s for {@link InvokeRequest.hooks}. The reasoner
  * registers each as a per-turn dispatcher subscriber, so a `deny` hook at
  * `tool.before_dispatch` blocks the matching tool. The user-global
- * `~/.chipos-ide/hooks/` plane, a settings-tab UI, and a cached file-watcher are
+ * `~/.chipos/hooks/` plane, a settings-tab UI, and a cached file-watcher are
  * follow-ups; today this reads on demand per turn (the file set is small).
  */
 export class ChiposHooksService {

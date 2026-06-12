@@ -41,7 +41,7 @@ suite('ChiposPluginsService', () => {
 		service = new ChiposPluginsService(fileService, pathService, config as unknown as IConfigurationService, instantiationService);
 	});
 
-	const pluginRoot = (id: string): URI => URI.joinPath(HOME, '.chipos-ide', 'plugins', id);
+	const pluginRoot = (id: string): URI => URI.joinPath(HOME, '.chipos', 'plugins', id);
 	const write = (uri: URI, contents: string): Promise<unknown> => fileService.writeFile(uri, VSBuffer.fromString(contents));
 
 	/** Install a fixture plugin contributing one rule, one command, one skill and one hook. */

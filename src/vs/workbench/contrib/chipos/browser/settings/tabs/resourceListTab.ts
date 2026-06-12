@@ -97,7 +97,7 @@ export function computeShadowedRows<T extends { readonly name: string; readonly 
 /**
  * Generic settings tab for a `.chipos/` resource kind (rules / commands / skills
  * / hooks). Lists both the project plane (`.chipos/<kind>/`) and the user-global
- * plane (`~/.chipos-ide/<kind>/`) with a scope badge + per-row enable/disable +
+ * plane (`~/.chipos/<kind>/`) with a scope badge + per-row enable/disable +
  * an active count, and offers New / Import-from-Local / Import-from-Git (each
  * choosing Project vs User scope first). Disabling a row writes the
  * scope-qualified id to `chipos.<kind>.disabled` so it drops from the agent.
@@ -192,7 +192,7 @@ export class ResourceListTab extends Disposable {
 		const hasWorkspace = !!this._workspaceFolder();
 		const picked = await this._quickInputService.pick([
 			{ label: localize('chipos.resource.scope.project', 'Project'), description: localize('chipos.resource.scope.projectDesc', 'Stored in .chipos/{0}/ — shared with this workspace', this._spec.kind), id: 'workspace' as const },
-			{ label: localize('chipos.resource.scope.user', 'User (all projects)'), description: localize('chipos.resource.scope.userDesc', 'Stored in ~/.chipos-ide/{0}/ — available in every project', this._spec.kind), id: 'user' as const },
+			{ label: localize('chipos.resource.scope.user', 'User (all projects)'), description: localize('chipos.resource.scope.userDesc', 'Stored in ~/.chipos/{0}/ — available in every project', this._spec.kind), id: 'user' as const },
 		].filter(o => o.id === 'user' || hasWorkspace), {
 			title: localize('chipos.resource.scope.title', 'Where should this go?'),
 		});
@@ -490,7 +490,7 @@ export class ResourceListTab extends Disposable {
 
 	private async _cloneToTemp(url: string): Promise<URI> {
 		const home = await this._pathService.userHome();
-		const parent = URI.joinPath(home, '.chipos-ide', '.cache', 'resource-clones');
+		const parent = URI.joinPath(home, '.chipos', '.cache', 'resource-clones');
 		await this._fileService.createFolder(parent);
 		// Name the clone dir after the repo (not a random uuid) so a root-level
 		// SKILL.md imports under the repo name, not an opaque id. Transient +

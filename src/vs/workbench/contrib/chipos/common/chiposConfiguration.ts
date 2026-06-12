@@ -221,7 +221,7 @@ configurationRegistry.registerConfiguration({
 		'chipos.promptResources.enabled': {
 			type: 'boolean',
 			default: true,
-			description: localize('chipos.promptResources.enabled.desc', 'Inject prompt resources (rules and slash commands from .chipos/ and ~/.chipos-ide/) into the agent prompt. Turn off to disable all rule/command injection (rollback / privacy). View what is injected via "ChipOS: Show Prompt Inputs".'),
+			description: localize('chipos.promptResources.enabled.desc', 'Inject prompt resources (rules and slash commands from .chipos/ and ~/.chipos/) into the agent prompt. Turn off to disable all rule/command injection (rollback / privacy). View what is injected via "ChipOS: Show Prompt Inputs".'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
@@ -321,7 +321,7 @@ configurationRegistry.registerConfiguration({
 			type: 'array',
 			items: { type: 'string' },
 			default: [],
-			description: localize('chipos.plugins.disabled.desc', 'IDs of installed agent plugins that are disabled. A disabled plugin stays installed under ~/.chipos-ide/plugins/ but does not contribute its rules, commands or skills to the agent. Managed from the Plugins settings tab.'),
+			description: localize('chipos.plugins.disabled.desc', 'IDs of installed agent plugins that are disabled. A disabled plugin stays installed under ~/.chipos/plugins/ but does not contribute its rules, commands or skills to the agent. Managed from the Plugins settings tab.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 

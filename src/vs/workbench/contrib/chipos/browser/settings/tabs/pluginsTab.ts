@@ -18,7 +18,7 @@ import { renderCatalogBrowser } from '../components/catalogBrowser.js';
 
 /**
  * Plugins settings tab (FEAT-002a). Lists the agent plugins installed under
- * `~/.chipos-ide/plugins/` with a summary of the rules/commands/skills each
+ * `~/.chipos/plugins/` with a summary of the rules/commands/skills each
  * contributes, plus an "Install from Local…" action wired to the
  * `chipos.plugins.installFromLocal` command. Agent plugins are chipos's own
  * AI-capability bundle format — NOT VS Code extensions (.vsix / Open VSX).
@@ -76,7 +76,7 @@ export class PluginsTab extends Disposable {
 		}));
 
 		dom.append(section, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.plugins.desc', 'Agent plugins are AI-capability bundles installed under ~/.chipos-ide/plugins/. Each plugin can contribute rules, commands and skills to the agent. This is separate from VS Code extensions.')));
+			localize('chipos.plugins.desc', 'Agent plugins are AI-capability bundles installed under ~/.chipos/plugins/. Each plugin can contribute rules, commands and skills to the agent. This is separate from VS Code extensions.')));
 
 		this._listContainer = dom.append(section, dom.$('.chipos-plugins-list'));
 		this._loadPlugins(this._listContainer);
@@ -252,7 +252,7 @@ export class PluginsTab extends Disposable {
 		this._listDisposables.add(dom.addDisposableListener(uninstallBtn, 'click', async () => {
 			const confirmed = await this._dialogService.confirm({
 				message: localize('chipos.plugins.uninstall.confirm', 'Uninstall plugin "{0}"?', summary.manifest.name),
-				detail: localize('chipos.plugins.uninstall.detail', 'This permanently deletes the plugin folder under ~/.chipos-ide/plugins/. This cannot be undone.'),
+				detail: localize('chipos.plugins.uninstall.detail', 'This permanently deletes the plugin folder under ~/.chipos/plugins/. This cannot be undone.'),
 				primaryButton: localize('chipos.plugins.uninstall.button', 'Uninstall'),
 				type: 'warning',
 			});

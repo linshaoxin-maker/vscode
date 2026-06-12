@@ -59,7 +59,7 @@ export interface PluginContributionSummary {
 const DISABLED_PLUGINS_KEY = 'chipos.plugins.disabled';
 
 /**
- * Indexes installed agent plugins under `~/.chipos-ide/plugins/<id>/` and
+ * Indexes installed agent plugins under `~/.chipos/plugins/<id>/` and
  * decomposes their contributed rules/commands/skills into the FEAT-001/003
  * collector shapes, tagged `source: 'plugin'` (so the renderer adds the
  * `[from plugin <id>]` provenance badge). Also installs (FEAT-002a) and
@@ -91,10 +91,10 @@ export class ChiposPluginsService {
 		}
 	}
 
-	/** `~/.chipos-ide/plugins/` — the user-global install root for agent plugins. */
+	/** `~/.chipos/plugins/` — the user-global install root for agent plugins. */
 	private async _pluginsRoot(): Promise<URI> {
 		const home = await this._pathService.userHome();
-		return URI.joinPath(home, '.chipos-ide', 'plugins');
+		return URI.joinPath(home, '.chipos', 'plugins');
 	}
 
 	/**
@@ -102,7 +102,7 @@ export class ChiposPluginsService {
 	 * URI, traversal-guarded (FEAT-004 / H-3 executable hooks). Used by the H-3
 	 * caller to locate a plugin's hook module before handing it to the isolated
 	 * subprocess host. Returns `undefined` when:
-	 *   - the resolved path escapes `~/.chipos-ide/plugins/<pluginId>/` (a `..`
+	 *   - the resolved path escapes `~/.chipos/plugins/<pluginId>/` (a `..`
 	 *     segment tried to climb out — SECURITY: never load such a file), or
 	 *   - the target does not exist on disk.
 	 * This is the ONLY sanctioned way to turn an untrusted `module` carrier from
@@ -161,7 +161,7 @@ export class ChiposPluginsService {
 	}
 
 	/**
-	 * Install a local plugin folder into `~/.chipos-ide/plugins/<id>/`. Thin
+	 * Install a local plugin folder into `~/.chipos/plugins/<id>/`. Thin
 	 * orchestration over {@link installLocalPlugin} (the testable core): supplies
 	 * the file service + resolved install root. Rejects with `PluginManifestError`
 	 * when the folder has no valid manifest — the install command surfaces it.
@@ -204,10 +204,10 @@ export class ChiposPluginsService {
 		}
 	}
 
-	/** Shallow-clone `url` into a fresh temp dir under `~/.chipos-ide/.cache/`. */
+	/** Shallow-clone `url` into a fresh temp dir under `~/.chipos/.cache/`. */
 	private async _cloneToTemp(url: string): Promise<URI> {
 		const home = await this._pathService.userHome();
-		const cloneParent = URI.joinPath(home, '.chipos-ide', '.cache', 'plugin-clones');
+		const cloneParent = URI.joinPath(home, '.chipos', '.cache', 'plugin-clones');
 		await this._fileService.createFolder(cloneParent);
 		const tempDir = URI.joinPath(cloneParent, generateUuid());
 		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 }, this._resolveGitService());
@@ -248,7 +248,7 @@ export class ChiposPluginsService {
 	}
 
 	/**
-	 * Uninstall a plugin: delete `~/.chipos-ide/plugins/<id>/`, then drop any
+	 * Uninstall a plugin: delete `~/.chipos/plugins/<id>/`, then drop any
 	 * stale `disabled` entry (so a later reinstall starts enabled). If the delete
 	 * throws, the error propagates before the cleanup — an already-disabled
 	 * plugin therefore stays disabled (FEAT-002c rollback invariant: a failed

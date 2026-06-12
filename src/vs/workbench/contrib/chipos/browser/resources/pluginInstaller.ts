@@ -32,7 +32,7 @@ export const PLUGIN_MANIFEST_DIRS: ReadonlyArray<{ dir: string; file: string; so
 
 /**
  * A parsed plugin manifest. `id` is the install key (folder name under
- * `~/.chipos-ide/plugins/`); it defaults to `name`.
+ * `~/.chipos/plugins/`); it defaults to `name`.
  */
 export interface PluginManifest {
 	readonly id: string;
@@ -128,7 +128,7 @@ export async function readPluginManifest(fileService: IFileService, sourceDir: U
  * manifest first (rejecting with {@link PluginManifestError}), then copies the
  * whole source tree to the install dir keyed by the manifest id, overwriting an
  * existing install of the same id (a clean reinstall/update, not a merge). The
- * install root (`~/.chipos-ide/plugins/`) is passed in so this stays pure of
+ * install root (`~/.chipos/plugins/`) is passed in so this stays pure of
  * path-service DI and unit-testable.
  */
 export async function installLocalPlugin(fileService: IFileService, sourceDir: URI, pluginsRoot: URI): Promise<IPluginInstallResult> {

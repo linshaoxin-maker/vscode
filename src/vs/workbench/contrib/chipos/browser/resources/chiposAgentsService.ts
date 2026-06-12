@@ -26,7 +26,7 @@ export interface SelectedAgentDefinition {
 
 /**
  * Resolves user-defined subagents (`.chipos/agents/<name>.md` + the user-global
- * `~/.chipos-ide/agents/` plane) for FEAT-005 Stage B `@<name>` routing. Stage A
+ * `~/.chipos/agents/` plane) for FEAT-005 Stage B `@<name>` routing. Stage A
  * authors + lists them via the Subagents tab; this service reads a single one by
  * name when the user invokes it in chat. Mirrors {@link ChiposSkillsService}'s
  * plane scan + never-throw posture.

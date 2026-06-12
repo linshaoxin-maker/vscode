@@ -18,7 +18,7 @@ import { IPathService } from '../../../../services/path/common/pathService.js';
  * `chipos.<kind>.disabled` state model, and copy-in all live here, so the four
  * resource types can't drift (a prior bug came from a tab mirroring another and
  * duplicating its leak). This is the chipos `.chipos/` convention — distinct
- * from VS Code extensions and from agent plugins (`~/.chipos-ide/plugins/`).
+ * from VS Code extensions and from agent plugins (`~/.chipos/plugins/`).
  */
 
 export type ResourceKind = 'rules' | 'commands' | 'skills' | 'hooks' | 'agents';
@@ -55,7 +55,7 @@ export const RESOURCE_LAYOUTS: Readonly<Record<ResourceKind, ResourceLayout>> = 
 
 /**
  * Extra ecosystem sub-directories scanned for each kind, on top of the chipos
- * `.chipos/` / `~/.chipos-ide/` planes — so resources authored for Cursor or
+ * `.chipos/` / `~/.chipos/` planes — so resources authored for Cursor or
  * Claude Code are picked up too (full-ecosystem compat). Each entry is a path
  * segment list resolved relative to a workspace folder OR the user home. These
  * planes always come AFTER the chipos plane so chipos keeps precedence under the
@@ -79,10 +79,10 @@ export function workspaceResourceDir(folder: URI, kind: ResourceKind): URI {
 	return URI.joinPath(folder, '.chipos', kind);
 }
 
-/** `~/.chipos-ide/<kind>/` — the user-global plane (available in all projects). */
+/** `~/.chipos/<kind>/` — the user-global plane (available in all projects). */
 export async function userGlobalResourceDir(pathService: IPathService, kind: ResourceKind): Promise<URI> {
 	const home = await pathService.userHome();
-	return URI.joinPath(home, '.chipos-ide', kind);
+	return URI.joinPath(home, '.chipos', kind);
 }
 
 /**
@@ -106,7 +106,7 @@ export interface ResourcePlane {
  * The ordered planes to scan for `kind`. Per workspace folder: the chipos
  * `.chipos/<kind>` plane (scope `workspace`) followed by any ecosystem planes
  * from {@link ECOSYSTEM_RESOURCE_DIRS} (Cursor / Claude Code dirs, also scope
- * `workspace`); then the user-global `~/.chipos-ide/<kind>` plane (scope `user`)
+ * `workspace`); then the user-global `~/.chipos/<kind>` plane (scope `user`)
  * followed by its ecosystem planes under the home dir (scope `user`).
  *
  * The order matters — callers dedupe by name with FIRST-wins, so all workspace

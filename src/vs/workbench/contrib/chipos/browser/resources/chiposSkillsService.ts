@@ -41,7 +41,7 @@ export interface SkillHeader {
  * Indexes skill headers for the prompt-resource collector (FEAT-003).
  *
  * Scans both the project plane (each workspace folder's `.chipos/skills/<id>/SKILL.md`)
- * and the user-global plane (`~/.chipos-ide/skills/<id>/SKILL.md`) — a directory
+ * and the user-global plane (`~/.chipos/skills/<id>/SKILL.md`) — a directory
  * per skill with a `SKILL.md` carrying frontmatter (`description`) + a body. Only
  * the header (id = dir name, description) is returned; the body is lazy-loaded
  * via `read_skill_body`. A skill disabled from the Skills tab

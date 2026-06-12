@@ -1992,7 +1992,7 @@ CommandsRegistry.registerCommand('chipos.eda.openInstallGuide', async (accessor:
 /**
  * FEAT-002a: install a chipos agent plugin from a local folder. Opens a folder
  * picker, validates its `.chipos-plugin/plugin.json` (or Cursor `.cursor-plugin/`)
- * manifest, and copies the tree into `~/.chipos-ide/plugins/<id>/` so the
+ * manifest, and copies the tree into `~/.chipos/plugins/<id>/` so the
  * plugin's rules/commands/skills decompose into the agent (source=plugin).
  * Agent plugins are chipos's own AI-capability bundle format — NOT VS Code
  * extensions (.vsix / Open VSX), which are a separate IDE concern.

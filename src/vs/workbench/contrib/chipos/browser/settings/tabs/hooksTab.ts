@@ -48,7 +48,7 @@ export const HOOKS_RESOURCE_SPEC: ResourceTabSpec = {
 	kind: 'hooks',
 	icon: 'shield',
 	title: localize('chipos.hooks.title', 'Hooks'),
-	description: localize('chipos.hooks.desc', 'Hooks are loaded from .chipos/hooks/*.json (project) or ~/.chipos-ide/hooks/ (global). Each hook is { point, action, tool_name?, reason? }; a "deny" at tool.before_dispatch blocks the matching tool, "observe" just records. Points include tool.before_dispatch, tool.after_result, turn.before_start, turn.after_end.'),
+	description: localize('chipos.hooks.desc', 'Hooks are loaded from .chipos/hooks/*.json (project) or ~/.chipos/hooks/ (global). Each hook is { point, action, tool_name?, reason? }; a "deny" at tool.before_dispatch blocks the matching tool, "observe" just records. Points include tool.before_dispatch, tool.after_result, turn.before_start, turn.after_end.'),
 	newLabel: localize('chipos.hooks.new', '+ New Hook'),
 	emptyMessage: localize('chipos.hooks.empty', 'No hooks yet. Click "+ New Hook", or import a hook JSON with "Import from Local…".'),
 	importFilter: { name: localize('chipos.hooks.filter', 'Hook files'), extensions: ['json'] },

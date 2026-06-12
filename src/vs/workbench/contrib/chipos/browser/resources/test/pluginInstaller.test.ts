@@ -66,7 +66,7 @@ suite('pluginInstaller', () => {
 			const src = dir('/src/my-plugin');
 			await write(URI.joinPath(src, '.chipos-plugin', 'plugin.json'), '{"name":"my-plugin","version":"2.0.0"}');
 			await write(URI.joinPath(src, 'rules', 'style.mdc'), 'be terse');
-			const root = dir('/home/.chipos-ide/plugins');
+			const root = dir('/home/.chipos/plugins');
 
 			const result = await installLocalPlugin(fileService, src, root);
 

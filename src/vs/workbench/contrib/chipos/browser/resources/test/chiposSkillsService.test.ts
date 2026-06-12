@@ -79,8 +79,8 @@ suite('ChiposSkillsService.readBody (FEAT-003 / B5)', () => {
 	});
 
 	test('plugin skill: untrusted workspace → error; trusted → body', async () => {
-		await write(URI.joinPath(HOME, '.chipos-ide', 'plugins', 'myplug', '.chipos-plugin', 'plugin.json'), JSON.stringify({ name: 'myplug', id: 'myplug', version: '0.0.1' }));
-		await write(URI.joinPath(HOME, '.chipos-ide', 'plugins', 'myplug', 'skills', 'p', 'SKILL.md'), '---\ndescription: d\n---\nPLUGIN BODY');
+		await write(URI.joinPath(HOME, '.chipos', 'plugins', 'myplug', '.chipos-plugin', 'plugin.json'), JSON.stringify({ name: 'myplug', id: 'myplug', version: '0.0.1' }));
+		await write(URI.joinPath(HOME, '.chipos', 'plugins', 'myplug', 'skills', 'p', 'SKILL.md'), '---\ndescription: d\n---\nPLUGIN BODY');
 		const untrusted = await makeService({ trusted: false }).readBody('p');
 		const trusted = await makeService({ trusted: true }).readBody('p');
 		assert.deepStrictEqual(

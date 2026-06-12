@@ -22,7 +22,7 @@ export const COMMANDS_RESOURCE_SPEC: ResourceTabSpec = {
 	kind: 'commands',
 	icon: 'terminal',
 	title: localize('chipos.commands.title', 'Commands'),
-	description: localize('chipos.commands.desc', 'Slash commands are loaded from .chipos/commands/ (project) or ~/.chipos-ide/commands/ (global). Invoke one by typing /<name> in chat — the file body is injected as the instruction for that turn. Import existing command files from a folder or a Git repo.'),
+	description: localize('chipos.commands.desc', 'Slash commands are loaded from .chipos/commands/ (project) or ~/.chipos/commands/ (global). Invoke one by typing /<name> in chat — the file body is injected as the instruction for that turn. Import existing command files from a folder or a Git repo.'),
 	newLabel: localize('chipos.commands.new', '+ New Command'),
 	emptyMessage: localize('chipos.commands.empty', 'No commands yet. Click "+ New Command", or import existing command files with "Import from Local…".'),
 	importFilter: { name: localize('chipos.commands.filter', 'Command files'), extensions: ['md', 'txt'] },

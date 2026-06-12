@@ -38,13 +38,13 @@ suite('chiposResourceScopes', () => {
 		test('workspace + user-global dirs and ordered planes (no ecosystem dirs → chipos only)', async () => {
 			const folder = URI.from({ scheme: SCHEME, path: '/ws' });
 			assert.strictEqual(workspaceResourceDir(folder, 'skills').path, '/ws/.chipos/skills');
-			assert.strictEqual((await userGlobalResourceDir(fakePathService, 'rules')).path, '/home/u/.chipos-ide/rules');
+			assert.strictEqual((await userGlobalResourceDir(fakePathService, 'rules')).path, '/home/u/.chipos/rules');
 
 			// hooks have no ecosystem form, so only the chipos planes appear.
 			const planes = await resourcePlanes(fakePathService, [folder], 'hooks');
 			assert.deepStrictEqual(planes.map(p => [p.scope, p.dir.path]), [
 				['workspace', '/ws/.chipos/hooks'],
-				['user', '/home/u/.chipos-ide/hooks'],
+				['user', '/home/u/.chipos/hooks'],
 			]);
 		});
 
@@ -60,7 +60,7 @@ suite('chiposResourceScopes', () => {
 				['workspace', '/ws-b/.chipos/commands'],
 				['workspace', '/ws-b/.claude/commands'],
 				['workspace', '/ws-b/.cursor/commands'],
-				['user', '/home/u/.chipos-ide/commands'],
+				['user', '/home/u/.chipos/commands'],
 				['user', '/home/u/.claude/commands'],
 				['user', '/home/u/.cursor/commands'],
 			]);
@@ -72,14 +72,14 @@ suite('chiposResourceScopes', () => {
 			assert.deepStrictEqual(rules.map(p => [p.scope, p.dir.path]), [
 				['workspace', '/ws/.chipos/rules'],
 				['workspace', '/ws/.cursor/rules'],
-				['user', '/home/u/.chipos-ide/rules'],
+				['user', '/home/u/.chipos/rules'],
 				['user', '/home/u/.cursor/rules'],
 			]);
 			const skills = await resourcePlanes(fakePathService, [folder], 'skills');
 			assert.deepStrictEqual(skills.map(p => [p.scope, p.dir.path]), [
 				['workspace', '/ws/.chipos/skills'],
 				['workspace', '/ws/.claude/skills'],
-				['user', '/home/u/.chipos-ide/skills'],
+				['user', '/home/u/.chipos/skills'],
 				['user', '/home/u/.claude/skills'],
 			]);
 		});
@@ -100,7 +100,7 @@ suite('chiposResourceScopes', () => {
 			assert.deepStrictEqual(agents.map(p => [p.scope, p.dir.path]), [
 				['workspace', '/ws/.chipos/agents'],
 				['workspace', '/ws/.claude/agents'],
-				['user', '/home/u/.chipos-ide/agents'],
+				['user', '/home/u/.chipos/agents'],
 				['user', '/home/u/.claude/agents'],
 			]);
 		});
@@ -122,7 +122,7 @@ suite('chiposResourceScopes', () => {
 				URI.joinPath(FOLDER, '.chipos', 'commands').path,
 				URI.joinPath(FOLDER, '.claude', 'commands').path,
 				URI.joinPath(FOLDER, '.cursor', 'commands').path,
-				URI.joinPath(HOME, '.chipos-ide', 'commands').path,
+				URI.joinPath(HOME, '.chipos', 'commands').path,
 				URI.joinPath(HOME, '.claude', 'commands').path,
 				URI.joinPath(HOME, '.cursor', 'commands').path,
 			]) {
@@ -133,7 +133,7 @@ suite('chiposResourceScopes', () => {
 				'/ws/.chipos/commands',
 				'/ws/.claude/commands',
 				'/ws/.cursor/commands',
-				'/home/u/.chipos-ide/commands',
+				'/home/u/.chipos/commands',
 				'/home/u/.claude/commands',
 				'/home/u/.cursor/commands',
 			]);
@@ -147,7 +147,7 @@ suite('chiposResourceScopes', () => {
 			assert.deepStrictEqual(paths, [
 				'/ws/.chipos/rules',
 				'/ws/.cursor/rules',
-				'/home/u/.chipos-ide/rules',
+				'/home/u/.chipos/rules',
 				'/home/u/.cursor/rules',
 			]);
 		});
@@ -155,11 +155,11 @@ suite('chiposResourceScopes', () => {
 		test('hooks: chipos planes only — no .claude/.cursor dirs (no ecosystem form)', async () => {
 			const paths = await planePaths('hooks');
 			assert.ok(paths.includes(URI.joinPath(FOLDER, '.chipos', 'hooks').path), 'expected the folder .chipos/hooks plane');
-			assert.ok(paths.includes(URI.joinPath(HOME, '.chipos-ide', 'hooks').path), 'expected the home .chipos-ide/hooks plane');
+			assert.ok(paths.includes(URI.joinPath(HOME, '.chipos', 'hooks').path), 'expected the home .chipos/hooks plane');
 			assert.ok(!paths.some(p => p.includes('/.claude/') || p.includes('/.cursor/')), `no ecosystem hook planes expected, got ${JSON.stringify(paths)}`);
 			assert.deepStrictEqual(paths, [
 				'/ws/.chipos/hooks',
-				'/home/u/.chipos-ide/hooks',
+				'/home/u/.chipos/hooks',
 			]);
 		});
 
@@ -172,9 +172,9 @@ suite('chiposResourceScopes', () => {
 			// workspace scope: .chipos/commands before .claude/commands and .cursor/commands
 			assert.ok(idxIn('workspace', '/.chipos/commands') < idxIn('workspace', '/.claude/commands'));
 			assert.ok(idxIn('workspace', '/.chipos/commands') < idxIn('workspace', '/.cursor/commands'));
-			// user scope: .chipos-ide/commands before .claude/commands and .cursor/commands
-			assert.ok(idxIn('user', '/.chipos-ide/commands') < idxIn('user', '/.claude/commands'));
-			assert.ok(idxIn('user', '/.chipos-ide/commands') < idxIn('user', '/.cursor/commands'));
+			// user scope: .chipos/commands before .claude/commands and .cursor/commands
+			assert.ok(idxIn('user', '/.chipos/commands') < idxIn('user', '/.claude/commands'));
+			assert.ok(idxIn('user', '/.chipos/commands') < idxIn('user', '/.cursor/commands'));
 		});
 	});
 
