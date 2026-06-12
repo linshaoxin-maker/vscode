@@ -65,7 +65,7 @@ export class ChiposCommandsService {
 		for (const plane of planes) {
 			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.commands);
 			for (const c of scanned) {
-				if (!isResourceEnabled(this._configurationService, 'commands', c.scope, c.name) || seen.has(c.name)) {
+				if (!isResourceEnabled(this._configurationService, 'commands', c.scope, c.source, c.name) || seen.has(c.name)) {
 					continue;
 				}
 				try {

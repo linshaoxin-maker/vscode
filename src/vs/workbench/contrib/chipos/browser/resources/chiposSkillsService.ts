@@ -72,7 +72,7 @@ export class ChiposSkillsService {
 		for (const plane of planes) {
 			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.skills);
 			for (const s of scanned) {
-				if (!isResourceEnabled(this._configurationService, 'skills', s.scope, s.name) || seen.has(s.name)) {
+				if (!isResourceEnabled(this._configurationService, 'skills', s.scope, s.source, s.name) || seen.has(s.name)) {
 					continue;
 				}
 				try {

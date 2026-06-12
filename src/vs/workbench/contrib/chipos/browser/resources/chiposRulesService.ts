@@ -50,7 +50,7 @@ export class ChiposRulesService {
 		for (const plane of planes) {
 			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.rules);
 			for (const r of scanned) {
-				if (!isResourceEnabled(this._configurationService, 'rules', r.scope, r.name) || seen.has(r.name)) {
+				if (!isResourceEnabled(this._configurationService, 'rules', r.scope, r.source, r.name) || seen.has(r.name)) {
 					continue;
 				}
 				try {
@@ -100,7 +100,7 @@ export class ChiposRulesService {
 			for (const plane of planes) {
 				const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.rules);
 				for (const r of scanned) {
-					if (r.name !== ruleId || !isResourceEnabled(this._configurationService, 'rules', r.scope, r.name)) {
+					if (r.name !== ruleId || !isResourceEnabled(this._configurationService, 'rules', r.scope, r.source, r.name)) {
 						continue;
 					}
 					try {

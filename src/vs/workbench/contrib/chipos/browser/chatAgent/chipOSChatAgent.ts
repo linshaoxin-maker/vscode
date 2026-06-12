@@ -6173,9 +6173,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// or the user-global plane). The reasoner applies the agent instructions as a
 		// persona overlay for this turn. Best-effort — never blocks the turn.
 		try {
+			// chipos repurposes `@` for FILE attachments (chiposAtContextCompletions
+			// inserts a literal `@<basename>` into the message), so an attached file
+			// whose stem equals an enabled subagent name would otherwise silently hijack
+			// the whole turn into that persona. Exclude any `@<stem>` that names an
+			// attached file/folder context.
+			const attachedStems = new Set(
+				this._extractMentions(request)
+					.filter(m => m.type === 'file' || m.type === 'folder')
+					.map(m => (m.path.split('/').pop() ?? '').split('.')[0].toLowerCase())
+					.filter(Boolean)
+			);
 			const agentMatch = /(?:^|\s)@(?<agent>[\w-]+)/.exec(request.message ?? '');
 			const agentName = agentMatch?.groups?.agent;
-			if (agentName && extensionSystemEnabled) {
+			if (agentName && !attachedStems.has(agentName.toLowerCase()) && extensionSystemEnabled) {
 				const def = await this._instantiationService.createInstance(ChiposAgentsService).getAgentDefinition(agentName);
 				if (def) {
 					invokeReq.selected_agent = { name: def.name, instructions: def.instructions, ...(def.description ? { description: def.description } : {}), ...(def.tools && def.tools.length ? { tools: def.tools } : {}), ...(def.mode ? { mode: def.mode } : {}) };

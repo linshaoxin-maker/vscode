@@ -18,6 +18,8 @@ import { ReasonerHookDefinition } from '../chatAgent/statelessInvoke/types.js';
 import { PLUGIN_MANIFEST_DIRS, PluginManifest, parsePluginManifest, installLocalPlugin, IPluginInstallResult } from './pluginInstaller.js';
 import { isAllowedGitUrl, cloneGitRepo } from './gitImport.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
+import { computePluginMcpSync } from './pluginMcpSync.js';
+import { IWorkerToolManagerService, McpServerConfig } from '../workerToolManager.js';
 
 const RULE_FILE_RE = /\.(mdc|md|txt)$/i;
 const COMMAND_FILE_RE = /\.(md|txt)$/i;
@@ -257,6 +259,34 @@ export class ChiposPluginsService {
 		await this._fileService.del(target, { recursive: true, useTrash: false });
 		if (this._disabledIds().has(id)) {
 			await this.setPluginEnabled(id, true);
+		}
+	}
+
+	/**
+	 * FEAT-011b — reconcile the worker's MCP config to the currently-enabled
+	 * plugins: register a newly-enabled plugin's contributed servers and drop any
+	 * `plugin.`-tagged server whose plugin is now disabled/uninstalled. Call after a
+	 * plugin enable/disable/uninstall so the worker does not keep a stale plugin
+	 * server running until the EDA Tools tab is reopened. Best-effort — a worker
+	 * that is down is ignored and retried on the next EDA Tools tab open.
+	 */
+	async reconcileWorkerMcp(): Promise<void> {
+		try {
+			const toolManager = this._instantiationService.invokeFunction(acc => acc.get(IWorkerToolManagerService));
+			const discovered = await this.getPluginMcp();
+			const existing = (await toolManager.listMcpServers()).servers.map(s => s.name);
+			const plan = computePluginMcpSync(discovered, existing);
+			if (!plan.toRegister.length && !plan.toRemove.length) {
+				return;
+			}
+			for (const server of plan.toRegister) {
+				await toolManager.addMcpServer(server.config as unknown as McpServerConfig);
+			}
+			for (const name of plan.toRemove) {
+				await toolManager.removeMcpServer(name);
+			}
+		} catch {
+			/* best-effort — worker may be down; the EDA Tools tab open retries */
 		}
 	}
 

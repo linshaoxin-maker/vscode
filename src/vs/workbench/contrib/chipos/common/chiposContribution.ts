@@ -1686,7 +1686,15 @@ async function runMcpServerWizard(
 			placeHolder: 'Server name (e.g. company-eda-cluster)',
 			prompt: 'Unique identifier — also used in chipos.eda.tools.<tool>.mcpServer setting',
 			value: name,
-			validateInput: async v => v.trim() ? undefined : 'Required',
+			validateInput: async v => {
+				const t = v.trim();
+				if (!t) { return 'Required'; }
+				// 'plugin.' is reserved for plugin-contributed servers (PLUGIN_MCP_PREFIX in
+				// resources/pluginMcpSync.ts); the plugin reconcile would delete a user server
+				// using it, so block it at input.
+				if (t.startsWith('plugin.')) { return localize('chipos.workerTools.reservedPluginPrefix', 'The "plugin." prefix is reserved for plugin-contributed servers — choose another name.'); }
+				return undefined;
+			},
 		});
 		if (v === undefined) { return undefined; }
 		name = v.trim();

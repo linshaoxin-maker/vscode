@@ -41,7 +41,7 @@ import {
 	McpServerListResult,
 } from '../../../../../../workbench/contrib/chipos/browser/workerToolManager.js';
 import { ChiposPluginsService } from '../../resources/chiposPluginsService.js';
-import { computePluginMcpSync } from '../../resources/pluginMcpSync.js';
+import { computePluginMcpSync, PLUGIN_MCP_PREFIX } from '../../resources/pluginMcpSync.js';
 
 const STRATEGY_OPTIONS: { value: string; label: string; desc: string }[] = [
 	{
@@ -789,7 +789,7 @@ export class EdaToolsTab extends Disposable {
 		const added: string[] = [];
 		const skipped: string[] = [];
 		for (const [name, raw] of Object.entries(mapRaw)) {
-			if (!name || existing.has(name) || !raw || typeof raw !== 'object') {
+			if (!name || existing.has(name) || name.startsWith(PLUGIN_MCP_PREFIX) || !raw || typeof raw !== 'object') {
 				skipped.push(name);
 				continue;
 			}

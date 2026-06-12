@@ -6,7 +6,6 @@
 import * as dom from '../../../../../../base/browser/dom.js';
 import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../../base/common/uri.js';
-import { generateUuid } from '../../../../../../base/common/uuid.js';
 import { localize } from '../../../../../../nls.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -65,6 +64,20 @@ interface RowModel extends ScannedResource {
  * tab can flag them. Disabled rows never shadow and are never shadowed (they are
  * not the effective match). Pure — `rows` must already be in plane order.
  */
+/**
+ * Derive a safe directory name from a git URL's last path segment (minus a
+ * trailing .git / query / fragment), so a cloned single-skill repo (SKILL.md at
+ * the repo root) imports under the repo name instead of an opaque scratch id.
+ * Sanitized to one path segment (no separators, no leading dot/dash) so the
+ * clone stays confined to the cache dir.
+ */
+function repoDirNameFromGitUrl(url: string): string {
+	const last = url.split('?')[0].split('#')[0].split('/').filter(Boolean).pop() ?? '';
+	const noGit = last.toLowerCase().endsWith('.git') ? last.slice(0, -4) : last;
+	const safe = noGit.replace(/[^\w.-]/g, '-').replace(/^[.-]+/, '').slice(0, 64);
+	return safe || 'imported-resource';
+}
+
 export function computeShadowedRows<T extends { readonly name: string; readonly enabled: boolean }>(rows: readonly T[]): Set<T> {
 	const claimed = new Set<string>();
 	const shadowed = new Set<T>();
@@ -190,17 +203,19 @@ export class ResourceListTab extends Disposable {
 
 	private async _loadList(container: HTMLElement): Promise<void> {
 		const epoch = ++this._epoch;
-		const folder = this._workspaceFolder();
-		// Use the SAME plane resolution as the per-turn services (resourcePlanes) so
-		// the tab also lists ecosystem resources (.cursor / .claude), not just
-		// .chipos / ~/.chipos-ide. Keeps tab display and the agent's view in sync.
-		const planes = await resourcePlanes(this._pathService, folder ? [folder] : [], this._spec.kind);
+		// Scan ALL workspace folders (not just the first), matching the per-turn
+		// services so the tab lists EVERY resource the agent sees — including
+		// non-first-folder and ecosystem (.cursor / .claude) resources — instead of
+		// silently hiding (and making un-manageable) resources outside folders[0] in
+		// a multi-root workspace.
+		const wsFolders = this._workspaceService.getWorkspace().folders.map(f => f.uri);
+		const planes = await resourcePlanes(this._pathService, wsFolders, this._spec.kind);
 
 		const rows: RowModel[] = [];
 		for (const plane of planes) {
 			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS[this._spec.kind]);
 			for (const r of scanned) {
-				const enabled = isResourceEnabled(this._configurationService, this._spec.kind, r.scope, r.name);
+				const enabled = isResourceEnabled(this._configurationService, this._spec.kind, r.scope, r.source, r.name);
 				let meta = '';
 				try {
 					meta = await this._spec.metaForRow(this._fileService, r);
@@ -260,6 +275,14 @@ export class ResourceListTab extends Disposable {
 		nameEl.style.fontWeight = '600';
 		nameEl.textContent = row.name;
 		this._appendScopeBadge(titleLine, row.scope);
+		// Multi-root: disambiguate same-named rows from different project folders
+		// (they now toggle independently via source-qualified ids).
+		if (row.scope === 'workspace' && this._workspaceService.getWorkspace().folders.length > 1) {
+			const wf = this._workspaceService.getWorkspaceFolder(row.entry);
+			if (wf) {
+				this._appendFolderBadge(titleLine, wf.name);
+			}
+		}
 		if (isShadowed) {
 			this._appendShadowBadge(titleLine, row.name);
 		}
@@ -276,7 +299,7 @@ export class ResourceListTab extends Disposable {
 		toggleBtn.textContent = row.enabled ? localize('chipos.resource.disable', 'Disable') : localize('chipos.resource.enable', 'Enable');
 		this._listDisposables.add(dom.addDisposableListener(toggleBtn, 'click', async () => {
 			try {
-				await setResourceEnabled(this._configurationService, this._spec.kind, row.scope, row.name, !row.enabled);
+				await setResourceEnabled(this._configurationService, this._spec.kind, row.scope, row.source, row.name, !row.enabled);
 			} catch (err) {
 				this._notificationService.error(localize('chipos.resource.toggleFailed', 'Could not update: {0}', String(err)));
 			}
@@ -302,7 +325,7 @@ export class ResourceListTab extends Disposable {
 			try {
 				await this._fileService.del(row.entry, { recursive: RESOURCE_LAYOUTS[this._spec.kind].shape === 'skill', useTrash: true });
 				// Clear any disabled-state so a later same-named re-create/import isn't silently disabled (ghost state).
-				await setResourceEnabled(this._configurationService, this._spec.kind, row.scope, row.name, true);
+				await setResourceEnabled(this._configurationService, this._spec.kind, row.scope, row.source, row.name, true);
 			} catch { /* ignore */ }
 			this._refresh();
 		}));
@@ -319,6 +342,20 @@ export class ResourceListTab extends Disposable {
 		badge.style.flexShrink = '0';
 		badge.style.background = 'var(--vscode-badge-background)';
 		badge.style.color = 'var(--vscode-badge-foreground)';
+	}
+
+	/** Multi-root only: show which project folder a workspace-scope row lives in. */
+	private _appendFolderBadge(parent: HTMLElement, folderName: string): void {
+		const badge = dom.append(parent, dom.$('span'));
+		badge.textContent = folderName;
+		badge.title = localize('chipos.resource.badge.folderTooltip', 'Project folder: {0}', folderName);
+		badge.style.fontSize = '10px';
+		badge.style.padding = '1px 6px';
+		badge.style.borderRadius = '4px';
+		badge.style.flexShrink = '0';
+		badge.style.background = 'var(--vscode-badge-background)';
+		badge.style.color = 'var(--vscode-badge-foreground)';
+		badge.style.opacity = '0.8';
 	}
 
 	/**
@@ -455,7 +492,11 @@ export class ResourceListTab extends Disposable {
 		const home = await this._pathService.userHome();
 		const parent = URI.joinPath(home, '.chipos-ide', '.cache', 'resource-clones');
 		await this._fileService.createFolder(parent);
-		const tempDir = URI.joinPath(parent, generateUuid());
+		// Name the clone dir after the repo (not a random uuid) so a root-level
+		// SKILL.md imports under the repo name, not an opaque id. Transient +
+		// pre-cleared so a stale same-named clone never leaks into the import.
+		const tempDir = URI.joinPath(parent, repoDirNameFromGitUrl(url));
+		try { await this._fileService.del(tempDir, { recursive: true, useTrash: false }); } catch { /* fresh clone */ }
 		await cloneGitRepo(url, tempDir.fsPath, { timeoutMs: 60000 }, this._resolveGitService());
 		try {
 			await this._fileService.del(URI.joinPath(tempDir, '.git'), { recursive: true, useTrash: false });

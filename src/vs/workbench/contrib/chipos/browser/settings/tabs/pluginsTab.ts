@@ -238,6 +238,9 @@ export class PluginsTab extends Disposable {
 		this._listDisposables.add(dom.addDisposableListener(toggleBtn, 'click', async () => {
 			try {
 				await this._service().setPluginEnabled(summary.manifest.id, !summary.enabled);
+				// FEAT-011b: enable/disable changes the plugin's contributed worker MCP
+				// servers — reconcile now rather than waiting for the EDA Tools tab to reopen.
+				await this._service().reconcileWorkerMcp();
 			} catch (err) {
 				this._notificationService.error(localize('chipos.plugins.toggleFailed', 'Could not update plugin: {0}', String(err)));
 			}
@@ -258,6 +261,7 @@ export class PluginsTab extends Disposable {
 			}
 			try {
 				await this._service().uninstall(summary.manifest.id);
+				await this._service().reconcileWorkerMcp();
 				this._notificationService.info(localize('chipos.plugins.uninstall.done', 'Uninstalled plugin "{0}".', summary.manifest.name));
 			} catch (err) {
 				this._notificationService.error(localize('chipos.plugins.uninstall.failed', 'Could not uninstall plugin: {0}', String(err)));

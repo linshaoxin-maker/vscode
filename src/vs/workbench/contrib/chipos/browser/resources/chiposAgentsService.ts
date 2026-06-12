@@ -55,7 +55,7 @@ export class ChiposAgentsService {
 		for (const plane of planes) {
 			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.agents);
 			const match = scanned.find(s => s.name === name);
-			if (!match || !isResourceEnabled(this._configurationService, 'agents', match.scope, match.name)) {
+			if (!match || !isResourceEnabled(this._configurationService, 'agents', match.scope, match.source, match.name)) {
 				continue;
 			}
 			try {

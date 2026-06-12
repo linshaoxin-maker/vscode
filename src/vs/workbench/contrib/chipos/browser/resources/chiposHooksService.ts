@@ -127,7 +127,7 @@ export class ChiposHooksService {
 		for (const plane of planes) {
 			const scanned = await scanResourcePlane(this._fileService, plane.dir, plane.scope, RESOURCE_LAYOUTS.hooks);
 			for (const h of scanned) {
-				if (!isResourceEnabled(this._configurationService, 'hooks', h.scope, h.name)) {
+				if (!isResourceEnabled(this._configurationService, 'hooks', h.scope, h.source, h.name)) {
 					continue; // per-file disable (id = `<scope>:<filename>`)
 				}
 				try {

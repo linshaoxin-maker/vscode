@@ -182,22 +182,41 @@ suite('chiposResourceScopes', () => {
 		test('disabling one scope leaves the same name in the other scope enabled', async () => {
 			const config = fakeConfig();
 			const kind: ResourceKind = 'skills';
-			assert.strictEqual(isResourceEnabled(config, kind, 'workspace', 'deploy'), true);
+			assert.strictEqual(isResourceEnabled(config, kind, 'workspace', 's1', 'deploy'), true);
 
-			await setResourceEnabled(config, kind, 'workspace', 'deploy', false);
-			assert.deepStrictEqual(config.getValue(disabledConfigKey(kind)), ['workspace:deploy']);
-			assert.strictEqual(isResourceEnabled(config, kind, 'workspace', 'deploy'), false);
+			await setResourceEnabled(config, kind, 'workspace', 's1', 'deploy', false);
+			assert.deepStrictEqual(config.getValue(disabledConfigKey(kind)), ['workspace:s1:deploy']);
+			assert.strictEqual(isResourceEnabled(config, kind, 'workspace', 's1', 'deploy'), false);
 			// same name, other scope, still enabled
-			assert.strictEqual(isResourceEnabled(config, kind, 'user', 'deploy'), true);
+			assert.strictEqual(isResourceEnabled(config, kind, 'user', 's1', 'deploy'), true);
 
 			// re-enabling removes just that id
-			await setResourceEnabled(config, kind, 'workspace', 'deploy', true);
+			await setResourceEnabled(config, kind, 'workspace', 's1', 'deploy', true);
 			assert.deepStrictEqual(config.getValue(disabledConfigKey(kind)), []);
 		});
 
 		test('id format + key naming', () => {
-			assert.strictEqual(resourceStateId('user' as ResourceScope, 'x'), 'user:x');
+			assert.strictEqual(resourceStateId('user' as ResourceScope, 'src', 'x'), 'user:src:x');
 			assert.strictEqual(disabledConfigKey('commands'), 'chipos.commands.disabled');
+		});
+
+		test('same name + scope but different source (plane) toggles independently', async () => {
+			const config = fakeConfig();
+			const kind: ResourceKind = 'rules';
+			// e.g. .chipos/foo and .cursor/foo — both workspace scope, different source.
+			await setResourceEnabled(config, kind, 'workspace', 'chipos', 'foo', false);
+			assert.strictEqual(isResourceEnabled(config, kind, 'workspace', 'chipos', 'foo'), false);
+			// the same-named resource in the OTHER plane is unaffected
+			assert.strictEqual(isResourceEnabled(config, kind, 'workspace', 'cursor', 'foo'), true);
+		});
+
+		test('a legacy bare <scope>:<name> id still disables, and re-enabling clears it', async () => {
+			const kind: ResourceKind = 'rules';
+			const config = fakeConfig({ [disabledConfigKey(kind)]: ['workspace:foo'] });
+			// honored as disabled for any source at that scope+name (read-side migration)
+			assert.strictEqual(isResourceEnabled(config, kind, 'workspace', 'chipos', 'foo'), false);
+			await setResourceEnabled(config, kind, 'workspace', 'chipos', 'foo', true);
+			assert.deepStrictEqual(config.getValue(disabledConfigKey(kind)), []);
 		});
 	});
 

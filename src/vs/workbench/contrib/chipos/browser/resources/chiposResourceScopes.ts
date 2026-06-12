@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../../base/common/uri.js';
+import { hash } from '../../../../../base/common/hash.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../../platform/configuration/common/configuration.js';
 import { IPathService } from '../../../../services/path/common/pathService.js';
@@ -84,6 +85,17 @@ export async function userGlobalResourceDir(pathService: IPathService, kind: Res
 	return URI.joinPath(home, '.chipos-ide', kind);
 }
 
+/**
+ * A stable, collision-free discriminator for a plane, derived from its on-disk
+ * dir. Distinguishes the same NAME across planes — the chipos `.chipos` dir vs an
+ * ecosystem `.cursor`/`.claude` dir, and the same ecosystem dir across multi-root
+ * folders — so each toggles its own disabled state independently. Stable across
+ * sessions (absolute dir paths don't change), so persisted ids survive a restart.
+ */
+export function planeSource(dir: URI): string {
+	return (hash(dir.toString()) >>> 0).toString(36);
+}
+
 /** A directory to scan plus the scope its contents belong to. */
 export interface ResourcePlane {
 	readonly dir: URI;
@@ -129,12 +141,13 @@ export function disabledConfigKey(kind: ResourceKind): string {
 }
 
 /**
- * Stable, scope-qualified identity (`"<scope>:<name>"`) so the same name in two
- * scopes — e.g. a workspace and a user-global skill both called `deploy` —
- * toggles independently.
+ * Stable, plane-qualified identity (`"<scope>:<source>:<name>"`) so the same name
+ * in different planes — two scopes (workspace vs user), the chipos vs an ecosystem
+ * (.cursor/.claude) dir, or two multi-root folders — toggles independently.
+ * `source` is {@link planeSource}.
  */
-export function resourceStateId(scope: ResourceScope, name: string): string {
-	return `${scope}:${name}`;
+export function resourceStateId(scope: ResourceScope, source: string, name: string): string {
+	return `${scope}:${source}:${name}`;
 }
 
 export function getDisabledResourceIds(config: IConfigurationService, kind: ResourceKind): ReadonlySet<string> {
@@ -143,8 +156,12 @@ export function getDisabledResourceIds(config: IConfigurationService, kind: Reso
 }
 
 /** Whether a resource currently contributes to the agent (not in the disabled set). */
-export function isResourceEnabled(config: IConfigurationService, kind: ResourceKind, scope: ResourceScope, name: string): boolean {
-	return !getDisabledResourceIds(config, kind).has(resourceStateId(scope, name));
+export function isResourceEnabled(config: IConfigurationService, kind: ResourceKind, scope: ResourceScope, source: string, name: string): boolean {
+	const disabled = getDisabledResourceIds(config, kind);
+	// Also honor a legacy `<scope>:<name>` id (pre source-qualification) so a
+	// resource disabled before the upgrade stays disabled without a config rewrite;
+	// new toggles write the source-qualified id (see setResourceEnabled).
+	return !disabled.has(resourceStateId(scope, source, name)) && !disabled.has(`${scope}:${name}`);
 }
 
 /**
@@ -153,11 +170,12 @@ export function isResourceEnabled(config: IConfigurationService, kind: ResourceK
  * the per-turn scan filters it out — no other wiring needed (mirrors
  * {@link ChiposPluginsService.setPluginEnabled}).
  */
-export async function setResourceEnabled(config: IConfigurationService, kind: ResourceKind, scope: ResourceScope, name: string, enabled: boolean): Promise<void> {
+export async function setResourceEnabled(config: IConfigurationService, kind: ResourceKind, scope: ResourceScope, source: string, name: string, enabled: boolean): Promise<void> {
 	const next = new Set(getDisabledResourceIds(config, kind));
-	const id = resourceStateId(scope, name);
+	const id = resourceStateId(scope, source, name);
 	if (enabled) {
 		next.delete(id);
+		next.delete(`${scope}:${name}`); // also clear any legacy (pre source-qualified) id
 	} else {
 		next.add(id);
 	}
@@ -170,6 +188,8 @@ export async function setResourceEnabled(config: IConfigurationService, kind: Re
 export interface ScannedResource {
 	readonly name: string;
 	readonly scope: ResourceScope;
+	/** Plane discriminator ({@link planeSource}) — qualifies the disabled-state id. */
+	readonly source: string;
 	/** The dir (skill) or file (flat) — the delete target. */
 	readonly entry: URI;
 	/** `SKILL.md` (skill) or the file itself (flat) — the open-in-editor target. */
@@ -192,6 +212,7 @@ export async function scanResourcePlane(fileService: IFileService, dir: URI, sco
 	if (!children) {
 		return [];
 	}
+	const source = planeSource(dir);
 	const out: ScannedResource[] = [];
 	for (const child of children) {
 		if (layout.shape === 'flat') {
@@ -199,7 +220,7 @@ export async function scanResourcePlane(fileService: IFileService, dir: URI, sco
 				continue;
 			}
 			const name = layout.stripExt ? child.name.replace(layout.fileRe!, '') : child.name;
-			out.push({ name, scope, entry: child.resource, editFile: child.resource });
+			out.push({ name, scope, source, entry: child.resource, editFile: child.resource });
 		} else {
 			if (!child.isDirectory) {
 				continue;
@@ -208,7 +229,7 @@ export async function scanResourcePlane(fileService: IFileService, dir: URI, sco
 			if (!(await fileService.exists(marker))) {
 				continue;
 			}
-			out.push({ name: child.name, scope, entry: child.resource, editFile: marker });
+			out.push({ name: child.name, scope, source, entry: child.resource, editFile: marker });
 		}
 	}
 	return out;
