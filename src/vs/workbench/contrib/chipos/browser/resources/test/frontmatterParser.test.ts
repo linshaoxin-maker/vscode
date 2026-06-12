@@ -66,6 +66,31 @@ suite('frontmatterParser', () => {
 		assert.strictEqual(parseRuleFile('---\ndescription: x\n---\nbody').mode, undefined);
 	});
 
+	test('FEAT-005: normalizes malformed mode so it still hits the reasoner subagent gate', () => {
+		// YAML-quoted, capitalized, and padded spellings must all normalize to
+		// 'subagent' — otherwise the reasoner silently runs the MAIN agent (isolation lost).
+		assert.deepStrictEqual(
+			{
+				doubleQuoted: parseRuleFile('---\nmode: "subagent"\n---\nbody').mode,
+				singleQuoted: parseRuleFile("---\nmode: 'subagent'\n---\nbody").mode,
+				capitalized: parseRuleFile('---\nmode: Subagent\n---\nbody').mode,
+				upper: parseRuleFile('---\nmode: SUBAGENT\n---\nbody').mode,
+				quotedSpaced: parseRuleFile('---\nmode: " Subagent "\n---\nbody').mode,
+				empty: parseRuleFile('---\nmode:\n---\nbody').mode,
+				persona: parseRuleFile('---\nmode: persona\n---\nbody').mode,
+			},
+			{
+				doubleQuoted: 'subagent',
+				singleQuoted: 'subagent',
+				capitalized: 'subagent',
+				upper: 'subagent',
+				quotedSpaced: 'subagent',
+				empty: undefined,
+				persona: 'persona',
+			},
+		);
+	});
+
 	test('FEAT-005 slice 2: parses agent tools allow-list (list / bracketed / absent)', () => {
 		assert.deepStrictEqual(parseRuleFile('---\ntools: read_file, ls, grep\n---\nbody').tools, ['read_file', 'ls', 'grep']);
 		assert.deepStrictEqual(parseRuleFile('---\ntools: [read_file, grep]\n---\nbody').tools, ['read_file', 'grep']);

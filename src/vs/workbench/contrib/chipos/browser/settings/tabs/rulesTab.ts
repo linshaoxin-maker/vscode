@@ -49,6 +49,7 @@ export const RULES_RESOURCE_SPEC: ResourceTabSpec = {
 		}
 		const file = URI.joinPath(destDir, /\.(mdc|md|txt)$/i.test(id) ? id : `${id}.md`);
 		const template = `---\ndescription: One-line summary the agent uses to decide when to apply this rule.\nalwaysApply: false\n---\n# ${id}\n\nDescribe the rule here. Set alwaysApply: true to inject it every turn, or add\nglobs: "src/**/*.ts" to inject it when a matching file is open.\n`;
+		if (await fileService.exists(file)) { throw new Error(localize('chipos.rules.exists', 'A resource with that name already exists — choose a different name.')); }
 		await fileService.writeFile(file, VSBuffer.fromString(template));
 		return file;
 	},

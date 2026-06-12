@@ -66,7 +66,25 @@ export function parseRuleFile(content: string): ParsedRuleFile {
 		ruleType = 'manual';
 	}
 
-	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script'), priority: parsePriority(fields.get('priority')), mode: fields.get('mode'), tools: parseList(fields.get('tools')), command: normalizeCommandName(fields.get('command') ?? fields.get('slash')) };
+	return { description: fields.get('description'), globs, alwaysApply, ruleType, body, script: fields.get('script'), priority: parsePriority(fields.get('priority')), mode: normalizeMode(fields.get('mode')), tools: parseList(fields.get('tools')), command: normalizeCommandName(fields.get('command') ?? fields.get('slash')) };
+}
+
+/**
+ * FEAT-005 — normalize an agent's `mode:` frontmatter so a YAML-quoted
+ * (`mode: "subagent"`) or capitalized (`mode: Subagent`) value still matches the
+ * reasoner's `mode === 'subagent'` isolation gate. Without this the reasoner runs
+ * the MAIN agent (parent conversation NOT dropped → isolation lost) with no
+ * user-visible signal. Strips a single layer of surrounding quotes, trims, and
+ * lowercases; returns `undefined` for empty/absent values. (The reasoner also
+ * normalizes defensively — `_normalize_agent_mode` — so this is defence-in-depth
+ * that also keeps the value the IDE forwards/displays clean.)
+ */
+function normalizeMode(raw: string | undefined): string | undefined {
+	if (!raw) {
+		return undefined;
+	}
+	const unquoted = raw.trim().replace(/^['"]|['"]$/g, '').trim();
+	return unquoted ? unquoted.toLowerCase() : undefined;
 }
 
 /**

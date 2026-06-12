@@ -49,6 +49,7 @@ export const AGENTS_RESOURCE_SPEC: ResourceTabSpec = {
 		}
 		const file = URI.joinPath(destDir, /\.md$/i.test(id) ? id : `${id}.md`);
 		const template = `---\nname: ${id}\ndescription: One-line summary of what this subagent specializes in.\n---\n# ${id}\n\nDescribe this subagent's role, scope, and instructions here.\n\nRuntime dispatch is staged: Stage B will route \`@${id}\` to this subagent.\n`;
+		if (await fileService.exists(file)) { throw new Error(localize('chipos.agents.exists', 'A resource with that name already exists — choose a different name.')); }
 		await fileService.writeFile(file, VSBuffer.fromString(template));
 		return file;
 	},

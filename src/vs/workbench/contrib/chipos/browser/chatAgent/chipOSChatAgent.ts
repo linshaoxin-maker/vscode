@@ -6024,6 +6024,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// conversation (ADR-002). Best-effort — a failure here must never block the
 		// turn. (glob + manual rules additionally need the active editor + attach
 		// UI; tracked as follow-ups.)
+		// FEAT-006c: master kill-switch gates the ENTIRE extension system (rules + commands + skills + hooks + @agent). Hoisted so EVERY injection block below honours it — off = baseline, no residual injection.
+		const extensionSystemEnabled = isExtensionSystemEnabled(this._configurationService.getValue('chipos.extensions.beta'));
 		try {
 			// FEAT-001b (AGENTS.md interop): anchor the rule scan at the directory of
 			// the active editor so AGENTS.md / CLAUDE.md files along the chain up to the
@@ -6059,7 +6061,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// FEAT-006c: AND the chipos.extensions.beta master switch — off returns to
 			// the baseline (no injection), with no residual state.
 			const promptResourcesEnabled = this._configurationService.getValue<boolean>('chipos.promptResources.enabled') !== false;
-			const extensionSystemEnabled = isExtensionSystemEnabled(this._configurationService.getValue('chipos.extensions.beta'));
 			const collected = collectPromptResources(allRules, {
 				activeFile,
 				enabled: promptResourcesEnabled && extensionSystemEnabled,
@@ -6091,7 +6092,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const explicitCommand = (request as { command?: string }).command;
 			const inlineMatch = /(?:^|\s)\/(?<name>[\w-]+)(?:[ \t]+(?<args>[^\n]*))?/.exec(request.message ?? '');
 			const commandName = explicitCommand || inlineMatch?.groups?.name;
-			if (commandName) {
+			if (commandName && extensionSystemEnabled) {
 				const commands = await this._instantiationService.createInstance(ChiposCommandsService).getCommands();
 				// FEAT-002a: also match commands contributed by installed plugins.
 				const pluginCommands = await this._instantiationService.createInstance(ChiposPluginsService).getPluginCommands();
@@ -6174,7 +6175,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		try {
 			const agentMatch = /(?:^|\s)@(?<agent>[\w-]+)/.exec(request.message ?? '');
 			const agentName = agentMatch?.groups?.agent;
-			if (agentName) {
+			if (agentName && extensionSystemEnabled) {
 				const def = await this._instantiationService.createInstance(ChiposAgentsService).getAgentDefinition(agentName);
 				if (def) {
 					invokeReq.selected_agent = { name: def.name, instructions: def.instructions, ...(def.description ? { description: def.description } : {}), ...(def.tools && def.tools.length ? { tools: def.tools } : {}), ...(def.mode ? { mode: def.mode } : {}) };
@@ -6194,7 +6195,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// (header only — body lazy-loads via read_skill_body, FEAT-003).
 			const pluginSkills = await this._instantiationService.createInstance(ChiposPluginsService).getPluginSkills();
 			const allSkills = pluginSkills.length ? [...skills, ...pluginSkills] : skills;
-			if (allSkills.length) {
+			if (allSkills.length && extensionSystemEnabled) {
 				invokeReq.skills = allSkills;
 			}
 		} catch (err) {
@@ -6218,7 +6219,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// filterHooksForInvoke.
 			const toAttach = filterHooksForInvoke(allHooks, {
 				executablePlugins: this._configurationService.getValue<boolean>('chipos.hooks.executablePlugins') === true,
-				disable: this._configurationService.getValue<boolean>('chipos.hooks.disable') === true,
+				disable: this._configurationService.getValue<boolean>('chipos.hooks.disable') === true || !extensionSystemEnabled,
 			});
 			if (toAttach.length) {
 				invokeReq.hooks = toAttach;

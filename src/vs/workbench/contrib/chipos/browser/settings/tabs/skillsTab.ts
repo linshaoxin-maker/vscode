@@ -44,6 +44,7 @@ export const SKILLS_RESOURCE_SPEC: ResourceTabSpec = {
 		}
 		const skillMd = URI.joinPath(destDir, id, 'SKILL.md');
 		const template = `---\ndescription: One-line description the agent sees in its skill menu.\n---\n# ${id}\n\nDescribe what this skill does and how to use it. The agent loads this body\non demand when it decides to use the skill.\n`;
+		if (await fileService.exists(skillMd)) { throw new Error(localize('chipos.skills.exists', 'A resource with that name already exists — choose a different name.')); }
 		await fileService.writeFile(skillMd, VSBuffer.fromString(template));
 		return skillMd;
 	},

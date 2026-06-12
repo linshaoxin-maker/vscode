@@ -53,6 +53,7 @@ export const COMMANDS_RESOURCE_SPEC: ResourceTabSpec = {
 		}
 		const file = URI.joinPath(destDir, /\.(md|txt)$/i.test(id) ? id : `${id}.md`);
 		const template = `# ${id}\n\nWhen the user runs /${id}, do the following:\n\n- Step one\n- Step two\n`;
+		if (await fileService.exists(file)) { throw new Error(localize('chipos.commands.exists', 'A resource with that name already exists — choose a different name.')); }
 		await fileService.writeFile(file, VSBuffer.fromString(template));
 		return file;
 	},

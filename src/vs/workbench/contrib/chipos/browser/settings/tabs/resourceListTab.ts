@@ -54,6 +54,34 @@ interface RowModel extends ScannedResource {
 }
 
 /**
+ * FEAT-005 — find rows SHADOWED by an earlier same-named enabled row.
+ *
+ * Agents resolve first-enabled-match in plane order (workspace before user, see
+ * `ChiposAgentsService.getAgentDefinition`), so when a workspace and a user-global
+ * agent share a name and both are enabled, `@<name>` silently routes to the
+ * workspace one and the user one never runs. Both otherwise list as enabled with
+ * only a scope badge — no signal that one is dead. This returns the set of rows
+ * that are shadowed (claimed by an earlier enabled row of the same name), so the
+ * tab can flag them. Disabled rows never shadow and are never shadowed (they are
+ * not the effective match). Pure — `rows` must already be in plane order.
+ */
+export function computeShadowedRows<T extends { readonly name: string; readonly enabled: boolean }>(rows: readonly T[]): Set<T> {
+	const claimed = new Set<string>();
+	const shadowed = new Set<T>();
+	for (const row of rows) {
+		if (!row.enabled) {
+			continue;
+		}
+		if (claimed.has(row.name)) {
+			shadowed.add(row);
+		} else {
+			claimed.add(row.name);
+		}
+	}
+	return shadowed;
+}
+
+/**
  * Generic settings tab for a `.chipos/` resource kind (rules / commands / skills
  * / hooks). Lists both the project plane (`.chipos/<kind>/`) and the user-global
  * plane (`~/.chipos-ide/<kind>/`) with a scope badge + per-row enable/disable +
@@ -198,12 +226,16 @@ export class ResourceListTab extends Disposable {
 			dom.append(container, dom.$('.chipos-setting-description', undefined, this._spec.emptyMessage));
 			return;
 		}
+		// FEAT-005: agents resolve first-enabled-match across planes, so flag any
+		// enabled row shadowed by an earlier same-named one (the collision is
+		// otherwise silent — `@<name>` routes elsewhere). Only agents route by name.
+		const shadowed = this._spec.kind === 'agents' ? computeShadowedRows(rows) : undefined;
 		for (const row of rows) {
-			this._renderRow(container, row);
+			this._renderRow(container, row, shadowed?.has(row) ?? false);
 		}
 	}
 
-	private _renderRow(parent: HTMLElement, row: RowModel): void {
+	private _renderRow(parent: HTMLElement, row: RowModel, isShadowed: boolean): void {
 		const el = dom.append(parent, dom.$('.chipos-rule-item'));
 		if (!row.enabled) {
 			el.style.opacity = '0.55';
@@ -228,6 +260,9 @@ export class ResourceListTab extends Disposable {
 		nameEl.style.fontWeight = '600';
 		nameEl.textContent = row.name;
 		this._appendScopeBadge(titleLine, row.scope);
+		if (isShadowed) {
+			this._appendShadowBadge(titleLine, row.name);
+		}
 
 		if (row.meta) {
 			const meta = dom.append(nameCell, dom.$('span'));
@@ -266,6 +301,8 @@ export class ResourceListTab extends Disposable {
 			}
 			try {
 				await this._fileService.del(row.entry, { recursive: RESOURCE_LAYOUTS[this._spec.kind].shape === 'skill', useTrash: true });
+				// Clear any disabled-state so a later same-named re-create/import isn't silently disabled (ghost state).
+				await setResourceEnabled(this._configurationService, this._spec.kind, row.scope, row.name, true);
 			} catch { /* ignore */ }
 			this._refresh();
 		}));
@@ -282,6 +319,24 @@ export class ResourceListTab extends Disposable {
 		badge.style.flexShrink = '0';
 		badge.style.background = 'var(--vscode-badge-background)';
 		badge.style.color = 'var(--vscode-badge-foreground)';
+	}
+
+	/**
+	 * FEAT-005 — flag a row whose `@name` is taken by a higher-priority enabled
+	 * agent of the same name (workspace beats user-global). It lists as enabled but
+	 * never runs; the warning-coloured badge + tooltip surfaces the silent collision.
+	 */
+	private _appendShadowBadge(parent: HTMLElement, name: string): void {
+		const badge = dom.append(parent, dom.$('span'));
+		badge.textContent = localize('chipos.resource.badge.shadowed', 'Shadowed');
+		badge.title = localize('chipos.resource.badge.shadowedTooltip', "Another enabled “{0}” in a higher-priority scope takes precedence — @{0} won’t run this one. Rename or disable one to resolve.", name);
+		badge.style.fontSize = '10px';
+		badge.style.padding = '1px 6px';
+		badge.style.borderRadius = '4px';
+		badge.style.flexShrink = '0';
+		badge.style.background = 'var(--vscode-inputValidation-warningBackground)';
+		badge.style.color = 'var(--vscode-inputValidation-warningForeground, var(--vscode-foreground))';
+		badge.style.border = '1px solid var(--vscode-inputValidation-warningBorder)';
 	}
 
 	private _refresh(): void {

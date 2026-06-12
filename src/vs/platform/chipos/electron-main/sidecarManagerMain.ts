@@ -1286,6 +1286,7 @@ export function registerSidecarIpcHandlers(): void {
 			const target = args.mcpConfigPath.startsWith('~/')
 				? path.join(os.homedir(), args.mcpConfigPath.slice(2))
 				: args.mcpConfigPath;
+			let priorServers: Record<string, unknown> = {};
 			if (fs.existsSync(target)) {
 				// Heal a stale config. An older onefile-era install wrote the EDA
 				// server `command` as the worker binary path `<ver>/<name>`. The
@@ -1299,6 +1300,7 @@ export function registerSidecarIpcHandlers(): void {
 				let stale = false;
 				try {
 					const existing = JSON.parse(fs.readFileSync(target, 'utf-8')) as { mcpServers?: Record<string, { command?: unknown }> };
+					if (existing && typeof existing.mcpServers === 'object' && existing.mcpServers) { priorServers = existing.mcpServers as Record<string, unknown>; }
 					const cmd = existing?.mcpServers?.['coderust-eda-tools']?.command;
 					stale = typeof cmd === 'string' && cmd !== 'python' && cmd !== 'python3'
 						&& path.isAbsolute(cmd) && fs.existsSync(cmd) && fs.statSync(cmd).isDirectory();
@@ -1309,8 +1311,9 @@ export function registerSidecarIpcHandlers(): void {
 				console.log(`[ChipOS Sidecar] Regenerating stale EDA MCP config at ${target} (command pointed at a directory)`);
 			}
 			fs.mkdirSync(path.dirname(target), { recursive: true });
-			const defaultConfig = JSON.stringify({
+			const merged = JSON.stringify({
 				mcpServers: {
+					...priorServers,
 					'coderust-eda-tools': {
 						command: 'python',
 						args: ['-m', 'execution.mcp_server.server'],
@@ -1319,7 +1322,7 @@ export function registerSidecarIpcHandlers(): void {
 					},
 				},
 			}, null, 2) + '\n';
-			fs.writeFileSync(target, defaultConfig, 'utf-8');
+			fs.writeFileSync(target, merged, 'utf-8');
 			console.log(`[ChipOS Sidecar] Wrote default MCP config to ${target}`);
 			return { existed: false, path: target };
 		} catch (err) {
