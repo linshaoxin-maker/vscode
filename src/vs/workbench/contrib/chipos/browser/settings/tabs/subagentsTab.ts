@@ -13,27 +13,27 @@ import { ScannedResource } from '../../resources/chiposResourceScopes.js';
 import { ResourceTabSpec } from './resourceListTab.js';
 
 /**
- * Subagents tab (FEAT-005 Stage A) spec for the generic {@link ResourceListTab}:
+ * Subagents tab (FEAT-005) spec for the generic {@link ResourceListTab}:
  * workspace + user-global `.chipos/agents/*.md` (+ Claude `.claude/agents/`). Each
- * file is a subagent definition (frontmatter name/description + instructions).
+ * file is a subagent definition (frontmatter name/description/mode/tools + an
+ * instructions body that becomes the sub-role's system prompt).
  *
- * STAGED: this is the authoring + listing surface only — runtime dispatch (routing
- * `@agent` to the subagent) is Stage B (user-subagent contract + M1 bridge). The
- * staged posture is called out in the tab description so users aren't surprised that
- * an authored subagent doesn't run yet.
+ * Runtime dispatch is LIVE (Stage B): typing `@<name>` in chat routes the turn to an
+ * isolated sub-role (reasoner `invoke_user_subagent`). `mode: subagent` in the
+ * frontmatter selects isolation — the +New template seeds it.
  */
 export const AGENTS_RESOURCE_SPEC: ResourceTabSpec = {
 	kind: 'agents',
 	icon: 'organization',
 	title: localize('chipos.agents.title', 'Subagents'),
-	description: localize('chipos.agents.desc', '⚠️ Staged (FEAT-005 Stage A): subagents are authored and listed here from .chipos/agents/ (project) or ~/.chipos/agents/ (global). Each file is a subagent definition (frontmatter name/description + instructions). Runtime dispatch — routing @agent to the subagent — arrives in Stage B; for now this is authoring + management only.'),
+	description: localize('chipos.agents.desc', 'Subagents are loaded from .chipos/agents/ (project) or ~/.chipos/agents/ (global). Each .md file is a subagent: frontmatter (name / description / mode: subagent / optional tools:) + an instructions body that becomes its system prompt. Type @<name> in chat to run a turn as that isolated subagent — fresh context, no parent conversation. (mode: subagent is required for isolation.)'),
 	newLabel: localize('chipos.agents.newAgent', '+ New Subagent'),
-	emptyMessage: localize('chipos.agents.empty', 'No subagents yet. Click "+ New Subagent" to define one (.chipos/agents/<name>.md). Note: runtime dispatch is staged (Stage B).'),
+	emptyMessage: localize('chipos.agents.empty', 'No subagents yet. Click "+ New Subagent" to define one (.chipos/agents/<name>.md), then type @<name> in chat to run it.'),
 	importFilter: { name: localize('chipos.agents.filter', 'Subagent files'), extensions: ['md'] },
 
 	async metaForRow(fileService: IFileService, r: ScannedResource): Promise<string> {
 		const parsed = parseRuleFile((await fileService.readFile(r.editFile)).value.toString());
-		return parsed.description || localize('chipos.agents.noDesc', 'subagent (staged)');
+		return parsed.description || localize('chipos.agents.noDesc', 'subagent');
 	},
 
 	async createNew(fileService: IFileService, quickInput: IQuickInputService, destDir: URI): Promise<URI | undefined> {
@@ -48,7 +48,7 @@ export const AGENTS_RESOURCE_SPEC: ResourceTabSpec = {
 			return undefined;
 		}
 		const file = URI.joinPath(destDir, /\.md$/i.test(id) ? id : `${id}.md`);
-		const template = `---\nname: ${id}\ndescription: One-line summary of what this subagent specializes in.\n---\n# ${id}\n\nDescribe this subagent's role, scope, and instructions here.\n\nRuntime dispatch is staged: Stage B will route \`@${id}\` to this subagent.\n`;
+		const template = `---\nname: ${id}\ndescription: One-line summary of what this subagent specializes in.\nmode: subagent\n---\n# ${id}\n\nDescribe this subagent's role and instructions here — this body becomes the subagent's system prompt.\n\nType \`@${id}\` in chat to run an isolated turn as this subagent (fresh context; add \`tools:\` to restrict its tools).\n`;
 		if (await fileService.exists(file)) { throw new Error(localize('chipos.agents.exists', 'A resource with that name already exists — choose a different name.')); }
 		await fileService.writeFile(file, VSBuffer.fromString(template));
 		return file;
