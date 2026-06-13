@@ -22,6 +22,9 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IChipOSTokenManager, type ChipOSAuthUserResponse, type IChipOSUserInfo } from './chiposTokenManager.js';
+import { fetchMyOrgs, postSwitchOrg, type IChipOSOrgSummary } from './orgSwitchClient.js';
+
+export type { IChipOSOrgSummary } from './orgSwitchClient.js';
 
 export interface IChipOSWorkerTokenResult {
 	worker_token: string;
@@ -47,6 +50,15 @@ export interface IChipOSAuthService {
 	 * exchange (caller should fall back to the legacy api_key path).
 	 */
 	getWorkerToken(workerId?: string): Promise<IChipOSWorkerTokenResult | undefined>;
+
+	/** Active-org switching: list the orgs the signed-in user belongs to + their role. */
+	getMyOrgs(): Promise<IChipOSOrgSummary[]>;
+	/**
+	 * Switch the active org → re-issue + store an org-scoped access_token (its
+	 * scopes follow the user's role in that org). Returns the new active org id +
+	 * role on success, or undefined if the switch was rejected (e.g. not a member).
+	 */
+	switchOrg(orgId: string): Promise<{ active_org_id: string; role: string } | undefined>;
 }
 
 export const IChipOSAuthService = createDecorator<IChipOSAuthService>('chipOSAuthService');
@@ -229,6 +241,45 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 			return { worker_token: data.worker_token, expires_in: data.expires_in };
 		} catch (err) {
 			this._logService.warn('[ChipOS Auth] getWorkerToken error:', String(err));
+			return undefined;
+		}
+	}
+
+	async getMyOrgs(): Promise<IChipOSOrgSummary[]> {
+		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
+		const accessToken = await this._tokenManager.getAccessToken();
+		if (!websiteUrl || !accessToken) {
+			this._logService.warn('[ChipOS Auth] getMyOrgs: not configured / not logged in');
+			return [];
+		}
+		try {
+			return await fetchMyOrgs(websiteUrl, accessToken);
+		} catch (err) {
+			this._logService.warn('[ChipOS Auth] getMyOrgs error:', String(err));
+			return [];
+		}
+	}
+
+	async switchOrg(orgId: string): Promise<{ active_org_id: string; role: string } | undefined> {
+		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
+		const accessToken = await this._tokenManager.getAccessToken();
+		if (!websiteUrl || !accessToken) {
+			this._logService.warn('[ChipOS Auth] switchOrg: not configured / not logged in');
+			return undefined;
+		}
+		try {
+			const result = await postSwitchOrg(websiteUrl, accessToken, orgId);
+			if (!result) {
+				this._logService.warn('[ChipOS Auth] switchOrg: /switch-org rejected or returned no token');
+				return undefined;
+			}
+			// Swap in the org-scoped token; the reasoner transport reads it per-request,
+			// so the next turn runs under the new org's scopes (reasoner-enforced).
+			await this._tokenManager.updateAccessToken(result.access_token);
+			this._logService.info('[ChipOS Auth] active org switched:', result.active_org_id, result.role);
+			return { active_org_id: result.active_org_id, role: result.role };
+		} catch (err) {
+			this._logService.warn('[ChipOS Auth] switchOrg error:', String(err));
 			return undefined;
 		}
 	}

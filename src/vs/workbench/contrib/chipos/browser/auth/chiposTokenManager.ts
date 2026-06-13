@@ -41,6 +41,22 @@ export interface IChipOSUserInfo {
 	created_at?: string;
 }
 
+/**
+ * Authz claims the IDE surfaces, decoded from the active access_token's JWT
+ * payload (F-3 path B: chiops signs `org_id` + `scopes` into the user token —
+ * see chiops/backend/app/auth/utils.py). `role` here is the GLOBAL user role
+ * claim (user/admin), NOT the per-org role (owner/admin/member); the per-org
+ * role comes from the `/my-orgs` + `/switch-org` responses.
+ */
+export interface IChipOSTokenClaims {
+	/** Active org id (chiops `org_id` claim). */
+	org_id?: string;
+	/** Global user role claim — coarse (user/admin); not the per-org role. */
+	role?: string;
+	/** Authz scopes the active org's role grants, e.g. `rtl.write`, `sim.run`. */
+	scopes?: string[];
+}
+
 // Wire format mirror of backend `UserResponse` (chiops/backend/app/auth/schemas.py).
 // IDE internal model is IChipOSUserInfo; mapAuthUser does the wire→internal rename (id → user_id).
 export type ChipOSAuthUserResponse = {
@@ -80,8 +96,22 @@ export interface IChipOSTokenManager {
 	 */
 	getAccessTokenForLogout(): string | undefined;
 	storeTokens(accessToken: string, refreshToken: string, user?: IChipOSUserInfo): Promise<void>;
+	/**
+	 * Active-org switch: replace ONLY the access_token (refresh_token + user are
+	 * unchanged), persist it, re-schedule auto-refresh, and fire onDidChangeToken.
+	 * Used after POST /switch-org hands back an org-scoped token so the reasoner
+	 * transport picks it up on its next request.
+	 */
+	updateAccessToken(accessToken: string): Promise<void>;
 	clearTokens(): Promise<void>;
 	getUser(): IChipOSUserInfo | undefined;
+	/**
+	 * Decode the in-memory access_token's JWT payload into the authz claims the
+	 * IDE surfaces (active org + role + scopes). Synchronous + side-effect free
+	 * (does NOT trigger a refresh) so render paths can read it cheaply. Returns
+	 * undefined when not logged in or the token isn't a decodable JWT.
+	 */
+	getTokenClaims(): IChipOSTokenClaims | undefined;
 	isLoggedIn(): boolean;
 	isUsingManualTokenFallback(): boolean;
 	resolveWebsiteUrl(): string | undefined;
@@ -230,6 +260,21 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		this._logService.info('[ChipOS Auth] Tokens stored, user:', user?.email ?? 'unknown');
 	}
 
+	async updateAccessToken(accessToken: string): Promise<void> {
+		// Active-org switch: replace ONLY the access_token (refresh_token + user are
+		// unchanged). Persist + re-schedule + fire onDidChangeToken so the reasoner
+		// transport picks up the new org-scoped token on its next request. NOTE: a
+		// later auto-refresh re-issues from the personal org (chiops /refresh has no
+		// active-org memory yet) — fine for a working session.
+		this._accessToken = accessToken;
+		this._usingManualTokenFallback = false;
+		this._parseTokenExpiry(accessToken);
+		await this._secretStorage.set(KEY_ACCESS_TOKEN, accessToken);
+		this._scheduleAutoRefresh();
+		this._onDidChangeToken.fire(accessToken);
+		this._logService.info('[ChipOS Auth] access_token replaced (active-org switch)');
+	}
+
 	async clearTokens(): Promise<void> {
 		this._accessToken = undefined;
 		this._refreshToken = undefined;
@@ -249,6 +294,27 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 
 	getUser(): IChipOSUserInfo | undefined {
 		return this._user;
+	}
+
+	getTokenClaims(): IChipOSTokenClaims | undefined {
+		if (!this._accessToken) {
+			return undefined;
+		}
+		try {
+			const parts = this._accessToken.split('.');
+			if (parts.length !== 3) {
+				return undefined;
+			}
+			const payload = JSON.parse(atob(parts[1])) as { org_id?: unknown; role?: unknown; scopes?: unknown };
+			const orgId = typeof payload.org_id === 'string' ? payload.org_id : undefined;
+			const role = typeof payload.role === 'string' ? payload.role : undefined;
+			const scopes = Array.isArray(payload.scopes)
+				? payload.scopes.filter((s): s is string => typeof s === 'string')
+				: undefined;
+			return { org_id: orgId, role, scopes };
+		} catch {
+			return undefined;
+		}
 	}
 
 	isLoggedIn(): boolean {

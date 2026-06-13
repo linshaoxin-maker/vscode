@@ -1017,6 +1017,76 @@
 	margin: 0 !important;
 }
 
+/* ── Organization section (active-org + role + permissions) ───────────── */
+
+.chipos-org-section {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.chipos-org-summary {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.chipos-org-line {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 10px;
+}
+
+.chipos-org-key {
+	font-size: 12px;
+	color: var(--chipos-text-secondary);
+	min-width: 132px;
+	flex-shrink: 0;
+}
+
+.chipos-org-name {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--chipos-text-primary);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.chipos-org-role-badge {
+	font-size: 11px;
+	font-weight: 500;
+	padding: 1px 8px;
+	border-radius: 10px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	text-transform: capitalize;
+}
+
+/* Member is the restricted tier (no rtl.write) — tint it so the limit reads at a glance. */
+.chipos-org-role-badge[data-role="member"] {
+	background: var(--vscode-inputValidation-warningBackground, var(--vscode-badge-background));
+	color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+}
+
+.chipos-org-permission {
+	font-size: 12px;
+	color: var(--chipos-text-secondary);
+	line-height: 16px;
+}
+
+.chipos-org-switch-status {
+	font-size: 12px;
+	color: var(--chipos-text-secondary);
+	line-height: 16px;
+}
+
+.chipos-org-switch-status.error {
+	color: var(--vscode-errorForeground);
+}
+
 /* ── Disabled / Coming-soon ───────────────────────────────────────────── */
 
 .chipos-setting-row.greyed-out,
