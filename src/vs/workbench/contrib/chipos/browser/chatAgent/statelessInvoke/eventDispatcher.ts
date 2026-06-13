@@ -32,6 +32,7 @@
  * `round_end`.
  */
 
+import { resolveRenderEnvelope, type ResolvedRender } from './renderEnvelope.js';
 import { StatelessHttpError, StatelessReplayExpiredError } from './statelessClient.js';
 import type {
 	CheckpointData,
@@ -226,11 +227,48 @@ export interface DispatchResult {
 }
 
 /**
+ * Render a degraded RenderEnvelope (layer 3 — unknown kind / schema too new /
+ * `ui_spec`) as a markdown block. D10: the mandatory `fallback` is NEVER dropped.
+ * The reasoner ships human-readable `summary` / `text` / `message` (+ optional
+ * `artifact_ref`); format whatever is present into one block, flushing pending
+ * assistant text first so it lands after the prose it summarizes.
+ */
+function renderEnvelopeFallback(resolved: ResolvedRender): DispatchResult {
+	const fb = (resolved.data ?? {}) as Record<string, unknown>;
+	const summary = typeof fb.summary === 'string' && fb.summary ? fb.summary
+		: typeof fb.text === 'string' && fb.text ? fb.text
+			: typeof fb.message === 'string' && fb.message ? fb.message : '';
+	const parts: string[] = [];
+	if (summary) {
+		parts.push(summary);
+	}
+	// artifact_ref → a link when the fallback carries a resolvable path/uri.
+	const ref = fb.artifact_ref;
+	if (ref !== null && typeof ref === 'object' && !Array.isArray(ref)) {
+		const r = ref as Record<string, unknown>;
+		const href = typeof r.uri === 'string' ? r.uri : typeof r.path === 'string' ? r.path : '';
+		if (href) {
+			const label = typeof r.label === 'string' && r.label ? r.label : href;
+			parts.push(`[${label}](${href})`);
+		}
+	}
+	if (parts.length === 0) {
+		// Never empty — surface the kind so a degrade is visible, not a silent drop.
+		parts.push(resolved.kind ? `\`${resolved.kind}\`` : 'Result');
+	}
+	return { flushText: true, markdownContents: [parts.join('\n\n')] };
+}
+
+/**
  * Translate one `InvokeEvent` → `DispatchResult`. Pure function.
  *
- * `friendlyToolName` is injected so the dispatcher can render
- * `Calling ${friendly_name}` without importing the chat agent's
- * `_friendlyToolName` map.
+ * S5 / F-1-ide entry: unwrap the {@link resolveRenderEnvelope RenderEnvelope} before
+ * the per-type switch so the render cases (which read `event.data` directly, e.g.
+ * `data.tests` for `sim_report`) see the real card payload, not the
+ * `{ kind, payload, fallback }` wrapper.
+ *   - layer 1 (legacy bare frame) → passes through untouched (backward-compat, D-2);
+ *   - layer 2 (known kind, compatible schema) → `event.data` becomes the payload;
+ *   - layer 3 (unknown kind / schema too new / `ui_spec`) → render `fallback` (D10).
  *
  * @param event raw event off the SSE stream
  * @param friendlyToolName optional tool-name humaniser (defaults to identity)
@@ -238,6 +276,28 @@ export interface DispatchResult {
 export function dispatchStatelessEvent(
 	event: InvokeEvent,
 	friendlyToolName: (raw: string) => string = raw => raw,
+): DispatchResult {
+	const resolved = resolveRenderEnvelope(event.data);
+	if (resolved.degraded) {
+		return renderEnvelopeFallback(resolved);
+	}
+	// Layer 2 unwrap: `resolved.data` is the envelope payload, guaranteed an object by
+	// `resolveRenderEnvelope` (the safePayload guard) — coerce to the event `data` shape.
+	const unwrapped: InvokeEvent = resolved.data === event.data
+		? event
+		: { ...event, data: resolved.data as Record<string, unknown> };
+	return dispatchUnwrappedEvent(unwrapped, friendlyToolName);
+}
+
+/**
+ * The per-`event.type` switch, operating on an already-unwrapped event (see
+ * {@link dispatchStatelessEvent}). `friendlyToolName` is injected so the dispatcher
+ * can render `Calling ${friendly_name}` without importing the chat agent's
+ * `_friendlyToolName` map.
+ */
+function dispatchUnwrappedEvent(
+	event: InvokeEvent,
+	friendlyToolName: (raw: string) => string,
 ): DispatchResult {
 	switch (event.type) {
 		case 'message_start':
