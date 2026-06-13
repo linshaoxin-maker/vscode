@@ -131,6 +131,25 @@ suite('dispatchStatelessEvent — RenderEnvelope wiring (F-1-ide)', () => {
 		assert.ok(Array.isArray(bare.edaParts) && bare.edaParts.length >= 1);
 	});
 
+	test('⭐ enveloped todo dispatches IDENTICALLY to the bare todo (regression — was degrading to raw JSON)', () => {
+		// `todo` is backend render-family (so the SSEEmitSink WRAPS it), and the IDE has a
+		// dedicated `case 'todo'`. It was missing from IDE_RENDER_KINDS → a wrapped todo
+		// degraded to a raw-JSON markdown dump on every write_todos turn. Lock it.
+		const payload = { todos: [{ id: '1', content: 'do x', status: 'pending' }, { id: '2', content: 'do y', status: 'completed' }] };
+		const bare = dispatchStatelessEvent(ev('todo', payload));
+		const enveloped = dispatchStatelessEvent(ev('todo', envelope('todo', payload, { text: '{"todos":[…]}' })));
+		assert.deepStrictEqual(enveloped, bare);
+		assert.ok(bare.progressMessage, 'bare todo should render a progressMessage');
+		assert.ok(!enveloped.markdownContents, 'enveloped todo must NOT fall through to a raw-JSON markdown block');
+	});
+
+	test('degraded fallback with artifact_ref → renders a markdown link (untrusted, so href is inert)', () => {
+		// `plan` is render-family (wrapped) but the IDE has no case → degrades to fallback.
+		const r = dispatchStatelessEvent(ev('plan', envelope('plan', { steps: [] }, { summary: 'Plan ready', artifact_ref: { uri: 'file:///tmp/plan.md', label: 'plan.md' } })));
+		assert.strictEqual(r.flushText, true);
+		assert.deepStrictEqual(r.markdownContents, ['Plan ready\n\n[plan.md](file:///tmp/plan.md)']);
+	});
+
 	test('degraded envelope (unknown kind) → markdown fallback, never dropped (D10)', () => {
 		const r = dispatchStatelessEvent(ev('loop_progress', envelope('loop_progress', { round: 3 }, { summary: 'Loop round 3/5' })));
 		assert.strictEqual(r.flushText, true);

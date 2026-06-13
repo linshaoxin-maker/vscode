@@ -55,16 +55,22 @@ export interface ResolvedRender {
 
 /**
  * The render kinds the IDE dispatcher renders NATIVELY with a dedicated `case` in
- * {@link dispatchStatelessEvent}. `kind` = the reasoner event `type` (snake_case) =
+ * {@link dispatchUnwrappedEvent}. `kind` = the reasoner event `type` (snake_case) =
  * `RenderEnvelope.kind`. Membership decides unwrap-vs-degrade in
- * {@link resolveRenderEnvelope}; it MUST stay in sync with the dispatcher's render
- * cases.
+ * {@link resolveRenderEnvelope}.
  *
- * DELIBERATELY ABSENT (the extension renders these but the IDE dispatcher has no
- * case for them today): `loop_progress`, `verification_progress`. An S5 envelope for
- * those therefore degrades to its purpose-built `fallback` (the honest result)
- * instead of pretending a card exists — add the kind here the moment a dedicated
- * case lands.
+ * ⭐ MUST equal { backend `family === 'render'` types } ∩ { kinds the IDE has a case
+ * for }. The backend wraps EVERY render-family event in an envelope (`_TYPE_TO_FAMILY`
+ * / `RENDER_EVENT_TYPES` in `shared/contracts/invoke.py`), so a render-family kind the
+ * IDE renders but OMITS here would wrongly DEGRADE to its raw fallback. `todo` is
+ * exactly that case — it is render-family (wrapped) AND has a dedicated `case 'todo'`,
+ * so it MUST be present; omitting it dumped the todo list as raw JSON on every
+ * `write_todos` turn (F-1-ide bug fix, caught in pre-launch review).
+ *
+ * DELIBERATELY ABSENT — render-family kinds the IDE has NO case for, which correctly
+ * degrade to their purpose-built `fallback`: `plan`, `timing_highlight`,
+ * `pre_review_report`, `review_gate`. (`loop_progress` / `verification_progress` are
+ * backend `control`, never wrapped, so they never reach this gate at all.)
  */
 export const IDE_RENDER_KINDS: ReadonlySet<string> = new Set([
 	'sim_report',
@@ -73,9 +79,12 @@ export const IDE_RENDER_KINDS: ReadonlySet<string> = new Set([
 	'ppa_report',
 	'negotiation_view',
 	'diff_preview',
-	'parallel_progress',
 	'spec_review',
 	'task_summary',
+	'todo',
+	// backend `control` family → never enveloped, so this is a no-op; kept only because
+	// the IDE has a dedicated `case 'parallel_progress'` (would unwrap right if ever wrapped).
+	'parallel_progress',
 ]);
 
 /**
