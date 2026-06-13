@@ -6324,6 +6324,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			progress([this._markdown(assistantTextBuf)]);
 			assistantTextBuf = '';
 		};
+		// [ChipOS] Live-render mirror of the reasoner accumulator's
+		// `_saw_streamed_text` (stateless_agentcore_driver.py:156): did ANY
+		// assistant text stream this turn (model_output / content_block_delta)?
+		// Gates whether a final `chat` event's `replyText` is rendered — only a
+		// reply that never streamed (subagent / resume / analog / non-streaming
+		// provider) must be surfaced from `chat`; a streamed reply duplicates it.
+		let sawStreamedText = false;
 
 		let roundEndReceived = false;
 		let errorResult: IChatAgentResult | undefined;
@@ -6350,7 +6357,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const applyDispatch = (handled: DispatchResult): void => {
 			if (handled.appendText) {
 				assistantTextBuf += handled.appendText;
+				sawStreamedText = true;
 				trackFirstProgress();
+			}
+			if (handled.replyText && !sawStreamedText) {
+				// A reply that never streamed (subagent / resume / analog / a
+				// non-streaming provider): its `chat` text is the only carrier, so
+				// render it. If anything streamed, replyText duplicates it → drop
+				// (gated by sawStreamedText). Mirrors the reasoner accumulator's
+				// `_saw_streamed_text` guard on the live render side.
+				assistantTextBuf += handled.replyText;
+				trackFirstProgress();
+				flushAssistantText();
 			}
 			if (handled.flushText) {
 				flushAssistantText();
@@ -6962,6 +6980,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			progress([this._markdown(assistantTextBuf)]);
 			assistantTextBuf = '';
 		};
+		// [ChipOS] See the invoke() loop: gates rendering a chat-only reply on
+		// resume so a non-streaming reply isn't dropped (mirrors `_saw_streamed_text`).
+		let sawStreamedText = false;
 		let usage: TokenUsage | undefined;
 		let errorResult: IChatAgentResult | undefined;
 		const friendlyToolName = (raw: string) => this._friendlyToolName(raw);
@@ -6978,6 +6999,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const applyDispatch = (handled: DispatchResult): void => {
 			if (handled.appendText) {
 				assistantTextBuf += handled.appendText;
+				sawStreamedText = true;
+			}
+			if (handled.replyText && !sawStreamedText) {
+				// Resume parity: a chat-only reply (the resume dispatcher path may
+				// not stream model_output) renders here; a streamed reply drops it
+				// (sawStreamedText). Mirrors the accumulator's `_saw_streamed_text`.
+				assistantTextBuf += handled.replyText;
+				flushAssistantText();
 			}
 			if (handled.flushText) {
 				flushAssistantText();

@@ -341,8 +341,17 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('model_output', {})), {});
 	});
 
-	test('chat → noop (text already streamed via model_output)', () => {
-		assert.deepStrictEqual(dispatchStatelessEvent(ev('chat', { content: 'dup' })), {});
+	test('chat → replyText (caller gates render on sawStreamedText)', () => {
+		// The dispatcher no longer drops `chat` outright. It hands the reply text to
+		// the STATEFUL caller as `replyText`; the caller renders it ONLY if no
+		// assistant text streamed this turn (sawStreamedText). So a streamed reply is
+		// still de-duped (caller drops it), but a chat-only reply (subagent / resume /
+		// analog clarification / a non-streaming provider) is no longer invisible.
+		// Live-render mirror of the reasoner accumulator's `_saw_streamed_text` guard.
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('chat', { content: 'the reply' })), { replyText: 'the reply' });
+		// empty / missing content → noop (nothing to surface)
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('chat', { content: '' })), {});
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('chat', {})), {});
 	});
 
 	test('status → flushText + progressMessage', () => {

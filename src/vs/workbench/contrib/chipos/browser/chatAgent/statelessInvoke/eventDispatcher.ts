@@ -96,6 +96,17 @@ export interface DispatchResult {
 	flushText?: boolean;
 	progressMessage?: { content: string; shimmer?: boolean };
 	thinkingText?: string;
+	/**
+	 * [ChipOS] Final assistant reply text carried by a `chat` event (deps.reply →
+	 * ChatMessage{content}). The STATEFUL caller renders it ONLY if no assistant
+	 * text streamed this turn (`model_output` / `content_block_delta`) — mirroring
+	 * the reasoner accumulator's `_saw_streamed_text` guard
+	 * (stateless_agentcore_driver.py:217) on the live render side. For the main
+	 * agent the reply already streamed, so the caller drops this; for a reply path
+	 * that never streams (subagent / resume / analog clarification / a
+	 * non-streaming provider) this is the ONLY carrier of the reply.
+	 */
+	replyText?: string;
 	markdownError?: string;
 	usage?: TokenUsage;
 	errorMessage?: string;
@@ -543,10 +554,22 @@ function dispatchUnwrappedEvent(
 				: {};
 		}
 
-		case 'chat':
-			// Final assistant reply (deps.reply). In agentcore mode the text was
-			// already streamed via `model_output`; ignore to avoid duplicating it.
-			return {};
+		case 'chat': {
+			// Final assistant reply (deps.reply → ChatMessage{content}). The main
+			// agent already streamed this via `model_output`, so the caller drops
+			// it (sawStreamedText). But a reply path that does NOT stream
+			// model_output (subagent / resume / analog clarification / a
+			// non-streaming provider) carries its ONLY text here — hand it to the
+			// STATEFUL caller as `replyText` and let it decide: render iff nothing
+			// streamed this turn. This is the live-render mirror of the reasoner
+			// accumulator's `_saw_streamed_text` guard (which already does the same
+			// for persisted history at stateless_agentcore_driver.py:217), so a
+			// chat-only reply is no longer invisible on screen while present in history.
+			const data = (event.data ?? {}) as { content?: string };
+			return typeof data.content === 'string' && data.content
+				? { replyText: data.content }
+				: {};
+		}
 
 		case 'status': {
 			// EDA status line ("正在综合…" etc.) → a progress message.
