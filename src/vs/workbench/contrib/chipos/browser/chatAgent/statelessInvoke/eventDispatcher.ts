@@ -290,6 +290,26 @@ export function dispatchStatelessEvent(
 }
 
 /**
+ * EDA payload schema guard. These card payloads ship with BARE keys (no
+ * RenderEnvelope on this path), so a backend key rename / schema drift makes a
+ * card render SILENTLY EMPTY — and a 0-row lint/sim card reads as "passed", which
+ * is worse than nothing. If the event carried a non-empty payload but NONE of the
+ * keys this card knows how to render are present, return a VISIBLE degraded note
+ * (+ the raw keys) instead. Returns null when fine: empty payload (legit no-op),
+ * or ≥1 recognized key present.
+ */
+function edaSchemaGuard(kind: string, raw: Record<string, unknown>, recognizedKeys: readonly string[]): DispatchResult | null {
+	const keys = Object.keys(raw);
+	if (keys.length === 0 || recognizedKeys.some(k => k in raw)) {
+		return null;
+	}
+	return {
+		flushText: true,
+		markdownContents: [`> ⚠️ **EDA "${kind}" 卡无法渲染** — 后端 payload 未含任何已知字段(收到: ${keys.join(', ')})。可能是 IDE↔reasoner 字段约定漂移了。`],
+	};
+}
+
+/**
  * The per-`event.type` switch, operating on an already-unwrapped event (see
  * {@link dispatchStatelessEvent}). `friendlyToolName` is injected so the dispatcher
  * can render `Calling ${friendly_name}` without importing the chat agent's
@@ -588,6 +608,8 @@ function dispatchUnwrappedEvent(
 		// so the card lands after the prose it summarizes.
 
 		case 'sim_report': {
+			const guard = edaSchemaGuard('sim_report', (event.data ?? {}) as Record<string, unknown>, ['tests', 'summary', 'round', 'result']);
+			if (guard) { return guard; }
 			// sim_debug_loop emits {tests:[{name,status,message}], summary:{total,passed,failed}};
 			// coverage_boost's internal simulate emits {round, result} (no tests) →
 			// an empty table (parity with legacy, which normalized the same way).
@@ -616,6 +638,8 @@ function dispatchUnwrappedEvent(
 		}
 
 		case 'coverage_report': {
+			const guard = edaSchemaGuard('coverage_report', (event.data ?? {}) as Record<string, unknown>, ['gaps', 'line_cov', 'branch_cov', 'toggle_cov', 'overall_cov', 'target', 'round']);
+			if (guard) { return guard; }
 			// coverage_boost: {line_cov?, branch_cov?, toggle_cov?, overall_cov?,
 			// target?, gaps: string[], ...} (values are 0-100 percentages). The
 			// text-fallback path omits line_cov/branch_cov (only overall_cov) and
@@ -649,6 +673,8 @@ function dispatchUnwrappedEvent(
 		}
 
 		case 'lint_report': {
+			const guard = edaSchemaGuard('lint_report', (event.data ?? {}) as Record<string, unknown>, ['errors', 'auto_fixable', 'tool', 'round']);
+			if (guard) { return guard; }
 			// lint_fix_loop: {round, errors:[{file,line,column,rule,message,severity}]}
 			// — note `column`, not the IDE's `col`.
 			const data = (event.data ?? {}) as {
@@ -678,6 +704,8 @@ function dispatchUnwrappedEvent(
 		}
 
 		case 'ppa_report': {
+			const guard = edaSchemaGuard('ppa_report', (event.data ?? {}) as Record<string, unknown>, ['stage', 'round']);
+			if (guard) { return guard; }
 			// ppa_optimize_loop emits per-stage payloads that already match the
 			// IDE part's fields 1:1 (stage / round / *_ppa / improvement / …).
 			const data = (event.data ?? {}) as Partial<IChatEdaPpaReport> & { stage?: string };
@@ -705,6 +733,8 @@ function dispatchUnwrappedEvent(
 		}
 
 		case 'negotiation_view': {
+			const guard = edaSchemaGuard('negotiation_view', (event.data ?? {}) as Record<string, unknown>, ['perspectives', 'challenges', 'recommendation', 'issue', 'round']);
+			if (guard) { return guard; }
 			// multi_agent_debate emits three distinct per-round shapes:
 			//   round 1 → {perspectives:[{role,analysis,confidence}]}
 			//   round 2 → {challenges:[{role,response,revised_confidence}]}
@@ -748,6 +778,8 @@ function dispatchUnwrappedEvent(
 		}
 
 		case 'parallel_progress': {
+			const guard = edaSchemaGuard('parallel_progress', (event.data ?? {}) as Record<string, unknown>, ['tracks', 'phase', 'conflicts', 'round']);
+			if (guard) { return guard; }
 			// parallel_generate / parallel_check: {phase, tracks:[{name,status,current_step,files?}], conflicts?}.
 			// Track `status` is a free-form backend string ("worktree_created",
 			// "review", …); preserve it raw (cast) so the renderer can show it,
@@ -775,6 +807,8 @@ function dispatchUnwrappedEvent(
 		}
 
 		case 'spec_review': {
+			const guard = edaSchemaGuard('spec_review', (event.data ?? {}) as Record<string, unknown>, ['spec_path', 'spec_name', 'summary', 'files', 'round']);
+			if (guard) { return guard; }
 			// subagent_tracker: {spec_path, spec_name, summary, files} — 1:1.
 			const data = (event.data ?? {}) as { spec_path?: string; spec_name?: string; summary?: string; files?: string[] };
 			return {

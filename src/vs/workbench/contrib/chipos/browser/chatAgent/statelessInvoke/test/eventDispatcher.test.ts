@@ -617,4 +617,24 @@ suite('classifySseFailure', () => {
 		assert.strictEqual(classifySseFailure(new Error('socket hang up'), liveSignal()), 'replay');
 		assert.strictEqual(classifySseFailure('string-thrown', liveSignal()), 'replay');
 	});
+
+	test('EDA schema guard: renamed/unrecognized payload → visible degraded note, not a silent empty card', () => {
+		// Backend renamed `errors` → `issues`: the lint card would otherwise render an
+		// empty (0-error = "passed") table. Surface a degraded note instead.
+		const r = dispatchStatelessEvent(ev('lint_report', { issues: [{ file: 'a.v', line: 1 }] }));
+		assert.ok(!r.edaParts, 'no misleading empty edaParts');
+		assert.ok(r.markdownContents && /EDA "lint_report"/.test(r.markdownContents[0]), 'degraded note carries the kind');
+		assert.ok(r.markdownContents![0].includes('issues'), 'degraded note lists the unrecognized key');
+	});
+
+	test('EDA schema guard: recognized empty payload (lint passed, errors:[]) → normal card, no degrade', () => {
+		const r = dispatchStatelessEvent(ev('lint_report', { errors: [] }));
+		assert.ok(r.edaParts && r.edaParts[0].kind === 'edaLintReport', 'real lint card still renders');
+		assert.ok(!r.markdownContents, 'no degraded note for a legit empty payload');
+	});
+
+	test('EDA schema guard: empty payload → legit no-op, not degraded', () => {
+		const r = dispatchStatelessEvent(ev('sim_report', {}));
+		assert.ok(!r.markdownContents, 'empty payload is a no-op, not a degrade');
+	});
 });
