@@ -13,7 +13,6 @@ import { IContextViewService } from '../../../../../../platform/contextview/brow
 import { IContextViewProvider } from '../../../../../../base/browser/ui/contextview/contextview.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IChipOSTokenManager } from '../../auth/chiposTokenManager.js';
-import { IChipOSAuthService, type IChipOSOrgSummary } from '../../auth/chiposAuthService.js';
 
 const LOG_LEVELS = ['trace', 'debug', 'info', 'warning', 'error', 'off'];
 
@@ -22,18 +21,12 @@ export class GeneralTab extends Disposable {
 	private readonly _disposables = this._register(new DisposableStore());
 	private readonly _contextViewProvider: IContextViewProvider | undefined;
 
-	/** Cached org membership list (loaded once per login; reused across token refreshes). */
-	private _orgsCache: IChipOSOrgSummary[] | undefined;
-	/** Monotonic guard so a stale `getMyOrgs()` response can't clobber a newer one. */
-	private _orgsFetchGeneration = 0;
-
 	constructor(
 		private readonly _container: HTMLElement,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IContextViewService contextViewService: IContextViewService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
-		@IChipOSAuthService private readonly _authService: IChipOSAuthService,
 	) {
 		super();
 		this._contextViewProvider = contextViewService ?? undefined;
@@ -43,12 +36,9 @@ export class GeneralTab extends Disposable {
 	private _render(): void {
 		dom.clearNode(this._container);
 
-		// Account (auth) — pinned at the top, similar to Cursor.
+		// Account (auth) — pinned at the top, similar to Cursor. Organization /
+		// role / members live in their own dedicated Organization tab.
 		this._renderAccountSection(this._container);
-
-		// Organization (active-org + role + permissions) — sits right under the
-		// account so identity and org/role read as one block.
-		this._renderOrganizationSection(this._container);
 
 		// Privacy
 		const privacySection = dom.append(this._container, dom.$('.chipos-settings-section'));
@@ -135,154 +125,6 @@ export class GeneralTab extends Disposable {
 
 		this._disposables.add(this._tokenManager.onDidChangeUser(updateStatus));
 		this._disposables.add(this._tokenManager.onDidChangeToken(updateStatus));
-	}
-
-	// ── Organization / active-org switching ──────────────────────────────
-	private _renderOrganizationSection(parent: HTMLElement): void {
-		const section = dom.append(parent, dom.$('.chipos-settings-section'));
-		dom.append(section, dom.$('.chipos-settings-section-title', undefined,
-			localize('chipos.general.organization', 'Organization')));
-
-		// Body is rebuilt on every auth/token change (login, logout, org switch).
-		const body = dom.append(section, dom.$('.chipos-org-section'));
-
-		// Sub-store cleared on each refresh so SelectBox instances + their
-		// listeners don't accumulate across token-refresh / switch events. The
-		// store itself lives for the tab's lifetime; clear() just drops contents.
-		const refreshStore = this._disposables.add(new DisposableStore());
-
-		const refresh = () => {
-			refreshStore.clear();
-			dom.clearNode(body);
-
-			if (!this._tokenManager.isLoggedIn()) {
-				this._orgsCache = undefined;
-				dom.append(body, dom.$('.chipos-auth-status', undefined,
-					localize('chipos.org.signedOut', 'Sign in to view and switch your organization.')));
-				return;
-			}
-
-			// The membership list resolves the org name + per-org role (owner/
-			// admin/member). Load it once, then render — so we never flash a raw
-			// org id or the coarse global role before the real values arrive.
-			if (this._orgsCache === undefined) {
-				dom.append(body, dom.$('.chipos-auth-status', undefined,
-					localize('chipos.org.loading', 'Loading organization…')));
-				this._loadOrgs(refresh);
-				return;
-			}
-
-			const claims = this._tokenManager.getTokenClaims();
-			const currentOrgId = claims?.org_id;
-			const scopes = claims?.scopes ?? [];
-			const matched = currentOrgId ? this._orgsCache.find(o => o.org_id === currentOrgId) : undefined;
-			const role = matched?.role ?? '';
-
-			// ── Current org + role + permission summary ──
-			const summary = dom.append(body, dom.$('.chipos-org-summary'));
-
-			const orgName = matched?.name || localize('chipos.org.unknownName', 'Your organization');
-			const nameLine = dom.append(summary, dom.$('.chipos-org-line'));
-			dom.append(nameLine, dom.$('.chipos-org-key', undefined, localize('chipos.org.current', 'Current organization')));
-			dom.append(nameLine, dom.$('.chipos-org-name', undefined, orgName));
-
-			if (role) {
-				const roleLine = dom.append(summary, dom.$('.chipos-org-line'));
-				dom.append(roleLine, dom.$('.chipos-org-key', undefined, localize('chipos.org.role', 'Your role')));
-				const badge = dom.append(roleLine, dom.$('.chipos-org-role-badge', undefined, role));
-				badge.dataset.role = role;
-			}
-
-			// Permission legibility: derive from the JWT scopes the reasoner
-			// actually enforces (rtl.write is the meaningful owner/admin vs member
-			// divide); fall back to the role when an older token carries no scopes.
-			dom.append(summary, dom.$('.chipos-org-permission', undefined, this._describePermissions(scopes, role)));
-
-			// ── Switch control (only when there's more than one org to pick) ──
-			if (this._orgsCache.length > 1) {
-				this._renderSwitchControl(body, refreshStore, this._orgsCache, currentOrgId);
-			}
-		};
-
-		refresh();
-
-		this._disposables.add(this._tokenManager.onDidChangeToken(refresh));
-		this._disposables.add(this._tokenManager.onDidChangeUser(refresh));
-	}
-
-	/** Fetch the org membership list once, guarding against stale/overlapping responses. */
-	private _loadOrgs(onLoaded: () => void): void {
-		const generation = ++this._orgsFetchGeneration;
-		this._authService.getMyOrgs().then(orgs => {
-			if (generation !== this._orgsFetchGeneration) {
-				return; // a newer login/refresh superseded this fetch
-			}
-			this._orgsCache = orgs;
-			onLoaded();
-		}).catch(() => {
-			if (generation !== this._orgsFetchGeneration) {
-				return;
-			}
-			this._orgsCache = [];
-			onLoaded();
-		});
-	}
-
-	private _renderSwitchControl(
-		parent: HTMLElement,
-		store: DisposableStore,
-		orgs: IChipOSOrgSummary[],
-		currentOrgId: string | undefined,
-	): void {
-		const row = dom.append(parent, dom.$('.chipos-setting-row'));
-		dom.append(row, dom.$('.chipos-setting-label', undefined, localize('chipos.org.switch', 'Switch Organization')));
-		dom.append(row, dom.$('.chipos-setting-description', undefined,
-			localize('chipos.org.switch.desc', 'Switching your active organization changes your permissions on the next conversation.')));
-
-		const selectContainer = dom.append(row, dom.$('.chipos-setting-input-container'));
-		// macOS uses the native <select>, which renders only `text` (no decoratorRight /
-		// description), so the role is baked into the option label to stay legible there.
-		const options: ISelectOptionItem[] = orgs.map(o => ({ text: `${o.name} · ${o.role}` }));
-		let activeIndex = orgs.findIndex(o => o.org_id === currentOrgId);
-		if (activeIndex < 0) {
-			activeIndex = 0;
-		}
-		const selectBox = store.add(new SelectBox(options, activeIndex, this._contextViewProvider!, defaultSelectBoxStyles));
-		selectBox.render(selectContainer);
-
-		// Switch feedback sits on its own line inside the switch row's card (spans
-		// both grid columns); cleared when the section rebuilds.
-		const status = dom.append(row, dom.$('.chipos-org-switch-status'));
-		status.style.display = 'none';
-
-		store.add(selectBox.onDidSelect(async e => {
-			const target = orgs[e.index];
-			if (!target || target.org_id === currentOrgId) {
-				return;
-			}
-			status.style.display = '';
-			status.classList.remove('error');
-			status.textContent = localize('chipos.org.switching', 'Switching to {0}…', target.name);
-			const result = await this._authService.switchOrg(target.org_id);
-			if (result) {
-				// Success: updateAccessToken fired onDidChangeToken → the section
-				// refresh re-renders with the new org/role/permissions and re-selects.
-				return;
-			}
-			status.classList.add('error');
-			status.textContent = localize('chipos.org.switchFailed', 'Could not switch organization. Please try again.');
-			selectBox.select(activeIndex); // revert to the still-active org
-		}));
-	}
-
-	/** One-line permission summary derived from the JWT scopes (authoritative), with a role fallback. */
-	private _describePermissions(scopes: string[], role: string): string {
-		const canWriteRtl = scopes.length > 0
-			? scopes.includes('rtl.write')
-			: (role === 'owner' || role === 'admin');
-		return canWriteRtl
-			? localize('chipos.org.perm.write', 'You can create and modify RTL, and run all analysis tools (simulation, lint, PPA, review).')
-			: localize('chipos.org.perm.readonly', 'Read-only RTL — you can run simulations, lint, PPA and review, but cannot modify RTL.');
 	}
 
 	private _renderToggle(parent: HTMLElement, key: string, label: string, description: string): void {

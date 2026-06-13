@@ -28,8 +28,10 @@ registerSingleton(IChiposGitService, ChiposGitElectron, InstantiationType.Delaye
 // Phase 1 Unified Auth: register auth services
 import { IChipOSTokenManager, ChipOSTokenManager } from '../../../../workbench/contrib/chipos/browser/auth/chiposTokenManager.js';
 import { IChipOSAuthService, ChipOSAuthService } from '../../../../workbench/contrib/chipos/browser/auth/chiposAuthService.js';
+import { IChipOSOrgService, ChipOSOrgService } from '../../../../workbench/contrib/chipos/browser/auth/chiposOrgService.js';
 registerSingleton(IChipOSTokenManager, ChipOSTokenManager, InstantiationType.Delayed);
 registerSingleton(IChipOSAuthService, ChipOSAuthService, InstantiationType.Delayed);
+registerSingleton(IChipOSOrgService, ChipOSOrgService, InstantiationType.Delayed);
 
 // Phase 2 Usage polling: status bar widget showing /api/billing/usage
 import { IChipOSUsageService, ChipOSUsageService } from '../../../../workbench/contrib/chipos/browser/billing/chiposUsageService.js';

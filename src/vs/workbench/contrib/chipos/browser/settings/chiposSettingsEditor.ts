@@ -30,6 +30,7 @@ import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
 import { EdaToolsTab } from './tabs/edaToolsTab.js';
 import { GeneralTab } from './tabs/generalTab.js';
+import { OrganizationTab } from './tabs/organizationTab.js';
 import { isExtensionSystemEnabled, EXTENSION_SYSTEM_TAB_IDS } from '../../common/extensionsBeta.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
@@ -51,6 +52,7 @@ interface ICategoryDef {
 const CATEGORY_GROUPS: ICategoryDef[][] = [
 	[
 		{ id: 'general', label: localize('chipos.cat.general', 'General'), icon: Codicon.gear, searchableTerms: ['account', 'auth', 'sign in', 'privacy', 'telemetry', 'logging', 'log level', 'editor', 'hints'] },
+		{ id: 'organization', label: localize('chipos.cat.organization', 'Organization'), icon: Codicon.organization, searchableTerms: ['organization', 'org', 'team', 'members', 'member', 'invite', 'role', 'permissions', 'owner', 'admin', 'switch', 'seat'] },
 	],
 	[
 		{ id: 'models', label: localize('chipos.cat.models', 'Models'), icon: Codicon.hubot, searchableTerms: ['provider', 'api key', 'model', 'base url', 'zhipu', 'openai', 'anthropic', 'deepseek'] },
@@ -385,6 +387,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 			switch (tab) {
 				case 'general':
 					store.add(this._instantiationService.createInstance(GeneralTab, inner));
+					break;
+				case 'organization':
+					store.add(this._instantiationService.createInstance(OrganizationTab, inner));
 					break;
 				case 'models':
 					store.add(this._instantiationService.createInstance(ModelsTab, inner));
