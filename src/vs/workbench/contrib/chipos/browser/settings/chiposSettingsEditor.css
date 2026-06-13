@@ -1019,10 +1019,38 @@
 
 /* ── Organization section (active-org + role + permissions) ───────────── */
 
+/* .chipos-org-section is a layout/refresh wrapper (like .chipos-mode-specific):
+ * its direct children join the same section-as-card visual the rest of the panel
+ * uses — surface-2 fill, hairline dividers, rounded top/bottom — so the org block
+ * lines up with the Account / Privacy / Logging cards above and below it. */
 .chipos-org-section {
 	display: flex;
 	flex-direction: column;
-	gap: 14px;
+	gap: 0;
+}
+
+.chipos-settings-section > .chipos-org-section > .chipos-org-summary,
+.chipos-settings-section > .chipos-org-section > .chipos-setting-row,
+.chipos-settings-section > .chipos-org-section > .chipos-auth-status {
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	border-top-width: 0;
+	margin: 0;
+	padding: 12px 14px;
+}
+
+.chipos-settings-section > .chipos-org-section > .chipos-org-summary:first-child,
+.chipos-settings-section > .chipos-org-section > .chipos-auth-status:first-child {
+	border-top-width: 1px;
+	border-top-left-radius: var(--chipos-radius-lg);
+	border-top-right-radius: var(--chipos-radius-lg);
+}
+
+.chipos-settings-section > .chipos-org-section > .chipos-setting-row:last-child,
+.chipos-settings-section > .chipos-org-section > .chipos-org-summary:last-child,
+.chipos-settings-section > .chipos-org-section > .chipos-auth-status:last-child {
+	border-bottom-left-radius: var(--chipos-radius-lg);
+	border-bottom-right-radius: var(--chipos-radius-lg);
 }
 
 .chipos-org-summary {
@@ -1078,6 +1106,8 @@
 }
 
 .chipos-org-switch-status {
+	grid-column: 1 / -1;
+	margin-top: 8px;
 	font-size: 12px;
 	color: var(--chipos-text-secondary);
 	line-height: 16px;

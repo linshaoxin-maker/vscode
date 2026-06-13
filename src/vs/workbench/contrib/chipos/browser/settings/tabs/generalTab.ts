@@ -250,8 +250,9 @@ export class GeneralTab extends Disposable {
 		const selectBox = store.add(new SelectBox(options, activeIndex, this._contextViewProvider!, defaultSelectBoxStyles));
 		selectBox.render(selectContainer);
 
-		// Switch feedback lives below the row; cleared when the section rebuilds.
-		const status = dom.append(parent, dom.$('.chipos-org-switch-status'));
+		// Switch feedback sits on its own line inside the switch row's card (spans
+		// both grid columns); cleared when the section rebuilds.
+		const status = dom.append(row, dom.$('.chipos-org-switch-status'));
 		status.style.display = 'none';
 
 		store.add(selectBox.onDidSelect(async e => {
