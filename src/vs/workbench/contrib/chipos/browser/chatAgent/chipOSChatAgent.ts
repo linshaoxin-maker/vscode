@@ -3943,6 +3943,21 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						isBackground: false,
 					} satisfies IChatTerminalToolInvocationData,
 				} satisfies IChatExternalToolInvocationUpdate]);
+			} else if (toolName === 'read_skill_body' || toolName === 'read_rule_body') {
+				// [ChipOS] Skill/rule lazy-load → a distinct "using" card (📘 技能 · <name>)
+				// instead of a generic tool row: surface WHICH capability the agent reached
+				// for, not the raw body. The completion row is suppressed (below).
+				const skillArgs = (ti.input ?? {}) as Record<string, unknown>;
+				const sName = String(skillArgs.skill_id ?? skillArgs.name ?? skillArgs.id ?? skillArgs.skill ?? skillArgs.rule_id ?? '').trim();
+				const isRule = toolName === 'read_rule_body';
+				const skillLabel = sName
+					? (isRule
+						? localize('chipos.render.usingRule', '📖 **规则** · `{0}`', sName)
+						: localize('chipos.render.usingSkill', '📘 **技能** · `{0}`', sName))
+					: (isRule
+						? localize('chipos.render.usingRuleBare', '📖 **规则**')
+						: localize('chipos.render.usingSkillBare', '📘 **技能**'));
+				progress([this._markdown(skillLabel)]);
 			} else {
 				const argDetail = ChipOSChatAgent._formatToolArgs(ti.input);
 				progress([{
@@ -4034,7 +4049,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						},
 					} satisfies IChatTerminalToolInvocationData,
 				} satisfies IChatExternalToolInvocationUpdate]);
-			} else if (toolName !== 'write_todos') {
+			} else if (toolName !== 'write_todos' && toolName !== 'read_skill_body' && toolName !== 'read_rule_body') {
 				// write_todos has no completion row — the sticky widget
 				// already reflects the latest list from the call side.
 				// Rebuild the "verb `object`" label from the cached input and append a
