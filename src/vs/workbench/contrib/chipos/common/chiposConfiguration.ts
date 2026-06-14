@@ -546,8 +546,8 @@ configurationRegistry.registerConfiguration({
 		// chat path remains the production code path until Phase 4 cleanup.
 		'chipos.experiments.statelessReasoner': {
 			type: 'boolean',
-			default: false,
-			description: localize('chipos.experiments.statelessReasoner.desc', 'Experimental: use Phase 0 stateless reasoner code path (ADR-017 C 档). Requires the reasoner deployment to have CHIPOS_STATELESS=1 set. Default off — leaving the legacy stateful path active.'),
+			default: true,
+			description: localize('chipos.experiments.statelessReasoner.desc', 'Use the stateless reasoner code path (the new /api/v1/invoke protocol). On by default — the legacy stateful /api/v1/task path is being retired (Phase 4 cleanup). Requires the reasoner deployment to have CHIPOS_STATELESS=1 set.'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 	},
