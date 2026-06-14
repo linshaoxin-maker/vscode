@@ -38,6 +38,7 @@ import { Range } from '../../../../../editor/common/core/range.js';
 import { TextEdit } from '../../../../../editor/common/languages.js';
 import {
 	IChatProgress,
+	IChatFollowup,
 	IChatMarkdownContent,
 	IChatConfirmation,
 	IChatProgressMessage,
@@ -786,6 +787,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 
 		return this._invokeStateless(request, progress, _history, token);
+	}
+
+	/**
+	 * [ChipOS][F-4] Surface the turn's next-step suggestion(s) as native clickable
+	 * reply chips below the response. The reasoner emits them on
+	 * `round_end.final_result.followups` (the mandated `建议下一步: …` line);
+	 * `_invokeStateless` stashes them on the result metadata. One click re-sends the
+	 * step as the next turn (native `IChatFollowup` behaviour) — no typing needed.
+	 */
+	async provideFollowups(request: IChatAgentRequest, result: IChatAgentResult, _history: IChatAgentHistoryEntry[], _token: CancellationToken): Promise<IChatFollowup[]> {
+		const raw = result.metadata?.chipos_followups;
+		if (!Array.isArray(raw)) {
+			return [];
+		}
+		return raw
+			.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+			.slice(0, 4)
+			.map(message => ({ kind: 'reply', message, agentId: request.agentId } satisfies IChatFollowup));
 	}
 
 	// ── Shared event handler: eliminates invoke/continuation duplication ──
@@ -5692,6 +5711,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// the IDE (the framework appends our return value's messages naturally
 		// via the chat model), but we keep last-seen for telemetry / future use.
 		let lastFinalMessages: Message[] | undefined;
+		// [ChipOS][F-4] round_end.final_result.followups → surfaced as native
+		// clickable reply chips via provideFollowups (stashed on result metadata).
+		let lastFollowups: string[] | undefined;
 		// Phase 1 checkpoint events bump our resume watermark for the SSE
 		// drop / resume flow (handled in `_statelessTraces` map below).
 
@@ -5773,6 +5795,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.finalMessages !== undefined) {
 				lastFinalMessages = handled.finalMessages;
+			}
+			if (handled.followups !== undefined) {
+				lastFollowups = handled.followups;
 			}
 			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
 			// Fire-and-forget on a background task so the SSE loop keeps draining
@@ -6102,6 +6127,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// authoritative cross-restart recovery is workspace storage, written at
 			// id-mint time — see `_statelessChatSessionIdFor`.
 			chipos_chat_session_id: chatSessionId,
+			// [ChipOS][F-4] next-step suggestions → provideFollowups renders them
+			// as native clickable reply chips below this response.
+			chipos_followups: lastFollowups ?? [],
 		};
 
 		const totalElapsed = Date.now() - startTime;

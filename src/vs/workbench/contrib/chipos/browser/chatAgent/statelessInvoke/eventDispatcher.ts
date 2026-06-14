@@ -111,6 +111,12 @@ export interface DispatchResult {
 	usage?: TokenUsage;
 	errorMessage?: string;
 	terminate?: boolean;
+	/**
+	 * [ChipOS][F-4] Next-step suggestion(s) from `round_end.final_result.followups`
+	 * (the reasoner's mandated `建议下一步: …` line). The caller stashes them on the
+	 * turn result so `provideFollowups` can render native clickable reply chips.
+	 */
+	followups?: string[];
 	// Phase 1 additions (ADR-018 §2 D7 + D8 + D10 + D14):
 	/** Reverse channel: IDE must execute this tool + POST result back. */
 	ideToolCall?: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number };
@@ -923,11 +929,18 @@ function dispatchUnwrappedEvent(
 			// adds "max_iterations" / "interrupted". `langgraph_state_blob` is
 			// gone — IDE owns the conversation log via `final_messages` which
 			// it appends to chatSessions/*.jsonl (D8 mixed-state).
-			const data = (event.data ?? {}) as { reason?: string; final_messages?: Message[] };
+			const data = (event.data ?? {}) as { reason?: string; final_messages?: Message[]; final_result?: { followups?: unknown } };
+			// [ChipOS][F-4] lift the structured next-step suggestions so the caller
+			// can render them as native clickable reply chips (provideFollowups).
+			const rawFollowups = data.final_result?.followups;
+			const followups = Array.isArray(rawFollowups)
+				? rawFollowups.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+				: undefined;
 			return {
 				terminate: true,
 				flushText: true,
 				finalMessages: Array.isArray(data.final_messages) ? data.final_messages : undefined,
+				followups: followups && followups.length > 0 ? followups : undefined,
 			};
 		}
 
