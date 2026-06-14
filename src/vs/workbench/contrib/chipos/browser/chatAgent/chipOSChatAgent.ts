@@ -5,7 +5,7 @@
 
 import { DeferredPromise, raceCancellation, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
 import { MarkdownString, type IMarkdownString } from '../../../../../base/common/htmlContent.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
@@ -51,10 +51,7 @@ import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/com
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
 import { IChatEditingService, type IChatEditingSession } from '../../../../contrib/chat/common/editing/chatEditingService.js';
 import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
-import { IChatWidgetService } from '../../../../contrib/chat/browser/chat.js';
-import { ConnectionBannerHandler } from './connectionBannerHandler.js';
 import type { IChatResponseModel, IChatModel } from '../../../../contrib/chat/common/model/chatModel.js';
-import { SseEventStreamClient } from '../eventStream/grpcSseEventStreamClient.js';
 import { ChatModelToRecordsAdapter } from './statelessInvoke/chatModelAdapter.js';
 import { ConversationAssembler, ConversationAssemblyError } from './statelessInvoke/conversationAssembler.js';
 import { ConversationCompactor } from './statelessInvoke/conversationCompactor.js';
@@ -92,7 +89,6 @@ import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubag
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
 import { isStatelessTurnResumable } from './statelessInvoke/statelessResumability.js';
-import type { IEventStreamClient } from '../eventStream/eventStreamClient.js';
 import { ChipOSEditorEffects } from './editorEffects.js';
 import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
@@ -101,15 +97,12 @@ import { IChipOSWorkerPermissionService, IWorkerPermissionAsk } from '../permiss
 import { IChipOSConfirmRetireService, type ChipOSConfirmRetireReason } from './chiposConfirmRetireService.js';
 import { ChatPermissionLevel, isAutoApproveLevel } from '../../../chat/common/constants.js';
 import {
-	ConnectionState,
 	type IConfirmRequestPayload,
 	type ITaskSummaryPayload,
 	type IMentionItem,
 } from '../eventStream/eventTypes.js';
 
 interface IChatSessionRuntime {
-	streamClient?: IEventStreamClient;
-	clientListeners: DisposableStore;  // listeners tied to the current streamClient lifetime
 	backendSessionId?: string;
 	toolStartTimes: Map<string, number>;
 	toolFileArgs: Map<string, string>;
@@ -252,7 +245,6 @@ export function _buildTracePillMarkdown(traceId: string): MarkdownString {
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
 	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
-	private readonly _connectionBanners = new ResourceMap<ConnectionBannerHandler>();
 	/** PHASE-1-CUTOVER §5: client-observable stateless ramp counters (DI). */
 	private readonly _statelessObs!: StatelessObservability;
 	/** FEAT-006c: per-turn extension-usage accumulator — auto-context @ collect,
@@ -274,7 +266,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatService private readonly _chatService: IChatService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IDialogService private readonly _dialogService: IDialogService,
-		@IChatWidgetService private readonly _chatWidgetService: IChatWidgetService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
 		@ITerminalChatService private readonly _terminalChatService: ITerminalChatService,
 		@ITerminalSandboxService private readonly _terminalSandboxService: ITerminalSandboxService,
@@ -490,7 +481,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	// ── R62: MCP 工具变更通知 ──────────────────────────────────────────────
 
-	private _mcpToolsReportDebounce: ReturnType<typeof setTimeout> | undefined;
 
 	private _onMcpToolsChanged(): void {
 		// R-C (PHASE-1-IMPLEMENTATION-AUDIT §13.3): invalidate the Phase 1
@@ -503,31 +493,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// immediately after an MCP install never sees a stale fingerprint.
 		this._statelessCatalogFingerprints.clear();
 		this._statelessCatalogVersions.clear();
-
-		// 防抖 1s — 避免启动时大量 server 连接导致频繁上报
-		if (this._mcpToolsReportDebounce) {
-			clearTimeout(this._mcpToolsReportDebounce);
-		}
-		this._mcpToolsReportDebounce = setTimeout(() => {
-			this._mcpToolsReportDebounce = undefined;
-			// Notify ALL active sessions so every Reasoner sees the updated tool list
-			const activeSessions = this._findAllActiveSessions();
-			for (const s of activeSessions) {
-				this._collectAndReportMcpTools(s.streamClient, s.sessionId);
-			}
-		}, 1000);
 	}
 
 
-	private _findAllActiveSessions(): Array<{ streamClient: IEventStreamClient; sessionId: string }> {
-		const result: Array<{ streamClient: IEventStreamClient; sessionId: string }> = [];
-		for (const [, runtime] of this._sessionRuntimes) {
-			if (runtime.streamClient && runtime.backendSessionId) {
-				result.push({ streamClient: runtime.streamClient, sessionId: runtime.backendSessionId });
-			}
-		}
-		return result;
-	}
 
 	async invoke(
 		request: IChatAgentRequest,
@@ -2358,108 +2326,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	// ── R55: MCP 工具定义上报 Reasoner ────────────────────────────────────
 
-	/**
-	 * 收集所有 MCP 工具定义，上报给 Reasoner。
-	 * 在 session 开始时和 MCP 工具列表变更时调用。
-	 */
-	private _collectAndReportMcpTools(streamClient: IEventStreamClient, sessionId: string): void {
-		try {
-			const tools: Array<{ name: string; description: string; parameters_json_schema: string; source: string }> = [];
-
-			// IDE-builtin tools that ARE LLM-callable. The other ide_tool_call
-			// names (`agent_ask`, `*_confirm`, `file_edit`, `sim/lint/coverage_report`)
-			// are reasoner-PUSH events and must NOT show up in the LLM tool list —
-			// they're rendered as confirmation cards / report cards by the chat
-			// view based on reasoner's flow, not chosen by the LLM.
-			//
-			// Wiring fix 2026-05-08: this builtin list was missing entirely;
-			// when no user-configured MCP server existed, the function early-
-			// returned without ever calling registerIdeMcpTools, so reasoner's
-			// `_ide_mcp_tool_names = {}` and the LLM had no awareness of
-			// terminal capabilities at all.
-			// run_in_terminal advertisement gate.
-			//
-			// History: Bug #17 (2026-05-20 dogfood) found the chipos
-			// `run_in_terminal` handler used `IDialogService.confirm()` for
-			// approval — a centered, draggable, blocking modal. The previous
-			// fix here was to STOP advertising the tool to the LLM (default
-			// `disable = true`) so the model would prefer worker-side
-			// `execute_command` / `execute` (which already used the inline
-			// ChipOSPermissionCard).
-			//
-			// 2026-05-21: the modal is gone — the handler now emits an
-			// inline `IChatConfirmation` (commit ed9e1bc420e). The flow
-			// renders in the same widget family as the chipos permission
-			// card + hook confirm card, so there's no longer a UX reason
-			// to hide the tool. Flip the default to **enabled**; the
-			// config key stays as an escape hatch (set to `true` to
-			// disable if the inline approval flow misbehaves).
-			const disableRunInTerminal = this._configurationService.getValue<boolean>('chipos.terminal.disableRunInTerminalTool');
-			const effectiveDisable = disableRunInTerminal === undefined ? false : disableRunInTerminal;
-			if (!effectiveDisable) {
-				tools.push({
-					name: 'run_in_terminal',
-					description:
-						"Execute a shell command in the user's IDE terminal with sandbox protection. " +
-						'The command runs in a sandboxed environment that restricts file system and network access. ' +
-						'Use this for: running scripts (python, node, bash), installing packages (pip, npm), ' +
-						'building / testing / linting code, executing EDA tools (yosys, verilator, iverilog), ' +
-						'or any other shell command the user explicitly requested. ' +
-						'Returns the command stdout/stderr and a `terminal_id` that can be passed to ' +
-						'`get_terminal_output` to read further output of long-running commands.',
-					parameters_json_schema: JSON.stringify({
-						type: 'object',
-						properties: {
-							command: { type: 'string', description: 'The shell command to run.' },
-							explanation: { type: 'string', description: 'Brief explanation of why this command is being run (shown to user in approval dialog).' },
-							isBackground: { type: 'boolean', description: 'Whether the command should be started as a background task (default false).' },
-						},
-						required: ['command'],
-					}),
-					source: 'ide-builtin',
-				});
-			}
-			tools.push({
-				name: 'get_terminal_output',
-				description:
-					'Get the output from a previously started terminal. ' +
-					'Use after `run_in_terminal` to check on background tasks or get additional output ' +
-					'when the initial response was truncated or the task is still running.',
-				parameters_json_schema: JSON.stringify({
-					type: 'object',
-					properties: {
-						terminal_id: { type: 'string', description: 'The terminal ID returned by run_in_terminal.' },
-					},
-					required: ['terminal_id'],
-				}),
-				source: 'ide-builtin',
-			});
-
-			// User-configured MCP servers (additive on top of builtins)
-			const servers = this._mcpService.servers.get();
-			for (const server of servers) {
-				const serverTools = server.tools.get();
-				if (!serverTools) { continue; }
-				for (const tool of serverTools) {
-					tools.push({
-						name: tool.definition.name,
-						description: tool.definition.description || '',
-						parameters_json_schema: JSON.stringify(tool.definition.inputSchema || {}),
-						source: `mcp:${server.definition.id}`,
-					});
-				}
-			}
-
-			// Always call register, even with just builtins. (Reasoner needs
-			// the registration to populate `_ide_mcp_tool_names`; otherwise
-			// LLM never sees `run_in_terminal`.)
-			this._logService.info('[ChipOS Agent] Reporting %d IDE tools to Reasoner (%d builtin + %d MCP)',
-				tools.length, 2, tools.length - 2);
-			streamClient.registerIdeMcpTools(sessionId, tools);
-		} catch (err: any) {
-			this._logService.warn('[ChipOS Agent] Failed to collect MCP tools: %s', err.message);
-		}
-	}
 
 	private _cleanTerminalOutput(raw: string, command: string, effectiveCommand?: string): string {
 		const lines = raw.split('\n');
@@ -2540,7 +2406,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		let runtime = this._sessionRuntimes.get(sessionResource);
 		if (!runtime) {
 			runtime = {
-				clientListeners: new DisposableStore(),
 				toolStartTimes: new Map<string, number>(),
 				toolFileArgs: new Map<string, string>(),
 				subagentTimers: new Map<string, number>(),
@@ -2574,13 +2439,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const pendingStartEdits = new Map(runtime.pendingStartEdits);
 		void this._cleanupExternalEditsForSession(sessionResource, externalEditOps, pendingStartEdits);
 
-		runtime.streamClient?.dispose();
-		runtime.clientListeners.dispose();
 		runtime.workspaceWatcher?.dispose();
 		runtime.workspaceWatcher = undefined;
 		runtime.watchedFileChanges.clear();
-		runtime.streamClient = undefined;
-		runtime.backendSessionId = undefined;
 		runtime.lastSubagentToolCallId = undefined;
 		runtime.toolStartTimes.clear();
 		runtime.toolFileArgs.clear();
@@ -2620,47 +2481,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// so there is nothing left to resume on a future startup.
 		this._removeStoredStatelessChatSessionId(sessionResource);
 		this._probedStatelessSessions.delete(sessionResource.toString());
-		// Clean up any connection banner for this session
-		this._hideConnectionBanner(sessionResource);
-		this._connectionBanners.delete(sessionResource);
 	}
 
-	// ── Connection Banner ─────────────────────────────────────────────────────
 
-	private _showConnectionBanner(sessionResource: URI, state: ConnectionState): void {
-		// Find the chat widget for this session
-		const widget = this._chatWidgetService.getWidgetBySessionResource(sessionResource);
-		const listContainer = widget?.domNode?.querySelector<HTMLElement>('.interactive-list');
-		if (!listContainer) {
-			// Widget not visible — fall back to notification
-			if (state === ConnectionState.Error) {
-				this._notificationService.warn(
-					localize('chipos.agent.disconnected', 'ChipOS: Backend connection failed. Check if the Reasoner is running.')
-				);
-			}
-			return;
-		}
 
-		let banner = this._connectionBanners.get(sessionResource);
-		if (!banner) {
-			banner = new ConnectionBannerHandler(this._logService);
-			this._connectionBanners.set(sessionResource, banner);
-		}
-
-		banner.show(listContainer, state, () => {
-			// "Reconnect Now" clicked — re-run _ensureClient
-			this._ensureClient(sessionResource).catch(err => {
-				this._logService.error('[ChipOS Agent] Manual reconnect failed:', String(err));
-			});
-		});
-	}
-
-	private _hideConnectionBanner(sessionResource: URI): void {
-		const banner = this._connectionBanners.get(sessionResource);
-		if (banner) {
-			banner.hide();
-		}
-	}
 
 	private async _cleanupExternalEditsForSession(
 		sessionResource: URI,
@@ -2806,65 +2630,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	// ── Client lifecycle ───────────────────────────────────────────────────
 
-	private async _ensureClient(sessionResource: URI): Promise<IEventStreamClient | undefined> {
-		const runtime = this._getOrCreateRuntime(sessionResource);
-		if (runtime.streamClient && runtime.streamClient.connectionState === ConnectionState.Connected) {
-			this._logService.trace('[ChipOS Agent] Reusing existing connected SSE client');
-			return runtime.streamClient;
-		}
-
-		// Three-tier resolution (settings > product.json > loopback).
-		// Reasoner is reached directly over the public internet (deployment
-		// model A: cloud-hosted Reasoner, per-user Worker on a remote EDA
-		// server). chipos-remote-ssh does NOT and SHOULD NOT route the chat
-		// SSE stream through the SSH tunnel — the worker's gRPC link is the
-		// only thing that needs to traverse the tunnel, and it goes
-		// Worker → Reasoner directly over its own grpcAddress, not via IDE.
-		const baseUrl = resolveReasoningUrl(this._configurationService, this._productService);
-		const noProxy = this._configurationService.getValue<string[]>('http.noProxy') ?? [];
-
-		this._logService.info('[ChipOS Agent] Connecting via SSE:', baseUrl, '| http.noProxy:', JSON.stringify(noProxy));
-
-		if (runtime.streamClient && runtime.streamClient instanceof SseEventStreamClient
-			&& runtime.streamClient.connectionState !== ConnectionState.Error) {
-			this._logService.trace('[ChipOS Agent] Reusing existing SSE client for reconnect');
-		} else {
-			runtime.streamClient?.dispose();
-			runtime.clientListeners.clear();  // drop listeners from previous client
-
-			// Phase 1 Unified Auth: use TokenManager as dynamic token provider
-			const tokenProvider = this._tokenManager ? {
-				getAccessToken: () => this._tokenManager.getAccessToken(),
-				refreshAccessToken: () => this._tokenManager.refreshAccessToken(),
-			} : undefined;
-
-			runtime.streamClient = new SseEventStreamClient({ baseUrl, tokenProvider }, this._logService);
-
-			// Monitor connection state changes — show/hide banner in chat widget
-			// Tied to clientListeners so it's cleaned up when the client is replaced or disposed
-			runtime.clientListeners.add(runtime.streamClient.onDidChangeConnectionState((state) => {
-				if (state === ConnectionState.Reconnecting || state === ConnectionState.Error) {
-					this._showConnectionBanner(sessionResource, state);
-				} else if (state === ConnectionState.Connected) {
-					this._hideConnectionBanner(sessionResource);
-					if (this._logService) {
-						this._logService.info('[ChipOS Agent] SSE reconnected');
-					}
-				}
-			}));
-		}
-
-		try {
-			await runtime.streamClient.connect();
-			this._logService.info('[ChipOS Agent] SSE connected successfully');
-		} catch (err) {
-			this._logService.error('[ChipOS Agent] Failed to connect SSE:', String(err));
-			this._logService.error('[ChipOS Agent] Hint: If proxy issue, add server IP to Settings > http.noProxy');
-			return undefined;
-		}
-
-		return runtime.streamClient;
-	}
 
 	// =========================================================================
 	// Phase 0 #8e — Stateless reasoner invoke path (ADR-017 C 档)
@@ -5075,17 +4840,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	override dispose(): void {
 		// R62: 清理 debounce timer
-		if (this._mcpToolsReportDebounce) {
-			clearTimeout(this._mcpToolsReportDebounce);
-			this._mcpToolsReportDebounce = undefined;
-		}
 		for (const [sessionResource] of this._sessionRuntimes) {
 			this._disposeRuntime(sessionResource);
 		}
-		for (const [, banner] of this._connectionBanners) {
-			banner.dispose();
-		}
-		this._connectionBanners.clear();
 		this._renderedConfirmsByTrace.clear();
 		// FEAT-004 / H-3: kill the executable-hook subprocess host (if it was ever
 		// spawned) so a forked plugin-hook child cannot outlive the agent.
