@@ -167,6 +167,12 @@ export interface DispatchResult {
 		isComplete: boolean;
 		outputPreview?: string;
 		isError?: boolean;
+		/**
+		 * Backend `error_kind` carried on a tool_result (e.g. 'hook_deny' when a
+		 * reasoner hook blocked the tool before dispatch). Lets the renderer show a
+		 * distinct "🛡 被 hook 拦截" badge instead of a generic red tool-error.
+		 */
+		errorKind?: string;
 	};
 	/**
 	 * [ChipOS] Fusion: a sub-agent (composite role) tool-lifecycle frame. On
@@ -416,7 +422,7 @@ function dispatchUnwrappedEvent(
 		}
 
 		case 'tool_result': {
-			const data = (event.data ?? {}) as { tool_id?: string; content?: string; is_error?: boolean };
+			const data = (event.data ?? {}) as { tool_id?: string; content?: string; is_error?: boolean; error_kind?: string };
 			const callId = typeof data.tool_id === 'string' ? data.tool_id : '';
 			if (!callId) {
 				return {};
@@ -427,6 +433,8 @@ function dispatchUnwrappedEvent(
 					isComplete: true,
 					outputPreview: typeof data.content === 'string' ? data.content : '',
 					isError: !!data.is_error,
+					// 'hook_deny' (FEAT-004) → renderer shows a hook-block badge, not a tool error.
+					errorKind: typeof data.error_kind === 'string' ? data.error_kind : undefined,
 				},
 			};
 		}

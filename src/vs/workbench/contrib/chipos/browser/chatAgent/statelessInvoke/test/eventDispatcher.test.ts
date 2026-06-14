@@ -94,7 +94,25 @@ suite('dispatchStatelessEvent', () => {
 	test('tool_result (agent_core bridge) → completes the invocation with content preview', () => {
 		const r = dispatchStatelessEvent(ev('tool_result', { tool_id: 'run_1', content: '0 errors', tool_name: 'verilog_lint' }));
 		assert.deepStrictEqual(r, {
-			toolInvocation: { callId: 'run_1', isComplete: true, outputPreview: '0 errors', isError: false },
+			toolInvocation: { callId: 'run_1', isComplete: true, outputPreview: '0 errors', isError: false, errorKind: undefined },
+		});
+	});
+
+	test('tool_result with error_kind hook_deny → errorKind passthrough (renderer shows a hook-block badge)', () => {
+		const r = dispatchStatelessEvent(ev('tool_result', {
+			tool_id: 'run_2',
+			content: "Tool 'run_in_terminal' was blocked by a reasoner hook: no shell in this workspace",
+			is_error: true,
+			error_kind: 'hook_deny',
+		}));
+		assert.deepStrictEqual(r, {
+			toolInvocation: {
+				callId: 'run_2',
+				isComplete: true,
+				outputPreview: "Tool 'run_in_terminal' was blocked by a reasoner hook: no shell in this workspace",
+				isError: true,
+				errorKind: 'hook_deny',
+			},
 		});
 	});
 
