@@ -3329,6 +3329,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					toolName,
 					isComplete: true,
 					pastTenseMessage: blockLabel,
+					// The start side set `toolSpecificData` (e.g. a terminal card for shell
+					// tools); the framework REPLACES (not merges) it on update, so we MUST
+					// re-supply a card here or the row renders empty (the bug that hid the
+					// whole deny row). Show the blocked input as a neutral input card.
+					toolSpecificData: { kind: 'input', rawInput: cached?.rawInput ?? '' } satisfies IChatToolInputInvocationData,
 					resultDetails: {
 						input: cached?.rawInput ?? '',
 						output: [{ type: 'embed' as const, value: output, isText: true, mimeType: 'text/plain' }],
