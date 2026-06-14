@@ -73,7 +73,9 @@ suite('ChatModeService', () => {
 	test('should return builtin modes', () => {
 		const modes = chatModeService.getModes();
 
-		assert.strictEqual(modes.builtin.length, 3);
+		// ChipOS fork adds a built-in Spec mode (Chat UI Redesign), so with the
+		// tools agent available the builtins are Agent + Ask + Edit + Spec.
+		assert.strictEqual(modes.builtin.length, 4);
 		assert.strictEqual(modes.custom.length, 0);
 
 		// Check that Ask mode is always present

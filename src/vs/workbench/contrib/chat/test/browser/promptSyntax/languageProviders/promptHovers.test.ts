@@ -406,7 +406,7 @@ suite('PromptHoverProvider', () => {
 				'The agent to use when running this prompt.',
 				'',
 				'**Built-in agents:**',
-				'- `agent`: Describe what to build',
+				'- `agent`: Plan, Build, / for commands, @ for context',
 				'- `ask`: Explore and understand your code',
 				'- `edit`: Edit or refactor selected code',
 				'',
