@@ -3679,9 +3679,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * in-flight trace (turn already finished — GET /turn_state is authoritative).
 	 */
 	private async _maybeProbeInFlightTurn(model: IChatModel): Promise<void> {
-		if (!(this._configurationService.getValue<boolean>('chipos.experiments.statelessReasoner') ?? false)) {
-			return;
-		}
 		const sessionResource = model.sessionResource;
 		const key = sessionResource.toString();
 		// Probe each thread at most once per IDE run.
