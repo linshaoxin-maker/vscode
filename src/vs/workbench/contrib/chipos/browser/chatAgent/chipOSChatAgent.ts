@@ -3098,7 +3098,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const explicitCommand = (request as { command?: string }).command;
 			const inlineMatch = /(?:^|\s)\/(?<name>[\w-]+)(?:[ \t]+(?<args>[^\n]*))?/.exec(request.message ?? '');
 			const commandName = explicitCommand || inlineMatch?.groups?.name;
-			console.warn(`[cmddbg2] commandName=${commandName ?? 'UNDEF'} explicit=${explicitCommand ?? '-'} inlineName=${inlineMatch?.groups?.name ?? '-'} ext=${extensionSystemEnabled} reqCmd=${JSON.stringify((request as { command?: string }).command ?? '-')} msg=${JSON.stringify((request.message ?? '').slice(0, 60))}`);
 			if (commandName && extensionSystemEnabled) {
 				const commands = await this._instantiationService.createInstance(ChiposCommandsService).getCommands();
 				// FEAT-002a: also match commands contributed by installed plugins.
