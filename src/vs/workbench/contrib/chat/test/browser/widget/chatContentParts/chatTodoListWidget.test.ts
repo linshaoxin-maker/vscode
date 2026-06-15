@@ -113,17 +113,17 @@ suite('ChatTodoListWidget Accessibility', () => {
 
 		const expandoButton = expandoContainer?.querySelector('.monaco-button');
 		assert.ok(expandoButton, 'Should have Monaco button');
-		assert.strictEqual(expandoButton?.getAttribute('aria-expanded'), 'false'); // Should be collapsed due to in-progress task
+		assert.strictEqual(expandoButton?.getAttribute('aria-expanded'), 'true'); // Defaults expanded (ChipOS UX: todos are the plan-of-record)
 		assert.strictEqual(expandoButton?.getAttribute('aria-controls'), 'todo-list-container');
 
 		// The title element should have progress information
 		const titleElement = expandoButton?.querySelector('.todo-list-title');
 		assert.ok(titleElement, 'Should have title element');
 		const titleText = titleElement?.textContent;
-		// When collapsed, title shows progress and current task: " (2/3) - Second task"
+		// Default is expanded (ChipOS UX), so the title is "Todos (2/3)".
 		// Progress is 2/3 because: 1 completed + 1 in-progress (current) = task 2 of 3
 		assert.ok(titleText?.includes('(2/3)'), `Title should show progress format, but got: "${titleText}"`);
-		assert.ok(titleText?.includes('Second task'), `Title should show current task when collapsed, but got: "${titleText}"`);
+		assert.ok(titleText?.includes('Todos'), `Expanded title should show the Todos label, but got: "${titleText}"`);
 	});
 
 	test('todo items have complete aria-label with status information', () => {
@@ -223,12 +223,12 @@ suite('ChatTodoListWidget Accessibility', () => {
 		const titleElement = widget.domNode.querySelector('#todo-list-title');
 		assert.ok(titleElement, 'Should have title element with ID');
 
-		// Title should show progress format: " (2/3)" since one todo is completed and one is in-progress
-		// When collapsed, it also shows the current task: " (2/3) - Second task"
-		// Progress is 2/3 because: 1 completed + 1 in-progress (current) = task 2 of 3
+		// Default is expanded (ChipOS UX), so the title is "Todos (2/3)" (collapsed
+		// would instead surface the current task). Progress is 2/3 because:
+		// 1 completed + 1 in-progress (current) = task 2 of 3.
 		const titleText = titleElement?.textContent;
 		assert.ok(titleText?.includes('(2/3)'), `Title should show progress format, but got: "${titleText}"`);
-		assert.ok(titleText?.includes('Second task'), `Title should show current task when collapsed, but got: "${titleText}"`);
+		assert.ok(titleText?.includes('Todos'), `Expanded title should show the Todos label, but got: "${titleText}"`);
 
 		// Verify aria-labelledby connection works
 		const todoListContainer = widget.domNode.querySelector('.todo-list-container');
@@ -239,11 +239,11 @@ suite('ChatTodoListWidget Accessibility', () => {
 		widget.render(testSessionUri);
 
 		const expandoButton = widget.domNode.querySelector('.todo-list-expand .monaco-button');
-		assert.strictEqual(expandoButton?.getAttribute('aria-expanded'), 'false', 'Todo list should start collapsed');
+		assert.strictEqual(expandoButton?.getAttribute('aria-expanded'), 'true', 'Todo list should start expanded (ChipOS UX default)');
 
 		const focused = widget.focus();
 		assert.strictEqual(focused, true, 'Focus should succeed when todos are present');
-		assert.strictEqual(expandoButton?.getAttribute('aria-expanded'), 'true', 'Focus should expand the todo list');
+		assert.strictEqual(expandoButton?.getAttribute('aria-expanded'), 'true', 'Todo list should remain expanded after focus');
 
 		const todoListContainer = widget.domNode.querySelector('.todo-list-container') as HTMLElement;
 		assert.ok(todoListContainer, 'Todo list container should exist');
