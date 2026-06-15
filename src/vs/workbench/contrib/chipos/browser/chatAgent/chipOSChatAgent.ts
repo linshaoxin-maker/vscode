@@ -1776,10 +1776,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			lines.push('');
 		}
 
-		const next = d.next_steps as string | undefined;
-		if (next && next !== '无') {
-			lines.push(`> $(lightbulb) **Next:** ${next}`);
-		}
+		// [ChipOS][F-4 redesign] next_steps now render as an inline command-button
+		// card under the summary (see _maybeEmitNextStepsCard), not a markdown pill
+		// here — one next-step surface, not two.
 
 		return lines.join('\n');
 	}
@@ -1832,6 +1831,44 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private static _followupChipLabel(action: string): string {
 		const MAX = 22;
 		return action.length > MAX ? action.slice(0, MAX - 1) + '…' : action;
+	}
+
+	/**
+	 * [ChipOS][F-4 redesign] Emit the inline next-step button card from a task
+	 * summary's structured `next_steps` (the canonical EDA next-step list, e.g.
+	 * "运行 lint_fix_loop / 生成 TestBench / 运行仿真验证"). Sits under the summary,
+	 * replacing the old markdown "Next" pill. Returns true if a card was emitted.
+	 */
+	private _maybeEmitNextStepsCard(handled: DispatchResult, progress: (parts: IChatProgress[]) => void, sessionResource: URI): boolean {
+		if (!handled.taskSummary) {
+			return false;
+		}
+		const raw = handled.taskSummary.structured_data?.next_steps as string | undefined;
+		const steps = ChipOSChatAgent._parseNextSteps(raw);
+		if (steps.length === 0) {
+			return false;
+		}
+		const card = this._buildFollowupsCard(sessionResource, steps);
+		if (!card) {
+			return false;
+		}
+		progress([card]);
+		return true;
+	}
+
+	/** Split a `next_steps` blob ("→ a\n→ b" or "→ a → b") into step strings. */
+	private static _parseNextSteps(raw: string | undefined): string[] {
+		if (!raw || raw === '无') {
+			return [];
+		}
+		let parts = raw.split(/\r?\n/);
+		if (parts.length === 1 && parts[0].split('→').length > 2) {
+			parts = parts[0].split('→');
+		}
+		return parts
+			.map(s => s.replace(/^[\s>→▸▶\-*•·.]+/, '').trim())
+			.filter(s => s.length > 0)
+			.slice(0, 4);
 	}
 
 	private _markdown(content: string): IChatMarkdownContent {
@@ -3280,6 +3317,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// [ChipOS][F-4] round_end.final_result.followups → surfaced as native
 		// clickable reply chips via provideFollowups (stashed on result metadata).
 		let lastFollowups: string[] | undefined;
+		// [ChipOS][F-4 redesign] true once the task-summary next_steps card emitted,
+		// so the round_end followups fallback below doesn't emit a second one.
+		let nextCardEmitted = false;
 		// Phase 1 checkpoint events bump our resume watermark for the SSE
 		// drop / resume flow (handled in `_statelessTraces` map below).
 
@@ -3328,6 +3368,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// stateless turn showed only tool rows; restore the legacy cards.
 				trackFirstProgress();
 				this._renderStatelessEdaParts(handled, progress);
+				if (this._maybeEmitNextStepsCard(handled, progress, request.sessionResource)) {
+					nextCardEmitted = true;
+				}
 			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
@@ -3364,10 +3407,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.followups !== undefined) {
 				lastFollowups = handled.followups;
-				// [ChipOS][F-4 redesign] Render the next-step suggestions as an
-				// inline, non-blocking command-button card in the conversation flow
-				// (replaces the native chips floating above the input box).
-				if (lastFollowups.length > 0) {
+				// [ChipOS][F-4 redesign] Fallback next-step card from the prose
+				// `建议下一步:` line — only when the task summary didn't already emit
+				// one from its structured `next_steps` (avoids a double card).
+				if (!nextCardEmitted && lastFollowups.length > 0) {
 					const followupCard = this._buildFollowupsCard(request.sessionResource, lastFollowups);
 					if (followupCard) {
 						progress([followupCard]);
@@ -3970,6 +4013,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Fusion: rich EDA report cards on the resume path too
 				// (parity with the live loop above).
 				this._renderStatelessEdaParts(handled, progress);
+				this._maybeEmitNextStepsCard(handled, progress, request.sessionResource);
 			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);

@@ -1621,4 +1621,18 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	padding-top: 0 !important;
 }
 
+/*
+ *  ── Diagnosis: task-summary table column collapse (Review Verdict → "Revi/ew") ──
+ *  Upstream chat.css sets `overflow-wrap: anywhere` on
+ *  `.interactive-item-container .value` so long unbreakable strings (URLs) wrap in
+ *  prose. That cascades into rendered-markdown <td> cells, where `anywhere` also
+ *  shrinks each cell's min-content to ~1 character — so the browser collapses the
+ *  narrow "项目" column and breaks every label per-character. Restore normal
+ *  word-breaking inside table cells so columns size to their content again. */
+.interactive-item-container .value .rendered-markdown table td,
+.interactive-item-container .value .rendered-markdown table th {
+	overflow-wrap: break-word;
+	word-break: normal;
+}
+
 
