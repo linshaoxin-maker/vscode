@@ -169,6 +169,7 @@ suite('dispatchStatelessEvent', () => {
 			terminate: true,
 			flushText: true,
 			finalMessages,
+			followups: undefined,
 		});
 	});
 
@@ -180,6 +181,7 @@ suite('dispatchStatelessEvent', () => {
 			terminate: true,
 			flushText: true,
 			finalMessages: undefined,
+			followups: undefined,
 		});
 	});
 
@@ -190,6 +192,7 @@ suite('dispatchStatelessEvent', () => {
 			terminate: true,
 			flushText: true,
 			finalMessages: undefined,
+			followups: undefined,
 		});
 	});
 
