@@ -38,7 +38,6 @@ import {
 	IChatFollowup,
 	IChatMarkdownContent,
 	IChatConfirmation,
-	IChatCommandButton,
 	IChatProgressMessage,
 	IChatThinkingPart,
 	IChatExternalToolInvocationUpdate,
@@ -464,7 +463,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	/**
 	 * [ChipOS][F-4 redesign] Send a clicked next-step chip as a fresh user turn.
 	 * Routed to ChipOS without an "@" mention (like a typed message). Fired by the
-	 * inline `chipos.chat.sendFollowup` command button (see `_buildFollowupsCard`).
+	 * inline next-step card command-links (see `_emitFollowupsCard`).
 	 */
 	private async _sendFollowupTurn(sessionResource: URI, text: string): Promise<void> {
 		const step = typeof text === 'string' ? text.trim() : '';
@@ -626,7 +625,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 */
 	async provideFollowups(_request: IChatAgentRequest, _result: IChatAgentResult, _history: IChatAgentHistoryEntry[], _token: CancellationToken): Promise<IChatFollowup[]> {
 		// [ChipOS][F-4 redesign] Next-step suggestions now render as an INLINE
-		// command-button card under the reply (see `_buildFollowupsCard`), NOT as
+		// inline next-step card under the reply (see `_emitFollowupsCard`), NOT as
 		// native chips floating above the input box. Returning none disables the
 		// float so the inline card is the single surface.
 		return [];
@@ -1790,47 +1789,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return folders.length > 0 ? folders[0].uri.fsPath : undefined;
 	}
 
-	/**
-	 * [ChipOS][F-4 redesign] Build the inline "下一步" card: a non-blocking button
-	 * group rendered in the conversation flow under the reply (NOT the native float
-	 * above the input). First step = primary button, the rest = secondary. The
-	 * button LABEL is clipped for tidiness; the click still sends the FULL action
-	 * text (see the `chipos.chat.sendFollowup` command).
-	 */
-	private _buildFollowupsCard(sessionResource: URI, followups: readonly string[]): IChatCommandButton | undefined {
-		const items = followups.filter(s => typeof s === 'string' && s.trim().length > 0).slice(0, 4);
-		if (items.length === 0) {
-			return undefined;
-		}
-		const toCommand = (raw: string) => {
-			const action = ChipOSChatAgent._followupAction(raw);
-			return {
-				id: 'chipos.chat.sendFollowup',
-				title: ChipOSChatAgent._followupChipLabel(action),
-				tooltip: action,
-				arguments: [sessionResource, action],
-			};
-		};
-		const [first, ...rest] = items;
-		return {
-			kind: 'command',
-			command: toCommand(first),
-			additionalCommands: rest.map(toCommand),
-		};
-	}
-
 	/** Drop a trailing meta-question the model sometimes appends ("…。需要我继续吗?"). */
 	private static _followupAction(raw: string): string {
 		const s = raw.trim();
 		const dot = s.indexOf('。');
 		const action = dot > 0 ? s.slice(0, dot).trim() : s;
 		return action.length > 0 ? action : s;
-	}
-
-	/** Clip the chip LABEL for tidiness; the full action still sends on click. */
-	private static _followupChipLabel(action: string): string {
-		const MAX = 22;
-		return action.length > MAX ? action.slice(0, MAX - 1) + '…' : action;
 	}
 
 	/**
@@ -1848,7 +1812,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * "运行 lint_fix_loop / 生成 TestBench / 运行仿真验证"). Sits under the summary,
 	 * replacing the old markdown "Next" pill. Returns true if a card was emitted.
 	 */
-	private _maybeEmitNextStepsCard(handled: DispatchResult, progress: (parts: IChatProgress[]) => void, sessionResource: URI): boolean {
+	private _maybeEmitNextStepsCard(handled: DispatchResult, progress: (parts: IChatProgress[]) => void, sessionResource: URI, fullReplyText: string): boolean {
 		if (!handled.taskSummary) {
 			return false;
 		}
@@ -1856,26 +1820,82 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		if (!raw || raw === '无') {
 			return false;
 		}
-		return this._emitFollowupsCard(progress, sessionResource, [raw]);
+		return this._emitFollowupsCard(progress, sessionResource, [raw], fullReplyText);
 	}
 
 	/**
-	 * [ChipOS][F-4 redesign] Emit the next-step card: a clear separator + "下一步"
-	 * header, then a non-blocking button group of the (split + cleaned) options so
-	 * the buttons read as discrete next-step choices. Returns true if emitted.
+	 * [ChipOS][F-4 redesign] Emit the next-step card: an aligned, multi-row table —
+	 * each row a clickable short title + a one-line description. Rich {title,desc}
+	 * options are parsed from the reply's own option bullets (the only place a
+	 * per-option description lives); else falls back to plain titles from
+	 * next_steps / the followup line. Returns true if a card was emitted.
 	 */
-	private _emitFollowupsCard(progress: (parts: IChatProgress[]) => void, sessionResource: URI, rawItems: readonly string[]): boolean {
-		const options = ChipOSChatAgent._toFollowupOptions(rawItems);
-		if (options.length === 0) {
+	private _emitFollowupsCard(progress: (parts: IChatProgress[]) => void, sessionResource: URI, rawItems: readonly string[], fullReplyText: string): boolean {
+		let opts = ChipOSChatAgent._parseNextStepOptions(fullReplyText);
+		if (opts.length < 2) {
+			opts = ChipOSChatAgent._toFollowupOptions(rawItems).map(title => ({ title, desc: '' }));
+		}
+		if (opts.length === 0) {
 			return false;
 		}
-		const card = this._buildFollowupsCard(sessionResource, options);
-		if (!card) {
-			return false;
-		}
-		progress([this._markdown('---\n\n$(lightbulb) **下一步**')]);
-		progress([card]);
+		const content = ChipOSChatAgent._renderFollowupsTable(sessionResource, opts);
+		progress([{ kind: 'markdownContent', content } satisfies IChatMarkdownContent]);
 		return true;
+	}
+
+	/**
+	 * Parse the LAST markdown bullet list in the reply into {title, description}
+	 * next-step options. Splits each bullet on the first "(（：:—" into a short
+	 * title + a detail; bullets with no separator become title-only.
+	 */
+	private static _parseNextStepOptions(replyText: string): { title: string; desc: string }[] {
+		if (!replyText) {
+			return [];
+		}
+		const bulletRe = /^\s*[-*•·]\s+(.+?)\s*$/;
+		let run: string[] = [];
+		let lastRun: string[] = [];
+		for (const line of replyText.split(/\r?\n/)) {
+			const m = bulletRe.exec(line);
+			if (m) {
+				run.push(m[1]);
+			} else if (run.length > 0) {
+				lastRun = run;
+				run = [];
+			}
+		}
+		if (run.length > 0) {
+			lastRun = run;
+		}
+		const opts: { title: string; desc: string }[] = [];
+		for (const bullet of lastRun) {
+			const plain = bullet.replace(/[`*]/g, '').trim();
+			const m = /^(.+?)\s*[（(：:—]\s*(.+)$/.exec(plain);
+			const title = (m ? m[1] : plain).trim();
+			const desc = (m ? m[2] : '').replace(/[（）()]/g, '').trim();
+			if (title) {
+				opts.push({ title, desc });
+			}
+		}
+		return opts.slice(0, 5);
+	}
+
+	/**
+	 * Render the next-step options as an aligned 2-column table: a clickable short
+	 * title (fires `chipos.chat.sendFollowup` with the full action) + its detail.
+	 * isTrusted is scoped to ONLY that command so model-supplied text can't smuggle
+	 * in another command link.
+	 */
+	private static _renderFollowupsTable(sessionResource: URI, opts: { title: string; desc: string }[]): MarkdownString {
+		const esc = (s: string) => s.replace(/\r?\n+/g, ' ').replace(/\|/g, '\\|').trim();
+		const rows = ['| $(lightbulb) 下一步 | |', '| :-- | :-- |'];
+		for (const o of opts) {
+			const sendText = o.desc ? `${o.title}(${o.desc})` : o.title;
+			const arg = encodeURIComponent(JSON.stringify([sessionResource.toJSON(), sendText]));
+			const label = esc(o.title).replace(/[\[\]]/g, '');
+			rows.push(`| **[${label}](command:chipos.chat.sendFollowup?${arg})** | ${esc(o.desc)} |`);
+		}
+		return new MarkdownString(rows.join('\n'), { supportThemeIcons: true, isTrusted: { enabledCommands: ['chipos.chat.sendFollowup'] } });
 	}
 
 	/**
@@ -3308,6 +3328,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		};
 		let assistantTextBuf = '';
+		// [ChipOS][F-4 redesign] uncleared full reply text, used to parse the option
+		// bullets that feed the next-step card (assistantTextBuf is cleared per flush).
+		let fullReplyText = '';
 		const flushAssistantText = () => {
 			if (assistantTextBuf.length === 0) {
 				return;
@@ -3359,6 +3382,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const applyDispatch = (handled: DispatchResult): void => {
 			if (handled.appendText) {
 				assistantTextBuf += handled.appendText;
+				fullReplyText += handled.appendText;
 				sawStreamedText = true;
 				trackFirstProgress();
 			}
@@ -3369,6 +3393,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// (gated by sawStreamedText). Mirrors the reasoner accumulator's
 				// `_saw_streamed_text` guard on the live render side.
 				assistantTextBuf += handled.replyText;
+				fullReplyText += handled.replyText;
 				trackFirstProgress();
 				flushAssistantText();
 			}
@@ -3401,7 +3426,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// stateless turn showed only tool rows; restore the legacy cards.
 				trackFirstProgress();
 				this._renderStatelessEdaParts(handled, progress);
-				if (this._maybeEmitNextStepsCard(handled, progress, request.sessionResource)) {
+				if (this._maybeEmitNextStepsCard(handled, progress, request.sessionResource, fullReplyText)) {
 					nextCardEmitted = true;
 				}
 			}
@@ -3444,7 +3469,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// `建议下一步:` line — only when the task summary didn't already emit
 				// one from its structured `next_steps` (avoids a double card).
 				if (!nextCardEmitted && lastFollowups.length > 0) {
-					this._emitFollowupsCard(progress, request.sessionResource, lastFollowups);
+					this._emitFollowupsCard(progress, request.sessionResource, lastFollowups, fullReplyText);
 				}
 			}
 			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
@@ -3987,6 +4012,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		});
 
 		let assistantTextBuf = '';
+		// [ChipOS][F-4 redesign] uncleared full reply text, used to parse the option
+		// bullets that feed the next-step card (assistantTextBuf is cleared per flush).
+		let fullReplyText = '';
 		const flushAssistantText = () => {
 			if (assistantTextBuf.length === 0) {
 				return;
@@ -4018,6 +4046,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const applyDispatch = (handled: DispatchResult): void => {
 			if (handled.appendText) {
 				assistantTextBuf += handled.appendText;
+				fullReplyText += handled.appendText;
 				sawStreamedText = true;
 			}
 			if (handled.replyText && !sawStreamedText) {
@@ -4025,6 +4054,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// not stream model_output) renders here; a streamed reply drops it
 				// (sawStreamedText). Mirrors the accumulator's `_saw_streamed_text`.
 				assistantTextBuf += handled.replyText;
+				fullReplyText += handled.replyText;
 				flushAssistantText();
 			}
 			if (handled.flushText) {
@@ -4048,7 +4078,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Fusion: rich EDA report cards on the resume path too
 				// (parity with the live loop above).
 				this._renderStatelessEdaParts(handled, progress);
-				this._maybeEmitNextStepsCard(handled, progress, request.sessionResource);
+				this._maybeEmitNextStepsCard(handled, progress, request.sessionResource, fullReplyText);
 			}
 			if (handled.thinkingText) {
 				progress([{ kind: 'thinking', value: handled.thinkingText } satisfies IChatThinkingPart]);
