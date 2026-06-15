@@ -1834,6 +1834,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * [ChipOS][F-4 redesign] Strip a trailing mandated `建议下一步: …` line from the
+	 * assistant prose — it renders as the inline next-step button card instead, so
+	 * keeping it in the text too is pure duplication.
+	 */
+	private static _stripNextStepLine(text: string): string {
+		return text.replace(/\n*[ \t]*建议下一步[ \t]*[:：][^\n]*$/, '').replace(/\s+$/, '');
+	}
+
+	/**
 	 * [ChipOS][F-4 redesign] Emit the inline next-step button card from a task
 	 * summary's structured `next_steps` (the canonical EDA next-step list, e.g.
 	 * "运行 lint_fix_loop / 生成 TestBench / 运行仿真验证"). Sits under the summary,
@@ -1844,31 +1853,50 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return false;
 		}
 		const raw = handled.taskSummary.structured_data?.next_steps as string | undefined;
-		const steps = ChipOSChatAgent._parseNextSteps(raw);
-		if (steps.length === 0) {
+		if (!raw || raw === '无') {
 			return false;
 		}
-		const card = this._buildFollowupsCard(sessionResource, steps);
+		return this._emitFollowupsCard(progress, sessionResource, [raw]);
+	}
+
+	/**
+	 * [ChipOS][F-4 redesign] Emit the next-step card: a clear separator + "下一步"
+	 * header, then a non-blocking button group of the (split + cleaned) options so
+	 * the buttons read as discrete next-step choices. Returns true if emitted.
+	 */
+	private _emitFollowupsCard(progress: (parts: IChatProgress[]) => void, sessionResource: URI, rawItems: readonly string[]): boolean {
+		const options = ChipOSChatAgent._toFollowupOptions(rawItems);
+		if (options.length === 0) {
+			return false;
+		}
+		const card = this._buildFollowupsCard(sessionResource, options);
 		if (!card) {
 			return false;
 		}
+		progress([this._markdown('---\n\n$(lightbulb) **下一步**')]);
 		progress([card]);
 		return true;
 	}
 
-	/** Split a `next_steps` blob ("→ a\n→ b" or "→ a → b") into step strings. */
-	private static _parseNextSteps(raw: string | undefined): string[] {
-		if (!raw || raw === '无') {
-			return [];
+	/**
+	 * Split raw next-step blobs into discrete option strings: on line breaks /
+	 * arrows (task_summary next_steps) and Chinese option separators (、；or 或) —
+	 * but NOT on "/" ("使能/加载" is one concept). Cleaned + de-duped, max 4.
+	 */
+	private static _toFollowupOptions(rawItems: readonly string[]): string[] {
+		const out: string[] = [];
+		for (const item of rawItems) {
+			if (typeof item !== 'string') {
+				continue;
+			}
+			for (const part of item.split(/\r?\n|→|▸|▶|[，,]?\s*或\s*|[、；;]/)) {
+				const opt = ChipOSChatAgent._followupAction(part.replace(/^[\s>\-*•·.]+/, ''));
+				if (opt && opt !== '无' && !out.includes(opt)) {
+					out.push(opt);
+				}
+			}
 		}
-		let parts = raw.split(/\r?\n/);
-		if (parts.length === 1 && parts[0].split('→').length > 2) {
-			parts = parts[0].split('→');
-		}
-		return parts
-			.map(s => s.replace(/^[\s>→▸▶\-*•·.]+/, '').trim())
-			.filter(s => s.length > 0)
-			.slice(0, 4);
+		return out.slice(0, 4);
 	}
 
 	private _markdown(content: string): IChatMarkdownContent {
@@ -3070,6 +3098,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			const explicitCommand = (request as { command?: string }).command;
 			const inlineMatch = /(?:^|\s)\/(?<name>[\w-]+)(?:[ \t]+(?<args>[^\n]*))?/.exec(request.message ?? '');
 			const commandName = explicitCommand || inlineMatch?.groups?.name;
+			console.warn(`[cmddbg2] commandName=${commandName ?? 'UNDEF'} explicit=${explicitCommand ?? '-'} inlineName=${inlineMatch?.groups?.name ?? '-'} ext=${extensionSystemEnabled} reqCmd=${JSON.stringify((request as { command?: string }).command ?? '-')} msg=${JSON.stringify((request.message ?? '').slice(0, 60))}`);
 			if (commandName && extensionSystemEnabled) {
 				const commands = await this._instantiationService.createInstance(ChiposCommandsService).getCommands();
 				// FEAT-002a: also match commands contributed by installed plugins.
@@ -3284,8 +3313,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (assistantTextBuf.length === 0) {
 				return;
 			}
-			progress([this._markdown(assistantTextBuf)]);
+			// [ChipOS][F-4 redesign] the mandated `建议下一步:` closing line renders as
+			// the inline next-step card, not prose — strip it so it isn't shown twice.
+			const text = ChipOSChatAgent._stripNextStepLine(assistantTextBuf);
 			assistantTextBuf = '';
+			if (text.length > 0) {
+				progress([this._markdown(text)]);
+			}
 		};
 		// [ChipOS] Live-render mirror of the reasoner accumulator's
 		// `_saw_streamed_text` (stateless_agentcore_driver.py:156): did ANY
@@ -3411,10 +3445,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// `建议下一步:` line — only when the task summary didn't already emit
 				// one from its structured `next_steps` (avoids a double card).
 				if (!nextCardEmitted && lastFollowups.length > 0) {
-					const followupCard = this._buildFollowupsCard(request.sessionResource, lastFollowups);
-					if (followupCard) {
-						progress([followupCard]);
-					}
+					this._emitFollowupsCard(progress, request.sessionResource, lastFollowups);
 				}
 			}
 			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
@@ -3961,8 +3992,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (assistantTextBuf.length === 0) {
 				return;
 			}
-			progress([this._markdown(assistantTextBuf)]);
+			// [ChipOS][F-4 redesign] the mandated `建议下一步:` closing line renders as
+			// the inline next-step card, not prose — strip it so it isn't shown twice.
+			const text = ChipOSChatAgent._stripNextStepLine(assistantTextBuf);
 			assistantTextBuf = '';
+			if (text.length > 0) {
+				progress([this._markdown(text)]);
+			}
 		};
 		// [ChipOS] See the invoke() loop: gates rendering a chat-only reply on
 		// resume so a non-streaming reply isn't dropped (mirrors `_saw_streamed_text`).
