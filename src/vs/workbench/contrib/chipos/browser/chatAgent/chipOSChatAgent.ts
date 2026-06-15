@@ -38,6 +38,7 @@ import {
 	IChatFollowup,
 	IChatMarkdownContent,
 	IChatConfirmation,
+	IChatCommandButton,
 	IChatProgressMessage,
 	IChatThinkingPart,
 	IChatExternalToolInvocationUpdate,
@@ -357,6 +358,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			(_accessor, ctx: { chatSessionId: string; traceId: string; lastSequenceId: number }) =>
 				this._resumeStatelessTurnFromCard(ctx),
 		));
+
+		// [ChipOS][F-4 redesign] Inline next-step card: each chip is a non-blocking
+		// IChatCommandButton whose click fires this command to send the (full) step
+		// text as a fresh user turn — the in-conversation replacement for the native
+		// followups that float above the input box.
+		this._register(CommandsRegistry.registerCommand(
+			'chipos.chat.sendFollowup',
+			(_accessor, sessionResource: UriComponents | URI, text: string) =>
+				this._sendFollowupTurn(URI.revive(sessionResource), text),
+		));
 	}
 
 	/**
@@ -447,6 +458,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		} catch (err) {
 			this._logService.error('[ChipOS Stateless] resume sendRequest failed:', String(err));
 			return false;
+		}
+	}
+
+	/**
+	 * [ChipOS][F-4 redesign] Send a clicked next-step chip as a fresh user turn.
+	 * Routed to ChipOS without an "@" mention (like a typed message). Fired by the
+	 * inline `chipos.chat.sendFollowup` command button (see `_buildFollowupsCard`).
+	 */
+	private async _sendFollowupTurn(sessionResource: URI, text: string): Promise<void> {
+		const step = typeof text === 'string' ? text.trim() : '';
+		if (!step) {
+			return;
+		}
+		try {
+			const result = await this._chatService.sendRequest(sessionResource, step, {
+				agentIdSilent: 'chipos.chat',
+			});
+			if (result.kind !== 'sent') {
+				this._logService.warn('[ChipOS][followup] sendRequest not sent: %s', JSON.stringify(result));
+			}
+		} catch (err) {
+			this._logService.error('[ChipOS][followup] sendRequest failed:', String(err));
 		}
 	}
 
@@ -591,15 +624,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * `_invokeStateless` stashes them on the result metadata. One click re-sends the
 	 * step as the next turn (native `IChatFollowup` behaviour) — no typing needed.
 	 */
-	async provideFollowups(request: IChatAgentRequest, result: IChatAgentResult, _history: IChatAgentHistoryEntry[], _token: CancellationToken): Promise<IChatFollowup[]> {
-		const raw = result.metadata?.chipos_followups;
-		if (!Array.isArray(raw)) {
-			return [];
-		}
-		return raw
-			.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-			.slice(0, 4)
-			.map(message => ({ kind: 'reply', message, agentId: request.agentId } satisfies IChatFollowup));
+	async provideFollowups(_request: IChatAgentRequest, _result: IChatAgentResult, _history: IChatAgentHistoryEntry[], _token: CancellationToken): Promise<IChatFollowup[]> {
+		// [ChipOS][F-4 redesign] Next-step suggestions now render as an INLINE
+		// command-button card under the reply (see `_buildFollowupsCard`), NOT as
+		// native chips floating above the input box. Returning none disables the
+		// float so the inline card is the single surface.
+		return [];
 	}
 
 	// ── FEAT-24: Extract #file/#selection references into IMentionItem[] ──
@@ -1759,6 +1789,49 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private _getWorkspaceRoot(): string | undefined {
 		const folders = this._workspaceContextService.getWorkspace().folders;
 		return folders.length > 0 ? folders[0].uri.fsPath : undefined;
+	}
+
+	/**
+	 * [ChipOS][F-4 redesign] Build the inline "下一步" card: a non-blocking button
+	 * group rendered in the conversation flow under the reply (NOT the native float
+	 * above the input). First step = primary button, the rest = secondary. The
+	 * button LABEL is clipped for tidiness; the click still sends the FULL action
+	 * text (see the `chipos.chat.sendFollowup` command).
+	 */
+	private _buildFollowupsCard(sessionResource: URI, followups: readonly string[]): IChatCommandButton | undefined {
+		const items = followups.filter(s => typeof s === 'string' && s.trim().length > 0).slice(0, 4);
+		if (items.length === 0) {
+			return undefined;
+		}
+		const toCommand = (raw: string) => {
+			const action = ChipOSChatAgent._followupAction(raw);
+			return {
+				id: 'chipos.chat.sendFollowup',
+				title: ChipOSChatAgent._followupChipLabel(action),
+				tooltip: action,
+				arguments: [sessionResource, action],
+			};
+		};
+		const [first, ...rest] = items;
+		return {
+			kind: 'command',
+			command: toCommand(first),
+			additionalCommands: rest.map(toCommand),
+		};
+	}
+
+	/** Drop a trailing meta-question the model sometimes appends ("…。需要我继续吗?"). */
+	private static _followupAction(raw: string): string {
+		const s = raw.trim();
+		const dot = s.indexOf('。');
+		const action = dot > 0 ? s.slice(0, dot).trim() : s;
+		return action.length > 0 ? action : s;
+	}
+
+	/** Clip the chip LABEL for tidiness; the full action still sends on click. */
+	private static _followupChipLabel(action: string): string {
+		const MAX = 22;
+		return action.length > MAX ? action.slice(0, MAX - 1) + '…' : action;
 	}
 
 	private _markdown(content: string): IChatMarkdownContent {
@@ -3291,6 +3364,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.followups !== undefined) {
 				lastFollowups = handled.followups;
+				// [ChipOS][F-4 redesign] Render the next-step suggestions as an
+				// inline, non-blocking command-button card in the conversation flow
+				// (replaces the native chips floating above the input box).
+				if (lastFollowups.length > 0) {
+					const followupCard = this._buildFollowupsCard(request.sessionResource, lastFollowups);
+					if (followupCard) {
+						progress([followupCard]);
+					}
+				}
 			}
 			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
 			// Fire-and-forget on a background task so the SSE loop keeps draining
