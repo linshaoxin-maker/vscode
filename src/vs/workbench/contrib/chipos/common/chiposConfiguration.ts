@@ -20,13 +20,6 @@ configurationRegistry.registerConfiguration({
 	type: 'object',
 	properties: {
 
-		'chipos.backendUrl': {
-			type: 'string',
-			default: 'ws://127.0.0.1:8000/ws/agent',
-			description: localize('chipos.backendUrl.desc', 'WebSocket URL of the ChipOS backend agent server.'),
-			scope: ConfigurationScope.APPLICATION,
-		},
-
 		'chipos.apiKey': {
 			type: 'string',
 			default: '',

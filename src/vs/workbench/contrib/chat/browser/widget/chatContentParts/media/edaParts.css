@@ -514,19 +514,22 @@
 	word-break: break-word;
 }
 
-/* ── ChipOS next-step suggestions card (design variant A) ─────────────────────
- * Borderless rows: a fixed-width clickable title column + an aligned one-line
- * description + a trailing chevron, with a per-row hover highlight. Replaces the
- * markdown-table fallback so the next-step affordance reads as a clean menu. */
+/* ── ChipOS next-step suggestions card (subtle button tiles) ──────────────────
+ * Each option is an understated clickable tile: a type icon, the title + a
+ * one-line description (stacked), and a chevron — a thin border + faint fill so
+ * it reads as a button without shouting; hover brightens fill + border. */
 .chipos-next-steps-card {
 	margin: 10px 0 2px;
+	display: flex;
+	flex-direction: column;
+	gap: 7px;
 }
 
 .chipos-next-steps-header {
 	display: flex;
 	align-items: center;
 	gap: 5px;
-	margin: 0 0 6px 2px;
+	margin: 0 0 1px 2px;
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 }
@@ -538,18 +541,38 @@
 
 .chipos-next-steps-row {
 	display: flex;
-	align-items: center;
-	gap: 12px;
-	padding: 7px 10px;
-	border-radius: 5px;
+	align-items: flex-start;
+	gap: 11px;
+	padding: 9px 11px;
+	border-radius: 6px;
 	cursor: pointer;
 	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	background: var(--vscode-input-background);
+	transition: background-color 0.1s ease, border-color 0.1s ease;
 }
 
 .chipos-next-steps-row:hover,
 .chipos-next-steps-row:focus {
-	background-color: var(--vscode-list-hoverBackground);
+	background: var(--vscode-list-hoverBackground);
+	border-color: var(--vscode-focusBorder);
 	outline: none;
+}
+
+.chipos-next-steps-row-icon {
+	flex: 0 0 auto;
+	width: 26px;
+	height: 26px;
+	margin-top: 1px;
+	border-radius: 6px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.chipos-next-steps-row-icon .codicon {
+	font-size: 15px;
 }
 
 .chipos-next-steps-row-main {
@@ -558,11 +581,12 @@
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	padding-top: 1px;
 }
 
 .chipos-next-steps-row-title {
-	font-weight: 500;
-	color: var(--vscode-textLink-foreground);
+	font-weight: 600;
+	color: var(--vscode-foreground);
 }
 
 .chipos-next-steps-row-desc {
@@ -573,6 +597,7 @@
 
 .chipos-next-steps-row-chevron {
 	flex: 0 0 auto;
+	margin-top: 4px;
 	font-size: 14px;
 	color: var(--vscode-descriptionForeground);
 	opacity: 0.5;

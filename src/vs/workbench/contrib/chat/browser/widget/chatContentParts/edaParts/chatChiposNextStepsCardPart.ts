@@ -51,6 +51,11 @@ export class ChatChiposNextStepsCardContentPart extends Disposable implements IC
 			row.tabIndex = 0;
 			row.title = item.action;
 
+			const style = ChatChiposNextStepsCardContentPart._stepStyle(item.title);
+			const iconWrap = dom.append(row, $('.chipos-next-steps-row-icon'));
+			const icon = dom.append(iconWrap, $('.codicon.codicon-' + style.icon));
+			icon.style.color = style.color;
+
 			const main = dom.append(row, $('.chipos-next-steps-row-main'));
 			const title = dom.append(main, $('.chipos-next-steps-row-title'));
 			title.textContent = item.title;
@@ -78,6 +83,24 @@ export class ChatChiposNextStepsCardContentPart extends Disposable implements IC
 			return;
 		}
 		void this._commandService.executeCommand('chipos.chat.sendFollowup', this._data.sessionResource, text);
+	}
+
+	/**
+	 * Type-aware leading icon + accent colour for a row, keyed off the title's
+	 * keywords (mirrors the description table). Falls back to a neutral arrow.
+	 */
+	private static _stepStyle(title: string): { icon: string; color: string } {
+		const t = title;
+		if (/testbench|\btb\b|仿真|simulat|波形|vcd/i.test(t)) { return { icon: 'play', color: 'var(--vscode-charts-purple)' }; }
+		if (/lint|静态检查/i.test(t)) { return { icon: 'search', color: 'var(--vscode-charts-orange)' }; }
+		if (/review|审查|质量|质检/i.test(t)) { return { icon: 'verified', color: 'var(--vscode-charts-green)' }; }
+		if (/复位|reset/i.test(t)) { return { icon: 'sync', color: 'var(--vscode-charts-blue)' }; }
+		if (/使能|enable|\ben\b/i.test(t)) { return { icon: 'zap', color: 'var(--vscode-charts-yellow)' }; }
+		if (/加载|置数|预置|\bload\b/i.test(t)) { return { icon: 'arrow-down', color: 'var(--vscode-charts-blue)' }; }
+		if (/覆盖|coverage/i.test(t)) { return { icon: 'graph', color: 'var(--vscode-charts-green)' }; }
+		if (/综合|synth|时序|面积|功耗|\bppa\b/i.test(t)) { return { icon: 'circuit-board', color: 'var(--vscode-charts-purple)' }; }
+		if (/位宽|宽度|width|加减|双向|风格|编码|snake|缩进/i.test(t)) { return { icon: 'code', color: 'var(--vscode-charts-green)' }; }
+		return { icon: 'arrow-right', color: 'var(--vscode-textLink-foreground)' };
 	}
 
 	hasSameContent(other: IChatRendererContent): boolean {

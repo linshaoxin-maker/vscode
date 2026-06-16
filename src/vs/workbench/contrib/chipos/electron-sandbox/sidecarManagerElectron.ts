@@ -165,10 +165,6 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		return resolveReasoningUrl(this._configurationService, this._productService);
 	}
 
-	get sseUrl(): string {
-		return `${this.reasoningUrl}/api/v1/events`;
-	}
-
 	get workerHttpUrl(): string {
 		// runtime override > explicit settings — both bypass the derive-from-reasoningUrl
 		// path. Fall through to deployment-mode-aware derivation when neither is set.
