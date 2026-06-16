@@ -3717,27 +3717,40 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// ConversationAssembler drops any still-orphaned tool_use as the backstop.
 		if (statelessToolInputs.size > 0) {
 			const wasCancelled = token.isCancellationRequested;
-			const closeMsg = wasCancelled
-				? localize('chipos.stateless.toolCancelled', "已取消（用户中断了本轮）")
-				: localize('chipos.stateless.toolIncomplete', "未完成（本轮结束时该工具调用未返回结果）");
+			const cancelledMsg = localize('chipos.stateless.toolCancelled', "已取消（用户中断了本轮）");
+			const incompleteMsg = localize('chipos.stateless.toolIncomplete', "未完成（本轮结束时该工具调用未返回结果）");
+			// [ChipOS] An `ask_user` (agent_ask) call that ends the turn without a
+			// result is NOT a failure — it was *waiting for the user*. Reframe such a
+			// dangling ask as a pending question (non-error) so a turn the user simply
+			// hasn't answered yet — or answered later in a resumed row after an SSE
+			// drop / IDE restart — doesn't read as a crash. Every other dangling tool
+			// keeps the honest "已取消"/"未完成". See lesson_ask_user_tool_incomplete_diagnosis.
+			const askPendingMsg = localize('chipos.stateless.askPending', "等待你回答（本轮结束时尚未作答；若会话仍在进行，可重开后继续作答）");
 			for (const [callId, cached] of statelessToolInputs) {
 				if (cached.toolName === 'write_todos') {
 					continue; // no completion row — the sticky widget owns write_todos
 				}
+				const isPendingAsk = !wasCancelled && cached.toolName === 'ask_user';
+				const closeMsg = wasCancelled ? cancelledMsg : isPendingAsk ? askPendingMsg : incompleteMsg;
 				try {
 					let danglingArg = '';
 					try { danglingArg = ChipOSChatAgent._formatToolArgs(cached.rawInput ? JSON.parse(cached.rawInput) as Record<string, unknown> : undefined); } catch { /* best-effort */ }
+					const baseLabel = cached.label ?? buildToolRowLabel(friendlyToolName(cached.toolName), danglingArg);
 					progress([{
 						kind: 'externalToolInvocationUpdate',
 						toolCallId: callId,
 						toolName: cached.toolName,
 						isComplete: true,
-						pastTenseMessage: cached.label ?? buildToolRowLabel(friendlyToolName(cached.toolName), danglingArg),
-						errorMessage: closeMsg,
+						// Pending ask: stamp "· 等待你回答" right on the (collapsed) row label,
+						// since a non-error row stays collapsed and would otherwise hide the note.
+						pastTenseMessage: isPendingAsk
+							? withResultBadge(baseLabel, localize('chipos.stateless.askPendingBadge', "等待你回答"))
+							: baseLabel,
+						errorMessage: isPendingAsk ? undefined : closeMsg,
 						resultDetails: {
 							input: cached.rawInput ?? '',
 							output: [{ type: 'embed' as const, value: closeMsg, isText: true, mimeType: 'text/plain' }],
-							isError: true,
+							isError: !isPendingAsk,
 						} satisfies IToolResultInputOutputDetails,
 					} satisfies IChatExternalToolInvocationUpdate]);
 				} catch (err) {
