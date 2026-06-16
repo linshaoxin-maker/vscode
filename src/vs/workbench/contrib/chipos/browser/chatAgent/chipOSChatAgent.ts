@@ -3243,7 +3243,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// uses; user is paying for it either way.
 			const compactor = new ConversationCompactor(
 				{ compact: req => client.compact(req) },
-				{ summaryModel: invokeReq.model },
+				{
+					summaryModel: invokeReq.model,
+					summaryProvider: invokeReq.provider,
+					summaryBaseUrl: invokeReq.base_url,
+					summaryApiKey: invokeReq.api_key,
+				},
 			);
 			if (compactor.shouldCompact(invokeReq.messages)) {
 				this._logService.info('[ChipOS Stateless] compact triggered (est tokens=%d)', compactor.estimateTokens(invokeReq.messages));
@@ -4285,9 +4290,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 		let compacted: Message[];
 		try {
+			const compactLlm = this._buildLlmConfig();
 			const compactor = new ConversationCompactor(
 				{ compact: req => client.compact(req) },
-				{ summaryModel: this._buildLlmConfig().model },
+				{
+					summaryModel: compactLlm.model,
+					summaryProvider: compactLlm.provider,
+					summaryBaseUrl: compactLlm.base_url,
+					summaryApiKey: compactLlm.api_key,
+				},
 			);
 			compacted = await compactor.compact(working, chatSessionId, generateUuid());
 		} catch (err) {

@@ -808,6 +808,10 @@ export interface CompactRequest {
 	provider?: string;
 	base_url?: string | null;
 	api_key_alias?: string | null;
+	/** F6 parity with InvokeRequest: body-supplied raw key for the summarize
+	 * LLM call. Required for /api/v1/compact to authenticate (the vault alias is
+	 * unwired and the reasoner env fallback doesn't cover the IDE's model). */
+	api_key?: string | null;
 	// Compact-specific
 	/** 摘要 token 上限; 作为 LLM max_tokens 下发; 默认 4000 */
 	max_summary_tokens?: number;

@@ -135,6 +135,17 @@ export interface ConversationCompactorOptions {
 	 * — cheap + fast, summarize doesn't need a flagship model.
 	 */
 	summaryModel?: string;
+
+	/**
+	 * LLM credentials/endpoint for the summary call, forwarded to
+	 * `CompactRequest.{provider,base_url,api_key}`. WITHOUT these the reasoner
+	 * has no key for the model (vault alias unwired + env fallback misses the
+	 * IDE's model) and `/api/v1/compact` returns 500. Pass the same config the
+	 * turn uses (`_buildLlmConfig()`).
+	 */
+	summaryProvider?: string;
+	summaryBaseUrl?: string | null;
+	summaryApiKey?: string | null;
 }
 
 const DEFAULT_TRIGGER_THRESHOLD_TOKENS = 50_000;
@@ -164,6 +175,9 @@ export class ConversationCompactor {
 	private readonly _keepRecentTurns: number;
 	private readonly _maxSummaryTokens: number;
 	private readonly _summaryModel: string;
+	private readonly _summaryProvider: string | undefined;
+	private readonly _summaryBaseUrl: string | null | undefined;
+	private readonly _summaryApiKey: string | null | undefined;
 
 	/**
 	 * @param _client  Injected `StatelessClient`-shaped collaborator with a
@@ -178,6 +192,9 @@ export class ConversationCompactor {
 		this._keepRecentTurns = opts?.keepRecentTurns ?? DEFAULT_KEEP_RECENT_TURNS;
 		this._maxSummaryTokens = opts?.maxSummaryTokens ?? DEFAULT_MAX_SUMMARY_TOKENS;
 		this._summaryModel = opts?.summaryModel ?? DEFAULT_SUMMARY_MODEL;
+		this._summaryProvider = opts?.summaryProvider;
+		this._summaryBaseUrl = opts?.summaryBaseUrl;
+		this._summaryApiKey = opts?.summaryApiKey;
 	}
 
 	/**
@@ -291,6 +308,12 @@ export class ConversationCompactor {
 			chat_session_id: chatSessionId,
 			messages: compactInput,
 			model: this._summaryModel,
+			// LLM credentials so the reasoner can authenticate the summarize call
+			// (omitting these is what made /api/v1/compact 500). Only set when
+			// provided so we don't override server-side resolution with blanks.
+			...(this._summaryProvider ? { provider: this._summaryProvider } : {}),
+			...(this._summaryBaseUrl ? { base_url: this._summaryBaseUrl } : {}),
+			...(this._summaryApiKey ? { api_key: this._summaryApiKey } : {}),
 			max_summary_tokens: this._maxSummaryTokens,
 		};
 		const resp = await this._client.compact(req);
