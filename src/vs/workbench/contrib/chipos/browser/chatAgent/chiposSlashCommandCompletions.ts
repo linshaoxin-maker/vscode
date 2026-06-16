@@ -96,7 +96,16 @@ export class ChipOSSlashCommandCompletions extends Disposable implements IWorkbe
 		// Reserved built-in commands sort above user/plugin commands and cannot be
 		// shadowed by a same-named file command (reserved-wins). Only the primary
 		// name is surfaced; aliases still resolve when typed, just aren't listed.
+		//
+		// `endpoint`-routed reserved commands (e.g. /compact) are registered in the
+		// framework IChatSlashCommandService, whose own slash-completion already
+		// surfaces them — so we skip adding them here to avoid a duplicate entry
+		// (the registration sorts them to the top itself). We still suppress any
+		// same-name user/plugin command for them below (reserved-wins).
 		for (const reserved of RESERVED_COMMANDS) {
+			if (reserved.routing === 'endpoint') {
+				continue;
+			}
 			if (pattern && !isPatternInWord(pattern, 0, pattern.length, reserved.name, 0, reserved.name.length)) {
 				continue;
 			}

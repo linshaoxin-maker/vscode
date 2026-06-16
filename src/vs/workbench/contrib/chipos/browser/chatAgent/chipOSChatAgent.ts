@@ -52,10 +52,13 @@ import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/com
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
 import { IChatEditingService, type IChatEditingSession } from '../../../../contrib/chat/common/editing/chatEditingService.js';
 import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
+import { IChatSlashCommandService } from '../../../../contrib/chat/common/participants/chatSlashCommands.js';
+import { ChatAgentLocation } from '../../../../contrib/chat/common/constants.js';
 import type { IChatResponseModel, IChatModel } from '../../../../contrib/chat/common/model/chatModel.js';
 import { ChatModelToRecordsAdapter } from './statelessInvoke/chatModelAdapter.js';
 import { ConversationAssembler, ConversationAssemblyError } from './statelessInvoke/conversationAssembler.js';
 import { ConversationCompactor } from './statelessInvoke/conversationCompactor.js';
+import { applyCompactionCheckpoint, deriveCompactionCheckpoint, isCheckpointStale, type CompactionCheckpoint } from './statelessInvoke/compactionCheckpoint.js';
 import {
 	StatelessClient,
 	StatelessHttpError,
@@ -262,6 +265,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IEditorService private readonly _editorService: IEditorService,
 		@IChiposPromptInputsService private readonly _promptInputsService: IChiposPromptInputsService,
 		@IChiposHookLogService private readonly _hookLogService: IChiposHookLogService,
+		@IChatSlashCommandService private readonly _slashCommandService: IChatSlashCommandService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -344,6 +348,28 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			(_accessor, sessionResource: UriComponents | URI, text: string) =>
 				this._sendFollowupTurn(URI.revive(sessionResource), text),
 		));
+
+		// Reserved built-in /compact (surface-unification, RESERVED_COMMANDS): summarise
+		// older turns via POST /api/v1/compact and persist a per-session checkpoint that
+		// later turns apply (see _compactSession / _applyCompactionCheckpoint). Registered
+		// in the framework slash layer like /clear (owner decision: all reserved commands
+		// go through IChatSlashCommandService). executeImmediately = run as a side-effect,
+		// silent = leave no stray request/response turn in the transcript.
+		this._register(this._slashCommandService.registerSlashCommand({
+			command: 'compact',
+			detail: localize('chipos.reserved.compact.detail', "Summarise older turns to free up context"),
+			// Sorts to the top of the slash menu (before the numeric-prefixed user
+			// commands) so it groups with /clear. This is the SOLE /compact
+			// completion entry — chiposSlashCommandCompletions deliberately does not
+			// also add it (the framework slash-completion already surfaces it), to
+			// avoid a duplicate.
+			sortText: '!compact',
+			executeImmediately: true,
+			silent: true,
+			locations: [ChatAgentLocation.Chat],
+		}, async (_prompt, _progress, _history, _location, sessionResource) => {
+			await this._compactSession(sessionResource);
+		}));
 	}
 
 	/**
@@ -2735,6 +2761,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	/** Plugin ids the user has consented to run executable hooks for, this session (H-3). */
 	private readonly _consentedHookPlugins = new Set<string>();
 	private readonly _statelessChatSessionIds = new ResourceMap<string>();
+	/**
+	 * Manual-/compact checkpoints, keyed by chat_session_id. `summary` is the
+	 * is_compact_summary Message returned by /api/v1/compact; `replacedCount` is
+	 * how many leading messages of the freshly-assembled (full) history it stands
+	 * in for. Applied each turn in `_buildStatelessInvokeRequest` so the compaction
+	 * persists across turns (history itself is the framework IChatModel, re-walked
+	 * every turn — auto-compact alone does not survive a turn boundary). Lazily
+	 * hydrated from workspace storage so a checkpoint survives an IDE restart.
+	 */
+	private readonly _compactionCheckpoints = new Map<string, CompactionCheckpoint>();
+	private _compactionCheckpointsHydrated = false;
 	private readonly _statelessTraces = new ResourceMap<{
 		traceId: string;
 		lastSequenceId: number;
@@ -2749,6 +2786,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	//   - `_probedStatelessSessions`: sessionResources already probed this IDE
 	//     run, so we offer resume at most once per thread per launch.
 	private static readonly _STATELESS_CSID_STORAGE_KEY = 'chipos.stateless.chatSessionIds';
+	private static readonly _COMPACTION_CHECKPOINT_STORAGE_KEY = 'chipos.stateless.compactionCheckpoints';
 	private readonly _probedStatelessSessions = new Set<string>();
 
 	/**
@@ -2841,7 +2879,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		if (!isLastUserPrompt) {
 			records.push({ role: 'user', content: request.message });
 		}
-		const { messages } = this._statelessAssembler.assemble(records);
+		// Apply any manual-/compact checkpoint: replace the leading summarised
+		// messages with the stored summary so the compaction persists across turns
+		// (history is re-walked from the IChatModel every turn). No-op when none.
+		const messages = this._applyCompactionCheckpoint(
+			chatSessionId,
+			this._statelessAssembler.assemble(records).messages,
+		);
 
 		const llm = this._buildLlmConfig();
 		const workspace = this._getWorkspaceRoot() ?? '';
@@ -4182,6 +4226,145 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 		delete map[sessionResource.toString()];
 		this._storageService.store(ChipOSChatAgent._STATELESS_CSID_STORAGE_KEY, JSON.stringify(map), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	// ── Reserved /compact: summarise older turns + persist a checkpoint ──────
+
+	/**
+	 * `/compact` (reserved built-in, routing=endpoint). Assemble the full live
+	 * history, fold any prior checkpoint in (idempotent), POST it to
+	 * `/api/v1/compact`, and persist a checkpoint that `_applyCompactionCheckpoint`
+	 * replays on every later turn. We deliberately do NOT touch the framework chat
+	 * model — the transcript stays fully visible; only what we *send* the reasoner
+	 * is compacted. Registered in the framework slash layer (executeImmediately +
+	 * silent), so it runs here as a pure side-effect with no chat turn.
+	 */
+	private async _compactSession(sessionResource: URI): Promise<void> {
+		const model = this._chatService.getSession(sessionResource);
+		if (!model) {
+			return;
+		}
+		const chatSessionId = this._statelessChatSessionIdFor(sessionResource);
+		let client: StatelessClient;
+		try {
+			client = await this._ensureStatelessClient();
+		} catch (err) {
+			this._notificationService.warn(localize('chipos.reserved.compact.clientErr', "ChipOS: could not reach the reasoner to compact this conversation."));
+			this._logService.warn('[ChipOS Reserved] /compact client init failed:', String(err));
+			return;
+		}
+
+		// Full history as the next turn would assemble it (sans the current prompt).
+		let full: Message[];
+		try {
+			full = this._statelessAssembler.assemble(this._statelessAdapter.fromChatModel(model)).messages;
+		} catch (err) {
+			this._logService.warn('[ChipOS Reserved] /compact assemble failed:', String(err));
+			return;
+		}
+
+		// Fold an existing checkpoint in so re-compaction absorbs the prior summary
+		// rather than re-summarising it from scratch (compactor handles the marker).
+		const existing = this._getCompactionCheckpoint(chatSessionId);
+		const working = (existing && full.length > existing.replacedCount)
+			? [existing.summary, ...full.slice(existing.replacedCount)]
+			: full;
+
+		let compacted: Message[];
+		try {
+			const compactor = new ConversationCompactor(
+				{ compact: req => client.compact(req) },
+				{ summaryModel: this._buildLlmConfig().model },
+			);
+			compacted = await compactor.compact(working, chatSessionId, generateUuid());
+		} catch (err) {
+			this._notificationService.warn(localize('chipos.reserved.compact.failed', "ChipOS: compacting the conversation failed — it was left unchanged."));
+			this._logService.warn('[ChipOS Reserved] /compact failed:', String(err));
+			return;
+		}
+
+		// `compacted` is [summary, ...recentKept] when something was summarised, or
+		// `working` unchanged when there was nothing old enough — derive returns
+		// undefined in the latter case (relative to the full, uncompacted history).
+		const checkpoint = deriveCompactionCheckpoint(full.length, compacted);
+		if (!checkpoint) {
+			this._notificationService.info(localize('chipos.reserved.compact.noop', "ChipOS: nothing to compact yet — the conversation is still short."));
+			return;
+		}
+
+		this._setCompactionCheckpoint(chatSessionId, checkpoint);
+		this._notificationService.info(localize('chipos.reserved.compact.done', "ChipOS: compacted {0} earlier message(s) into a summary. The full transcript stays visible; new turns continue from the summary.", checkpoint.replacedCount));
+		this._logService.info('[ChipOS Reserved] /compact: replaced=%d kept=%d chat_session=%s', checkpoint.replacedCount, compacted.length - 1, chatSessionId);
+	}
+
+	/**
+	 * Replace the leading `replacedCount` messages of a freshly-assembled history
+	 * with the stored compaction summary. No-op without a checkpoint. Drops a stale
+	 * checkpoint if the history is now shorter than it covered (e.g. the user edited
+	 * or deleted an earlier turn), failing safe to the uncompacted history.
+	 */
+	private _applyCompactionCheckpoint(chatSessionId: string, messages: Message[]): Message[] {
+		const cp = this._getCompactionCheckpoint(chatSessionId);
+		if (!cp) {
+			return messages;
+		}
+		if (isCheckpointStale(cp, messages.length)) {
+			// History shrank below what the summary stands in for — checkpoint is no
+			// longer positionally valid; drop it rather than corrupt the context.
+			this._logService.info('[ChipOS Reserved] dropping stale /compact checkpoint (history shrank) chat_session=%s', chatSessionId);
+			this._clearCompactionCheckpoint(chatSessionId);
+			return messages;
+		}
+		return applyCompactionCheckpoint(cp, messages);
+	}
+
+	// ── Durable /compact checkpoint storage (survives IDE restart) ───────────
+
+	private _hydrateCompactionCheckpoints(): void {
+		if (this._compactionCheckpointsHydrated) {
+			return;
+		}
+		this._compactionCheckpointsHydrated = true;
+		const raw = this._storageService.get(ChipOSChatAgent._COMPACTION_CHECKPOINT_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return;
+		}
+		try {
+			const parsed = JSON.parse(raw) as Record<string, CompactionCheckpoint>;
+			for (const [id, cp] of Object.entries(parsed)) {
+				if (cp && typeof cp.replacedCount === 'number' && cp.summary) {
+					this._compactionCheckpoints.set(id, cp);
+				}
+			}
+		} catch {
+			// Corrupt blob — start clean.
+		}
+	}
+
+	private _getCompactionCheckpoint(chatSessionId: string): CompactionCheckpoint | undefined {
+		this._hydrateCompactionCheckpoints();
+		return this._compactionCheckpoints.get(chatSessionId);
+	}
+
+	private _setCompactionCheckpoint(chatSessionId: string, cp: CompactionCheckpoint): void {
+		this._hydrateCompactionCheckpoints();
+		this._compactionCheckpoints.set(chatSessionId, cp);
+		this._persistCompactionCheckpoints();
+	}
+
+	private _clearCompactionCheckpoint(chatSessionId: string): void {
+		this._hydrateCompactionCheckpoints();
+		if (this._compactionCheckpoints.delete(chatSessionId)) {
+			this._persistCompactionCheckpoints();
+		}
+	}
+
+	private _persistCompactionCheckpoints(): void {
+		const blob: Record<string, CompactionCheckpoint> = {};
+		for (const [id, cp] of this._compactionCheckpoints) {
+			blob[id] = cp;
+		}
+		this._storageService.store(ChipOSChatAgent._COMPACTION_CHECKPOINT_STORAGE_KEY, JSON.stringify(blob), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	// =========================================================================

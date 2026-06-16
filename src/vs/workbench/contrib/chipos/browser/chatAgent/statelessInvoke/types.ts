@@ -433,15 +433,17 @@ export interface ReservedCommandSpec {
 }
 
 /**
- * Single source of truth (mirror of python `RESERVED_COMMANDS`). Slice 1 ships
- * `/clear` (local); `/compact` (endpoint) lands with its compaction checkpoint
- * in the next slice. Adding one = edit here + the python table + a handler.
+ * Single source of truth (mirror of python `RESERVED_COMMANDS`). `/clear` is the
+ * surface's native new-chat; `/compact` summarises older turns and the surface
+ * persists a compaction checkpoint. Adding one = edit here + the python table +
+ * a handler.
  */
 export const RESERVED_COMMANDS: readonly ReservedCommandSpec[] = [
 	// aliases empty on purpose — see the python RESERVED_COMMANDS comment: /new and
 	// /reset are only reserved once a surface resolves them (the IDE framework
 	// registers only `clear`), else we'd suppress a user's own new.md/reset.md.
 	{ name: 'clear', routing: 'local', takesArgs: false, availableInFlight: false, aliases: [] },
+	{ name: 'compact', routing: 'endpoint', takesArgs: false, availableInFlight: false, aliases: [] },
 ];
 
 /**
