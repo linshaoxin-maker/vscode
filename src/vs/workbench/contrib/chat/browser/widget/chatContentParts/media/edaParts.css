@@ -513,3 +513,72 @@
 .chipos-todo-card-item-title {
 	word-break: break-word;
 }
+
+/* ── ChipOS next-step suggestions card (design variant A) ─────────────────────
+ * Borderless rows: a fixed-width clickable title column + an aligned one-line
+ * description + a trailing chevron, with a per-row hover highlight. Replaces the
+ * markdown-table fallback so the next-step affordance reads as a clean menu. */
+.chipos-next-steps-card {
+	margin: 10px 0 2px;
+}
+
+.chipos-next-steps-header {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	margin: 0 0 6px 2px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chipos-next-steps-header .codicon {
+	font-size: 13px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chipos-next-steps-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 7px 10px;
+	border-radius: 5px;
+	cursor: pointer;
+	color: var(--vscode-foreground);
+}
+
+.chipos-next-steps-row:hover,
+.chipos-next-steps-row:focus {
+	background-color: var(--vscode-list-hoverBackground);
+	outline: none;
+}
+
+.chipos-next-steps-row-main {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.chipos-next-steps-row-title {
+	font-weight: 500;
+	color: var(--vscode-textLink-foreground);
+}
+
+.chipos-next-steps-row-desc {
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chipos-next-steps-row-chevron {
+	flex: 0 0 auto;
+	font-size: 14px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.5;
+}
+
+.chipos-next-steps-row:hover .chipos-next-steps-row-chevron,
+.chipos-next-steps-row:focus .chipos-next-steps-row-chevron {
+	opacity: 1;
+}

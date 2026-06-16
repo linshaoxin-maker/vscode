@@ -74,6 +74,7 @@ import { ChatRoundProgressContentPart } from '../../../../workbench/contrib/chat
 import { ChatAgentErrorContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatAgentErrorPart.js';
 import { ChatEdaPpaReportContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatEdaPpaReportPart.js';
 import { ChatChiposTodoCardContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatChiposTodoCardPart.js';
+import { ChatChiposNextStepsCardContentPart } from '../../../../workbench/contrib/chat/browser/widget/chatContentParts/edaParts/chatChiposNextStepsCardPart.js';
 import { AgentSessionsPicker } from '../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsPicker.js';
 
 import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos/browser/settings/chiposQuickToggles.js';
@@ -1316,7 +1317,8 @@ class ChipOSContribution extends Disposable {
 		registry.registerContentPart('agentError', (content, inst) => inst.createInstance(ChatAgentErrorContentPart, content as any));
 		registry.registerContentPart('edaPpaReport', (content, inst) => inst.createInstance(ChatEdaPpaReportContentPart, content as any));
 		registry.registerContentPart('chiposTodoCard', (content, inst) => inst.createInstance(ChatChiposTodoCardContentPart, content as any));
-		this._logService.info('[ChipOS] Registered 10 EDA content part renderers');
+		registry.registerContentPart('chiposNextSteps', (content, inst) => inst.createInstance(ChatChiposNextStepsCardContentPart, content as any));
+		this._logService.info('[ChipOS] Registered 11 EDA content part renderers');
 	}
 
 	private _registerFileChangeCommands(agent: ChipOSChatAgent): void {

@@ -31,7 +31,7 @@ import { ChatRequestToolReferenceEntry, IChatRequestVariableEntry, isImplicitVar
 import { migrateLegacyTerminalToolSpecificData } from '../chat.js';
 import { ChatAgentVoteDirection, ChatAgentVoteDownReason, ChatRequestQueueKind, ChatResponseClearToPreviousToolInvocationReason, ElicitationState, IChatAgentMarkdownContentWithVulnerability, IChatClearToPreviousToolInvocation, IChatCodeCitation, IChatCommandButton, IChatConfirmation, IChatContentInlineReference, IChatContentReference, IChatDisabledClaudeHooksPart, IChatEditingSessionAction, IChatElicitationRequest, IChatElicitationRequestSerialized, IChatExternalToolInvocationUpdate, IChatExtensionsContent, IChatFollowup, IChatHookPart, IChatLocationData, IChatMarkdownContent, IChatMcpServersStarting, IChatMcpServersStartingSerialized, IChatModelReference, IChatMultiDiffData, IChatMultiDiffDataSerialized, IChatNotebookEdit, IChatProgress, IChatProgressMessage, IChatPullRequestContent, IChatQuestionCarousel, IChatResponseCodeblockUriPart, IChatResponseProgressFileTreeData, IChatSendRequestOptions, IChatService, IChatSessionContext, IChatSessionTiming, IChatTask, IChatTaskSerialized, IChatTextEdit, IChatThinkingPart, IChatToolInvocation, IChatToolInvocationSerialized, IChatTreeData, IChatUndoStop, IChatUsage, IChatUsedContext, IChatWarningMessage, IChatWorkspaceEdit, ResponseModelState, isIUsedContext, IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview } from '../chatService/chatService.js';
 import { ChatAgentLocation, ChatModeKind, ChatPermissionLevel } from '../constants.js';
-import { isEdaContentKind, IChatRoundProgress, IChatAgentError, IChatEdaPpaReport, IChatChiposTodoCard } from '../chatEdaTypes.js';
+import { isEdaContentKind, IChatRoundProgress, IChatAgentError, IChatEdaPpaReport, IChatChiposTodoCard, IChatChiposNextStepsCard } from '../chatEdaTypes.js';
 import { ChatToolInvocation } from './chatProgressTypes/chatToolInvocation.js';
 import { ToolDataSource, IToolData } from '../tools/languageModelToolsService.js';
 import { IChatEditingService, IChatEditingSession, ModifiedFileEntryState } from '../editing/chatEditingService.js';
@@ -203,7 +203,8 @@ export type IChatProgressHistoryResponseContent =
 	| IChatRoundProgress
 	| IChatAgentError
 	| IChatEdaPpaReport
-	| IChatChiposTodoCard;
+	| IChatChiposTodoCard
+	| IChatChiposNextStepsCard;
 
 /**
  * "Normal" progress kinds that are rendered as parts of the stream of content.
@@ -223,7 +224,8 @@ export type IChatProgressResponseContent =
 	| IChatRoundProgress
 	| IChatAgentError
 	| IChatEdaPpaReport
-	| IChatChiposTodoCard;
+	| IChatChiposTodoCard
+	| IChatChiposNextStepsCard;
 
 export type IChatProgressResponseContentSerialized = Exclude<IChatProgressResponseContent,
 	| IChatToolInvocation

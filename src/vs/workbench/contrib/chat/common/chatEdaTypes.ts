@@ -7,6 +7,8 @@
  *  All types are re-exported from chatService.ts for backward compatibility.
  *--------------------------------------------------------------------------------------------*/
 
+import type { UriComponents } from '../../../../base/common/uri.js';
+
 // ── EDA Simulation Report ───────────────────────────────────────────────────
 
 export interface IChatEdaSimTestResult {
@@ -176,6 +178,30 @@ export interface IChatChiposTodoCard {
 	todos: ReadonlyArray<IChatChiposTodoCardItem>;
 }
 
+// ── ChipOS Next-Step Suggestions Card ────────────────────────────────────────
+
+export interface IChatChiposNextStepsItem {
+	/** Short clickable label (the row's title / button). */
+	title: string;
+	/** One-line detail shown next to the title. */
+	description?: string;
+	/** The full text sent as the next turn when the row is clicked. */
+	action: string;
+}
+
+/**
+ * [ChipOS] An inline, interactive next-step suggestions card rendered under a
+ * reply: each row is a clickable short title + a one-line description; clicking a
+ * row sends `action` as the next turn (via the chipos.chat.sendFollowup command).
+ * Replaces the markdown-table fallback so rows are borderless, column-aligned and
+ * hover-able (design variant A).
+ */
+export interface IChatChiposNextStepsCard {
+	kind: 'chiposNextSteps';
+	sessionResource: UriComponents;
+	items: ReadonlyArray<IChatChiposNextStepsItem>;
+}
+
 // ── EDA PPA Report ─────────────────────────────────────────────────────────
 
 export interface IChatEdaPpaMetrics {
@@ -214,7 +240,8 @@ export type IChatEdaProgress =
 	| IChatRoundProgress
 	| IChatAgentError
 	| IChatEdaPpaReport
-	| IChatChiposTodoCard;
+	| IChatChiposTodoCard
+	| IChatChiposNextStepsCard;
 
 // ── EDA kind constants ──────────────────────────────────────────────────────
 
@@ -229,6 +256,7 @@ export const EDA_CONTENT_KINDS = [
 	'agentError',
 	'edaPpaReport',
 	'chiposTodoCard',
+	'chiposNextSteps',
 ] as const;
 
 export type EdaContentKind = typeof EDA_CONTENT_KINDS[number];

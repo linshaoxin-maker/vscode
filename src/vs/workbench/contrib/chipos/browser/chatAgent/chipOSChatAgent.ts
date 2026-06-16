@@ -46,6 +46,7 @@ import {
 	IChatTerminalToolInvocationData,
 	IChatAgentError,
 	IChatChiposTodoCard,
+	IChatChiposNextStepsCard,
 } from '../../../../contrib/chat/common/chatService/chatService.js';
 import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/common/tools/languageModelToolsService.js';
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
@@ -93,9 +94,7 @@ import { ChipOSEditorEffects } from './editorEffects.js';
 import { IChipOSTokenManager } from '../auth/chiposTokenManager.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { resolveReasoningUrl } from '../../common/chiposEndpoints.js';
-import { IChipOSWorkerPermissionService, IWorkerPermissionAsk } from '../permission/workerPermissionService.js';
 import { IChipOSConfirmRetireService, type ChipOSConfirmRetireReason } from './chiposConfirmRetireService.js';
-import { ChatPermissionLevel, isAutoApproveLevel } from '../../../chat/common/constants.js';
 import {
 	type IConfirmRequestPayload,
 	type ITaskSummaryPayload,
@@ -103,7 +102,6 @@ import {
 } from '../eventStream/eventTypes.js';
 
 interface IChatSessionRuntime {
-	backendSessionId?: string;
 	toolStartTimes: Map<string, number>;
 	toolFileArgs: Map<string, string>;
 	subagentTimers: Map<string, number>;
@@ -163,29 +161,17 @@ interface IChatSessionRuntime {
 	workspaceWatcher?: IDisposable;
 	watchedFileChanges: Set<string>;
 	/**
-	 * Worker permission ASK channel (WORKER-PERMISSION-ASK-TRANSPORT):
-	 * - `activeProgress`: when invoke() is mid-flight, points at the same
-	 *   progress callback so worker SSE asks can be surfaced as confirmations
-	 *   asynchronously.
-	 * - `pendingWorkerAsks`: asks received between invokes are queued and
-	 *   flushed on the next invoke entry.
-	 * - `permissionSub`: SSE EventSource subscription, owned by the runtime
-	 *   so dispose() closes it.
+	 * `activeProgress` / `activeFinish`: when invoke() is mid-flight, point at
+	 * the round's progress + finish callbacks so an out-of-band reverse-channel
+	 * confirm card can be surfaced and the round finalized asynchronously.
 	 */
 	activeProgress?: (parts: IChatProgress[]) => void;
-	/** Bound to invoke()'s `finish()` so worker-permission asks can finalize
+	/** Bound to invoke()'s `finish()` so a reverse-channel confirm can finalize
 	 * the current invoke immediately on card emission — without this, VS Code
 	 * chat keeps the invoke "in flight" and the confirmation Submit button is
 	 * disabled until the invoke ends naturally (which can be 30-60s while
 	 * reasoner waits for tool result). */
 	activeFinish?: (result: IChatAgentResult, thinkingTitle?: string) => void;
-	pendingWorkerAsks: Map<string, IWorkerPermissionAsk>;
-	permissionSub?: IDisposable;
-	/** v2 (PERMISSION-APPROVAL-UX-V2 §1): IDE chat permission level for the
-	 * **current** invoke. When AutoApprove or Autopilot, worker permission
-	 * ASKs are silently auto-allowed instead of rendered as a card. Updated
-	 * at every invoke() entry from `request.modeInfo?.permissionLevel`. */
-	permissionLevel?: ChatPermissionLevel;
 	/** InlineChat v2 — tracks whether the current invoke emitted any FileEdit
 	 * (i.e. the response was edit-style). If false at completion AND the
 	 * request came from EditorInline location, we treat the response as
@@ -272,7 +258,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IMcpService private readonly _mcpService: IMcpService,
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IProductService private readonly _productService: IProductService,
-		@IChipOSWorkerPermissionService private readonly _workerPermissionService: IChipOSWorkerPermissionService,
 		@IChipOSConfirmRetireService private readonly _confirmRetireService: IChipOSConfirmRetireService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IChiposPromptInputsService private readonly _promptInputsService: IChiposPromptInputsService,
@@ -298,14 +283,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			// 当 servers 或任何 server 的 tools 变化时，重新上报
 			this._onMcpToolsChanged();
 		}));
-
-		// WORKER-PERMISSION-ASK-TRANSPORT: subscribe once to worker→IDE SSE
-		// asks. When a permission ASK arrives we look up the matching session
-		// runtime by backendSessionId, and either fire it through the active
-		// progress callback (if invoke() is mid-flight) or queue it to be
-		// flushed on the next invoke. The actual subscription is per-session
-		// and opened in `_setSessionBackendId` once we know the sessionId.
-		this._register(this._workerPermissionService.onAsk(ask => this._onWorkerPermissionAsk(ask)));
 
 		// PHASE-1 §2.9 (ADR-018 §2 D10 / R-D) IDE-restart auto-resume: when a chat
 		// model is created — including the lazy restore of a persisted thread on
@@ -1824,22 +1801,39 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
-	 * [ChipOS][F-4 redesign] Emit the next-step card: an aligned, multi-row table —
-	 * each row a clickable short title + a one-line description. Rich {title,desc}
-	 * options are parsed from the reply's own option bullets (the only place a
-	 * per-option description lives); else falls back to plain titles from
-	 * next_steps / the followup line. Returns true if a card was emitted.
+	 * [ChipOS][F-4 redesign] Emit the next-step card (design variant A): a custom
+	 * inline content part of borderless, clickable rows (short title + one-line
+	 * description + chevron + hover). Rich {title,desc} options come from the
+	 * reply's own option bullets; else from an inline parenthetical option list
+	 * ("（例如 A、B、或 C）"); else plain titles from next_steps / the followup line.
+	 * Returns true if a card was emitted.
 	 */
 	private _emitFollowupsCard(progress: (parts: IChatProgress[]) => void, sessionResource: URI, rawItems: readonly string[], fullReplyText: string): boolean {
 		let opts = ChipOSChatAgent._parseNextStepOptions(fullReplyText);
 		if (opts.length < 2) {
-			opts = ChipOSChatAgent._toFollowupOptions(rawItems).map(title => ({ title, desc: '' }));
+			const inline = ChipOSChatAgent._parseInlineOptions(fullReplyText);
+			if (inline.length >= 2) {
+				opts = inline;
+			}
+		}
+		if (opts.length < 2) {
+			const titles = ChipOSChatAgent._toFollowupOptions(rawItems).map(title => ({ title, desc: '' }));
+			if (titles.length > opts.length) {
+				opts = titles;
+			}
 		}
 		if (opts.length === 0) {
 			return false;
 		}
-		const content = ChipOSChatAgent._renderFollowupsTable(sessionResource, opts);
-		progress([{ kind: 'markdownContent', content } satisfies IChatMarkdownContent]);
+		const items = opts.map(o => ({
+			title: o.title,
+			// Prefer the model's own (context-specific) parenthetical detail; else
+			// fall back to a curated one-liner for common EDA next-steps so every
+			// row carries a "what is this step" description.
+			description: o.desc || ChipOSChatAgent._describeStep(o.title) || undefined,
+			action: o.desc ? `${o.title}(${o.desc})` : o.title,
+		}));
+		progress([{ kind: 'chiposNextSteps', sessionResource, items } satisfies IChatChiposNextStepsCard]);
 		return true;
 	}
 
@@ -1881,21 +1875,58 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
-	 * Render the next-step options as an aligned 2-column table: a clickable short
-	 * title (fires `chipos.chat.sendFollowup` with the full action) + its detail.
-	 * isTrusted is scoped to ONLY that command so model-supplied text can't smuggle
-	 * in another command link.
+	 * Fallback option source: an inline parenthetical list like
+	 * "（例如加入使能信号、置数功能、或改输出宽度）". Picks the parenthetical with the most
+	 * 、/，/；-separated items (≥2), strips 例如/或 connectors, and returns title-only
+	 * options (the phrases ARE the options).
 	 */
-	private static _renderFollowupsTable(sessionResource: URI, opts: { title: string; desc: string }[]): MarkdownString {
-		const esc = (s: string) => s.replace(/\r?\n+/g, ' ').replace(/\|/g, '\\|').trim();
-		const rows = ['| $(lightbulb) 下一步 | |', '| :-- | :-- |'];
-		for (const o of opts) {
-			const sendText = o.desc ? `${o.title}(${o.desc})` : o.title;
-			const arg = encodeURIComponent(JSON.stringify([sessionResource.toJSON(), sendText]));
-			const label = esc(o.title).replace(/[\[\]]/g, '');
-			rows.push(`| **[${label}](command:chipos.chat.sendFollowup?${arg})** | ${esc(o.desc)} |`);
+	private static _parseInlineOptions(text: string): { title: string; desc: string }[] {
+		if (!text) {
+			return [];
 		}
-		return new MarkdownString(rows.join('\n'), { supportThemeIcons: true, isTrusted: { enabledCommands: ['chipos.chat.sendFollowup'] } });
+		const re = /[（(]([^（）()]{2,}?[、，;；][^（）()]*?)[)）]/g;
+		let best: string[] = [];
+		let m: RegExpExecArray | null;
+		while ((m = re.exec(text)) !== null) {
+			const inner = m[1].replace(/^\s*(?:例如|比如|如|e\.g\.?[:：]?)\s*/i, '');
+			const parts = inner
+				.split(/[、，;；]/)
+				.map(s => s.replace(/[`*]/g, '').replace(/^[\s或和及与、]+/, '').replace(/[\s。，,.]+$/, '').trim())
+				.filter(s => s.length > 0 && s.length <= 24);
+			if (parts.length >= 2 && parts.length > best.length) {
+				best = parts;
+			}
+		}
+		return best.slice(0, 5).map(title => ({ title, desc: '' }));
+	}
+
+	/**
+	 * Curated one-liner descriptions for common EDA next-steps, used to fill the
+	 * card's description when the model gave only a bare title (next_steps and
+	 * inline options carry no detail). First keyword match wins.
+	 */
+	private static readonly _NEXT_STEP_DESCRIPTIONS: ReadonlyArray<readonly [RegExp, string]> = [
+		[/testbench|\btb\b|仿真|simulat|波形|waveform|vcd/i, '写测试激励,仿真验证功能与边界场景'],
+		[/lint|静态检查/i, '静态检查 RTL:语法、风格、可综合性'],
+		[/review|审查|质量|质检/i, '质量审查,定位问题并给改进项'],
+		[/复位|reset/i, '调整复位:同步/异步、有效电平、复位值'],
+		[/使能|enable|\ben\b/i, '加使能信号,控制计数/运行的启停'],
+		[/加载|置数|预置|\bload\b/i, '加 load+data,支持预置初值'],
+		[/覆盖|coverage/i, '跑覆盖率,补齐未覆盖的分支与场景'],
+		[/综合|synth|时序|面积|功耗|\bppa\b/i, '综合评估面积、时序、功耗(PPA)'],
+		[/位宽|宽度|width|\bbit\b/i, '调整计数位宽 / 输出宽度'],
+		[/加减|双向|可逆|up.?down/i, '支持加 / 减双向计数'],
+		[/优化|改进|增强|enhance|完善/i, '按发现的问题优化 / 增强设计'],
+	];
+
+	/** Look up a curated description for a next-step title (first keyword match). */
+	private static _describeStep(title: string): string {
+		for (const [re, desc] of ChipOSChatAgent._NEXT_STEP_DESCRIPTIONS) {
+			if (re.test(title)) {
+				return desc;
+			}
+		}
+		return '';
 	}
 
 	/**
@@ -2251,7 +2282,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				} : {}),
 				tool: 'Bash',
 				specifier: cmd || '(empty command)',
-				sessionId: runtime?.backendSessionId ?? statelessTraceId ?? '',
+				sessionId: statelessTraceId ?? '',
 				requestId: call_id,
 				options: [
 					{ label: runLabel, action_id: 'run' },
@@ -2576,7 +2607,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				terminalArtifacts: new Map(),
 				inInitPhase: true,
 				emittedFileRefs: new Set<string>(),
-				pendingWorkerAsks: new Map<string, IWorkerPermissionAsk>(),
 				watchedFileChanges: new Set<string>(),
 			};
 			this._sessionRuntimes.set(sessionResource, runtime);
@@ -2610,15 +2640,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		runtime.terminalSessionMap.clear();
 		runtime.terminalCommandLines.clear();
 		runtime.terminalArtifacts.clear();
-		// WORKER-PERMISSION-ASK-TRANSPORT: close SSE subscription + drop any
-		// queued asks; auto-deny outstanding requests since the chat thread
-		// is going away.
-		for (const askId of runtime.pendingWorkerAsks.keys()) {
-			this._workerPermissionService.decide(askId, 'deny', 'chat session disposed').catch(() => { /* swallow */ });
-		}
-		runtime.pendingWorkerAsks.clear();
-		runtime.permissionSub?.dispose();
-		runtime.permissionSub = undefined;
 		runtime.activeProgress = undefined;
 		runtime.activeFinish = undefined;
 		this._ensureEditorEffects().clearSessionState(sessionResource);
@@ -2684,106 +2705,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 
-	// ── WORKER-PERMISSION-ASK-TRANSPORT helpers ─────────────────────────────
-
-	private _onWorkerPermissionAsk(ask: IWorkerPermissionAsk): void {
-		const runtime = this._findRuntimeByBackendSessionId(ask.sessionId);
-		if (!runtime) {
-			this._logService.info(`[ChipOS Agent] worker ASK ${ask.askId} dropped — no runtime for session ${ask.sessionId}`);
-			// Best-effort: auto-deny so the worker doesn't hang on a 5-min TTL
-			// when the IDE has no UI for the asking session.
-			this._workerPermissionService.decide(ask.askId, 'deny', 'no IDE runtime for session').catch(() => { /* swallow */ });
-			return;
-		}
-
-		// v2 PERMISSION-APPROVAL-UX-V2 §1: when the user has selected Bypass
-		// Approvals / Autopilot from the chat permission dropdown, silently
-		// auto-allow ASKs instead of rendering a confirmation card. The
-		// existing in-progress invoke continues uninterrupted, the user
-		// never sees a card, and the file write completes within the
-		// normal latency budget.
-		if (runtime.permissionLevel && isAutoApproveLevel(runtime.permissionLevel)) {
-			this._logService.info(`[ChipOS Agent] auto-allow ASK ${ask.askId} (permission level: ${runtime.permissionLevel})`);
-			this._workerPermissionService.decide(ask.askId, 'allow', `auto: ${runtime.permissionLevel}`).catch(err => {
-				this._logService.warn(`[ChipOS Agent] auto-allow decide failed for ${ask.askId}: ${err}`);
-			});
-			return;
-		}
-
-		const confirmation = this._buildWorkerAskConfirmation(ask);
-		if (runtime.activeProgress) {
-			runtime.activeProgress([confirmation]);
-			// CRITICAL: end the invoke so VS Code chat's Submit button activates.
-			// Without this the framework keeps the round "in flight" and the
-			// confirmation row's Submit is greyed out until the round ends
-			// (typically via reasoner tool-timeout 30-60s later — too late).
-			// Mirrors what the reasoner-side ConfirmRequest handler does
-			// (`ctx.finish({}, 'Awaiting confirmation')`).
-			runtime.activeFinish?.({}, 'Awaiting worker permission');
-		} else {
-			// Defer until the next invoke flushes pendingWorkerAsks.
-			runtime.pendingWorkerAsks.set(ask.askId, ask);
-		}
-	}
-
-	private _buildWorkerAskConfirmation(ask: IWorkerPermissionAsk): IChatConfirmation {
-		// Phase B (PERMISSION-APPROVAL-UX-V2 §5): data carries all Phase A
-		// extras so ChipOSPermissionCardContentPart can render the full card
-		// without relying on the markdown message (which was cramped into 3
-		// lines by BaseChatConfirmationWidget._getPreview).  The message field
-		// is kept as a short plain string for accessibility / screen-readers;
-		// the custom DOM renderer ignores it.
-		const title = localize('chipos.workerPermission.title', 'Worker requests permission');
-		const allowOnce = localize('chipos.workerPermission.allowOnce', 'Allow once');
-		const allowWorkspace = localize('chipos.workerPermission.allowWorkspace', 'Always in workspace');
-		const allowAlways = localize('chipos.workerPermission.allowAlways', 'Always globally');
-		const deny = localize('chipos.workerPermission.deny', 'Deny');
-		return {
-			kind: 'confirmation',
-			title,
-			message: localize(
-				'chipos.workerPermission.message',
-				'{0} {1}',
-				ask.tool,
-				ask.specifier,
-			),
-			data: {
-				// WORKER-PERMISSION-ASK-TRANSPORT marker — triggers chipos
-				// routing in chipOSChatAgent's acceptedConfirmationData handler.
-				__chiposWorkerAskId: ask.askId,
-				requestId: ask.askId,
-				sessionId: ask.sessionId,
-				// Phase A extras for ChipOSPermissionCardContentPart rendering.
-				tool: ask.tool,
-				specifier: ask.specifier,
-				targetExists: ask.targetExists,
-				targetSizeBytes: ask.targetSizeBytes,
-				matchedRule: ask.matchedRule,
-				matchedLayer: ask.matchedLayer,
-				contentPreview: ask.contentPreview,
-				options: [
-					{ label: allowOnce,      action_id: 'allow_once' },
-					{ label: allowWorkspace, action_id: 'allow_workspace' },
-					{ label: allowAlways,    action_id: 'allow_always' },
-					{ label: deny,           action_id: 'deny' },
-				],
-			},
-			buttons: [allowOnce, allowWorkspace, allowAlways, deny],
-		};
-	}
-
-
-	private _findRuntimeByBackendSessionId(sessionId: string): IChatSessionRuntime | undefined {
-		if (!sessionId) {
-			return undefined;
-		}
-		for (const [, runtime] of this._sessionRuntimes) {
-			if (runtime.backendSessionId === sessionId) {
-				return runtime;
-			}
-		}
-		return undefined;
-	}
 
 
 	// ── Client lifecycle ───────────────────────────────────────────────────
