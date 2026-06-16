@@ -15,7 +15,7 @@ import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
-import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { CommandsRegistry } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
@@ -70,7 +70,6 @@ import type {
 	TokenUsage,
 	TurnStateResponse,
 } from './statelessInvoke/types.js';
-import { reservedCommandFor, type ReservedCommandSpec } from './statelessInvoke/types.js';
 import { collectPromptResources } from '../resources/promptResourceAttachmentCollector.js';
 import { isExtensionSystemEnabled } from '../../common/extensionsBeta.js';
 import { IChiposPromptInputsService } from './chiposPromptInputsService.js';
@@ -263,7 +262,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IEditorService private readonly _editorService: IEditorService,
 		@IChiposPromptInputsService private readonly _promptInputsService: IChiposPromptInputsService,
 		@IChiposHookLogService private readonly _hookLogService: IChiposHookLogService,
-		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -1956,55 +1954,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return { kind: 'markdownContent', content: new MarkdownString(content, { supportThemeIcons: true }) };
 	}
 
-	/**
-	 * Match the user's input against the reserved built-in command table. Accepts
-	 * a framework-parsed `request.command` or an inline `/<name>` typed at the very
-	 * start of the prompt (reserved commands are start-of-prompt only, like the
-	 * slash-command completions). Returns the matched spec, or `undefined`.
-	 */
-	private _tryMatchReserved(request: IChatAgentRequest): ReservedCommandSpec | undefined {
-		const explicitCommand = (request as { command?: string }).command;
-		const inlineMatch = /^\s*\/(?<name>[\w-]+)/.exec(request.message ?? '');
-		const name = explicitCommand || inlineMatch?.groups?.name;
-		return reservedCommandFor(name);
-	}
-
-	/**
-	 * Execute a matched reserved built-in command. Emits a short ack and returns
-	 * early — the request never reaches the reasoner. Slice 1 wires `routing=local`
-	 * (`/clear`); `endpoint` (`/compact`) lands with its checkpoint in the next slice.
-	 */
-	private _handleReservedCommand(spec: ReservedCommandSpec, progress: (parts: IChatProgress[]) => void): IChatAgentResult {
-		switch (spec.name) {
-			case 'clear':
-				return this._handleClearCommand(progress);
-			default:
-				// The table only lists implemented commands, so this is unreachable;
-				// fail safe + visible rather than silently doing nothing.
-				this._logService.warn('[ChipOS Reserved] no handler for /%s', spec.name);
-				progress([this._markdown(`$(warning) **ChipOS:** \`/${spec.name}\` is not implemented yet.`)]);
-				return { metadata: { reservedCommand: spec.name } };
-		}
-	}
-
-	/**
-	 * `/clear` (routing=local): start a fresh chat session. We deliberately do NOT
-	 * call `clearHistory` (that hard-deletes every local session). Instead we fire
-	 * the same `workbench.action.chat.newChat` command the "+" toolbar button uses:
-	 * it opens a new session and leaves the current one recoverable in history.
-	 * Deferred to a macrotask so the in-flight turn finalises before its own
-	 * session is replaced (the proven /fork race-avoidance pattern).
-	 */
-	private _handleClearCommand(progress: (parts: IChatProgress[]) => void): IChatAgentResult {
-		progress([this._markdown('$(clear-all) Started a new chat — the previous conversation is still in your history.')]);
-		setTimeout(() => {
-			this._commandService.executeCommand('workbench.action.chat.newChat').then(undefined, err => {
-				this._logService.warn('[ChipOS Reserved] /clear newChat failed:', String(err));
-			});
-		}, 0);
-		return { metadata: { reservedCommand: 'clear' } };
-	}
-
 	private _progress(content: string, shimmer?: boolean): IChatProgressMessage {
 		// Strip codicon prefixes like "$(loading~spin)" from the message: the chat
 		// panel uses chatContentMarkdownRenderer which parses them as icons (works
@@ -2969,16 +2918,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		const traceId = generateUuid();
 		const chatSessionId = this._statelessChatSessionIdFor(request.sessionResource);
 		this._logService.info('[ChipOS Stateless] invoke start: trace=%s chat_session=%s msg_len=%d', traceId, chatSessionId, request.message.length);
-
-		// Reserved built-in slash commands (/clear, …) are intercepted here —
-		// before the stateless client, history assembly, or any /invoke turn.
-		// They are surface-local side-effects the stateless reasoner has no part
-		// in; a user file of the same name cannot override them (reserved-wins).
-		// See docs/plan/surface-unification/RESERVED-COMMANDS-LAYER-DESIGN-2026-06-16.md.
-		const reserved = this._tryMatchReserved(request);
-		if (reserved) {
-			return this._handleReservedCommand(reserved, progress);
-		}
 
 		// Resolve client up front so config / token errors surface before we
 		// burn cycles walking the chat model.

@@ -20,6 +20,7 @@ import { ChatAgentLocation } from '../../../chat/common/constants.js';
 import { chatSubcommandLeader } from '../../../chat/common/requestParser/chatParserTypes.js';
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposPluginsService } from '../resources/chiposPluginsService.js';
+import { RESERVED_COMMANDS, RESERVED_NAMES } from './statelessInvoke/types.js';
 
 /**
  * ChipOS `/`-command completions. Adds a Cursor-style command picker popup when
@@ -91,7 +92,29 @@ export class ChipOSSlashCommandCompletions extends Disposable implements IWorkbe
 
 		const suggestions: CompletionItem[] = [];
 		let order = 0;
+
+		// Reserved built-in commands sort above user/plugin commands and cannot be
+		// shadowed by a same-named file command (reserved-wins). Only the primary
+		// name is surfaced; aliases still resolve when typed, just aren't listed.
+		for (const reserved of RESERVED_COMMANDS) {
+			if (pattern && !isPatternInWord(pattern, 0, pattern.length, reserved.name, 0, reserved.name.length)) {
+				continue;
+			}
+			const text = `${chatSubcommandLeader}${reserved.name}`;
+			suggestions.push({
+				label: { label: text, description: 'built-in' },
+				filterText: text,
+				insertText: reserved.takesArgs ? `${text} ` : text,
+				range,
+				kind: CompletionItemKind.Text,
+				sortText: String(order++).padStart(4, '0'),
+			});
+		}
+
 		for (const command of cmds) {
+			if (RESERVED_NAMES.has(command.name.toLowerCase())) {
+				continue; // reserved-wins: a user/plugin command cannot shadow a reserved name
+			}
 			if (pattern) {
 				const name = command.name.toLowerCase();
 				if (!isPatternInWord(pattern, 0, pattern.length, name, 0, name.length)) {

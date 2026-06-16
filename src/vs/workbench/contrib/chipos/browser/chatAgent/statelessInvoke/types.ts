@@ -404,6 +404,55 @@ export interface SkillHeader {
 }
 
 /**
+ * How a reserved built-in slash command executes. Mirrors
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py` ReservedCommandRouting.
+ * `local` = client-side only; `endpoint` = a dedicated non-/invoke endpoint;
+ * `invoke` = a normal model turn (reserved, unused in Beta-1).
+ */
+export type ReservedCommandRouting = 'local' | 'endpoint' | 'invoke';
+
+/**
+ * Declaration of one reserved built-in slash command. Mirrors
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py` ReservedCommandSpec /
+ * RESERVED_COMMANDS. Field names + defaults must align literally with python.
+ * Pure data — the IDE implements the handler; the same table is the contract the
+ * vscode-extension and the (future) CLI follow. See
+ * `docs/plan/surface-unification/RESERVED-COMMANDS-LAYER-DESIGN-2026-06-16.md`.
+ */
+export interface ReservedCommandSpec {
+	/** Canonical command name (typed as `/<name>`), no leading slash. */
+	readonly name: string;
+	/** Where the command executes. */
+	readonly routing: ReservedCommandRouting;
+	/** Whether inline args after `/<name>` are meaningful. */
+	readonly takesArgs: boolean;
+	/** Whether it may run while the previous turn still streams. */
+	readonly availableInFlight: boolean;
+	/** Alternative names that resolve to this same command. */
+	readonly aliases: readonly string[];
+}
+
+/**
+ * Single source of truth (mirror of python `RESERVED_COMMANDS`). Slice 1 ships
+ * `/clear` (local); `/compact` (endpoint) lands with its compaction checkpoint
+ * in the next slice. Adding one = edit here + the python table + a handler.
+ */
+export const RESERVED_COMMANDS: readonly ReservedCommandSpec[] = [
+	// aliases empty on purpose — see the python RESERVED_COMMANDS comment: /new and
+	// /reset are only reserved once a surface resolves them (the IDE framework
+	// registers only `clear`), else we'd suppress a user's own new.md/reset.md.
+	{ name: 'clear', routing: 'local', takesArgs: false, availableInFlight: false, aliases: [] },
+];
+
+/**
+ * Names + aliases of every reserved command. The IDE completion uses this to
+ * suppress a user/plugin command that collides with a reserved name (the
+ * framework's slash-command service already enforces reserved-wins at execution).
+ */
+export const RESERVED_NAMES: ReadonlySet<string> = new Set(
+	RESERVED_COMMANDS.flatMap(c => [c.name, ...c.aliases]));
+
+/**
  * Canonical reasoner lifecycle point a hook attaches to (mirrors
  * `backend_v2/packages/shared/src/shared/contracts/invoke.py` ReasonerHookPoint).
  * `tool.before_dispatch` is the deny-capable point used by Beta-1.
