@@ -54,7 +54,7 @@ import { IChatEditingService, type IChatEditingSession } from '../../../../contr
 import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
 import { IChatSlashCommandService } from '../../../../contrib/chat/common/participants/chatSlashCommands.js';
 import { ChatAgentLocation } from '../../../../contrib/chat/common/constants.js';
-import type { IChatResponseModel, IChatModel } from '../../../../contrib/chat/common/model/chatModel.js';
+import type { IChatResponseModel, IChatModel, IChatProgressResponseContent } from '../../../../contrib/chat/common/model/chatModel.js';
 import { ChatModelToRecordsAdapter } from './statelessInvoke/chatModelAdapter.js';
 import { ConversationAssembler, ConversationAssemblyError } from './statelessInvoke/conversationAssembler.js';
 import { ConversationCompactor } from './statelessInvoke/conversationCompactor.js';
@@ -229,6 +229,24 @@ export function _buildTracePillMarkdown(traceId: string): MarkdownString {
 		`\n\n— $(link-external) *[trace](command:chipos.trace.copyId?${encodedArg} "Trace ID: ${safeTitle} — click to copy")*`,
 		{ supportThemeIcons: true, isTrusted: true },
 	);
+}
+
+/**
+ * True when `parts` already carries a trailing trace pill (the markdown built
+ * by {@link _buildTracePillMarkdown}, recognised by its `chipos.trace.copyId`
+ * command link).
+ *
+ * Idempotency guard for the queue-while-running/steer path: when several
+ * invokes share ONE chat response row (the framework reuses the in-flight
+ * response across steered turns), each invoke mints its own `trace_id` and
+ * ends by appending a pill. Without this check N steered turns stack N pills
+ * on one bubble (the assistant text de-dupes because it replaces/streams, but
+ * the pill is a fresh appended markdownContent each time). We scan the response
+ * for an existing pill and skip the duplicate so exactly one pill — the first
+ * one, which trails the visible streamed answer — survives. See `_emitTracePill`.
+ */
+export function _responseHasTracePill(parts: ReadonlyArray<IChatProgressResponseContent>): boolean {
+	return parts.some(p => p.kind === 'markdownContent' && p.content.value.includes('command:chipos.trace.copyId'));
 }
 
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
@@ -1120,6 +1138,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		if (!chatModel) { return undefined; }
 		const lastRequest = chatModel.getRequests().at(-1);
 		return lastRequest?.response ?? undefined;
+	}
+
+	/**
+	 * Append the trailing copyable trace pill — but AT MOST ONCE per chat
+	 * response. The queue-while-running/steer machinery can drive several
+	 * invokes into a single response row; each invoke mints its own `trace_id`
+	 * and would otherwise stack a pill (see `_responseHasTracePill`). We look up
+	 * the response this invoke is writing into and skip if it already carries a
+	 * pill, so the first one — which trails the visible streamed answer — wins.
+	 */
+	private _emitTracePill(request: IChatAgentRequest, progress: (parts: IChatProgress[]) => void, traceId: string): void {
+		// Look up THIS invoke's response (a shared/steered response is attached to
+		// the current request, so match by id). If it already carries a pill, a
+		// prior invoke into this same row emitted one — skip the duplicate. On any
+		// lookup miss we fall through and emit (never wrongly suppress a pill).
+		const response = this._chatService.getSession(request.sessionResource)
+			?.getRequests().find(r => r.id === request.requestId)?.response;
+		if (response && _responseHasTracePill(response.entireResponse.value)) {
+			this._logService.info(
+				'[ChipOS Stateless] trace pill already on response %s — skipping duplicate (trace=%s, steered/continued turn)',
+				response.id, traceId,
+			);
+			return;
+		}
+		progress([{ kind: 'markdownContent', content: _buildTracePillMarkdown(traceId) }]);
 	}
 
 
@@ -3810,8 +3853,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// stream is keyed by it) so it is always present here; the pill's hover shows
 		// the full id and a click copies it via the existing `chipos.trace.copyId`
 		// command. Emitted only on success — failures surface the trace in
-		// `_statelessFailureCard`.
-		progress([{ kind: 'markdownContent', content: _buildTracePillMarkdown(traceId) }]);
+		// `_statelessFailureCard`. `_emitTracePill` keeps it idempotent so a
+		// steered/continued turn sharing this response row doesn't stack pills.
+		this._emitTracePill(request, progress, traceId);
 		return {
 			metadata: resultMetadata,
 			timings: { totalElapsed, firstProgress: firstProgressTime },
@@ -4201,8 +4245,9 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return { ...errorResult, timings };
 		}
 		// P1-2: same trailing trace_id pill as the primary `_invokeStateless` path,
-		// so an IDE-restart-resumed turn ends with the copyable trace too.
-		progress([{ kind: 'markdownContent', content: _buildTracePillMarkdown(traceId) }]);
+		// so an IDE-restart-resumed turn ends with the copyable trace too. Routed
+		// through `_emitTracePill` so it stays idempotent per response row.
+		this._emitTracePill(request, progress, traceId);
 		return {
 			metadata: { usage: usage ?? null, trace_id: traceId, chipos_chat_session_id: chatSessionId },
 			timings,

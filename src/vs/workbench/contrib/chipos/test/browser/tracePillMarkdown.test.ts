@@ -18,7 +18,11 @@
  */
 
 import assert from 'assert';
-import { _buildTracePillMarkdown } from '../../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { MarkdownString } from '../../../../../base/common/htmlContent.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { _buildTracePillMarkdown, _responseHasTracePill } from '../../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
+import { Response, type IChatProgressResponseContent } from '../../../../../workbench/contrib/chat/common/model/chatModel.js';
 
 suite('_buildTracePillMarkdown', () => {
 
@@ -121,5 +125,113 @@ suite('_buildTracePillMarkdown', () => {
 		assert.ok(md.value.includes('command:chipos.trace.copyId?'),
 			'still produces a link; caller guard prevents this from rendering',
 		);
+	});
+});
+
+suite('_responseHasTracePill', () => {
+
+	const md = (value: string): IChatProgressResponseContent =>
+		({ kind: 'markdownContent', content: new MarkdownString(value) });
+	const pill = (tid: string): IChatProgressResponseContent =>
+		({ kind: 'markdownContent', content: _buildTracePillMarkdown(tid) });
+
+	test('false on an empty response', () => {
+		assert.strictEqual(_responseHasTracePill([]), false);
+	});
+
+	test('false on assistant text + tool parts but no pill', () => {
+		const parts: IChatProgressResponseContent[] = [
+			md('看起来你在测试输入'),
+			{ kind: 'progressMessage', content: new MarkdownString('读取文件') } as IChatProgressResponseContent,
+		];
+		assert.strictEqual(_responseHasTracePill(parts), false);
+	});
+
+	test('true once a real pill is present', () => {
+		// This is the dedup trigger: the queue/steer path drives a 2nd invoke
+		// into the SAME response, which already ends with the 1st invoke's pill.
+		const parts: IChatProgressResponseContent[] = [
+			md('看起来你在测试输入'),
+			pill('11111111-1111-1111-1111-111111111111'),
+		];
+		assert.strictEqual(_responseHasTracePill(parts), true,
+			'a response carrying a prior trace pill must report present so the duplicate is skipped',
+		);
+	});
+
+	test('matches the pill regardless of its trace_id (different invokes mint different ids)', () => {
+		assert.strictEqual(_responseHasTracePill([pill('aaaa-bbbb')]), true);
+		assert.strictEqual(_responseHasTracePill([pill('cccc-dddd')]), true);
+	});
+
+	test('does not false-positive on prose that merely mentions the command name', () => {
+		// The detector keys off the full `command:chipos.trace.copyId` link
+		// target the pill always emits, not the bare command id, so assistant
+		// text discussing the feature does not suppress a real pill.
+		assert.strictEqual(
+			_responseHasTracePill([md('调试时可以点 trace 胶囊（chipos.trace.copyId）复制 ID')]),
+			false,
+		);
+	});
+});
+
+suite('trace pill idempotency over the real ChatModel response path', () => {
+	// Drives the genuine `Response` append/merge logic — the same path
+	// `_emitTracePill` inspects via `entireResponse.value` — so the dedup is
+	// verified against the framework's real behavior, not a hand-built array.
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	// Mirrors how the agent appends the assistant answer: a markdownContent
+	// with supportThemeIcons (NO isTrusted), so it does NOT merge with the
+	// pill's isTrusted markdown — exactly the asymmetry that lets pills stack
+	// while the answer text stays single.
+	const emitText = (response: Response, text: string) =>
+		response.updateContent({ kind: 'markdownContent', content: new MarkdownString(text, { supportThemeIcons: true }) });
+	const emitPill = (response: Response, tid: string) =>
+		response.updateContent({ kind: 'markdownContent', content: _buildTracePillMarkdown(tid) });
+	const pillCount = (response: Response) =>
+		response.value.filter(p => p.kind === 'markdownContent' && p.content.value.includes('command:chipos.trace.copyId')).length;
+
+	test('a fresh response reports no pill, so the first invoke emits one', () => {
+		const response = store.add(new Response([]));
+		emitText(response, '看起来你在测试输入');
+		assert.strictEqual(_responseHasTracePill(response.value), false,
+			'before the first pill, the guard must allow emission');
+		emitPill(response, 'aaaaaaaa-1111');
+		assert.strictEqual(pillCount(response), 1);
+	});
+
+	test('reproduces the bug: a second invoke into the same response is suppressed (one pill, not two)', () => {
+		// Steered/continued turn: invoke #1 streamed the answer + a pill; invoke
+		// #2 shares this response row and mints a DIFFERENT trace_id. The old
+		// code appended unconditionally → 2 pills on one bubble. The guard now
+		// sees the existing pill and skips, so the answer keeps exactly one.
+		const response = store.add(new Response([]));
+
+		// invoke #1
+		emitText(response, '看起来你在测试输入');
+		if (!_responseHasTracePill(response.value)) {
+			emitPill(response, 'aaaaaaaa-1111');
+		}
+
+		// invoke #2 (shares the row) — guarded emission
+		if (!_responseHasTracePill(response.value)) {
+			emitPill(response, 'bbbbbbbb-2222'); // would have been a 2nd pill pre-fix
+		}
+
+		assert.strictEqual(pillCount(response), 1,
+			'the merged/steered response must end with exactly one trace pill');
+	});
+
+	test('six rapid steered invokes still leave exactly one pill (matches the reported 6-pill case)', () => {
+		const response = store.add(new Response([]));
+		emitText(response, '看起来你在测试输入');
+		for (let i = 0; i < 6; i++) {
+			if (!_responseHasTracePill(response.value)) {
+				emitPill(response, `trace-${i}`);
+			}
+		}
+		assert.strictEqual(pillCount(response), 1,
+			'6 queued/steered invokes collapse to a single pill');
 	});
 });
