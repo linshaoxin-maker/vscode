@@ -117,9 +117,12 @@ export interface ISidecarManagerService {
 	 * only — talks to the main process via IPC). Returns undefined in web
 	 * builds or older sidecar implementations that don't expose this.
 	 *
-	 * Used by the WorkerPermissionService to obtain the per-worker Bearer
-	 * token (WORKER-PERMISSION-ASK-TRANSPORT §5.7) without each consumer
-	 * having to know about the underlying IPC channel.
+	 * Primary consumer: worker HTTP-port discovery (the worker rolls to a
+	 * kernel-assigned port on EADDRINUSE, so instance.json is authoritative).
+	 * The surfaced `permission_token` fed the worker-direct permission ASK
+	 * channel, removed 2026-06-16 — worker permission ASKs now flow over the
+	 * reasoner reverse channel (confirm_request → /confirm_response), so that
+	 * field is currently unconsumed.
 	 */
 	readonly readInstanceMeta?: (workspaceRoot: string) => Promise<IWorkerInstanceMeta | undefined>;
 

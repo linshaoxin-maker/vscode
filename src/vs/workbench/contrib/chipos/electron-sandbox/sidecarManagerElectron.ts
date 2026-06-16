@@ -1346,7 +1346,10 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	/**
 	 * Read instance.json metadata via the existing `checkInstance` IPC — same
 	 * payload, additionally surfaces `permission_token` after 2026-05-11.
-	 * Used by WorkerPermissionService (Worker→IDE permission ASK channel).
+	 * Consumed for worker HTTP-port discovery (instance.json is authoritative
+	 * for the kernel-assigned port). The `permission_token` fed the worker-direct
+	 * permission ASK channel, removed 2026-06-16 — worker permission ASKs now go
+	 * reverse-channel via /confirm_response, so that field is currently unconsumed.
 	 */
 	readInstanceMeta = async (workspaceRoot: string): Promise<IWorkerInstanceMeta | undefined> => {
 		if (!workspaceRoot) {

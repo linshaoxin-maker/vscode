@@ -1052,10 +1052,10 @@ export function registerSidecarIpcHandlers(): void {
 		// 2026-05-12 regression fix: a failed HTTP probe **does NOT** delete
 		// instance.json any more. Nuitka onefile binaries take ~25 s to bind
 		// their HTTP port during startup; during that window pid is alive,
-		// HTTP is not. The previous logic deleted instance.json and the
-		// freshly-minted permission_token along with it — every subsequent
-		// renderer-side `readInstanceMeta()` then returned an empty token
-		// and the permission SSE could never authenticate.
+		// HTTP is not. The previous logic deleted instance.json (and all the
+		// metadata in it) prematurely — every subsequent renderer-side
+		// `readInstanceMeta()` then returned nothing and worker discovery
+		// (the kernel-assigned HTTP port, etc.) broke until the next spawn.
 		//
 		// New contract: instance.json is deleted only when the pid itself
 		// is dead. HTTP unresponsiveness in spite of a live pid yields
@@ -1076,12 +1076,12 @@ export function registerSidecarIpcHandlers(): void {
 			pid: meta.pid,
 			ref_count: meta.ref_count,
 			http_port: meta.http_port,
-			// WORKER-PERMISSION-ASK-TRANSPORT §5.7: surface the Bearer token so
-			// the renderer's WorkerPermissionService can authenticate against
-			// the worker's /api/v1/permissions/* endpoints. Empty when missing
-			// (legacy worker — IDE-side service should fall back to disabled).
-			// Always surfaced when pid is alive, even if HTTP isn't ready yet
-			// — caller can decide to retry instead of giving up.
+			// permission_token: surfaced for the worker-direct permission ASK
+			// channel (the renderer WorkerPermissionService → worker
+			// /api/v1/permissions/*), which was REMOVED 2026-06-16 — worker
+			// permission ASKs now flow reverse-channel (confirm_request →
+			// /confirm_response). No live renderer consumer reads it today; kept
+			// for instance.json contract parity. Empty when the worker mints none.
 			permission_token: pidAlive && typeof meta.permission_token === 'string'
 				? meta.permission_token : '',
 		};
