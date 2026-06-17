@@ -195,12 +195,12 @@ export class ChatListWidget extends Disposable {
 	private _suppressAutoScroll: boolean = false;
 	private _settingChangeCounter: number = 0;
 	private _visibleChangeCount: number = 0;
-	/** [ChipOS] Per response element, how many chipos confirmation cards
-	 * (agent_ask / permission) we've already revealed. We reveal each NEW card
-	 * once (when the count grows) so its inline buttons aren't clipped below the
-	 * fold, but do NOT re-reveal on every height delta — that would drag the
-	 * response back and block upward scrolling. */
-	private readonly _revealedChipOSCardCount = new WeakMap<object, number>();
+	/** [ChipOS] Response elements whose chipos confirmation card we've already
+	 * scrolled into view once. `reveal()`/`scrollToEnd()` both bail when a chipos
+	 * card is in view (to allow scroll-up), so on first appearance we reveal the
+	 * card's bottom directly via the tree — once per element, so upward scrolling
+	 * still works afterwards. Cleared when the card is gone. */
+	private readonly _revealedChipOSCardElements = new WeakSet<object>();
 
 	private readonly _container: HTMLElement;
 	private readonly _scrollDownButton: Button;
@@ -362,28 +362,27 @@ export class ChatListWidget extends Disposable {
 			// covered by that same auto-follow on the first refresh after the
 			// card is appended.
 			if (isResponseVM(e.element)) {
-				// Count chipos confirmation cards (agent_ask / permission) on this
-				// response. These render as `kind: 'confirmation'` parts but do NOT
-				// set the model's `isPendingConfirmation` (that's why the stock
-				// reveal below misses them) — detect them by part kind, the same
-				// way `_hasChipOSPermissionCardInView` does.
-				const chipOSCardCount = e.element.response?.value.filter(
+				const containsChipOSCard = e.element.response?.value.some(
 					part => part.kind === 'confirmation' && isChipOSCardData(part.data),
-				).length ?? 0;
-				if (e.element.model?.isPendingConfirmation.get() && chipOSCardCount === 0) {
-					// Stock (non-chipos) confirmation — reveal so the overlay
-					// buttons are visible (unchanged behaviour).
-					this.reveal(e.element, 1);
-				} else if (chipOSCardCount > 0) {
-					// [ChipOS] Reveal each NEW chipos card ONCE (when the count
-					// grows), so its inline buttons aren't clipped below the fold
-					// (the queued-messages bar makes this worse). Not on every
-					// height delta — so the user can still scroll the waiting card.
-					const revealed = this._revealedChipOSCardCount.get(e.element) ?? 0;
-					if (chipOSCardCount > revealed) {
-						this._revealedChipOSCardCount.set(e.element, chipOSCardCount);
-						this.reveal(e.element, 1);
+				);
+				if (containsChipOSCard) {
+					// [ChipOS] A chipos confirmation card (agent_ask / permission /
+					// terminal / generic) is at the response tail. `reveal()` and
+					// `scrollToEnd()` both bail when such a card is in view (to let
+					// the user scroll it up), which leaves the card's inline action
+					// buttons clipped below the fold on first appearance. Reveal the
+					// row's bottom directly via the tree (1e6 = align bottom) ONCE
+					// per element, then stop — so upward scrolling still works.
+					if (!this._revealedChipOSCardElements.has(e.element) && this._tree.hasElement(e.element)) {
+						this._revealedChipOSCardElements.add(e.element);
+						this._tree.reveal(e.element, 1e6);
 					}
+				} else if (e.element.model?.isPendingConfirmation.get()) {
+					// Stock confirmation — reveal so its floating buttons are visible.
+					this.reveal(e.element, 1);
+				} else {
+					// No card on this element — let a future card reveal again.
+					this._revealedChipOSCardElements.delete(e.element);
 				}
 			}
 
