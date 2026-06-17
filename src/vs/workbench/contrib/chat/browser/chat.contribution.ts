@@ -734,7 +734,12 @@ configurationRegistry.registerConfiguration({
 				nls.localize('chat.requestQueuing.defaultAction.steer', "Steer the current request by sending the message immediately, signaling the current request to yield."),
 			],
 			description: nls.localize('chat.requestQueuing.defaultAction.description', "Controls which action is the default for the queue button when a request is in progress."),
-			default: 'steer',
+			// [ChipOS] Default to 'queue' (upstream default is 'steer'): a message
+			// sent while the assistant is busy should get its own answer, not be
+			// merged into the in-flight turn. (product.json configurationDefaults
+			// does NOT override this — it's read via a `config.` context key that
+			// resolves the registered default, so the change must live here.)
+			default: 'queue',
 		},
 		[ChatConfiguration.EditModeHidden]: {
 			type: 'boolean',

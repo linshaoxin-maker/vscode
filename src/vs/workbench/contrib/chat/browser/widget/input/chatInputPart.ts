@@ -290,6 +290,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	private readonly inputEditorMinHeight: number | undefined;
 	private inputEditorHeight: number = 0;
 	private container!: HTMLElement;
+	private chiposQueuedMessagesSlot!: HTMLElement;
 
 	private inputSideToolbarContainer?: HTMLElement;
 	private secondaryToolbarContainer!: HTMLElement;
@@ -1975,7 +1976,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 					// up while a request is in flight, and can cancel from
 					// here without scrolling the transcript to the bottom.
 					// `ChipOSQueuedMessagesContribution` mounts the widget.
-					dom.h('.chipos-queued-messages-slot'),
+					dom.h('.chipos-queued-messages-slot@chiposQueuedMessagesSlot'),
 					dom.h('.interactive-input-and-side-toolbar@inputAndSideToolbar', [
 						dom.h('.chat-input-container@inputContainer', [
 							dom.h('.chat-editor-container@editorContainer'),
@@ -2004,7 +2005,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				// up while a request is in flight, and can cancel from
 				// here without scrolling the transcript to the bottom.
 				// `ChipOSQueuedMessagesContribution` mounts the widget.
-				dom.h('.chipos-queued-messages-slot'),
+				dom.h('.chipos-queued-messages-slot@chiposQueuedMessagesSlot'),
 				dom.h('.interactive-input-and-side-toolbar@inputAndSideToolbar', [
 					dom.h('.chat-input-container@inputContainer', [
 						dom.h('.chat-attachments-container@attachmentsContainer', [
@@ -2063,6 +2064,18 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			this.height.set(newHeight, undefined);
 		}));
 		this._register(todoResizeObserver.observe(this.chatInputTodoListWidgetContainer));
+
+		// [ChipOS] Same for the queued-messages bar: without its own observer the
+		// bar grows the input part but the transcript list never reserves space,
+		// so the bar visibly OVERLAPS (covers) the last response. The whole-part
+		// `inputResizeObserver` below is not sufficient for dynamic children
+		// (that is exactly why the todo widget needs its own observer too).
+		this.chiposQueuedMessagesSlot = elements.chiposQueuedMessagesSlot;
+		const queuedMessagesResizeObserver = this._register(new dom.DisposableResizeObserver(() => {
+			const newHeight = this.container.offsetHeight;
+			this.height.set(newHeight, undefined);
+		}));
+		this._register(queuedMessagesResizeObserver.observe(this.chiposQueuedMessagesSlot));
 
 		this.chatGettingStartedTipContainer = elements.chatGettingStartedTipContainer;
 		this.chatGettingStartedTipContainer.style.display = 'none';

@@ -881,7 +881,14 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
  *      as "part of the composer".
  */
 .chipos-queued-messages-slot {
-	display: contents;
+	/* A real block box (not `display: contents`) so a ResizeObserver in
+	 * chatInputPart can watch it: when the bar appears the slot grows, the
+	 * input-part height updates, and the transcript list reserves space
+	 * instead of being overlapped/covered by the bar. The slot itself adds
+	 * no spacing — the inner `.chipos-queued-messages` carries the margins —
+	 * so this is visually identical to the old `display: contents`, and it
+	 * collapses to 0 height when the bar is empty (child is `display: none`). */
+	display: block;
 }
 
 /*
