@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { StatusBarHandler } from '../../../../../workbench/contrib/chipos/browser/migration/statusBarHandler.js';
-import { ConnectionState } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import { ConnectionState } from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 
 // ── Mock IStatusbarEntryAccessor & IStatusbarService ──────────────────────
 

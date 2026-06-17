@@ -102,7 +102,7 @@ import {
 	type IConfirmRequestPayload,
 	type ITaskSummaryPayload,
 	type IMentionItem,
-} from '../eventStream/eventTypes.js';
+} from '../eventTypes.js';
 
 interface IChatSessionRuntime {
 	toolStartTimes: Map<string, number>;
@@ -884,7 +884,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 
 			// ── ChipOS UI polish: render EDA report payloads as markdown tables ──
-			// Schemas come from eventStream/eventTypes.ts (ISimReportPayload / ILintReportPayload /
+			// Schemas come from eventTypes.ts (ISimReportPayload / ILintReportPayload /
 			// ICoverageReportPayload). Each block is defensive about missing fields so a slightly
 			// off payload still degrades gracefully to the default JSON pretty-print below.
 			case 'sim_report': {

@@ -11,7 +11,7 @@ import {
 	type IContextFile,
 	type IFileEditPayload,
 	type IEditOperation,
-} from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+} from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 
 suite('EventTypes — contract verification', () => {
 

@@ -42,7 +42,7 @@ import { ChatViewId, IChatWidgetService } from '../../../../workbench/contrib/ch
 import { nullExtensionDescription } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ChipOSChatAgent } from '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
 import { StatusBarHandler, ReconnectReason } from '../../../../workbench/contrib/chipos/browser/migration/statusBarHandler.js';
-import { ConnectionState } from '../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import { ConnectionState } from '../../../../workbench/contrib/chipos/browser/eventTypes.js';
 import { IStatusbarService } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { autorun } from '../../../../base/common/observable.js';

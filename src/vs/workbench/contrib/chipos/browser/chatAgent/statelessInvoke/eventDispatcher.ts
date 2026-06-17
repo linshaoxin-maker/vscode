@@ -57,7 +57,7 @@ import type {
 	IChatEdaSimTestResult,
 	IChatEdaSpecReview,
 } from '../../../../chat/common/chatEdaTypes.js';
-import type { ITaskSummaryPayload } from '../../eventStream/eventTypes.js';
+import type { ITaskSummaryPayload } from '../../eventTypes.js';
 
 /**
  * What the dispatcher's caller should do after processing one event.

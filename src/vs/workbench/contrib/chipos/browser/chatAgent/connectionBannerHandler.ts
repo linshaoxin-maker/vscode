@@ -8,7 +8,7 @@ import './connectionBanner.css';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import * as dom from '../../../../../base/browser/dom.js';
-import { ConnectionState } from '../eventStream/eventTypes.js';
+import { ConnectionState } from '../eventTypes.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 
 /**

@@ -10,7 +10,7 @@ import {
 	type AgentEvent,
 	type ISkillTreeEvent,
 	type IToolResultEvent,
-} from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+} from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 import { ChipOSEditorEffects } from '../../../../../workbench/contrib/chipos/browser/chatAgent/editorEffects.js';
 
 class StubLogService {

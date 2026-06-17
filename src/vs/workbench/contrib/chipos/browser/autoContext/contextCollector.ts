@@ -12,7 +12,7 @@ import { IWorkspaceContextService } from '../../../../../platform/workspace/comm
 import { ISCMService } from '../../../../../workbench/contrib/scm/common/scm.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IMarkerService } from '../../../../../platform/markers/common/markers.js';
-import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 import { IContextProvider, IContextCollectionResult, IContextItem } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextTypes.js';
 import { ContextPrioritizer } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextPrioritizer.js';
 import { ActiveFileProvider } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextProviders/activeFileProvider.js';

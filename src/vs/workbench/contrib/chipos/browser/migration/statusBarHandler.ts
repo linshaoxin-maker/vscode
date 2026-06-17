@@ -5,7 +5,7 @@
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IStatusbarService, StatusbarAlignment, IStatusbarEntryAccessor } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
-import { ConnectionState } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import { ConnectionState } from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 
 const CONNECTION_LABELS: Record<string, string> = {
 	[ConnectionState.Connected]: '$(circle-filled) ChipOS: Connected',

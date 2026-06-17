@@ -24,7 +24,7 @@ import {
 	type IWorktreeFilesAppliedPayload,
 	type IDiffPreviewPayload,
 	type ISkillTreePayload,
-} from '../eventStream/eventTypes.js';
+} from '../eventTypes.js';
 import { SkillTreeHandler, type ISkillTreeData, type ISkillDomain, type ISkillItem } from '../../browser/migration/skillTreeHandler.js';
 
 /**

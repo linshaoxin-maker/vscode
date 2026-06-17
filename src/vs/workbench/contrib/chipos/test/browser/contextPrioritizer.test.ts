@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { ContextPrioritizer } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextPrioritizer.js';
 import { ContextSourceType, type IContextItem } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextTypes.js';
-import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 
 function createItem(source: ContextSourceType, priority: number, content: string): IContextItem {
 	return { source, content, priority, tokenEstimate: Math.ceil(content.length / 4) };

@@ -27,11 +27,11 @@
 
 import assert from 'assert';
 import { ChipOSChatAgent } from '../../browser/chatAgent/chipOSChatAgent.js';
-import { IConfirmRequestPayload } from '../../browser/eventStream/eventTypes.js';
+import { IConfirmRequestPayload } from '../../browser/eventTypes.js';
 
 // Helper: build a minimum-viable IConfirmRequestPayload for the given
 // card_type with the supplied card_data. The actual interface (see
-// chipos/browser/eventStream/eventTypes.ts) requires only request_id +
+// chipos/browser/eventTypes.ts) requires only request_id +
 // card_type + card_data; everything else is optional. _renderConfirmMessage
 // reads only card_type + card_data + message.
 function makePayload(card_type: string, card_data: Record<string, unknown>, message?: string): IConfirmRequestPayload {

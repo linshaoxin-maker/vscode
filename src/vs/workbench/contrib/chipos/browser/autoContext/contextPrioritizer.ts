@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventStream/eventTypes.js';
+import type { IMentionItem } from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 import { ContextSourceType, IContextItem, IContextCollectionResult } from '../../../../../workbench/contrib/chipos/browser/autoContext/contextTypes.js';
 
 const CHARS_PER_TOKEN = 4;
