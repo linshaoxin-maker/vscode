@@ -1853,6 +1853,31 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * Split a growing assistant-text buffer into the portion safe to render
+	 * NOW (`emit`) and the portion to hold back (`hold`) for incremental
+	 * streaming. We emit only completed lines (everything up to and including
+	 * the last newline) and hold the trailing partial line.
+	 *
+	 * Why hold the last line: the mandated `建议下一步: …` next-step line is
+	 * always the LAST line (`_stripNextStepLine` is end-anchored and renders it
+	 * as the inline card instead of prose). By never streaming the last line
+	 * until the turn's final flush — where `flushAssistantText` strips it — we
+	 * stream text live without ever flashing the next-step line as prose, then
+	 * un-rendering it. Without this, streamed text only painted at flush
+	 * boundaries (tool call / message_stop), so a plain-text reply stayed blank
+	 * until the turn ended.
+	 */
+	static _splitStreamableText(buf: string): { emit: string; hold: string } {
+		const lastNewline = buf.lastIndexOf('\n');
+		if (lastNewline < 0) {
+			// No completed line yet — hold everything (could still be growing
+			// into the next-step line).
+			return { emit: '', hold: buf };
+		}
+		return { emit: buf.slice(0, lastNewline + 1), hold: buf.slice(lastNewline + 1) };
+	}
+
+	/**
 	 * [ChipOS][F-4 redesign] Emit the inline next-step button card from a task
 	 * summary's structured `next_steps` (the canonical EDA next-step list, e.g.
 	 * "运行 lint_fix_loop / 生成 TestBench / 运行仿真验证"). Sits under the summary,
@@ -3356,6 +3381,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				progress([this._markdown(text)]);
 			}
 		};
+		// [ChipOS] Incremental streaming: render completed lines as deltas arrive
+		// instead of only at flush boundaries (tool call / message_stop). Without
+		// this a plain-text reply stayed blank until the turn ended. The trailing
+		// partial line is held back so the mandated `建议下一步:` next-step line is
+		// never flashed as prose before `flushAssistantText` strips it.
+		const streamFlush = () => {
+			const { emit, hold } = ChipOSChatAgent._splitStreamableText(assistantTextBuf);
+			if (emit.length === 0) {
+				return;
+			}
+			assistantTextBuf = hold;
+			progress([this._markdown(emit)]);
+		};
 		// [ChipOS] Live-render mirror of the reasoner accumulator's
 		// `_saw_streamed_text` (stateless_agentcore_driver.py:156): did ANY
 		// assistant text stream this turn (model_output / content_block_delta)?
@@ -3398,6 +3436,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				fullReplyText += handled.appendText;
 				sawStreamedText = true;
 				trackFirstProgress();
+				streamFlush();
 			}
 			if (handled.replyText && !sawStreamedText) {
 				// A reply that never streamed (subagent / resume / analog / a
@@ -4054,6 +4093,16 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				progress([this._markdown(text)]);
 			}
 		};
+		// [ChipOS] Incremental streaming on the resume path too — same rationale
+		// and next-step safety as the live invoke() loop's `streamFlush`.
+		const streamFlush = () => {
+			const { emit, hold } = ChipOSChatAgent._splitStreamableText(assistantTextBuf);
+			if (emit.length === 0) {
+				return;
+			}
+			assistantTextBuf = hold;
+			progress([this._markdown(emit)]);
+		};
 		// [ChipOS] See the invoke() loop: gates rendering a chat-only reply on
 		// resume so a non-streaming reply isn't dropped (mirrors `_saw_streamed_text`).
 		let sawStreamedText = false;
@@ -4075,6 +4124,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				assistantTextBuf += handled.appendText;
 				fullReplyText += handled.appendText;
 				sawStreamedText = true;
+				streamFlush();
 			}
 			if (handled.replyText && !sawStreamedText) {
 				// Resume parity: a chat-only reply (the resume dispatcher path may

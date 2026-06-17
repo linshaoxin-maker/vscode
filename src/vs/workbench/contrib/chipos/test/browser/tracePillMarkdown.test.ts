@@ -18,7 +18,6 @@
  */
 
 import assert from 'assert';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { _buildTracePillMarkdown, _responseHasTracePill } from '../../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
