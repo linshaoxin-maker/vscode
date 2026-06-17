@@ -195,6 +195,12 @@ export class ChatListWidget extends Disposable {
 	private _suppressAutoScroll: boolean = false;
 	private _settingChangeCounter: number = 0;
 	private _visibleChangeCount: number = 0;
+	/** [ChipOS] Per response element, how many chipos confirmation cards
+	 * (agent_ask / permission) we've already revealed. We reveal each NEW card
+	 * once (when the count grows) so its inline buttons aren't clipped below the
+	 * fold, but do NOT re-reveal on every height delta — that would drag the
+	 * response back and block upward scrolling. */
+	private readonly _revealedChipOSCardCount = new WeakMap<object, number>();
 
 	private readonly _container: HTMLElement;
 	private readonly _scrollDownButton: Button;
@@ -355,12 +361,29 @@ export class ChatListWidget extends Disposable {
 			// after a pending confirmation), so first-emission visibility is
 			// covered by that same auto-follow on the first refresh after the
 			// card is appended.
-			if (isResponseVM(e.element) && e.element.model?.isPendingConfirmation.get()) {
-				const containsChipOSCard = e.element.response?.value.some(
+			if (isResponseVM(e.element)) {
+				// Count chipos confirmation cards (agent_ask / permission) on this
+				// response. These render as `kind: 'confirmation'` parts but do NOT
+				// set the model's `isPendingConfirmation` (that's why the stock
+				// reveal below misses them) — detect them by part kind, the same
+				// way `_hasChipOSPermissionCardInView` does.
+				const chipOSCardCount = e.element.response?.value.filter(
 					part => part.kind === 'confirmation' && isChipOSCardData(part.data),
-				);
-				if (!containsChipOSCard) {
+				).length ?? 0;
+				if (e.element.model?.isPendingConfirmation.get() && chipOSCardCount === 0) {
+					// Stock (non-chipos) confirmation — reveal so the overlay
+					// buttons are visible (unchanged behaviour).
 					this.reveal(e.element, 1);
+				} else if (chipOSCardCount > 0) {
+					// [ChipOS] Reveal each NEW chipos card ONCE (when the count
+					// grows), so its inline buttons aren't clipped below the fold
+					// (the queued-messages bar makes this worse). Not on every
+					// height delta — so the user can still scroll the waiting card.
+					const revealed = this._revealedChipOSCardCount.get(e.element) ?? 0;
+					if (chipOSCardCount > revealed) {
+						this._revealedChipOSCardCount.set(e.element, chipOSCardCount);
+						this.reveal(e.element, 1);
+					}
 				}
 			}
 

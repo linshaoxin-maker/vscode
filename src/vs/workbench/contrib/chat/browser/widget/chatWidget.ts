@@ -2694,7 +2694,14 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		// Skip auto-scroll when the confirmation overlay is present — the overlay
 		// insertion already scrolls to end once, and subsequent layout calls should
 		// not fight with the user's manual scrolling.
-		const shouldScroll = lastElementVisible
+		// [ChipOS] When the turn is awaiting user input (an agent_ask / permission /
+		// confirmation card is pending), always reveal it so its actionable bottom
+		// (buttons) stays visible — even if the user wasn't at the bottom or the
+		// card is still rendering. Otherwise an in-flight chipos card grows below
+		// the viewport (auto-scroll is otherwise skipped for chipos cards) and the
+		// queued-messages bar worsens the clipping.
+		const needsInput = !!this.viewModel?.model.requestNeedsInput.get();
+		const shouldScroll = needsInput || (lastElementVisible
 			// Bug #14 (2026-05-20 dogfood): removed `!containsChipOSCard`
 			// guard. It disabled auto-scroll on EVERY layout pass while a
 			// chipos worker-permission card was at chat end — side effect:
@@ -2703,7 +2710,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			// height growth (working-set widget, mention pill) shrank the
 			// list without re-aligning scroll. Streaming snap is already
 			// covered by lastResponseIsRendering.
-			&& (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll));
+			&& (!lastResponseIsRendering || checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll)));
 		if (shouldScroll && !overlayEl) {
 			this.listWidget.scrollToEnd();
 		}

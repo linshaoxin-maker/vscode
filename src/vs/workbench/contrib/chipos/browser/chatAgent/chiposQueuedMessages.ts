@@ -44,6 +44,10 @@ export class ChipOSQueuedMessages extends Disposable {
 	private readonly _widgetSubscription = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _rowListeners = this._register(new DisposableStore());
 	private _currentWidget: IChatWidget | undefined;
+	/** Pending-request count from the previous render — used to detect "queue grew". */
+	private _lastPendingCount = 0;
+	/** Deferred scroll-to-end after the bar grows (waits for the re-layout). */
+	private readonly _scrollSchedule = this._register(new MutableDisposable());
 
 	constructor(
 		host: HTMLElement,
@@ -66,6 +70,7 @@ export class ChipOSQueuedMessages extends Disposable {
 			return;
 		}
 		this._currentWidget = widget;
+		this._lastPendingCount = 0;
 		const sub = new DisposableStore();
 		this._widgetSubscription.value = sub;
 
@@ -111,11 +116,26 @@ export class ChipOSQueuedMessages extends Disposable {
 		// Include BOTH user-pending kinds:
 		//   - Queued: waits for current request to fully complete
 		//   - Steering: signals current request to yield, then sends next
-		// Both are user-submitted-while-busy messages. The framework default
-		// for `chat.requestQueuing.defaultAction` is 'steer', so Enter-while-
-		// busy actually produces Steering by default — filtering Queued-only
-		// would leave the chipos bar empty for the most common case.
+		// Both are user-submitted-while-busy messages. (ChipOS defaults
+		// `chat.requestQueuing.defaultAction` to 'queue', but a user can still
+		// steer explicitly, so render either kind.)
 		const pending = vm.model.getPendingRequests();
+
+		// When the queue GROWS, the bar gets taller and pushes the transcript
+		// shorter; a tall latest card (e.g. an agent_ask / permission request)
+		// then has its bottom clipped behind the bar. Scroll the transcript to
+		// the end — after the input-part ResizeObserver has re-laid out the list
+		// to the new height — so the latest card stays fully visible above the
+		// bar. Only on growth, so we don't fight the user's manual scrolling.
+		const grew = pending.length > this._lastPendingCount;
+		this._lastPendingCount = pending.length;
+		if (grew && pending.length > 0 && widget) {
+			const win = dom.getWindow(this._container);
+			this._scrollSchedule.value = dom.scheduleAtNextAnimationFrame(win, () => {
+				this._scrollSchedule.value = dom.scheduleAtNextAnimationFrame(win, () => widget.scrollToEnd());
+			});
+		}
+
 		if (pending.length === 0) {
 			this._container.classList.add('chipos-queued-messages-empty');
 			return;

@@ -3594,6 +3594,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// between IDE and reasoner) so we surface it like any other HTTP
 		// error rather than looping.
 		let attempt412Retried = false;
+		let attempt409Retried = false;
 		retryLoop: while (true) {
 			try {
 				for await (const event of client.invoke(invokeReq, abortController.signal)) {
@@ -3636,6 +3637,34 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 						break retryLoop;
 					}
 					continue retryLoop;  // retry /invoke with new version
+				}
+				// 409 Conflict recovery — one-shot. The reasoner rejects /invoke
+				// with 409 when this chat session already has an in-flight turn
+				// (e.g. an earlier agent_ask / permission request that was never
+				// answered, then orphaned by an IDE reload). The old behaviour
+				// dead-ended the user on a REASONER_HTTP_409 card whose Retry just
+				// re-conflicts. Instead: look up the stuck turn(s) via /turn_state,
+				// cancel them, and retry /invoke once so the new message can run.
+				if (verdict === 'surface-http'
+					&& (err as StatelessHttpError).status === 409
+					&& !attempt409Retried) {
+					attempt409Retried = true;
+					try {
+						const ts = await client.getTurnState(chatSessionId);
+						const stuck = ts.in_flight_traces ?? [];
+						this._logService.warn(
+							'[ChipOS Stateless] /invoke 409 conflict — cancelling %d stuck in-flight turn(s) then retrying once',
+							stuck.length,
+						);
+						for (const t of stuck) {
+							await client.cancel(t.trace_id, 'superseded_by_new_turn').catch(cancelErr =>
+								this._logService.warn('[ChipOS Stateless] cancel stuck turn %s failed: %s', t.trace_id, String(cancelErr)),
+							);
+						}
+					} catch (probeErr) {
+						this._logService.warn('[ChipOS Stateless] /invoke 409 — turn_state probe failed: %s', String(probeErr));
+					}
+					continue retryLoop;  // retry /invoke after clearing the conflict
 				}
 				// Fall through to existing error-handling switch.
 				switch (verdict) {
