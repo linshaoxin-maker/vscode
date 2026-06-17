@@ -249,6 +249,57 @@ export function _responseHasTracePill(parts: ReadonlyArray<IChatProgressResponse
 	return parts.some(p => p.kind === 'markdownContent' && p.content.value.includes('command:chipos.trace.copyId'));
 }
 
+/**
+ * Structural subset of {@link StatelessClient} needed by {@link _recoverFrom409Conflict}.
+ * Declared so the recovery orchestration can be unit-tested against a mock
+ * without standing up the whole client (network, SSE, auth). `StatelessClient`
+ * structurally satisfies this.
+ */
+export interface I409RecoveryClient {
+	getTurnState(chatSessionId: string): Promise<{ in_flight_traces?: ReadonlyArray<{ trace_id: string }> }>;
+	cancel(traceId: string, reason?: string): Promise<unknown>;
+}
+
+/**
+ * Recover from a 409 `chat_session_busy` so the caller can retry /invoke once.
+ *
+ * The reasoner rejects /invoke with 409 when the chat session already has an
+ * in-flight turn (e.g. an `agent_ask` / permission request that was orphaned
+ * by an IDE reload, or a genuine concurrent send). The old behaviour
+ * dead-ended the user on a `REASONER_HTTP_409` card whose Retry just
+ * re-conflicts. Instead we probe `/turn_state`, cancel every stuck trace with
+ * `superseded_by_new_turn`, and let the caller retry.
+ *
+ * Best-effort by design: the `/turn_state` probe failing and any individual
+ * `cancel` failing are both swallowed (logged via `onWarn`) — the caller
+ * retries /invoke regardless and surfaces the *next* failure through the
+ * normal error path. Returns the number of in-flight traces we attempted to
+ * cancel (0 if the probe failed or none were reported) for logging/testing.
+ */
+export async function _recoverFrom409Conflict(
+	client: I409RecoveryClient,
+	chatSessionId: string,
+	onWarn: (msg: string, ...args: unknown[]) => void,
+): Promise<number> {
+	try {
+		const ts = await client.getTurnState(chatSessionId);
+		const stuck = ts.in_flight_traces ?? [];
+		onWarn(
+			'[ChipOS Stateless] /invoke 409 conflict — cancelling %d stuck in-flight turn(s) then retrying once',
+			stuck.length,
+		);
+		for (const t of stuck) {
+			await client.cancel(t.trace_id, 'superseded_by_new_turn').catch(cancelErr =>
+				onWarn('[ChipOS Stateless] cancel stuck turn %s failed: %s', t.trace_id, String(cancelErr)),
+			);
+		}
+		return stuck.length;
+	} catch (probeErr) {
+		onWarn('[ChipOS Stateless] /invoke 409 — turn_state probe failed: %s', String(probeErr));
+		return 0;
+	}
+}
+
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
 	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
@@ -3649,21 +3700,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					&& (err as StatelessHttpError).status === 409
 					&& !attempt409Retried) {
 					attempt409Retried = true;
-					try {
-						const ts = await client.getTurnState(chatSessionId);
-						const stuck = ts.in_flight_traces ?? [];
-						this._logService.warn(
-							'[ChipOS Stateless] /invoke 409 conflict — cancelling %d stuck in-flight turn(s) then retrying once',
-							stuck.length,
-						);
-						for (const t of stuck) {
-							await client.cancel(t.trace_id, 'superseded_by_new_turn').catch(cancelErr =>
-								this._logService.warn('[ChipOS Stateless] cancel stuck turn %s failed: %s', t.trace_id, String(cancelErr)),
-							);
-						}
-					} catch (probeErr) {
-						this._logService.warn('[ChipOS Stateless] /invoke 409 — turn_state probe failed: %s', String(probeErr));
-					}
+					await _recoverFrom409Conflict(
+						client,
+						chatSessionId,
+						(msg, ...args) => this._logService.warn(msg, ...args),
+					);
 					continue retryLoop;  // retry /invoke after clearing the conflict
 				}
 				// Fall through to existing error-handling switch.
