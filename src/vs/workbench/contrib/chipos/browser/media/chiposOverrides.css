@@ -934,6 +934,12 @@ a.chipos-onboarding-recent-item .chipos-onboarding-recent-path {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	/* Cap the queued-cards stack and scroll within it, so a queue of several
+	 * messages doesn't grow the input part and squeeze / cover the transcript
+	 * response above it. ~4 compact cards show, the rest scroll. The header
+	 * ("N pending messages") stays outside this box and is always visible. */
+	max-height: 132px;
+	overflow-y: auto;
 }
 
 /*
