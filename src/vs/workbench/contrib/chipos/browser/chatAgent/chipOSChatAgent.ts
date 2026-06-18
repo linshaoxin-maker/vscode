@@ -2747,17 +2747,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * brings the standalone IDE to parity with the vscode-extension that already
 	 * fetches the same endpoint.
 	 *
-	 * Resilience: on a cold start the SecretStorage-restored access token is
-	 * often stale (past its TTL — e.g. the IDE was reopened the next day), so the
-	 * first pull 401s. The IDE's StatelessClient (unlike the extension's) does
-	 * not auto-refresh on 401, so do it here: on the first 401, force a token
-	 * refresh and retry once with the fresh token, which populates the panel
-	 * promptly instead of leaving it empty until a scheduled refresh. If the
-	 * refresh also fails (refresh_token dead → genuinely logged out) we stop;
-	 * the {@link _tokenManager.onDidChangeToken} listener then re-pulls whenever
-	 * the user logs back in. Any non-401 failure is logged once and swallowed so
-	 * a backend hiccup never surfaces as a broken panel. The in-flight guard
-	 * collapses overlapping reveals (each fires this) into one sequence.
+	 * Resilience — two distinct cold-start 401 modes to ride out:
+	 *  (a) RACE: the contribution fires this the instant the view is revealed,
+	 *      which on a cold start can beat ``ChipOSTokenManager.initialize()``
+	 *      finishing its async SecretStorage restore (observed ~270ms–1s window),
+	 *      so ``getAccessToken()`` returns undefined → 401. The token becomes
+	 *      valid a beat later but the restore is SILENT (no onDidChangeToken), so
+	 *      nothing re-triggers — hence we retry across a short backoff window,
+	 *      exactly like the resume probe does.
+	 *  (b) STALE: the restored access token is past its TTL → 401 until refreshed.
+	 *      The IDE's StatelessClient (unlike the extension's) does not auto-refresh
+	 *      on 401, so on the first 401 we also fire a one-shot force-refresh; it
+	 *      no-ops harmlessly when no refresh_token is present/restored yet.
+	 * A non-401 error is not retried. A genuine logout (no refresh_token) just
+	 * exhausts the window and leaves the panel as-is; {@link _tokenManager.onDidChangeToken}
+	 * then re-pulls on the next (re)login. The in-flight guard collapses
+	 * overlapping reveals into one sequence.
 	 */
 	async refreshSkillTree(): Promise<void> {
 		this._skillTreeEverRequested = true;
@@ -2766,7 +2771,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 		this._skillTreeRefreshInFlight = true;
 		try {
-			for (let attempt = 0; attempt < 2; attempt++) {
+			const backoffMs = [0, 1000, 2000, 4000, 6000];
+			let forcedRefresh = false;
+			for (let attempt = 0; attempt < backoffMs.length; attempt++) {
+				if (backoffMs[attempt] > 0) {
+					await timeout(backoffMs[attempt]);
+				}
 				try {
 					const client = await this._ensureStatelessClient();
 					const payload = await client.getSkillTree();
@@ -2774,16 +2784,20 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					return;
 				} catch (err) {
 					const is401 = err instanceof StatelessHttpError && err.status === 401;
-					if (is401 && attempt === 0) {
-						this._logService.info('[ChipOS] refreshSkillTree 401 — forcing token refresh and retrying');
-						const refreshed = await this._tokenManager?.refreshAccessToken();
-						if (refreshed) {
-							continue; // retry the pull with the fresh token
-						}
-						// refresh failed (logged out) — surface as the warn below
+					if (!is401) {
+						this._logService.warn('[ChipOS] refreshSkillTree failed (skill panel left as-is):', String(err));
+						return;
 					}
-					this._logService.warn('[ChipOS] refreshSkillTree failed (skill panel left as-is):', String(err));
-					return;
+					// First 401: also try a one-shot force-refresh for the STALE case.
+					if (!forcedRefresh) {
+						forcedRefresh = true;
+						this._logService.info('[ChipOS] refreshSkillTree 401 — forcing token refresh + retrying through restore window');
+						await this._tokenManager?.refreshAccessToken().catch(() => undefined);
+					}
+					if (attempt === backoffMs.length - 1) {
+						this._logService.warn('[ChipOS] refreshSkillTree still 401 after retries (likely logged out); skill panel left as-is');
+						return;
+					}
 				}
 			}
 		} finally {
