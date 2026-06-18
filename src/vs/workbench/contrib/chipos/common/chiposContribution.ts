@@ -53,6 +53,9 @@ import { TreeViewPane, CustomTreeView, TreeView } from '../../../../workbench/br
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { SkillTreeViewDataProvider } from '../../../../workbench/contrib/chipos/browser/migration/skillTreeHandler.js';
 import { IWorkerToolManagerService, WorkerToolsViewDataProvider } from '../../../../workbench/contrib/chipos/browser/workerToolManager.js';
+import { IModuleHierarchyService } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyService.js';
+import { ModuleHierarchyTreeHandler } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTree.js';
+import { ModuleHierarchyTreeDataProvider } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTreeDataProvider.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
@@ -81,6 +84,7 @@ import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos
 
 import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryService.js';
+import '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchy.contribution.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposSlashCommandCompletions.js';
@@ -115,6 +119,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 
 const SKILL_TREE_VIEW_ID = 'chipos.skillTree';
 const WORKER_TOOLS_VIEW_ID = 'chipos.workerTools';
+const MODULE_HIERARCHY_VIEW_ID = 'chipos.moduleHierarchy';
 const viewContainersRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
 
@@ -1018,6 +1023,7 @@ class ChipOSContribution extends Disposable {
 		this._registerChatAgent();
 		this._registerEdaContentParts();
 		this._registerWorkerToolsView();
+		this._registerModuleHierarchyView();
 	}
 
 	private _mapSidecarToConnectionState(state: SidecarState): ConnectionState {
@@ -1314,6 +1320,74 @@ class ChipOSContribution extends Disposable {
 		}));
 
 		this._logService.info('[ChipOS] Worker Tools view registered (R26)');
+	}
+
+	// ── Phase 6 / Slice 2: Module Hierarchy View ────────────────────────────
+	// Scans workspace .v/.sv files for the Verilog/SystemVerilog module
+	// instantiation hierarchy and renders it as a tree. Clicking a node opens
+	// that module's `module <type>` definition. Mirrors the Skill Tree / Worker
+	// Tools views: same `chipos.tools` container, same TreeView/TreeViewPane
+	// wiring and title-action registration.
+	private _registerModuleHierarchyView(): void {
+		const treeView = this._instantiationService.createInstance(
+			CustomTreeView, MODULE_HIERARCHY_VIEW_ID, localize('chiposModuleHierarchy', 'Module Hierarchy'), 'chipos'
+		);
+		treeView.showCollapseAllAction = true;
+		this._register(treeView);
+
+		const service = this._instantiationService.invokeFunction(accessor => accessor.get(IModuleHierarchyService));
+		const handler = this._register(this._instantiationService.createInstance(ModuleHierarchyTreeHandler));
+		const dataProvider = this._register(new ModuleHierarchyTreeDataProvider(handler));
+		treeView.dataProvider = dataProvider;
+
+		viewsRegistry.registerViews([{
+			id: MODULE_HIERARCHY_VIEW_ID,
+			name: { value: localize('chiposModuleHierarchy', 'Module Hierarchy'), original: 'Module Hierarchy' },
+			ctorDescriptor: new SyncDescriptor(TreeViewPane),
+			treeView,
+			canToggleVisibility: true,
+			canMoveView: true,
+			collapsed: true,
+			order: 30,
+			hideByDefault: false,
+		} as ITreeViewDescriptor], chiposViewContainer);
+
+		// Empty-state message (mirrors how the pane renders a welcome string).
+		const updateEmptyMessage = () => {
+			treeView.message = dataProvider.isTreeEmpty
+				? localize('chiposModuleHierarchyEmpty', "No Verilog modules found in this workspace.")
+				: undefined;
+		};
+		updateEmptyMessage();
+		this._register(dataProvider.onDidChangeEmpty(updateEmptyMessage));
+
+		// Re-render whenever the parsed hierarchy changes (re-scan completed).
+		this._register(handler.onDidChangeTreeData(() => {
+			treeView.refresh();
+		}));
+
+		// Scan on first reveal (cheap to re-run, picks up edits made while the
+		// panel was hidden) and expose an explicit Re-scan command + title
+		// button. The framework's built-in collapse-all sits next to it.
+		this._register(treeView.onDidChangeVisibility(visible => {
+			if (visible) {
+				void service.scanWorkspace();
+			}
+		}));
+		this._register(CommandsRegistry.registerCommand('chipos.moduleHierarchy.rescan', () => {
+			void service.scanWorkspace();
+		}));
+		this._register(MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+			command: {
+				id: 'chipos.moduleHierarchy.rescan',
+				title: localize('chiposModuleHierarchyRescan', "Re-scan Modules"),
+				icon: Codicon.refresh,
+			},
+			when: ContextKeyExpr.equals('view', MODULE_HIERARCHY_VIEW_ID),
+			group: 'navigation',
+		}));
+
+		this._logService.info('[ChipOS] Module Hierarchy view registered');
 	}
 
 	private _registerInlineDiffCommands(agent: ChipOSChatAgent): void {
