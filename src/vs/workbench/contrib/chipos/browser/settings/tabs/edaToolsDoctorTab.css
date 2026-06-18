@@ -1,0 +1,377 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── EDA Doctor tab ───────────────────────────────────────────────────────
+ * Friendly, actionable triage view for the EDA toolchain. Uses the
+ * --chipos-{radius,text,border,surface,gap}-* design tokens defined at the top
+ * of chiposSettingsEditor.css (which is always loaded by the settings editor),
+ * and VS Code theme tokens (--vscode-charts-green / --vscode-charts-yellow /
+ * --vscode-errorForeground) for the success/warning/error status colors —
+ * never hardcoded colors.
+ */
+
+/* Header: stethoscope-style icon + title/subtitle on the left, Re-scan + Add
+ * tool on the right. */
+.chipos-eda-doctor-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 0 8px 18px;
+}
+
+.chipos-eda-doctor-titlewrap {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+}
+
+.chipos-eda-doctor-title-icon {
+	font-size: 20px;
+	color: var(--vscode-charts-green);
+	flex-shrink: 0;
+}
+
+.chipos-eda-doctor-titletext {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.chipos-eda-doctor-title {
+	font-size: 15px;
+	font-weight: 600;
+	color: var(--chipos-text-primary);
+	line-height: 20px;
+}
+
+.chipos-eda-doctor-subtitle {
+	font-size: 12px;
+	color: var(--chipos-text-tertiary);
+	line-height: 16px;
+}
+
+.chipos-eda-doctor-headeractions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+/* Re-scan button — compact ghost button, matching the section-header buttons
+ * used elsewhere in Settings. */
+.chipos-eda-doctor-headerbtn {
+	height: 28px;
+	padding: 0 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 12px;
+}
+
+.chipos-eda-doctor-headerbtn .codicon {
+	font-size: 14px;
+}
+
+.chipos-eda-doctor-headerbtn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* Add tool — emphasized accent (filled) button. */
+.chipos-eda-doctor-addbtn {
+	height: 28px;
+	padding: 0 14px;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 12px;
+	font-weight: 500;
+	font-family: inherit;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: var(--chipos-radius-md);
+	cursor: pointer;
+	transition: background-color 0.12s ease, transform 0.06s ease;
+}
+
+.chipos-eda-doctor-addbtn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.chipos-eda-doctor-addbtn:active {
+	transform: translateY(0.5px);
+}
+
+.chipos-eda-doctor-addbtn .codicon {
+	font-size: 14px;
+}
+
+/* Loading + empty states */
+.chipos-eda-doctor-loading,
+.chipos-eda-doctor-emptystate {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	padding: 40px 16px;
+	color: var(--chipos-text-tertiary);
+	font-size: 12px;
+}
+
+.chipos-eda-doctor-emptystate {
+	flex-direction: column;
+	text-align: center;
+	gap: 12px;
+}
+
+.chipos-eda-doctor-emptyicon {
+	font-size: 28px;
+	color: var(--chipos-text-tertiary);
+	opacity: 0.7;
+}
+
+/* ── Metric cards ─────────────────────────────────────────────────────── */
+
+.chipos-eda-doctor-metrics {
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: 10px;
+	margin: 0 8px 22px;
+}
+
+.chipos-eda-doctor-metric {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 14px 16px;
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	border-radius: var(--chipos-radius-lg);
+}
+
+.chipos-eda-doctor-metric-count {
+	font-size: 24px;
+	font-weight: 600;
+	line-height: 28px;
+	font-variant-numeric: tabular-nums;
+	color: var(--chipos-text-primary);
+}
+
+.chipos-eda-doctor-metric-label {
+	font-size: 11.5px;
+	color: var(--chipos-text-tertiary);
+}
+
+/* Colored counts per metric kind. Total stays neutral. */
+.chipos-eda-doctor-metric.ok .chipos-eda-doctor-metric-count { color: var(--vscode-charts-green); }
+.chipos-eda-doctor-metric.warn .chipos-eda-doctor-metric-count { color: var(--vscode-charts-yellow); }
+.chipos-eda-doctor-metric.err .chipos-eda-doctor-metric-count { color: var(--vscode-errorForeground); }
+
+/* ── Grouped sections (amber / green / red) ───────────────────────────── */
+
+.chipos-eda-doctor-section {
+	margin: 0 8px 18px;
+	background: var(--chipos-surface-2);
+	border: 1px solid var(--chipos-border-soft);
+	border-radius: var(--chipos-radius-lg);
+	overflow: hidden;
+}
+
+/* A subtle tinted top border keys each section to its tone. */
+.chipos-eda-doctor-section.warn { border-top: 2px solid color-mix(in srgb, var(--vscode-charts-yellow) 55%, transparent); }
+.chipos-eda-doctor-section.ok { border-top: 2px solid color-mix(in srgb, var(--vscode-charts-green) 50%, transparent); }
+.chipos-eda-doctor-section.err { border-top: 2px solid color-mix(in srgb, var(--vscode-errorForeground) 50%, transparent); }
+
+.chipos-eda-doctor-section-header {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 12px 14px 10px;
+	border-bottom: 1px solid var(--chipos-border-soft);
+}
+
+.chipos-eda-doctor-section-title {
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+}
+
+.chipos-eda-doctor-section.warn .chipos-eda-doctor-section-title { color: var(--vscode-charts-yellow); }
+.chipos-eda-doctor-section.ok .chipos-eda-doctor-section-title { color: var(--vscode-charts-green); }
+.chipos-eda-doctor-section.err .chipos-eda-doctor-section-title { color: var(--vscode-errorForeground); }
+
+.chipos-eda-doctor-section-count {
+	font-size: 11.5px;
+	color: var(--chipos-text-tertiary);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ── Tool / server rows ───────────────────────────────────────────────── */
+
+.chipos-eda-doctor-rows {
+	display: flex;
+	flex-direction: column;
+}
+
+.chipos-eda-doctor-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 14px;
+	border-bottom: 1px solid var(--chipos-border-soft);
+}
+
+.chipos-eda-doctor-row:last-child {
+	border-bottom: none;
+}
+
+/* Custom (user-added) rows get a subtle tint so they stand out from the
+ * managed/local rows in the Ready section. */
+.chipos-eda-doctor-row.custom {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 5%, transparent);
+}
+
+.chipos-eda-doctor-row-icon {
+	font-size: 15px;
+	flex-shrink: 0;
+}
+
+.chipos-eda-doctor-row-icon.ok { color: var(--vscode-charts-green); }
+.chipos-eda-doctor-row-icon.warn { color: var(--vscode-charts-yellow); }
+.chipos-eda-doctor-row-icon.err { color: var(--vscode-errorForeground); }
+
+.chipos-eda-doctor-row-main {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.chipos-eda-doctor-row-nameline {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	min-width: 0;
+}
+
+.chipos-eda-doctor-row-name {
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--chipos-text-primary);
+	white-space: nowrap;
+}
+
+.chipos-eda-doctor-row-hint {
+	font-size: 11px;
+	color: var(--chipos-text-tertiary);
+}
+
+.chipos-eda-doctor-row-detail {
+	font-size: 11.5px;
+	color: var(--chipos-text-tertiary);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.chipos-eda-doctor-row-detail.err {
+	color: color-mix(in srgb, var(--vscode-errorForeground) 80%, var(--chipos-text-secondary));
+}
+
+/* ── Source badge ─────────────────────────────────────────────────────── */
+
+.chipos-eda-doctor-badge {
+	flex-shrink: 0;
+	font-size: 10.5px;
+	font-weight: 500;
+	line-height: 1;
+	padding: 3px 7px;
+	border-radius: var(--chipos-radius-sm);
+	letter-spacing: 0.02em;
+	text-transform: lowercase;
+	background: var(--chipos-surface-4);
+	color: var(--chipos-text-tertiary);
+	border: 1px solid var(--chipos-border-soft);
+}
+
+.chipos-eda-doctor-badge.custom {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 16%, transparent);
+	border-color: color-mix(in srgb, var(--vscode-focusBorder) 30%, transparent);
+	color: var(--vscode-foreground);
+}
+
+/* ── Row action buttons ───────────────────────────────────────────────── */
+
+.chipos-eda-doctor-row-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+/* Secondary row button (Test / Locate / Edit / Logs / Reconnect). Builds on
+ * the shared .chipos-btn-secondary look with a compact, icon+label sizing. */
+.chipos-eda-doctor-rowbtn {
+	height: 26px;
+	padding: 0 10px;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11.5px;
+}
+
+.chipos-eda-doctor-rowbtn .codicon {
+	font-size: 13px;
+}
+
+.chipos-eda-doctor-rowbtn.danger {
+	color: var(--vscode-errorForeground);
+	border-color: color-mix(in srgb, var(--vscode-errorForeground) 30%, transparent);
+}
+
+.chipos-eda-doctor-rowbtn.danger:hover {
+	background: color-mix(in srgb, var(--vscode-errorForeground) 12%, transparent);
+	border-color: var(--vscode-errorForeground);
+}
+
+/* Install — prominent accent/filled (download) button. */
+.chipos-eda-doctor-installbtn {
+	height: 26px;
+	padding: 0 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11.5px;
+	font-weight: 500;
+	font-family: inherit;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: var(--chipos-radius-md);
+	cursor: pointer;
+	transition: background-color 0.12s ease, transform 0.06s ease;
+}
+
+.chipos-eda-doctor-installbtn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.chipos-eda-doctor-installbtn:active {
+	transform: translateY(0.5px);
+}
+
+.chipos-eda-doctor-installbtn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.chipos-eda-doctor-installbtn .codicon {
+	font-size: 13px;
+}

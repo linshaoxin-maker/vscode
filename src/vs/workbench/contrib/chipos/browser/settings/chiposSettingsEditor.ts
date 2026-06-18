@@ -29,6 +29,7 @@ import { PluginsTab } from './tabs/pluginsTab.js';
 import { BetaTab } from './tabs/betaTab.js';
 import { ToolsTab } from './tabs/toolsTab.js';
 import { EdaToolsTab } from './tabs/edaToolsTab.js';
+import { EdaToolsDoctorTab } from './tabs/edaToolsDoctorTab.js';
 import { GeneralTab } from './tabs/generalTab.js';
 import { OrganizationTab } from './tabs/organizationTab.js';
 import { isExtensionSystemEnabled, EXTENSION_SYSTEM_TAB_IDS } from '../../common/extensionsBeta.js';
@@ -68,6 +69,7 @@ const CATEGORY_GROUPS: ICategoryDef[][] = [
 		{ id: 'connection', label: localize('chipos.cat.connection', 'Connection'), icon: Codicon.plug, searchableTerms: ['backend', 'mode', 'reasoning', 'worker', 'grpc', 'tls', 'port', 'python', 'sidecar'] },
 		{ id: 'tools', label: localize('chipos.cat.tools', 'Tools'), icon: Codicon.tools, searchableTerms: ['mcp', 'server', 'configuration'] },
 		{ id: 'edaTools', label: localize('chipos.cat.edaTools', 'EDA Tools'), icon: Codicon.circuitBoard, searchableTerms: ['eda', 'vivado', 'quartus', 'yosys', 'openroad', 'verilator', 'managed', 'mcp', 'install', 'strategy'] },
+		{ id: 'edaDoctor', label: localize('chipos.cat.edaDoctor', 'EDA Doctor'), icon: Codicon.pulse, searchableTerms: ['doctor', 'health', 'check', 'diagnose', 'scan', 'missing', 'install', 'custom', 'add tool', 'eda', 'toolchain'] },
 	],
 	[
 		{ id: 'beta', label: localize('chipos.cat.beta', 'Beta'), icon: Codicon.beaker, searchableTerms: ['inline chat', 'terminal agent', 'multi-agent', 'simulation', 'spec mode'] },
@@ -426,6 +428,9 @@ export class ChipOSSettingsEditor extends EditorPane {
 					break;
 				case 'edaTools':
 					store.add(this._instantiationService.createInstance(EdaToolsTab, inner));
+					break;
+				case 'edaDoctor':
+					store.add(this._instantiationService.createInstance(EdaToolsDoctorTab, inner));
 					break;
 			}
 		} catch (err) {
