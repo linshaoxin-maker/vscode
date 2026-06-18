@@ -1181,6 +1181,31 @@ class ChipOSContribution extends Disposable {
 			treeView.refresh();
 		});
 
+		// FEAT-DS-006: the stateless transport has no SSE ``skill_tree`` event,
+		// so the dynamic-skill store is pulled on demand. Fetch when the panel is
+		// first revealed (and on each re-reveal — cheap, and picks up skills
+		// learned since the last look), and expose a manual refresh command plus
+		// a title ↻ button so a user can force a re-pull right after a debug
+		// session. This brings the standalone IDE to parity with the
+		// vscode-extension, which already fetches the same endpoint.
+		this._register(treeView.onDidChangeVisibility(visible => {
+			if (visible) {
+				void agent.refreshSkillTree();
+			}
+		}));
+		this._register(CommandsRegistry.registerCommand('chipos.skillTree.refresh', () => {
+			void agent.refreshSkillTree();
+		}));
+		this._register(MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+			command: {
+				id: 'chipos.skillTree.refresh',
+				title: localize('chiposSkillTreeRefresh', "Refresh Skill Tree"),
+				icon: Codicon.refresh,
+			},
+			when: ContextKeyExpr.equals('view', SKILL_TREE_VIEW_ID),
+			group: 'navigation',
+		}));
+
 		this._logService.info('[ChipOS] SkillTree view registered');
 	}
 

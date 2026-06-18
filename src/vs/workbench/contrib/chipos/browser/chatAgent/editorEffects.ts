@@ -161,26 +161,75 @@ export class ChipOSEditorEffects extends Disposable {
 		}
 	}
 
+	/**
+	 * Flatten the reasoner's nested category tree (``children`` of ``children``
+	 * … each leaf category carrying ``skills``) into the IDE's two-level
+	 * domain→skill model. Every category that directly holds skills becomes one
+	 * domain labelled by its full path (``"logic_design / counter"``); the leaf
+	 * skills render by name underneath. This recurses to arbitrary depth so a
+	 * skill at ``logic_design/counter`` (a 2-level path) is shown by name rather
+	 * than the old shallow map's bug — which treated the ``counter`` *category*
+	 * as a fake skill leaf and never reached the real skill. Matches the
+	 * skills the vscode-extension's (recursive) ``SkillTreeProvider`` shows,
+	 * just presented one level flatter to fit the existing IDE tree model.
+	 */
 	private _convertSkillTreePayload(payload: ISkillTreePayload): ISkillTreeData {
-		const domains: ISkillDomain[] = (payload.children ?? []).map((child: unknown, idx: number) => {
-			const c = child as Record<string, unknown>;
-			const skills: ISkillItem[] = ((c.children ?? c.skills ?? []) as unknown[]).map((s: unknown, sIdx: number) => {
-				const sk = s as Record<string, unknown>;
-				return {
-					id: (sk.id as string) ?? `skill_${idx}_${sIdx}`,
-					name: (sk.name as string) ?? (sk.label as string) ?? `Skill ${sIdx}`,
-					description: (sk.description as string) ?? '',
-					triggerMode: ((sk.trigger_mode ?? sk.triggerMode ?? 'manual') as 'auto' | 'manual' | 'keyword' | 'always'),
-					enabled: (sk.enabled as boolean) ?? true,
-				};
-			});
-			return {
-				id: (c.id as string) ?? `domain_${idx}`,
-				label: (c.label as string) ?? (c.name as string) ?? `Domain ${idx}`,
-				skills,
-			};
-		});
+		const domains: ISkillDomain[] = [];
+		const walk = (node: Record<string, unknown>, pathLabels: string[]): void => {
+			const label = (node.label as string) ?? (node.name as string) ?? (node.id as string) ?? '';
+			const here = label ? [...pathLabels, label] : pathLabels;
+			const rawSkills = (node.skills ?? []) as unknown[];
+			if (rawSkills.length > 0) {
+				const skills: ISkillItem[] = rawSkills.map((s: unknown, sIdx: number) => {
+					const sk = s as Record<string, unknown>;
+					// Reasoner skill entries are ``{ skill_id, description, status,
+					// confidence }`` (skill_tree_manager.add_skill) — there is no
+					// name/label/id/trigger field. Show the rule summary
+					// (``description``) as the primary label, exactly like the
+					// vscode-extension's SkillTreeProvider, with the skill id as the
+					// secondary line. ``enabled`` is derived from status so a retired
+					// skill renders with the ○ marker. ``trigger_mode``/``triggerMode``
+					// are still honoured if a future payload supplies them.
+					const skillId = (sk.skill_id as string) ?? (sk.id as string) ?? `skill_${here.join('_')}_${sIdx}`;
+					const summary = (sk.description as string) ?? (sk.name as string) ?? (sk.label as string) ?? skillId;
+					const status = (sk.status as string) ?? '';
+					return {
+						id: skillId,
+						name: summary,
+						description: skillId,
+						triggerMode: ((sk.trigger_mode ?? sk.triggerMode ?? 'auto') as 'auto' | 'manual' | 'keyword' | 'always'),
+						enabled: typeof sk.enabled === 'boolean' ? (sk.enabled as boolean) : status !== 'retired',
+					};
+				});
+				domains.push({
+					id: (node.id as string) ?? here.join('/'),
+					label: here.join(' / ') || label,
+					skills,
+				});
+			}
+			for (const child of (node.children ?? []) as unknown[]) {
+				walk(child as Record<string, unknown>, here);
+			}
+		};
+		for (const top of (payload.children ?? []) as unknown[]) {
+			walk(top as Record<string, unknown>, []);
+		}
 		return { domains };
+	}
+
+	/**
+	 * FEAT-DS-006: feed a server-fetched skill tree (GET /api/v1/skill-tree)
+	 * straight into the projected handler. The stateless path emits no SSE
+	 * ``skill_tree`` event, so the IDE pulls the store on demand
+	 * (see {@link ChipOSChatAgent.refreshSkillTree}) and hands the raw payload
+	 * here. Unlike {@link _handleSkillTree} this is session-independent — the
+	 * dynamic-skill store is global, not per-conversation — so it always updates
+	 * the handler with no active-session gate.
+	 */
+	applySkillTreePayload(payload: ISkillTreePayload): void {
+		const data = this._convertSkillTreePayload(payload);
+		this._logService.info(`[ChipOS Effects] SkillTree (pull): ${data.domains.length} domains, ${payload.total_skills ?? '?'} skills`);
+		this._projectedSkillTreeHandler.updateSkillTree(data);
 	}
 
 	// ── 1. Lint Diagnostics ─────────────────────────────────────────────────

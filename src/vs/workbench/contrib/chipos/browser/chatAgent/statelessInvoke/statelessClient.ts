@@ -46,6 +46,7 @@ import {
 	type ToolResultRequest,
 	type TurnStateResponse,
 } from './types.js';
+import { type ISkillTreePayload } from '../../eventTypes.js';
 
 
 // ── Errors ────────────────────────────────────────────────────────────────
@@ -285,6 +286,35 @@ export class StatelessClient {
 				throw new StatelessHttpError(resp.status, parsed);
 			}
 			return (await this._parseJson(resp)) as CompactResponse;
+		} finally {
+			clear();
+		}
+	}
+
+	/**
+	 * GET /api/v1/skill-tree — the reasoner's dynamic-skill store rendered as a
+	 * category tree (``{version, total_skills, children}``, consumed verbatim by
+	 * the IDE ``SkillTreeHandler``). FEAT-DS-006: the stateless transport emits
+	 * no SSE ``skill_tree`` event (that only ever fired on the legacy task
+	 * path), so the IDE pulls this endpoint on demand to populate the Skill Tree
+	 * side panel — the same endpoint the vscode-extension already fetches, so
+	 * both surfaces show the identical learned-skill set. Auth'd via the
+	 * per-request bearer header like every other call.
+	 *
+	 * Throws ``StatelessHttpError`` on non-2xx.
+	 */
+	async getSkillTree(): Promise<ISkillTreePayload> {
+		const url = `${this._baseUrl}/api/v1/skill-tree`;
+		const headers: Record<string, string> = {};
+		Object.assign(headers, await this._authHeaders());
+		const { controller, clear } = this._timeoutSignal(undefined);
+		try {
+			const resp = await this._fetch(url, { method: 'GET', headers, signal: controller.signal });
+			if (!resp.ok) {
+				const parsed = await this._parseJsonSafe(resp);
+				throw new StatelessHttpError(resp.status, parsed);
+			}
+			return (await this._parseJson(resp)) as ISkillTreePayload;
 		} finally {
 			clear();
 		}

@@ -346,6 +346,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 		}));
 
+		// FEAT-DS-006: the SecretStorage-restored token can be expired, so the
+		// first Skill Tree pull on launch often 401s; a fresh (valid) token is
+		// stored on the next refresh and fires onDidChangeToken (the silent
+		// restore does not). Re-pull then — but only once the user has actually
+		// opened the panel (`_skillTreeEverRequested`) — so the view self-heals
+		// however long auth takes, without fetching for users who never look at
+		// it. The in-flight `refreshSkillTree` retry only covers the fast case.
+		this._register(this._tokenManager.onDidChangeToken(token => {
+			if (token && this._skillTreeEverRequested) {
+				void this.refreshSkillTree();
+			}
+		}));
+
 		// R62: 监听 MCP 工具列表变更 → 通知 Reasoner
 		this._register(autorun(reader => {
 			const servers = this._mcpService.servers.read(reader);
@@ -2725,6 +2738,59 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return this._ensureEditorEffects();
 	}
 
+	/**
+	 * FEAT-DS-006: pull the reasoner's dynamic-skill store
+	 * (``GET /api/v1/skill-tree``) and project it into the Skill Tree side
+	 * panel. The stateless transport has no SSE ``skill_tree`` event (that only
+	 * fired on the legacy task path), so the view is populated on demand — on
+	 * first reveal and via the ``chipos.skillTree.refresh`` command — which
+	 * brings the standalone IDE to parity with the vscode-extension that already
+	 * fetches the same endpoint.
+	 *
+	 * Resilience: on a cold start the SecretStorage-restored access token is
+	 * often stale (past its TTL — e.g. the IDE was reopened the next day), so the
+	 * first pull 401s. The IDE's StatelessClient (unlike the extension's) does
+	 * not auto-refresh on 401, so do it here: on the first 401, force a token
+	 * refresh and retry once with the fresh token, which populates the panel
+	 * promptly instead of leaving it empty until a scheduled refresh. If the
+	 * refresh also fails (refresh_token dead → genuinely logged out) we stop;
+	 * the {@link _tokenManager.onDidChangeToken} listener then re-pulls whenever
+	 * the user logs back in. Any non-401 failure is logged once and swallowed so
+	 * a backend hiccup never surfaces as a broken panel. The in-flight guard
+	 * collapses overlapping reveals (each fires this) into one sequence.
+	 */
+	async refreshSkillTree(): Promise<void> {
+		this._skillTreeEverRequested = true;
+		if (this._skillTreeRefreshInFlight) {
+			return;
+		}
+		this._skillTreeRefreshInFlight = true;
+		try {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				try {
+					const client = await this._ensureStatelessClient();
+					const payload = await client.getSkillTree();
+					this._ensureEditorEffects().applySkillTreePayload(payload);
+					return;
+				} catch (err) {
+					const is401 = err instanceof StatelessHttpError && err.status === 401;
+					if (is401 && attempt === 0) {
+						this._logService.info('[ChipOS] refreshSkillTree 401 — forcing token refresh and retrying');
+						const refreshed = await this._tokenManager?.refreshAccessToken();
+						if (refreshed) {
+							continue; // retry the pull with the fresh token
+						}
+						// refresh failed (logged out) — surface as the warn below
+					}
+					this._logService.warn('[ChipOS] refreshSkillTree failed (skill panel left as-is):', String(err));
+					return;
+				}
+			}
+		} finally {
+			this._skillTreeRefreshInFlight = false;
+		}
+	}
+
 	// ── Editor effects ──────────────────────────────────────────────────────
 
 	private _ensureEditorEffects(): ChipOSEditorEffects {
@@ -2868,6 +2934,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	//     the chat session is disposed (`_disposeRuntime`).
 	//   - `_statelessTraces`: per-session in-flight trace meta — used by #8g
 	//     (cancel + replay) to know which trace_id to address.
+
+	/** FEAT-DS-006: guards {@link refreshSkillTree} so overlapping view reveals collapse into one retry sequence. */
+	private _skillTreeRefreshInFlight = false;
+	/** FEAT-DS-006: set once the Skill Tree panel has been opened; gates the onDidChangeToken self-heal re-pull. */
+	private _skillTreeEverRequested = false;
 
 	private _statelessClient: StatelessClient | undefined;
 	private _statelessClientBaseUrl: string | undefined;
