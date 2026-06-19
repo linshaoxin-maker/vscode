@@ -9,6 +9,8 @@ import * as dom from '../../../../../../base/browser/dom.js';
 import { IMcpService, McpConnectionState } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { autorun } from '../../../../../../base/common/observable.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
+// NOTE: this tab keeps its own inline IDE-side MCP list. The dedicated, merged
+// IDE + worker MCP management view lives in mcpServersTab.ts (Phase 6 slice 4).
 export class ToolsTab extends Disposable {
 
 	private readonly _disposables = this._register(new DisposableStore());

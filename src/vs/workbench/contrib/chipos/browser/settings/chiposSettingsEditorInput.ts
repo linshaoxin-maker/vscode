@@ -9,7 +9,7 @@ import { Codicon } from '../../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { localize } from '../../../../../nls.js';
 
-export type ChipOSSettingsTab = 'general' | 'organization' | 'models' | 'features' | 'connection' | 'rules' | 'commands' | 'skills' | 'hooks' | 'agents' | 'plugins' | 'beta' | 'tools' | 'edaTools' | 'edaDoctor';
+export type ChipOSSettingsTab = 'general' | 'organization' | 'models' | 'features' | 'connection' | 'rules' | 'commands' | 'skills' | 'hooks' | 'agents' | 'plugins' | 'beta' | 'tools' | 'edaTools' | 'edaDoctor' | 'mcpServers';
 
 export interface IChipOSSettingsEditorOptions {
 	readonly initialTab?: ChipOSSettingsTab;
