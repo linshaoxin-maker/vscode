@@ -90,6 +90,7 @@ import { buildIdeMcpTools, shapeMcpToolResult, IdeMcpToolInfo } from './ideToolC
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { IRunStorageService, type IRunMetadata, type RunStatus } from '../runs/runStorageService.js';
+import { IChiposWaveformService } from '../waveform/chiposWaveformService.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
@@ -337,6 +338,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChiposHookLogService private readonly _hookLogService: IChiposHookLogService,
 		@IChatSlashCommandService private readonly _slashCommandService: IChatSlashCommandService,
 		@IRunStorageService private readonly _runStorageService: IRunStorageService,
+		@IChiposWaveformService private readonly _waveformService: IChiposWaveformService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -2027,6 +2029,35 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * [ChipOS] Phase 6 slice 5 Part B: drive the waveform viewer from a reasoner
+	 * `viewer_action` event — open the `.vcd` in Vaporview + best-effort reveal
+	 * signals / mark a cycle. Shared by both the live and the resume dispatch
+	 * loops. Relative paths resolve against the workspace folder (the canonical URI
+	 * shape — sidesteps the macOS firmlink mismatch); absolute paths are
+	 * normalized inside the service. Fire-and-forget: opening an editor is async
+	 * and must not block the SSE drain loop, and the service never throws.
+	 */
+	private _driveViewer(viewerAction: NonNullable<DispatchResult['viewerAction']>): void {
+		try {
+			const path = viewerAction.path;
+			const isAbsolute = path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path);
+			let uri: URI;
+			if (isAbsolute) {
+				uri = URI.file(path);
+			} else {
+				const root = this._getWorkspaceRoot();
+				uri = root ? URI.joinPath(URI.file(root), path) : URI.file(path);
+			}
+			void this._waveformService.openWaveform(uri, {
+				signals: viewerAction.signals,
+				cycle: viewerAction.cycle,
+			});
+		} catch (err) {
+			this._logService.warn('[ChipOS][Waveform] drive viewer failed:', err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	/**
 	 * Parse the LAST markdown bullet list in the reply into {title, description}
 	 * next-step options. Splits each bullet on the first "(（：:—" into a short
 	 * title + a detail; bullets with no separator become title-only.
@@ -3703,6 +3734,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// Runs view. Best-effort telemetry — never throws.
 				this._captureRun(request.sessionResource, handled.runResult);
 			}
+			if (handled.viewerAction !== undefined) {
+				// [ChipOS] Phase 6 slice 5 Part B: open the waveform the reasoner
+				// asked for (its `open_waveform` tool → `viewer_action` event).
+				this._driveViewer(handled.viewerAction);
+			}
 			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
 			// Fire-and-forget on a background task so the SSE loop keeps draining
 			// new events (reasoner's agent loop is awaiting our POST; if we
@@ -4373,6 +4409,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (handled.terminate) {
 				// settle any sub-agent cards still open when the resumed turn ends.
 				this._finalizeStatelessSubagents(progress, resumeSubagentCardState);
+			}
+			if (handled.viewerAction !== undefined) {
+				// [ChipOS] Phase 6 slice 5 Part B: a resumed turn can also drive the
+				// waveform viewer (parity with the live loop above).
+				this._driveViewer(handled.viewerAction);
 			}
 			if (handled.ideToolCall) {
 				const call = handled.ideToolCall;

@@ -646,6 +646,7 @@ export type InvokeEventType =
 	| 'checkpoint'
 	| 'resumed_buffer_drained'
 	| 'resumed_live'
+	| 'viewer_action'
 	| 'round_end'
 	| 'error';
 

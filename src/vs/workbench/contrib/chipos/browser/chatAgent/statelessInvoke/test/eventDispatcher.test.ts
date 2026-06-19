@@ -238,6 +238,31 @@ suite('dispatchStatelessEvent', () => {
 		assert.ok(!('runResult' in r));
 	});
 
+	test('viewer_action → viewerAction with path + signals + cycle (Phase 6 slice 5 Part B)', () => {
+		const r = dispatchStatelessEvent(ev('viewer_action', {
+			action: 'open_waveform',
+			path: 'sim/counter.vcd',
+			signals: ['tb.dut.count', 'tb.dut.clk', 7, ''],
+			cycle: 12,
+		}));
+		assert.deepStrictEqual(r, {
+			viewerAction: {
+				path: 'sim/counter.vcd',
+				signals: ['tb.dut.count', 'tb.dut.clk'],
+				cycle: 12,
+			},
+		});
+	});
+
+	test('viewer_action with `vcd` alias + no signals/cycle → minimal viewerAction', () => {
+		const r = dispatchStatelessEvent(ev('viewer_action', { vcd: '/abs/w/counter.vcd' }));
+		assert.deepStrictEqual(r, { viewerAction: { path: '/abs/w/counter.vcd' } });
+	});
+
+	test('viewer_action without a path → ignored (no descriptor)', () => {
+		assert.deepStrictEqual(dispatchStatelessEvent(ev('viewer_action', { signals: ['x'] })), {});
+	});
+
 	test('ide_tool_call → flushText + ideToolCall (camelCased payload)', () => {
 		const r = dispatchStatelessEvent(
 			ev('ide_tool_call', {

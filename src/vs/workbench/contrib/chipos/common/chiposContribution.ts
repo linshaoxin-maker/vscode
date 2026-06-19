@@ -1583,7 +1583,10 @@ class ChipOSContribution extends Disposable {
 			}
 
 			const vcdUri = found[0] ?? URI.joinPath(root, 'counter.vcd');
-			await waveformService.openWaveform(vcdUri, { signals: ['count'], cycle: 12 });
+			// Full hierarchical instance path (scope.name) — Vaporview's addVariable
+			// matches on the exact instancePath, so a bare leaf name ('count') is a
+			// silent no-op. The sample counter.vcd nests signals under `tb_counter`.
+			await waveformService.openWaveform(vcdUri, { signals: ['tb_counter.count', 'tb_counter.clk'], cycle: 12 });
 			this._logService.info(`[ChipOS] Waveform dev command opened ${vcdUri.toString()}`);
 		}));
 		this._register(MenuRegistry.appendMenuItem(MenuId.CommandPalette, {

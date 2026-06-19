@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../../base/common/uri.js';
+import { timeout } from '../../../../../base/common/async.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
@@ -22,15 +23,30 @@ const VAPORVIEW_VIEW_TYPE = 'vaporview.waveformViewer';
  * `{ uri?, netlistId?, instancePath?, scopePath?, name?, msb?, lsb?, recursive?, reveal? }`.
  * We address signals by `instancePath` and pass `reveal: true` so an
  * already-displayed signal is selected rather than duplicated.
+ *
+ * IMPORTANT: `uri` MUST be a STRING here, not a `URI`. Vaporview resolves the
+ * document with `documents[i].uri.toString() === arg.uri` (a string identity
+ * check), so passing a revived `URI` object never matches and it silently warns
+ * "Document not found". We always pass Vaporview's OWN reported uri string (from
+ * `getOpenDocuments`) — see `_resolveOpenDocumentUri`.
  */
 const VAPORVIEW_ADD_VARIABLE_CMD = 'waveformViewer.addVariable';
 
 /**
  * Vaporview's public command to set the marker. Argument shape:
- * `{ uri?, time, units?, markerType? }`. Note Vaporview markers are keyed by
- * *time* (with units), not a cycle index — see the gap note on `openWaveform`.
+ * `{ uri?, time, units?, markerType? }` (`uri` a STRING, see addVariable note).
+ * Note Vaporview markers are keyed by *time* (with units), not a cycle index —
+ * see the gap note on `openWaveform`.
  */
 const VAPORVIEW_SET_MARKER_CMD = 'waveformViewer.setMarker';
+
+/**
+ * Vaporview's command returning the open waveform documents — used to recover
+ * the exact uri string Vaporview keys a document under (and to wait for it to be
+ * registered after a fresh open). Return shape: `{ documents: string[],
+ * last_active_document: string | null }`.
+ */
+const VAPORVIEW_GET_OPEN_DOCUMENTS_CMD = 'waveformViewer.getOpenDocuments';
 
 export interface IOpenWaveformOptions {
 	/** Full instance paths of signals to add/reveal in the viewer. */
@@ -75,16 +91,27 @@ export class ChiposWaveformService implements IChiposWaveformService {
 		}
 
 		const signals = opts?.signals ?? [];
+		if (signals.length === 0 && typeof opts?.cycle !== 'number') {
+			return;
+		}
+
+		// Recover the exact uri STRING Vaporview keys this document under and wait
+		// for it to be registered. Vaporview's command args want `uri` as a string
+		// (it does a verbatim `doc.uri.toString() === arg.uri` check), and reusing
+		// its OWN reported uri sidesteps every URI-identity pitfall — revived-URI
+		// objects, the macOS `/private` firmlink, trailing-slash/encoding drift.
+		const docUriStr = await this._resolveOpenDocumentUri(vcdUri);
+		if (!docUriStr) {
+			this._logService.warn(`[ChipOS][Waveform] Vaporview never registered ${vcdUri.toString()}; skipping signal/marker reveal.`);
+			return;
+		}
+
 		for (const signal of signals) {
-			try {
-				await this._commandService.executeCommand(VAPORVIEW_ADD_VARIABLE_CMD, {
-					uri: vcdUri,
-					instancePath: signal,
-					reveal: true,
-				});
-			} catch (err) {
-				this._logService.warn(`[ChipOS][Waveform] Failed to add/reveal signal '${signal}': ${this._describe(err)}`);
-			}
+			// Vaporview signals into the webview after the VCD finishes parsing; it
+			// reports "Signal not found" (a message, not a throw) if we ask too early,
+			// so retry a few times. `reveal: true` makes a repeat a no-op selection
+			// rather than a duplicate add.
+			await this._executeWithRetry(VAPORVIEW_ADD_VARIABLE_CMD, { uri: docUriStr, instancePath: signal, reveal: true });
 		}
 
 		// Vaporview's marker is time-based (`setMarker` takes `time` + `units`),
@@ -93,14 +120,69 @@ export class ChiposWaveformService implements IChiposWaveformService {
 		// callers that need true cycle→time conversion must resolve the clock
 		// period themselves before calling. GAP: no cycle-marker command exists.
 		if (typeof opts?.cycle === 'number') {
+			await this._executeWithRetry(VAPORVIEW_SET_MARKER_CMD, { uri: docUriStr, time: opts.cycle, markerType: 0 });
+		}
+	}
+
+	/**
+	 * Poll `getOpenDocuments` until Vaporview reports a document matching `vcdUri`
+	 * (by file name), returning that document's exact uri STRING — the authoritative
+	 * key for addVariable/setMarker. Also serves as a readiness gate: the document
+	 * only appears here once Vaporview has registered it. The extension activates
+	 * asynchronously on open, so the command itself may not exist yet (throws) for
+	 * the first attempts. Returns undefined if it never appears in the window.
+	 */
+	private async _resolveOpenDocumentUri(vcdUri: URI): Promise<string | undefined> {
+		const wantBase = this._baseName(vcdUri.path);
+		const ATTEMPTS = 12;
+		const DELAY_MS = 300;
+		for (let i = 0; i < ATTEMPTS; i++) {
 			try {
-				await this._commandService.executeCommand(VAPORVIEW_SET_MARKER_CMD, {
-					uri: vcdUri,
-					time: opts.cycle,
-					markerType: 0,
-				});
+				// The command returns a plain array of uri strings (Vaporview's
+				// `getAllDocumentUris()` → `documents.map(d => d.uri.toString())`).
+				// Tolerate an object-wrapped shape too in case a future version
+				// changes it (the API doc describes `{ documents, lastActiveDocument }`).
+				const result = await this._commandService.executeCommand<string[] | { documents?: string[] }>(VAPORVIEW_GET_OPEN_DOCUMENTS_CMD);
+				const docs: string[] = Array.isArray(result)
+					? result
+					: Array.isArray(result?.documents) ? result.documents : [];
+				const match = docs.find(d => typeof d === 'string' && this._baseName(d) === wantBase);
+				if (match) {
+					return match;
+				}
+			} catch {
+				// Command not registered yet (extension still activating) — retry.
+			}
+			await timeout(DELAY_MS);
+		}
+		return undefined;
+	}
+
+	private _baseName(pathOrUri: string): string {
+		const noQuery = pathOrUri.split('?')[0].split('#')[0];
+		const segs = noQuery.split('/');
+		return segs[segs.length - 1] || noQuery;
+	}
+
+	/**
+	 * Run a Vaporview command, retrying through the residual VCD-parse race: even
+	 * after the document is registered, addVariable can report "Signal not found"
+	 * (a message, not a throw) until the netlist finishes building. `reveal: true`
+	 * makes repeats idempotent. Best-effort — never throws.
+	 */
+	private async _executeWithRetry(commandId: string, arg: object): Promise<void> {
+		const ATTEMPTS = 6;
+		const DELAY_MS = 300;
+		for (let i = 0; i < ATTEMPTS; i++) {
+			try {
+				await this._commandService.executeCommand(commandId, arg);
+				return;
 			} catch (err) {
-				this._logService.warn(`[ChipOS][Waveform] Failed to set marker at cycle ${opts.cycle}: ${this._describe(err)}`);
+				if (i === ATTEMPTS - 1) {
+					this._logService.warn(`[ChipOS][Waveform] '${commandId}' failed (final attempt): ${this._describe(err)}`);
+					return;
+				}
+				await timeout(DELAY_MS);
 			}
 		}
 	}

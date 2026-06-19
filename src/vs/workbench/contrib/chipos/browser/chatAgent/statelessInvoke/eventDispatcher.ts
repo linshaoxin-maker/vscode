@@ -132,6 +132,21 @@ export interface DispatchResult {
 		changedFiles: string[];
 		errors: { category?: string; code?: string; message?: string }[];
 	};
+	/**
+	 * [ChipOS] Phase 6 / Waveform viewer (slice 5 Part B): the reasoner asked the
+	 * IDE to open a waveform (`.vcd`) in Vaporview and best-effort reveal `signals`
+	 * (full instance paths) / mark a `cycle`. An imperative host ACTION (the
+	 * `viewer_action` event, `control` family) — NOT a render card — so the
+	 * dispatcher stays pure and just surfaces the descriptor; the DI-constructed
+	 * caller resolves `path` against the workspace and drives
+	 * `IChiposWaveformService.openWaveform`. `path` may be workspace-relative or
+	 * absolute.
+	 */
+	viewerAction?: {
+		path: string;
+		signals?: string[];
+		cycle?: number;
+	};
 	// Phase 1 additions (ADR-018 §2 D7 + D8 + D10 + D14):
 	/** Reverse channel: IDE must execute this tool + POST result back. */
 	ideToolCall?: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number };
@@ -1004,6 +1019,34 @@ function dispatchUnwrappedEvent(
 					retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
 				},
 				errorMessage: msg,
+			};
+		}
+
+		case 'viewer_action': {
+			// [ChipOS] Phase 6 slice 5 Part B: the reasoner (its `open_waveform`
+			// tool) asked the IDE to open a waveform (.vcd) in Vaporview and
+			// best-effort reveal signals / mark a cycle. An imperative host ACTION
+			// (`control` family), not a render card — keep this pure (no service
+			// import) and surface a typed descriptor; the DI-constructed caller
+			// drives IChiposWaveformService.openWaveform. Keys map 1:1 to
+			// IOpenWaveformOptions (`signals` / `cycle`); accept `path` (canonical)
+			// or `vcd` (alias) for the file, read defensively like the EDA cases.
+			const data = (event.data ?? {}) as { path?: unknown; vcd?: unknown; signals?: unknown; cycle?: unknown };
+			const rawPath = typeof data.path === 'string' ? data.path : typeof data.vcd === 'string' ? data.vcd : '';
+			const path = rawPath.trim();
+			if (!path) {
+				return {};
+			}
+			const signals = Array.isArray(data.signals)
+				? data.signals.filter((s): s is string => typeof s === 'string' && s.length > 0)
+				: undefined;
+			const cycle = typeof data.cycle === 'number' && Number.isFinite(data.cycle) ? data.cycle : undefined;
+			return {
+				viewerAction: {
+					path,
+					...(signals && signals.length > 0 ? { signals } : {}),
+					...(cycle !== undefined ? { cycle } : {}),
+				},
 			};
 		}
 
