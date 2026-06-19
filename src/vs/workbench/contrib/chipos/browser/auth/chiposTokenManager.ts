@@ -145,6 +145,26 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 		@IProductService private readonly _productService: IProductService,
 	) {
 		super();
+
+		// Cross-window auth sync. A TokenManager reads SecretStorage only once, in
+		// initialize(); without this, logging in / out (or a token refresh) in ONE
+		// window leaves every OTHER already-open window's auth state stale — its
+		// requests keep 401ing. SecretStorage is APPLICATION-scoped, so
+		// onDidChangeSecret fires here whenever any window writes the access token —
+		// mirror that into this window and re-emit onDidChangeToken so downstream
+		// (login state → sidecar, skill tree, settings UI) follows.
+		//
+		// Safety: additive only (initialize/storeTokens/updateAccessToken/clearTokens/
+		// refresh are untouched, so single-window behaviour is unchanged); the WRITER
+		// window no-ops because every writer sets its in-memory token BEFORE writing
+		// storage, so `stored === this._accessToken` short-circuits (no loop, no
+		// self-fire); a refresh in flight here is left to finish; and the whole thing
+		// is wrapped so any error is logged, never thrown (auth must not crash).
+		this._register(this._secretStorage.onDidChangeSecret(key => {
+			if (key === KEY_ACCESS_TOKEN) {
+				void this._syncFromSecretStorage();
+			}
+		}));
 	}
 
 	// ── Lifecycle ──
@@ -180,6 +200,62 @@ export class ChipOSTokenManager extends Disposable implements IChipOSTokenManage
 			this._usingManualTokenFallback = true;
 			this._parseTokenExpiry(legacyToken);
 			this._logService.info('[ChipOS Auth] Using legacy chipos.backend.token as fallback');
+		}
+	}
+
+	/**
+	 * Adopt an access-token change made by another window (cross-window auth sync).
+	 * Fired from the constructor's onDidChangeSecret listener. No-op when already
+	 * in sync — including when WE are the writer (writers set the in-memory token
+	 * before writing storage, so `stored === this._accessToken`). Best-effort:
+	 * never throws; on any error the current state is left untouched.
+	 */
+	private async _syncFromSecretStorage(): Promise<void> {
+		// A refresh in this window is mid-flight and will set the token itself —
+		// don't race it.
+		if (this._refreshPromise) {
+			return;
+		}
+		try {
+			const stored = (await this._secretStorage.get(KEY_ACCESS_TOKEN)) || undefined;
+			if (stored === this._accessToken) {
+				return; // already in sync (incl. the writer reacting to its own write)
+			}
+			if (stored) {
+				// Login / refresh in another window — adopt the new token.
+				this._accessToken = stored;
+				this._refreshToken = await this._secretStorage.get(KEY_REFRESH_TOKEN) ?? undefined;
+				this._usingManualTokenFallback = false;
+				const userJson = await this._secretStorage.get(KEY_USER_INFO);
+				if (userJson) {
+					try {
+						this._user = JSON.parse(userJson) as IChipOSUserInfo;
+					} catch {
+						this._user = undefined;
+					}
+				} else {
+					this._user = undefined;
+				}
+				this._parseTokenExpiry(stored);
+				this._scheduleAutoRefresh();
+				this._onDidChangeToken.fire(stored);
+				this._onDidChangeUser.fire(this._user);
+				this._logService.info('[ChipOS Auth] Adopted token from another window (cross-window sync), user:', this._user?.email ?? 'unknown');
+			} else {
+				// Logout in another window — drop our token too.
+				this._accessToken = undefined;
+				this._refreshToken = undefined;
+				this._user = undefined;
+				this._usingManualTokenFallback = false;
+				this._tokenExpiry = 0;
+				this._clearRefreshTimer();
+				this._onDidChangeToken.fire(undefined);
+				this._onDidChangeUser.fire(undefined);
+				this._logService.info('[ChipOS Auth] Cleared token after logout in another window (cross-window sync)');
+			}
+		} catch (err) {
+			// Auth must never crash. On any error keep the current state.
+			this._logService.warn('[ChipOS Auth] cross-window token sync failed (state unchanged):', String(err));
 		}
 	}
 
