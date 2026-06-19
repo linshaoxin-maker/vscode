@@ -117,6 +117,21 @@ export interface DispatchResult {
 	 * turn result so `provideFollowups` can render native clickable reply chips.
 	 */
 	followups?: string[];
+	/**
+	 * [ChipOS] Phase 6 / Run workbench: the run-relevant slice of a terminal
+	 * `round_end.final_result` (trace_id / status / verdict / artifacts / changed
+	 * files / errors). Present only when the turn produced artifacts or changed
+	 * files (a real EDA run, not plain chat). The caller persists it via
+	 * `IRunStorageService` so it surfaces in the Runs view.
+	 */
+	runResult?: {
+		traceId: string;
+		status: string;
+		verdict: string;
+		artifacts: { kind: string; uri?: string; summary?: string }[];
+		changedFiles: string[];
+		errors: { category?: string; code?: string; message?: string }[];
+	};
 	// Phase 1 additions (ADR-018 §2 D7 + D8 + D10 + D14):
 	/** Reverse channel: IDE must execute this tool + POST result back. */
 	ideToolCall?: { callId: string; toolName: string; args: Record<string, unknown>; timeoutMs?: number };
@@ -929,18 +944,46 @@ function dispatchUnwrappedEvent(
 			// adds "max_iterations" / "interrupted". `langgraph_state_blob` is
 			// gone — IDE owns the conversation log via `final_messages` which
 			// it appends to chatSessions/*.jsonl (D8 mixed-state).
-			const data = (event.data ?? {}) as { reason?: string; final_messages?: Message[]; final_result?: { followups?: unknown } };
+			const data = (event.data ?? {}) as {
+				reason?: string;
+				final_messages?: Message[];
+				final_result?: {
+					followups?: unknown;
+					trace_id?: string;
+					status?: string;
+					verdict?: string;
+					artifacts?: { kind?: string; uri?: string; summary?: string }[];
+					changed_files?: string[];
+					errors?: { category?: string; code?: string; message?: string }[];
+				};
+			};
 			// [ChipOS][F-4] lift the structured next-step suggestions so the caller
 			// can render them as native clickable reply chips (provideFollowups).
 			const rawFollowups = data.final_result?.followups;
 			const followups = Array.isArray(rawFollowups)
 				? rawFollowups.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
 				: undefined;
+			// [ChipOS] Phase 6: capture the run iff it produced artifacts or changed
+			// files (a real EDA run, not plain chat). The caller persists it.
+			const fr = data.final_result;
+			const frArtifacts = Array.isArray(fr?.artifacts) ? fr!.artifacts : [];
+			const frChanged = Array.isArray(fr?.changed_files) ? fr!.changed_files.filter((f): f is string => typeof f === 'string') : [];
+			const runResult = fr && (frArtifacts.length > 0 || frChanged.length > 0)
+				? {
+					traceId: typeof fr.trace_id === 'string' ? fr.trace_id : '',
+					status: typeof fr.status === 'string' ? fr.status : 'unknown',
+					verdict: typeof fr.verdict === 'string' ? fr.verdict : '',
+					artifacts: frArtifacts.map(a => ({ kind: typeof a.kind === 'string' ? a.kind : 'artifact', uri: a.uri, summary: a.summary })),
+					changedFiles: frChanged,
+					errors: Array.isArray(fr.errors) ? fr.errors : [],
+				}
+				: undefined;
 			return {
 				terminate: true,
 				flushText: true,
 				finalMessages: Array.isArray(data.final_messages) ? data.final_messages : undefined,
 				followups: followups && followups.length > 0 ? followups : undefined,
+				...(runResult ? { runResult } : {}),
 			};
 		}
 

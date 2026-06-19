@@ -196,6 +196,48 @@ suite('dispatchStatelessEvent', () => {
 		});
 	});
 
+	test('round_end with artifacts → runResult (Phase 6 run capture)', () => {
+		const r = dispatchStatelessEvent(ev('round_end', {
+			reason: 'end_turn',
+			final_result: {
+				trace_id: 'tr_sim_1',
+				status: 'success',
+				verdict: 'All 12 testbench assertions passed.',
+				artifacts: [{ kind: 'report', uri: 'file:///w/sim_report.md', summary: 'sim_report.md' }],
+				changed_files: ['counter.v'],
+				errors: [],
+			},
+		}));
+		assert.deepStrictEqual(r.runResult, {
+			traceId: 'tr_sim_1',
+			status: 'success',
+			verdict: 'All 12 testbench assertions passed.',
+			artifacts: [{ kind: 'report', uri: 'file:///w/sim_report.md', summary: 'sim_report.md' }],
+			changedFiles: ['counter.v'],
+			errors: [],
+		});
+		assert.strictEqual(r.terminate, true);
+	});
+
+	test('round_end with changed_files only → runResult present', () => {
+		const r = dispatchStatelessEvent(ev('round_end', {
+			reason: 'end_turn',
+			final_result: { trace_id: 't', status: 'success', verdict: '', changed_files: ['top.v'] },
+		}));
+		assert.ok(r.runResult);
+		assert.deepStrictEqual(r.runResult?.changedFiles, ['top.v']);
+		assert.deepStrictEqual(r.runResult?.artifacts, []);
+	});
+
+	test('round_end without artifacts/changed_files → no runResult (plain chat)', () => {
+		const r = dispatchStatelessEvent(ev('round_end', {
+			reason: 'end_turn',
+			final_result: { trace_id: 't', status: 'success', verdict: 'Here is the answer.' },
+		}));
+		assert.strictEqual(r.runResult, undefined);
+		assert.ok(!('runResult' in r));
+	});
+
 	test('ide_tool_call → flushText + ideToolCall (camelCased payload)', () => {
 		const r = dispatchStatelessEvent(
 			ev('ide_tool_call', {

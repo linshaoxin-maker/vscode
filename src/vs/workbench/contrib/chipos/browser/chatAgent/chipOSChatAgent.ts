@@ -89,6 +89,7 @@ import { IChiposPluginHookService } from '../../common/chiposPluginHookService.j
 import { buildIdeMcpTools, shapeMcpToolResult, IdeMcpToolInfo } from './ideToolCatalog.js';
 import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
+import { IRunStorageService, type IRunMetadata, type RunStatus } from '../runs/runStorageService.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
@@ -335,6 +336,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChiposPromptInputsService private readonly _promptInputsService: IChiposPromptInputsService,
 		@IChiposHookLogService private readonly _hookLogService: IChiposHookLogService,
 		@IChatSlashCommandService private readonly _slashCommandService: IChatSlashCommandService,
+		@IRunStorageService private readonly _runStorageService: IRunStorageService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -1993,6 +1995,35 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}));
 		progress([{ kind: 'chiposNextSteps', sessionResource, items } satisfies IChatChiposNextStepsCard]);
 		return true;
+	}
+
+	/**
+	 * [ChipOS] Phase 6: map a terminal run result → IRunMetadata and persist it
+	 * via IRunStorageService so it surfaces in the Runs view. Only EDA runs reach
+	 * here (gated on artifacts/changed-files in the dispatcher). Best-effort — a
+	 * capture failure must never break the turn.
+	 */
+	private _captureRun(sessionResource: URI, runResult: NonNullable<DispatchResult['runResult']>): void {
+		try {
+			const status: RunStatus = runResult.status === 'success' ? 'passed'
+				: runResult.status === 'error' ? 'failed'
+					: 'unknown';
+			const verdict = runResult.verdict.trim();
+			const run: IRunMetadata = {
+				traceId: runResult.traceId || `run-${Date.now().toString(36)}`,
+				sessionId: sessionResource.toString(),
+				timestamp: Date.now(),
+				label: verdict ? verdict.split('\n')[0].slice(0, 60) : localize('chipos.runs.capturedLabel', 'Agent run'),
+				status,
+				verdictSummary: verdict || undefined,
+				artifacts: runResult.artifacts,
+				changedFiles: runResult.changedFiles.map(path => ({ path })),
+				errors: runResult.errors.map(e => ({ category: e.category, code: e.code, message: e.message ?? '' })),
+			};
+			this._runStorageService.saveRun(run);
+		} catch (err) {
+			this._logService.warn('[ChipOS] capture run failed:', err instanceof Error ? err.message : String(err));
+		}
 	}
 
 	/**
@@ -3666,6 +3697,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				if (!nextCardEmitted && lastFollowups.length > 0) {
 					this._emitFollowupsCard(progress, request.sessionResource, lastFollowups, fullReplyText);
 				}
+			}
+			if (handled.runResult !== undefined) {
+				// [ChipOS] Phase 6: persist the finished run so it surfaces in the
+				// Runs view. Best-effort telemetry — never throws.
+				this._captureRun(request.sessionResource, handled.runResult);
 			}
 			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
 			// Fire-and-forget on a background task so the SSE loop keeps draining
