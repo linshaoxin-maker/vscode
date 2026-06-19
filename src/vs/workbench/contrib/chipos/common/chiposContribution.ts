@@ -14,7 +14,7 @@ import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keyb
 import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
@@ -1197,26 +1197,25 @@ class ChipOSContribution extends Disposable {
 	}
 
 	private _registerSkillTreeView(agent: ChipOSChatAgent): void {
-		// FEAT-DS-006: the ``chipos.dynamicSkill.enabled`` setting gates this whole
-		// capability. Surface it as the ``chipos.dynamicSkillEnabled`` context key
-		// (same key the vscode-extension uses) so the view's ``when`` shows/hides
-		// the panel live when the user toggles it in Settings → Features. The agent
-		// reads the same setting to gate the learn signal it sends the reasoner.
+		// FEAT-DS-006: the ``chipos.dynamicSkill.enabled`` setting is the master
+		// switch for the whole capability. Surface it as the
+		// ``chipos.dynamicSkillEnabled`` context key (same key the vscode-extension
+		// uses), which drives the title-bar quick toggle's on/off state. The panel
+		// stays registered either way — disabling renders an "off" placeholder
+		// rather than hiding the panel, so the title toggle never hides itself. The
+		// agent reads the same setting to gate the learn signal it sends the
+		// reasoner. The onDidChangeConfiguration wiring is below, once treeView/agent
+		// are in scope.
 		const dynamicSkillEnabledKey = this._contextKeyService.createKey<boolean>('chipos.dynamicSkillEnabled', true);
-		const syncDynamicSkillEnabled = () => dynamicSkillEnabledKey.set(this._configurationService.getValue<boolean>('chipos.dynamicSkill.enabled') ?? true);
-		syncDynamicSkillEnabled();
-		this._register(this._configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('chipos.dynamicSkill.enabled')) {
-				syncDynamicSkillEnabled();
-			}
-		}));
+		const isDynamicSkillEnabled = () => this._configurationService.getValue<boolean>('chipos.dynamicSkill.enabled') ?? true;
+		dynamicSkillEnabledKey.set(isDynamicSkillEnabled());
 
 		const treeView = this._instantiationService.createInstance(
 			CustomTreeView, SKILL_TREE_VIEW_ID, localize('chiposSkillTree', 'Skill Tree'), 'chipos'
 		);
 		this._register(treeView);
 
-		const dataProvider = new SkillTreeViewDataProvider(agent.skillTreeHandler);
+		const dataProvider = new SkillTreeViewDataProvider(agent.skillTreeHandler, isDynamicSkillEnabled);
 		treeView.dataProvider = dataProvider;
 
 		// Register the view with treeView field so TreeViewPane can find it
@@ -1230,7 +1229,6 @@ class ChipOSContribution extends Disposable {
 			collapsed: true,
 			order: 1,
 			hideByDefault: false,
-			when: ContextKeyExpr.equals('chipos.dynamicSkillEnabled', true),
 		} as ITreeViewDescriptor], chiposViewContainer);
 
 		agent.skillTreeHandler.onDidChangeTreeData(() => {
@@ -1260,6 +1258,46 @@ class ChipOSContribution extends Disposable {
 			},
 			when: ContextKeyExpr.equals('view', SKILL_TREE_VIEW_ID),
 			group: 'navigation',
+		}));
+
+		// FEAT-DS-006: keep the context key in sync (drives the title toggle's
+		// on/off state), re-render the tree on change (skills vs the "off"
+		// placeholder), and re-pull when switched back on. The panel stays visible
+		// either way so the title toggle never hides itself.
+		this._register(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('chipos.dynamicSkill.enabled')) {
+				const enabled = isDynamicSkillEnabled();
+				dynamicSkillEnabledKey.set(enabled);
+				if (enabled) {
+					void agent.refreshSkillTree();
+				}
+				treeView.refresh();
+			}
+		}));
+
+		// FEAT-DS-006: title-bar quick toggle — flip chipos.dynamicSkill.enabled
+		// without opening Settings (mirrors the vscode-extension's skill-bar
+		// switch). Its checked state follows the dynamicSkillEnabled context key.
+		this._register(registerAction2(class extends Action2 {
+			constructor() {
+				super({
+					id: 'chipos.skillTree.toggleEnabled',
+					title: localize('chiposSkillTreeToggle', "Dynamic Skills Enabled"),
+					icon: Codicon.lightbulbSparkleAutofix,
+					toggled: ContextKeyExpr.equals('chipos.dynamicSkillEnabled', true),
+					menu: {
+						id: MenuId.ViewTitle,
+						when: ContextKeyExpr.equals('view', SKILL_TREE_VIEW_ID),
+						group: 'navigation',
+						order: 0,
+					},
+				});
+			}
+			async run(accessor: ServicesAccessor): Promise<void> {
+				const configService = accessor.get(IConfigurationService);
+				const current = configService.getValue<boolean>('chipos.dynamicSkill.enabled') ?? true;
+				await configService.updateValue('chipos.dynamicSkill.enabled', !current, ConfigurationTarget.USER);
+			}
 		}));
 
 		this._logService.info('[ChipOS] SkillTree view registered');

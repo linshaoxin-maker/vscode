@@ -9,6 +9,7 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { ITreeItem, ITreeViewDataProvider, TreeItemCollapsibleState } from '../../../../common/views.js';
+import { localize } from '../../../../../nls.js';
 
 // ── Data types ─────────────────────────────────────────────────────────────
 
@@ -156,12 +157,14 @@ export interface ISkillTreeDataProvider {
 export class SkillTreeViewDataProvider implements ITreeViewDataProvider {
 
 	private readonly _handler: SkillTreeHandler;
+	private readonly _isEnabled: () => boolean;
 	private _isEmpty = true;
 	private readonly _onDidChangeEmpty = new Emitter<void>();
 	readonly onDidChangeEmpty: Event<void> = this._onDidChangeEmpty.event;
 
-	constructor(handler: SkillTreeHandler) {
+	constructor(handler: SkillTreeHandler, isEnabled?: () => boolean) {
 		this._handler = handler;
+		this._isEnabled = isEnabled ?? (() => true);
 		handler.onDidChangeTreeData(() => {
 			const wasEmpty = this._isEmpty;
 			this._isEmpty = handler.domains.length === 0;
@@ -177,6 +180,14 @@ export class SkillTreeViewDataProvider implements ITreeViewDataProvider {
 
 	async getChildren(element?: ITreeItem): Promise<ITreeItem[] | undefined> {
 		if (!element) {
+			if (!this._isEnabled()) {
+				return [{
+					handle: 'chipos.skillTree.disabled',
+					collapsibleState: TreeItemCollapsibleState.None,
+					label: { label: localize('chipos.skillTree.off', 'Dynamic skills are off — turn it back on from the title bar.') },
+					themeIcon: Codicon.circleSlash,
+				}];
+			}
 			return this._handler.domains.map(d => this._domainToTreeItem(d));
 		}
 

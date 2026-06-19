@@ -94,7 +94,7 @@ configurationRegistry.registerConfiguration({
 		'chipos.dynamicSkill.enabled': {
 			type: 'boolean',
 			default: true,
-			description: localize('chipos.dynamicSkill.enabled.desc', 'Enable dynamic skills: the system automatically extracts coding rules from debug sessions to assist subsequent tasks. Disabling hides the skill panel and stops injecting skill indices into prompts.'),
+			description: localize('chipos.dynamicSkill.enabled.desc', 'Enable dynamic skills: the system automatically extracts coding rules from debug sessions to assist subsequent tasks. Disabling stops learning and stops injecting skill indices into prompts; the Skill Tree panel stays visible and shows an off state (toggle it from the panel title bar or here).'),
 			scope: ConfigurationScope.APPLICATION,
 		},
 
