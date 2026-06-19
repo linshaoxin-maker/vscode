@@ -56,6 +56,9 @@ import { IWorkerToolManagerService, WorkerToolsViewDataProvider } from '../../..
 import { IModuleHierarchyService } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyService.js';
 import { ModuleHierarchyTreeHandler } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTree.js';
 import { ModuleHierarchyTreeDataProvider } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTreeDataProvider.js';
+import { IRunStorageService, IRunMetadata } from '../../../../workbench/contrib/chipos/browser/runs/runStorageService.js';
+import { OPEN_RUN_DETAIL_COMMAND_ID, RunHistoryTreeDataProvider, RunHistoryTreeHandler } from '../../../../workbench/contrib/chipos/browser/runs/runHistoryView.js';
+import { RunDetailPanel } from '../../../../workbench/contrib/chipos/browser/runs/runDetailPanel.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
@@ -85,6 +88,7 @@ import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos
 import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryService.js';
 import '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchy.contribution.js';
+import '../../../../workbench/contrib/chipos/browser/runs/runs.contribution.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposSlashCommandCompletions.js';
@@ -120,6 +124,32 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 const SKILL_TREE_VIEW_ID = 'chipos.skillTree';
 const WORKER_TOOLS_VIEW_ID = 'chipos.workerTools';
 const MODULE_HIERARCHY_VIEW_ID = 'chipos.moduleHierarchy';
+const RUNS_VIEW_ID = 'chipos.runs';
+
+/** Builds one realistic sample run for the `chipos.runs.addSampleRun` dev command. */
+function buildSampleRun(): IRunMetadata {
+	const traceId = `trace-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	return {
+		traceId,
+		sessionId: 'dev-session',
+		timestamp: Date.now(),
+		label: 'Simulate counter',
+		status: 'passed',
+		tool: 'iverilog',
+		durationMs: 1240,
+		verdictSummary: 'All 12 testbench assertions passed.',
+		artifacts: [
+			{ kind: 'report', uri: 'file:///tmp/chipos-sample/sim_report.md', summary: 'sim_report.md' },
+			{ kind: 'waveform', uri: 'file:///tmp/chipos-sample/counter.vcd', summary: 'counter.vcd' },
+			{ kind: 'log', uri: 'file:///tmp/chipos-sample/sim.log', summary: 'sim.log' },
+		],
+		changedFiles: [
+			{ path: 'counter.v', added: 4, removed: 1 },
+		],
+		errors: [],
+	};
+}
+
 const viewContainersRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
 
@@ -1024,6 +1054,7 @@ class ChipOSContribution extends Disposable {
 		this._registerEdaContentParts();
 		this._registerWorkerToolsView();
 		this._registerModuleHierarchyView();
+		this._registerRunsView();
 	}
 
 	private _mapSidecarToConnectionState(state: SidecarState): ConnectionState {
@@ -1388,6 +1419,83 @@ class ChipOSContribution extends Disposable {
 		}));
 
 		this._logService.info('[ChipOS] Module Hierarchy view registered');
+	}
+
+	private _registerRunsView(): void {
+		const treeView = this._instantiationService.createInstance(
+			CustomTreeView, RUNS_VIEW_ID, localize('chiposRuns', 'Runs'), 'chipos'
+		);
+		this._register(treeView);
+
+		const runStorageService = this._instantiationService.invokeFunction(accessor => accessor.get(IRunStorageService));
+		const handler = this._register(this._instantiationService.createInstance(RunHistoryTreeHandler));
+		const dataProvider = this._register(new RunHistoryTreeDataProvider(handler));
+		treeView.dataProvider = dataProvider;
+
+		// A single, reused detail panel the list items open via the command below.
+		const detailPanel = this._register(this._instantiationService.createInstance(RunDetailPanel));
+
+		viewsRegistry.registerViews([{
+			id: RUNS_VIEW_ID,
+			name: { value: localize('chiposRuns', 'Runs'), original: 'Runs' },
+			ctorDescriptor: new SyncDescriptor(TreeViewPane),
+			treeView,
+			canToggleVisibility: true,
+			canMoveView: true,
+			collapsed: true,
+			order: 40,
+			hideByDefault: false,
+		} as ITreeViewDescriptor], chiposViewContainer);
+
+		// Empty-state message (mirrors how the pane renders a welcome string).
+		const updateEmptyMessage = () => {
+			treeView.message = dataProvider.isTreeEmpty
+				? localize('chiposRunsEmpty', "No runs captured yet.")
+				: undefined;
+		};
+		updateEmptyMessage();
+		this._register(dataProvider.onDidChangeEmpty(updateEmptyMessage));
+
+		// Re-render whenever the persisted run set changes.
+		this._register(handler.onDidChangeTreeData(() => {
+			treeView.refresh();
+		}));
+
+		// Open the detail view for a given trace id (invoked by list-item clicks).
+		this._register(CommandsRegistry.registerCommand(OPEN_RUN_DETAIL_COMMAND_ID, (_accessor, traceId?: string) => {
+			if (typeof traceId === 'string') {
+				detailPanel.open(traceId);
+			}
+		}));
+
+		// Explicit Refresh title button.
+		this._register(CommandsRegistry.registerCommand('chipos.runs.refresh', () => {
+			treeView.refresh();
+		}));
+		this._register(MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+			command: {
+				id: 'chipos.runs.refresh',
+				title: localize('chiposRunsRefresh', "Refresh"),
+				icon: Codicon.refresh,
+			},
+			when: ContextKeyExpr.equals('view', RUNS_VIEW_ID),
+			group: 'navigation',
+		}));
+
+		// Dev command: inject a realistic sample run so the list/detail can be
+		// verified end-to-end before the round_end capture wiring lands. Each
+		// invocation adds another run, so the list visibly grows.
+		this._register(CommandsRegistry.registerCommand('chipos.runs.addSampleRun', () => {
+			runStorageService.saveRun(buildSampleRun());
+		}));
+		this._register(MenuRegistry.appendMenuItem(MenuId.CommandPalette, {
+			command: {
+				id: 'chipos.runs.addSampleRun',
+				title: localize2('chiposRunsAddSample', "ChipOS Dev: Add Sample Run"),
+			},
+		}));
+
+		this._logService.info('[ChipOS] Runs view registered');
 	}
 
 	private _registerInlineDiffCommands(agent: ChipOSChatAgent): void {
