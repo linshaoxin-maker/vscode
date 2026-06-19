@@ -1193,6 +1193,20 @@ class ChipOSContribution extends Disposable {
 	}
 
 	private _registerSkillTreeView(agent: ChipOSChatAgent): void {
+		// FEAT-DS-006: the ``chipos.dynamicSkill.enabled`` setting gates this whole
+		// capability. Surface it as the ``chipos.dynamicSkillEnabled`` context key
+		// (same key the vscode-extension uses) so the view's ``when`` shows/hides
+		// the panel live when the user toggles it in Settings → Features. The agent
+		// reads the same setting to gate the learn signal it sends the reasoner.
+		const dynamicSkillEnabledKey = this._contextKeyService.createKey<boolean>('chipos.dynamicSkillEnabled', true);
+		const syncDynamicSkillEnabled = () => dynamicSkillEnabledKey.set(this._configurationService.getValue<boolean>('chipos.dynamicSkill.enabled') ?? true);
+		syncDynamicSkillEnabled();
+		this._register(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('chipos.dynamicSkill.enabled')) {
+				syncDynamicSkillEnabled();
+			}
+		}));
+
 		const treeView = this._instantiationService.createInstance(
 			CustomTreeView, SKILL_TREE_VIEW_ID, localize('chiposSkillTree', 'Skill Tree'), 'chipos'
 		);
@@ -1212,6 +1226,7 @@ class ChipOSContribution extends Disposable {
 			collapsed: true,
 			order: 1,
 			hideByDefault: false,
+			when: ContextKeyExpr.equals('chipos.dynamicSkillEnabled', true),
 		} as ITreeViewDescriptor], chiposViewContainer);
 
 		agent.skillTreeHandler.onDidChangeTreeData(() => {

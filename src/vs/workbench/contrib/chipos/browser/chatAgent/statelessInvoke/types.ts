@@ -228,6 +228,8 @@ export interface InvokeRequest {
 	allowed_tools?: string[];
 	/** FEAT-011c: per-turn opt-in for executable skill scripts (`chipos.skills.executableScripts` AND workspace trust). When false/absent the reasoner drops the run_skill_script tool. */
 	skill_scripts_enabled?: boolean;
+	/** FEAT-DS-006: per-turn dynamic-skill learning toggle (`chipos.dynamicSkill.enabled`). When false the reasoner skips extracting skills from this turn's debug session; overrides the reasoner's env default. */
+	dynamic_skill_learn?: boolean;
 	/** FEAT-005 Stage B: the user-selected subagent for this turn (the user typed `@<name>`). The reasoner applies `instructions` as a persona overlay + restricts tools to `tools` if set. Absent = a normal turn. */
 	selected_agent?: { name: string; instructions: string; description?: string; tools?: string[]; mode?: string };
 	// Open structural editor context for reasoner system prompt
