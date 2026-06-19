@@ -31,6 +31,7 @@ import { IURLService } from '../../../../platform/url/common/url.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ISidecarManagerService, SidecarState, WorkerState } from '../../../../workbench/contrib/chipos/common/sidecarService.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
@@ -56,6 +57,7 @@ import { IWorkerToolManagerService, WorkerToolsViewDataProvider } from '../../..
 import { IModuleHierarchyService } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyService.js';
 import { ModuleHierarchyTreeHandler } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTree.js';
 import { ModuleHierarchyTreeDataProvider } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTreeDataProvider.js';
+import { IChiposWaveformService } from '../../../../workbench/contrib/chipos/browser/waveform/chiposWaveformService.js';
 import { IRunStorageService, IRunMetadata } from '../../../../workbench/contrib/chipos/browser/runs/runStorageService.js';
 import { OPEN_RUN_DETAIL_COMMAND_ID, RunHistoryTreeDataProvider, RunHistoryTreeHandler } from '../../../../workbench/contrib/chipos/browser/runs/runHistoryView.js';
 import { RunDetailPanel } from '../../../../workbench/contrib/chipos/browser/runs/runDetailPanel.js';
@@ -88,6 +90,7 @@ import { registerChipOSQuickToggles } from '../../../../workbench/contrib/chipos
 import '../../../../workbench/contrib/chipos/common/chiposConfiguration.js';
 import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryService.js';
 import '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchy.contribution.js';
+import '../../../../workbench/contrib/chipos/browser/waveform/waveform.contribution.js';
 import '../../../../workbench/contrib/chipos/browser/runs/runs.contribution.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
@@ -1055,6 +1058,7 @@ class ChipOSContribution extends Disposable {
 		this._registerWorkerToolsView();
 		this._registerModuleHierarchyView();
 		this._registerRunsView();
+		this._registerWaveformDevCommand();
 	}
 
 	private _mapSidecarToConnectionState(state: SidecarState): ConnectionState {
@@ -1511,6 +1515,65 @@ class ChipOSContribution extends Disposable {
 		}));
 
 		this._logService.info('[ChipOS] Runs view registered');
+	}
+
+	/**
+	 * Dev command: programmatically drive the Vaporview waveform control via
+	 * `IChiposWaveformService` so the open + add/reveal primitive is
+	 * CDP-verifiable before the agent `viewer_action` event wiring (deferred
+	 * Part B) lands. Resolves the first `*.vcd` in the workspace (falling back to
+	 * `<workspaceFolder>/counter.vcd`) and reveals the `count` signal at cycle 12.
+	 */
+	private _registerWaveformDevCommand(): void {
+		this._register(CommandsRegistry.registerCommand('chipos.waveform.openSample', async accessor => {
+			const fileService = accessor.get(IFileService);
+			const waveformService = accessor.get(IChiposWaveformService);
+
+			const folders = this._contextService.getWorkspace().folders;
+			if (!folders.length) {
+				this._notificationService.info(localize('chiposWaveformNoWorkspace', "ChipOS: Open a workspace folder containing a .vcd file first."));
+				return;
+			}
+			const root = folders[0].uri;
+
+			const found: URI[] = [];
+			try {
+				const stat = await fileService.resolve(root, { resolveMetadata: false });
+				this._gatherVcdFiles(stat, found);
+			} catch {
+				// Ignore — fall through to the counter.vcd fallback below.
+			}
+
+			const vcdUri = found[0] ?? URI.joinPath(root, 'counter.vcd');
+			await waveformService.openWaveform(vcdUri, { signals: ['count'], cycle: 12 });
+			this._logService.info(`[ChipOS] Waveform dev command opened ${vcdUri.toString()}`);
+		}));
+		this._register(MenuRegistry.appendMenuItem(MenuId.CommandPalette, {
+			command: {
+				id: 'chipos.waveform.openSample',
+				title: localize2('chiposWaveformOpenSample', "ChipOS Dev: Open Sample Waveform"),
+			},
+		}));
+	}
+
+	private _gatherVcdFiles(stat: IFileStat, out: URI[]): void {
+		if (out.length > 0) {
+			return;
+		}
+		if (stat.isFile) {
+			if (stat.resource.path.toLowerCase().endsWith('.vcd')) {
+				out.push(stat.resource);
+			}
+			return;
+		}
+		if (stat.children) {
+			for (const child of stat.children) {
+				this._gatherVcdFiles(child, out);
+				if (out.length > 0) {
+					return;
+				}
+			}
+		}
 	}
 
 	private _registerInlineDiffCommands(agent: ChipOSChatAgent): void {
