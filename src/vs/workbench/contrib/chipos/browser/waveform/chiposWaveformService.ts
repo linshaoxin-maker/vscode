@@ -48,6 +48,15 @@ const VAPORVIEW_SET_MARKER_CMD = 'waveformViewer.setMarker';
  */
 const VAPORVIEW_GET_OPEN_DOCUMENTS_CMD = 'waveformViewer.getOpenDocuments';
 
+/**
+ * Vaporview's command returning a document's viewer state (save-file schema),
+ * whose `displayedSignals` array we use to VERIFY that an `addVariable` actually
+ * landed — on a cold open the webview is still loading when addVariable fires and
+ * silently drops it (no throw), so we re-issue until the displayed count reaches
+ * the target. Return shape (subset): `{ displayedSignals: unknown[], … }`.
+ */
+const VAPORVIEW_GET_VIEWER_STATE_CMD = 'waveformViewer.getViewerState';
+
 export interface IOpenWaveformOptions {
 	/** Full instance paths of signals to add/reveal in the viewer. */
 	readonly signals?: string[];
@@ -106,12 +115,8 @@ export class ChiposWaveformService implements IChiposWaveformService {
 			return;
 		}
 
-		for (const signal of signals) {
-			// Vaporview signals into the webview after the VCD finishes parsing; it
-			// reports "Signal not found" (a message, not a throw) if we ask too early,
-			// so retry a few times. `reveal: true` makes a repeat a no-op selection
-			// rather than a duplicate add.
-			await this._executeWithRetry(VAPORVIEW_ADD_VARIABLE_CMD, { uri: docUriStr, instancePath: signal, reveal: true });
+		if (signals.length > 0) {
+			await this._revealSignals(docUriStr, signals);
 		}
 
 		// Vaporview's marker is time-based (`setMarker` takes `time` + `units`),
@@ -119,8 +124,65 @@ export class ChiposWaveformService implements IChiposWaveformService {
 		// forward `cycle` as a best-effort `time` value (default waveform units);
 		// callers that need true cycle→time conversion must resolve the clock
 		// period themselves before calling. GAP: no cycle-marker command exists.
+		// Set AFTER the signals (the webview is warm by then, so the marker lands).
 		if (typeof opts?.cycle === 'number') {
 			await this._executeWithRetry(VAPORVIEW_SET_MARKER_CMD, { uri: docUriStr, time: opts.cycle, markerType: 0 });
+		}
+	}
+
+	/**
+	 * Add + reveal `signals`, re-issuing until they actually appear in the viewer.
+	 * The cold-open trap: even after the netlist parses and `addVariable` is
+	 * accepted (no throw), the WEBVIEW that renders the waveform is still loading,
+	 * so the "draw this signal" message is dropped and the signal never shows — and
+	 * Vaporview reports nothing back. We can't detect that per-call, so after each
+	 * round we read `getViewerState().displayedSignals` and re-issue (idempotent via
+	 * `reveal: true`) until the displayed count reaches the target or settles (some
+	 * paths may be genuinely absent from the netlist). Best-effort — never throws.
+	 */
+	private async _revealSignals(docUriStr: string, signals: string[]): Promise<void> {
+		const ATTEMPTS = 10;
+		const DELAY_MS = 350;
+		const target = signals.length;
+		let prevCount = -1;
+		let stableRounds = 0;
+		for (let i = 0; i < ATTEMPTS; i++) {
+			for (const signal of signals) {
+				try {
+					await this._commandService.executeCommand(VAPORVIEW_ADD_VARIABLE_CMD, { uri: docUriStr, instancePath: signal, reveal: true });
+				} catch {
+					// Command not registered yet (extension still activating) — next round.
+				}
+			}
+			await timeout(DELAY_MS);
+			const count = await this._displayedSignalCount(docUriStr);
+			if (count >= target) {
+				return;
+			}
+			// Settle guard: if the count has stopped growing for two rounds, the
+			// signals that CAN resolve have landed (the rest are absent paths) — stop
+			// rather than burn the full attempt budget.
+			if (count > 0 && count === prevCount) {
+				stableRounds++;
+				if (stableRounds >= 2) {
+					this._logService.warn(`[ChipOS][Waveform] revealed ${count}/${target} signals (remaining paths not in netlist?)`);
+					return;
+				}
+			} else {
+				stableRounds = 0;
+			}
+			prevCount = count;
+		}
+		this._logService.warn(`[ChipOS][Waveform] signal reveal gave up at ${prevCount < 0 ? 0 : prevCount}/${target} after ${ATTEMPTS} rounds`);
+	}
+
+	/** Number of signals currently displayed in the viewer (0 on any error). */
+	private async _displayedSignalCount(docUriStr: string): Promise<number> {
+		try {
+			const state = await this._commandService.executeCommand<{ displayedSignals?: unknown[] }>(VAPORVIEW_GET_VIEWER_STATE_CMD, { uri: docUriStr });
+			return Array.isArray(state?.displayedSignals) ? state!.displayedSignals!.length : 0;
+		} catch {
+			return 0;
 		}
 	}
 
