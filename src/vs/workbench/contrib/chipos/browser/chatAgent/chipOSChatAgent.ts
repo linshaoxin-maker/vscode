@@ -302,6 +302,86 @@ export async function _recoverFrom409Conflict(
 	}
 }
 
+/**
+ * Structural subset of {@link IChatResponseModel} needed by
+ * {@link _finalizeUnrecoverableRestoredRow}. Declared so the finalize logic can
+ * be unit-tested against a mock without standing up a full chat model.
+ * `IChatResponseModel` structurally satisfies this.
+ */
+export interface IFinalizableRestoredResponse {
+	/**
+	 * True when this restored response was coerced from an in-flight
+	 * (Pending/NeedsInput) state to Cancelled by the chat model on
+	 * (de)serialize (see `ChatResponseModel.toJSON`). It is the unambiguous
+	 * signature of a row that was LIVE when the IDE restarted — i.e. a resume
+	 * candidate — as opposed to a cleanly Completed/Failed/user-Cancelled row
+	 * (a user cancel finalizes as Complete, not Cancelled — see
+	 * `ChatResponseModel.complete`).
+	 */
+	readonly isCanceled: boolean;
+	readonly entireResponse: { readonly value: ReadonlyArray<IChatProgressResponseContent> };
+	updateContent(part: IChatProgressResponseContent): void;
+}
+
+/**
+ * Finalize a restored "zombie" chat row left in-flight by an IDE restart, when
+ * the resume probe has determined the turn can NOT be continued (the reasoner
+ * dropped the trace — TTL / reasoner restart — or stayed unreachable after the
+ * probe's bounded retries).
+ *
+ * Background (PHASE-1 §2.9): the chat framework coerces a restored in-flight
+ * response Pending→Cancelled, but a ChipOS stateless row renders its own
+ * content parts, so the row keeps showing its pre-restart state — a `$(sync)
+ * reconnecting…` progress line plus an unanswered confirm card — and, because
+ * the resume probe simply `return`ed on a failed/empty `getTurnState`, never
+ * got closed. The row then lingers indefinitely (observed ~2h). We append a
+ * terminal `resumable:false` failure card, which both surfaces an explicit
+ * "can't recover" terminal state AND hides the now-stale trailing reconnecting
+ * progress line — the framework hides a progress message once any non-progress
+ * content follows it (see `ChatProgressContentPart` `isHidden`; verified live:
+ * appending the card makes the last reconnecting line disappear). The unanswered
+ * confirm card above it may still render its now-dead buttons —
+ * `isPendingConfirmation` re-derives from the unused confirmation part on
+ * restore, NOT from the coerced modelState (verified live) — but retiring that
+ * stale confirm is a separate, secondary concern; the appended terminal card at
+ * least makes the dead state unambiguous.
+ *
+ * Narrowly guarded so a healthy row is never defaced:
+ *  - no last response → nothing to finalize;
+ *  - response NOT `isCanceled` → it completed/failed/was-cancelled normally,
+ *    leave it (critical: the probe-empty path also fires for a turn that
+ *    finished cleanly before the restart);
+ *  - a terminal card with this `error_code` already present → idempotent no-op
+ *    (the probe is deduped per IDE run, but stay defensive against re-entry).
+ *
+ * Returns true iff a terminal card was appended.
+ */
+export function _finalizeUnrecoverableRestoredRow(
+	response: IFinalizableRestoredResponse | undefined,
+	card: IChatAgentError,
+	onLog: (msg: string, ...args: unknown[]) => void,
+): boolean {
+	if (!response) {
+		return false;
+	}
+	if (!response.isCanceled) {
+		// A normally finalized row is not an in-flight zombie. Leaving it
+		// untouched is what keeps the `getTurnState` empty path (turn finished
+		// cleanly before the restart) from stamping a spurious failure card onto
+		// a good answer.
+		return false;
+	}
+	const alreadyFinalized = response.entireResponse.value.some(
+		p => p.kind === 'agentError' && (p as IChatAgentError).error_code === card.error_code,
+	);
+	if (alreadyFinalized) {
+		return false;
+	}
+	response.updateContent(card);
+	onLog('[ChipOS Stateless] resume probe: finalized unrecoverable restored row with %s terminal card', card.error_code);
+	return true;
+}
+
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
 	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
@@ -4210,17 +4290,61 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					continue;
 				}
 				this._logService.warn('[ChipOS Stateless] resume probe: getTurnState failed for cs=%s: %s', chatSessionId, String(err));
+				// We could not learn whether the turn is resumable after bounded
+				// retries — close any restored zombie row instead of leaving it on
+				// its stale reconnecting/confirm state forever (the terminal card's
+				// Retry re-sends if the user wants to try again).
+				this._finalizeRestoredZombieRow(model, chatSessionId, 'getTurnState failed');
 				return;
 			}
 		}
 		if (!turnState || turnState.in_flight_traces.length === 0) {
 			this._logService.info('[ChipOS Stateless] resume probe: turn_state empty for cs=%s — nothing to resume', chatSessionId);
+			// `getTurnState` is authoritative: no in-flight trace means the reasoner
+			// has nothing left to resume (the turn finished, or its state expired /
+			// was dropped by a reasoner restart). If the restored row was itself
+			// in-flight at restart (isCanceled), close it — the `_finalize…` guard
+			// no-ops on a cleanly completed row, so a turn that simply finished
+			// before the restart is left as the good answer it is.
+			this._finalizeRestoredZombieRow(model, chatSessionId, 'no in-flight trace');
 			return;
 		}
 		// Offer to resume the most-recently-started in-flight trace.
 		const trace = turnState.in_flight_traces.reduce((a, b) => (b.started_at >= a.started_at ? b : a));
 		this._logService.info('[ChipOS Stateless] resume probe: in-flight trace=%s state=%s for cs=%s', trace.trace_id, trace.state, chatSessionId);
 		this._offerStatelessResume(sessionResource, chatSessionId, trace);
+	}
+
+	/**
+	 * Close the last (restored) row of a thread when the resume probe has
+	 * conclusively given up — `getTurnState` failed after bounded retries, or
+	 * returned no in-flight trace. Builds the terminal `resumable:false` card and
+	 * delegates the guarded append to {@link _finalizeUnrecoverableRestoredRow},
+	 * which no-ops unless the row is an in-flight-at-restart zombie. Without this
+	 * the row keeps its pre-restart `reconnecting…` progress + confirm card and
+	 * never settles (observed lingering ~2h). See the section header above.
+	 */
+	private _finalizeRestoredZombieRow(model: IChatModel, chatSessionId: string, reasonLog: string): void {
+		const response = model.getRequests().at(-1)?.response;
+		const card = this._statelessFailureCard({
+			errorCode: 'TURN_UNRECOVERABLE',
+			message: localize('chipos.stateless.fail.restoreUnrecoverable', "上一个回答在 IDE 重启时仍在进行，但该回合已无法恢复（连接已中断或已过期）。"),
+			resumable: false,
+			chatSessionId,
+			// resumable:false ⇒ `_statelessFailureCard` drops resumeContext, so
+			// trace/seq are never read; there is no live trace to resume anyway.
+			traceId: '',
+			lastSequenceId: -1,
+		});
+		const finalized = _finalizeUnrecoverableRestoredRow(
+			response,
+			card,
+			(msg, ...args) => this._logService.info(msg, ...args),
+		);
+		this._logService.info(
+			'[ChipOS Stateless] resume probe: %s restored zombie row for cs=%s (%s)',
+			finalized ? 'closed' : 'no-op on', chatSessionId, reasonLog,
+		);
 	}
 
 	/**

@@ -26,7 +26,9 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { _recoverFrom409Conflict, type I409RecoveryClient } from '../../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
+import { _recoverFrom409Conflict, _finalizeUnrecoverableRestoredRow, type I409RecoveryClient, type IFinalizableRestoredResponse } from '../../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
+import type { IChatAgentError } from '../../../../../workbench/contrib/chat/common/chatEdaTypes.js';
+import type { IChatProgressResponseContent } from '../../../../../workbench/contrib/chat/common/model/chatModel.js';
 
 interface CancelCall { readonly traceId: string; readonly reason?: string }
 
@@ -140,5 +142,82 @@ suite('_recoverFrom409Conflict', () => {
 		assert.strictEqual(count, 0, 'probe failure recovers to 0 rather than throwing');
 		assert.strictEqual(client.cancelCalls.length, 0, 'no traces to cancel when the probe failed');
 		assert.ok(warn.calls.length > 0, 'the probe failure is logged');
+	});
+});
+
+/**
+ * Unit test for `_finalizeUnrecoverableRestoredRow` — the helper the resume
+ * probe calls when it has conclusively given up (GET /turn_state failed after
+ * bounded retries, or reported no in-flight trace). It must close the restored
+ * "zombie" row — the row a stateless turn left on its pre-restart `reconnecting…`
+ * progress + unanswered confirm card after an IDE reload — by appending a
+ * terminal failure card, but ONLY when that row was genuinely in-flight at
+ * restart (the chat model coerces such a row to Cancelled on (de)serialize, so
+ * `isCanceled` is the discriminator). A cleanly completed row must be left
+ * untouched so the probe-empty path never defaces a good answer.
+ */
+function makeRestoredResponse(opts: {
+	isCanceled: boolean;
+	existingParts?: ReadonlyArray<IChatProgressResponseContent>;
+}): IFinalizableRestoredResponse & { readonly appended: IChatProgressResponseContent[] } {
+	const appended: IChatProgressResponseContent[] = [];
+	return {
+		appended,
+		isCanceled: opts.isCanceled,
+		entireResponse: { value: opts.existingParts ?? [] },
+		updateContent(part: IChatProgressResponseContent) { appended.push(part); },
+	};
+}
+
+function makeErrorCard(code = 'TURN_UNRECOVERABLE'): IChatAgentError {
+	return { kind: 'agentError', error_code: code, message: '测试：无法恢复', retryable: true };
+}
+
+suite('_finalizeUnrecoverableRestoredRow', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('restored in-flight zombie (isCanceled) → appends the terminal card', () => {
+		const resp = makeRestoredResponse({ isCanceled: true });
+		const card = makeErrorCard();
+
+		const returned = _finalizeUnrecoverableRestoredRow(resp, card, () => { });
+
+		assert.deepStrictEqual(
+			{ returned, appended: resp.appended },
+			{ returned: true, appended: [card] },
+			'a row that was live at restart is closed with exactly the terminal card',
+		);
+	});
+
+	test('cleanly completed row (not isCanceled) → left untouched', () => {
+		const resp = makeRestoredResponse({ isCanceled: false });
+
+		const returned = _finalizeUnrecoverableRestoredRow(resp, makeErrorCard(), () => { });
+
+		assert.deepStrictEqual(
+			{ returned, appended: resp.appended },
+			{ returned: false, appended: [] },
+			'a normally finished answer is never defaced by the probe-empty path',
+		);
+	});
+
+	test('no last response (undefined) → no-op, returns false', () => {
+		const returned = _finalizeUnrecoverableRestoredRow(undefined, makeErrorCard(), () => { });
+
+		assert.strictEqual(returned, false);
+	});
+
+	test('idempotent: a terminal card with the same code already present → no double-append', () => {
+		const existing = makeErrorCard('TURN_UNRECOVERABLE');
+		const resp = makeRestoredResponse({ isCanceled: true, existingParts: [existing] });
+
+		const returned = _finalizeUnrecoverableRestoredRow(resp, makeErrorCard('TURN_UNRECOVERABLE'), () => { });
+
+		assert.deepStrictEqual(
+			{ returned, appended: resp.appended },
+			{ returned: false, appended: [] },
+			're-entry on an already-finalized row must not stack a second card',
+		);
 	});
 });
