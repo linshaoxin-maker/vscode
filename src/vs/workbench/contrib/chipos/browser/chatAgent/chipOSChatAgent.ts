@@ -4534,6 +4534,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// settle any sub-agent cards still open when the resumed turn ends.
 				this._finalizeStatelessSubagents(progress, resumeSubagentCardState);
 			}
+			if (handled.runResult !== undefined) {
+				// [ChipOS] Phase 6: a resumed turn that reaches `round_end` with
+				// artifacts/changed-files must also land a Runs row — the original
+				// turn was interrupted before it captured (parity with the live loop;
+				// `saveRun` dedups by traceId so a rare live+resume overlap is a no-op).
+				this._captureRun(request.sessionResource, handled.runResult);
+			}
 			if (handled.viewerAction !== undefined) {
 				// [ChipOS] Phase 6 slice 5 Part B: a resumed turn can also drive the
 				// waveform viewer (parity with the live loop above).
