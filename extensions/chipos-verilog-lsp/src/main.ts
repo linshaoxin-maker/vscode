@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { DocumentSelector, LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-languageclient/node';
+import { registerCrossProbe } from './crossProbe';
 
 /**
  * ChipOS Verilog/SystemVerilog LSP — spawns two external LSP servers
@@ -71,6 +72,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}
 		}),
 	);
+
+	// Cross-probe: click a signal in the Vaporview waveform → jump to its RTL
+	// declaration (resolved via the LSP symbol index, with a text-search
+	// fallback). Best-effort; no-ops if Vaporview isn't installed.
+	registerCrossProbe(context, log);
 }
 
 export async function deactivate(): Promise<void> {

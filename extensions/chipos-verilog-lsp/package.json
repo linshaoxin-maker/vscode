@@ -102,7 +102,14 @@
 					"description": "(svlangserver) Linter to invoke on save when `systemverilog.disableLinting` is false. Only 'verilator' and 'icarus' are supported by svlangserver. Requires the chosen binary on PATH; ChipOS auto-installs both via the oss-cad-suite pack."
 				}
 			}
-		}
+		},
+		"commands": [
+			{
+				"command": "chipos.verilog.revealSignalInRtl",
+				"title": "Reveal Signal in RTL",
+				"category": "ChipOS"
+			}
+		]
 	},
 	"repository": {
 		"type": "git",
