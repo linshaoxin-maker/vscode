@@ -2264,6 +2264,27 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		return { kind: 'progressMessage', content: new MarkdownString(stripIcons(content), { supportThemeIcons: true }), shimmer };
 	}
 
+	/**
+	 * [ChipOS] #4: map a non-normal `round_end.reason` to a one-line user-visible
+	 * notice so a truncated turn (iteration/token cap, cancelled, or reasoner-side
+	 * interruption) is distinct from clean completion. Returns undefined for
+	 * 'end_turn' (normal) and 'error' (already shown as a dedicated error card).
+	 */
+	private static _formatTerminationReason(reason: string): string | undefined {
+		switch (reason) {
+			case 'max_iterations':
+				return localize('chipos.turn.maxIterations', '⚠️ 已达最大迭代轮数上限，本轮在收敛前停止（可细化提示后重试）。');
+			case 'max_tokens':
+				return localize('chipos.turn.maxTokens', '⚠️ 已达 token 上限，本轮提前结束。');
+			case 'cancelled':
+				return localize('chipos.turn.cancelled', '🛑 本轮已取消。');
+			case 'interrupted':
+				return localize('chipos.turn.interrupted', '⚠️ 推理被中断（服务端），本轮未正常完成。');
+			default:
+				return undefined;
+		}
+	}
+
 
 
 
@@ -3787,6 +3808,15 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Fusion: settle any sub-agent cards still open at round
 				// end (no `complete` frame exists on this path) so none spins on.
 				this._finalizeStatelessSubagents(progress, subagentCardState);
+				// [ChipOS] #4: surface non-normal termination (max_iterations /
+				// max_tokens / cancelled / interrupted) — a truncated turn renders
+				// identically to clean completion otherwise.
+				if (handled.terminationReason && handled.terminationReason !== 'end_turn') {
+					const reasonMsg = ChipOSChatAgent._formatTerminationReason(handled.terminationReason);
+					if (reasonMsg) {
+						progress([this._progress(reasonMsg)]);
+					}
+				}
 				// FEAT-006c: emit the per-turn extension-usage telemetry (content-free).
 				if (this._pendingExtTelemetry) {
 					this._statelessObs.extensionUsage({
@@ -4533,6 +4563,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (handled.terminate) {
 				// settle any sub-agent cards still open when the resumed turn ends.
 				this._finalizeStatelessSubagents(progress, resumeSubagentCardState);
+				// [ChipOS] #4: surface non-normal termination on the resume path too.
+				if (handled.terminationReason && handled.terminationReason !== 'end_turn') {
+					const reasonMsg = ChipOSChatAgent._formatTerminationReason(handled.terminationReason);
+					if (reasonMsg) {
+						progress([this._progress(reasonMsg)]);
+					}
+				}
 			}
 			if (handled.runResult !== undefined) {
 				// [ChipOS] Phase 6: a resumed turn that reaches `round_end` with

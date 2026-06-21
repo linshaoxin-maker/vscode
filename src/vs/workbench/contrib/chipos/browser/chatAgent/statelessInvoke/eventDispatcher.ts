@@ -56,6 +56,7 @@ import type {
 	IChatEdaSimReport,
 	IChatEdaSimTestResult,
 	IChatEdaSpecReview,
+	IChatRoundProgress,
 } from '../../../../chat/common/chatEdaTypes.js';
 import type { ITaskSummaryPayload } from '../../eventTypes.js';
 
@@ -277,6 +278,15 @@ export interface DispatchResult {
 	 * `structured_data` object).
 	 */
 	taskSummary?: ITaskSummaryPayload;
+	/**
+	 * [ChipOS] #4: round termination reason from `round_end.data.reason`. Present
+	 * only when terminate: true. Values: 'end_turn' (normal) / 'max_iterations' /
+	 * 'max_tokens' (resource limits) / 'cancelled' (user) / 'interrupted'
+	 * (reasoner-side failure). The caller surfaces non-'end_turn' termination so a
+	 * truncated turn (hit the 50-round cap) is visibly distinct from clean
+	 * completion — the two render identically otherwise.
+	 */
+	terminationReason?: string;
 }
 
 /**
@@ -578,7 +588,33 @@ function dispatchUnwrappedEvent(
 			return text.length > 0 ? { thinkingText: text } : {};
 		}
 
-		case 'round_progress':
+		case 'round_progress': {
+			// [ChipOS] #1: the roundProgress content part IS registered
+			// (chiposContribution registerContentPart('roundProgress')) but this
+			// case used to drop the event (`return {}`), so multi-round composite
+			// loops (lint_fix / ppa_optimize / sim_debug) rendered no round
+			// counter — a half-wired part. Map the backend payload onto the part
+			// so the agentcore path shows live "round N/M" progress.
+			const data = (event.data ?? {}) as {
+				current_round?: number;
+				max_rounds?: number;
+				phase?: string;
+				status?: string;
+				tool?: string;
+			};
+			return {
+				flushText: true,
+				edaParts: [{
+					kind: 'roundProgress',
+					current_round: typeof data.current_round === 'number' ? data.current_round : 0,
+					max_rounds: typeof data.max_rounds === 'number' ? data.max_rounds : 0,
+					phase: typeof data.phase === 'string' ? data.phase : undefined,
+					status: (data.status === 'running' || data.status === 'done' || data.status === 'failed') ? data.status : undefined,
+					tool: typeof data.tool === 'string' ? data.tool : undefined,
+				} satisfies IChatRoundProgress],
+			};
+		}
+
 		case 'trace_link':
 			// Decorative — reserved for future UI hooks.
 			return {};
@@ -996,6 +1032,7 @@ function dispatchUnwrappedEvent(
 			return {
 				terminate: true,
 				flushText: true,
+				terminationReason: typeof data.reason === 'string' ? data.reason : 'end_turn',
 				finalMessages: Array.isArray(data.final_messages) ? data.final_messages : undefined,
 				followups: followups && followups.length > 0 ? followups : undefined,
 				...(runResult ? { runResult } : {}),
