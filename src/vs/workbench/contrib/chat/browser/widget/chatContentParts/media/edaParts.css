@@ -8,16 +8,20 @@
 .eda-section {
 	margin: 6px 0;
 	border: 1px solid color-mix(in srgb, var(--vscode-panel-border, var(--vscode-input-border)) 72%, transparent);
-	border-radius: 6px;
+	/* ChipOS brand accent (中度): teal left rail marks the card as ChipOS without
+	   overriding the host theme. Token from @chipos/design-tokens (:root --chipos-brand). */
+	border-left: 3px solid var(--chipos-brand, #5ED3B3);
+	border-radius: var(--chipos-radius-lg, 6px);
 	padding: 9px 10px;
 	background: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-foreground) 4%);
 }
 
 .eda-section-title {
 	margin: 0 0 6px 0;
-	font-size: 12px;
+	font-size: var(--chipos-font-sm, 12px);
 	font-weight: 600;
-	color: var(--vscode-foreground);
+	/* Brand teal title — accent only; semantic state stays on badges/icons. */
+	color: var(--chipos-brand, #5ED3B3);
 }
 
 /* ── Table ──────────────────────────────────────────────────────────────────── */

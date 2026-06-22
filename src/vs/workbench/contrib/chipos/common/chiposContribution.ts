@@ -109,6 +109,9 @@ import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposChatInputHi
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposRtlFileWatcher.js';
 import '../../../../workbench/contrib/chipos/browser/edaStatusBar.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposLoginGate.js';
+// Cross-surface design tokens (:root --chipos-*). Generated from @chipos/design-tokens;
+// imported before chiposOverrides so all chipos CSS / EDA cards can read the vars.
+import '../../../../workbench/contrib/chipos/browser/media/chiposDesignTokens.css';
 import '../../../../workbench/contrib/chipos/browser/media/chiposOverrides.css';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chipOSInputAccent.css';
 

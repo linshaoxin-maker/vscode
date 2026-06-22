@@ -1,0 +1,44 @@
+/* ──────────────────────────────────────────────────────────────────────
+ * VENDORED — DO NOT EDIT BY HAND. Regenerate: npm run gen (in packages/design-tokens)
+ * canonical source: packages/design-tokens/src/tokens.ts
+ * @chipos/design-tokens — cross-surface design tokens. Brand = teal #5ED3B3 (ADR-CLI-013).
+ * Semantic colours bind var(--vscode-*, <canonical hex>): host theme primary, hex fallback.
+ * ────────────────────────────────────────────────────────────────────── */
+
+:root {
+
+	/* brand — literal teal in every theme (ADR-CLI-013); accent only, never a semantic colour */
+	--chipos-brand: #5ED3B3;
+	--chipos-brand-hover: #4FC2A3;
+	--chipos-brand-dim: #3D8B79;
+
+	/* semantic — host theme primary, canonical hex fallback (preserves light/dark/HC adaptation) */
+	--chipos-success: var(--vscode-testing-iconPassed, #74D397);
+	--chipos-warning: var(--vscode-editorWarning-foreground, #E3B271);
+	--chipos-error: var(--vscode-testing-iconFailed, #F0726F);
+	--chipos-info: var(--vscode-editorInfo-foreground, #78C8DC);
+
+	/* neutral / structure */
+	--chipos-path: #9FB0C8;
+	--chipos-dim: var(--vscode-descriptionForeground, #86868F);
+	--chipos-line: var(--vscode-panel-border, #5A5A64);
+	--chipos-line-dim: #3A3A42;
+	--chipos-bright: #EBF0F5;
+
+	/* spacing (px) */
+	--chipos-space-xs: 4px;
+	--chipos-space-sm: 8px;
+	--chipos-space-md: 12px;
+	--chipos-space-lg: 16px;
+	--chipos-space-xl: 24px;
+
+	/* radius (px) */
+	--chipos-radius-sm: 3px;
+	--chipos-radius-md: 4px;
+	--chipos-radius-lg: 6px;
+
+	/* font-size (px) */
+	--chipos-font-xs: 11px;
+	--chipos-font-sm: 12px;
+	--chipos-font-md: 13px;
+}
