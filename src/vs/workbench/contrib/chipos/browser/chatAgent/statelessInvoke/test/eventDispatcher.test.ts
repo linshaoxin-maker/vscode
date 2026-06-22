@@ -152,8 +152,22 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('thinking_delta', {})), {});
 	});
 
-	test('round_progress / trace_link → noop (decorative)', () => {
-		assert.deepStrictEqual(dispatchStatelessEvent(ev('round_progress', { round_idx: 1 })), {});
+	test('round_progress → roundProgress part (b4534f329d6); trace_link → noop (decorative)', () => {
+		// [ChipOS] b4534f329d6 wired round_progress onto the registered `roundProgress`
+		// content part (it used to be a decorative no-op). The dispatcher reads
+		// current_round / max_rounds / phase / status / tool off the payload.
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('round_progress', { current_round: 2, max_rounds: 5, phase: 'lint_fix', status: 'running', tool: 'verilog_lint' })),
+			{ flushText: true, edaParts: [{ kind: 'roundProgress', current_round: 2, max_rounds: 5, phase: 'lint_fix', status: 'running', tool: 'verilog_lint' }] },
+		);
+		// ⚠️ Field-name caveat: PHASE-0/1-PROTOCOL-SPEC document the wire payload as
+		// {round_idx, phase, progress_pct}, but the dispatcher reads current_round /
+		// max_rounds — so the documented `round_idx` falls through to 0. No backend
+		// emit ships this event yet, so the mismatch is latent (tracked separately).
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('round_progress', { round_idx: 1 })),
+			{ flushText: true, edaParts: [{ kind: 'roundProgress', current_round: 0, max_rounds: 0, phase: undefined, status: undefined, tool: undefined }] },
+		);
 		assert.deepStrictEqual(dispatchStatelessEvent(ev('trace_link', { trace_id: 'abc' })), {});
 	});
 
@@ -168,6 +182,7 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(r, {
 			terminate: true,
 			flushText: true,
+			terminationReason: 'end_turn',
 			finalMessages,
 			followups: undefined,
 		});
@@ -180,6 +195,7 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(r, {
 			terminate: true,
 			flushText: true,
+			terminationReason: 'cancelled',
 			finalMessages: undefined,
 			followups: undefined,
 		});
@@ -191,6 +207,7 @@ suite('dispatchStatelessEvent', () => {
 		assert.deepStrictEqual(r, {
 			terminate: true,
 			flushText: true,
+			terminationReason: 'max_iterations',
 			finalMessages: undefined,
 			followups: undefined,
 		});
