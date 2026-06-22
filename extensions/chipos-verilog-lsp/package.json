@@ -109,7 +109,16 @@
 				"title": "Reveal Signal in RTL",
 				"category": "ChipOS"
 			}
-		]
+		],
+		"menus": {
+			"view/item/context": [
+				{
+					"command": "chipos.verilog.revealSignalInRtl",
+					"when": "viewItem == 'netlistVar' && view == 'waveformViewerNetlistView'",
+					"group": "navigation@9"
+				}
+			]
+		}
 	},
 	"repository": {
 		"type": "git",

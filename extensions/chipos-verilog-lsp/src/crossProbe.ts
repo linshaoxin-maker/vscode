@@ -37,11 +37,10 @@ export function registerCrossProbe(context: vscode.ExtensionContext, log: (...ar
 	// instance path / leaf name; when invoked with no argument it prompts.
 	context.subscriptions.push(
 		vscode.commands.registerCommand('chipos.verilog.revealSignalInRtl', async (arg?: unknown) => {
-			let path = typeof arg === 'string' ? arg : '';
-			if (!path && arg && typeof arg === 'object') {
-				const o = arg as { instancePath?: unknown; name?: unknown };
-				path = typeof o.instancePath === 'string' ? o.instancePath : typeof o.name === 'string' ? o.name : '';
-			}
+			// `arg` is a string (programmatic), a Vaporview netlist tree item (the
+			// right-click menu — has name/label/instancePath), or undefined (palette
+			// → prompt).
+			let path = signalFromArg(arg);
 			if (!path) {
 				path = (await vscode.window.showInputBox({
 					title: 'Reveal Signal in RTL',
@@ -53,6 +52,34 @@ export function registerCrossProbe(context: vscode.ExtensionContext, log: (...ar
 		}),
 	);
 	void wireWaveformToRtl(context, log);
+}
+
+/**
+ * Extract a signal name / instance path from a command argument — a plain string,
+ * or a Vaporview netlist tree item (the right-click menu passes one; it carries
+ * `name` / `instancePath` / a `label` that may be a string or `{ label }`).
+ */
+function signalFromArg(arg: unknown): string {
+	if (typeof arg === 'string') {
+		return arg;
+	}
+	if (!arg || typeof arg !== 'object') {
+		return '';
+	}
+	const o = arg as { instancePath?: unknown; name?: unknown; label?: unknown };
+	if (typeof o.instancePath === 'string') {
+		return o.instancePath;
+	}
+	if (typeof o.name === 'string') {
+		return o.name;
+	}
+	if (typeof o.label === 'string') {
+		return o.label;
+	}
+	if (o.label && typeof o.label === 'object' && typeof (o.label as { label?: unknown }).label === 'string') {
+		return (o.label as { label: string }).label;
+	}
+	return '';
 }
 
 /** The identifier under the cursor in the active editor (seed for the prompt). */
