@@ -51,6 +51,7 @@ import type {
 	IChatEdaLintReport,
 	IChatEdaNegotiationView,
 	IChatEdaParallelProgress,
+	IChatEdaPpaMetrics,
 	IChatEdaPpaReport,
 	IChatEdaProgress,
 	IChatEdaSimReport,
@@ -147,6 +148,22 @@ export interface DispatchResult {
 		path: string;
 		signals?: string[];
 		cycle?: number;
+	};
+	/**
+	 * [ChipOS] Phase 6 / PPA workbench: a structured slice of a `ppa_report` event
+	 * (stage / round / strategy + current/baseline/best metrics + improvement). The
+	 * dispatcher already renders the inline card via `edaParts`; this directive lets
+	 * the DI-constructed caller ALSO persist it (with the turn's trace id) into the
+	 * `IPpaStorageService` so the dedicated PPA view + dashboard surface it.
+	 */
+	ppaReport?: {
+		round?: number;
+		stage: string;
+		strategy?: string;
+		current?: IChatEdaPpaMetrics;
+		baseline?: IChatEdaPpaMetrics;
+		best?: IChatEdaPpaMetrics;
+		improvement?: Record<string, number>;
 	};
 	// Phase 1 additions (ADR-018 §2 D7 + D8 + D10 + D14):
 	/** Reverse channel: IDE must execute this tool + POST result back. */
@@ -832,6 +849,15 @@ function dispatchUnwrappedEvent(
 					power_report: data.power_report,
 					pareto_front_size: data.pareto_front_size,
 				} satisfies IChatEdaPpaReport],
+				ppaReport: {
+					round: data.round,
+					stage,
+					strategy: data.strategy,
+					current: data.current_ppa ?? data.ppa,
+					baseline: data.baseline_ppa,
+					best: data.best_ppa,
+					improvement: data.improvement,
+				},
 			};
 		}
 

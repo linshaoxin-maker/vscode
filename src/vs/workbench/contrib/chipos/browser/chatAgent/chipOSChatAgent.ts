@@ -91,6 +91,8 @@ import { ChiposHooksService } from '../resources/chiposHooksService.js';
 import { classifySseFailure, dispatchStatelessEvent, type DispatchResult } from './statelessInvoke/eventDispatcher.js';
 import { IRunStorageService, type IRunMetadata, type RunStatus } from '../runs/runStorageService.js';
 import { IChiposWaveformService } from '../waveform/chiposWaveformService.js';
+import { IPpaStorageService, type IPpaSnapshot } from '../ppa/ppaStorageService.js';
+import { IAgentActivityStore } from '../agents/agentActivityStore.js';
 import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
@@ -419,6 +421,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChatSlashCommandService private readonly _slashCommandService: IChatSlashCommandService,
 		@IRunStorageService private readonly _runStorageService: IRunStorageService,
 		@IChiposWaveformService private readonly _waveformService: IChiposWaveformService,
+		@IPpaStorageService private readonly _ppaStorageService: IPpaStorageService,
+		@IAgentActivityStore private readonly _agentActivityStore: IAgentActivityStore,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -2138,6 +2142,30 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * [ChipOS] Phase 6: persist a `ppa_report` slice (stamped with the turn's trace
+	 * id) into the PPA store so the dedicated PPA view + dashboard surface it.
+	 * Best-effort — a capture failure must never break the turn.
+	 */
+	private _capturePpa(traceId: string, ppaReport: NonNullable<DispatchResult['ppaReport']>): void {
+		try {
+			const snapshot: IPpaSnapshot = {
+				traceId: traceId || `ppa-${Date.now().toString(36)}`,
+				round: ppaReport.round,
+				stage: ppaReport.stage,
+				strategy: ppaReport.strategy,
+				timestamp: Date.now(),
+				current: ppaReport.current,
+				baseline: ppaReport.baseline,
+				best: ppaReport.best,
+				improvement: ppaReport.improvement,
+			};
+			this._ppaStorageService.savePpa(snapshot);
+		} catch (err) {
+			this._logService.warn('[ChipOS] capture PPA failed:', err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	/**
 	 * Parse the LAST markdown bullet list in the reply into {title, description}
 	 * next-step options. Splits each bullet on the first "(（：:—" into a short
 	 * title + a detail; bullets with no separator become title-only.
@@ -3736,6 +3764,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Phase 1 checkpoint events bump our resume watermark for the SSE
 		// drop / resume flow (handled in `_statelessTraces` map below).
 
+		// [ChipOS] Phase 6: the Agents view is per-turn — drop the prior turn's
+		// sub-agent runs so a role reused across turns starts a fresh run.
+		this._agentActivityStore.clear();
+
 		const applyDispatch = (handled: DispatchResult): void => {
 			if (handled.appendText) {
 				assistantTextBuf += handled.appendText;
@@ -3776,6 +3808,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// rows), replacing the old transient one-line progress message.
 				trackFirstProgress();
 				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, subagentCardState);
+				// [ChipOS] Phase 6: also record into the live Agents workbench view.
+				this._agentActivityStore.recordEvent(handled.subagentEvent);
 			}
 			if (handled.edaParts || handled.markdownContents || handled.taskSummary) {
 				// [ChipOS] Fusion: rich EDA report cards (sim/lint/coverage/PPA/
@@ -3808,6 +3842,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Fusion: settle any sub-agent cards still open at round
 				// end (no `complete` frame exists on this path) so none spins on.
 				this._finalizeStatelessSubagents(progress, subagentCardState);
+				// [ChipOS] Phase 6: close out the live Agents workbench view too.
+				this._agentActivityStore.markAllDone();
 				// [ChipOS] #4: surface non-normal termination (max_iterations /
 				// max_tokens / cancelled / interrupted) — a truncated turn renders
 				// identically to clean completion otherwise.
@@ -3848,6 +3884,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Phase 6 slice 5 Part B: open the waveform the reasoner
 				// asked for (its `open_waveform` tool → `viewer_action` event).
 				this._driveViewer(handled.viewerAction);
+			}
+			if (handled.ppaReport !== undefined) {
+				// [ChipOS] Phase 6: persist PPA results into the PPA workbench view.
+				this._capturePpa(traceId, handled.ppaReport);
 			}
 			// Phase 1 reverse channel: ide_tool_call → execute + POST result back.
 			// Fire-and-forget on a background task so the SSE loop keeps draining
@@ -4538,6 +4578,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			}
 			if (handled.subagentEvent) {
 				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, resumeSubagentCardState);
+				this._agentActivityStore.recordEvent(handled.subagentEvent);
 			}
 			if (handled.edaParts || handled.markdownContents || handled.taskSummary) {
 				// [ChipOS] Fusion: rich EDA report cards on the resume path too
@@ -4563,6 +4604,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (handled.terminate) {
 				// settle any sub-agent cards still open when the resumed turn ends.
 				this._finalizeStatelessSubagents(progress, resumeSubagentCardState);
+				this._agentActivityStore.markAllDone();
 				// [ChipOS] #4: surface non-normal termination on the resume path too.
 				if (handled.terminationReason && handled.terminationReason !== 'end_turn') {
 					const reasonMsg = ChipOSChatAgent._formatTerminationReason(handled.terminationReason);
@@ -4582,6 +4624,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Phase 6 slice 5 Part B: a resumed turn can also drive the
 				// waveform viewer (parity with the live loop above).
 				this._driveViewer(handled.viewerAction);
+			}
+			if (handled.ppaReport !== undefined) {
+				// [ChipOS] Phase 6: PPA capture on the resume path too.
+				this._capturePpa(traceId, handled.ppaReport);
 			}
 			if (handled.ideToolCall) {
 				const call = handled.ideToolCall;

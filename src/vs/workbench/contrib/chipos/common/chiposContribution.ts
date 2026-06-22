@@ -58,6 +58,10 @@ import { ModuleHierarchyTreeHandler } from '../../../../workbench/contrib/chipos
 import { ModuleHierarchyTreeDataProvider } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTreeDataProvider.js';
 import { OPEN_RUN_DETAIL_COMMAND_ID, RunHistoryTreeDataProvider, RunHistoryTreeHandler } from '../../../../workbench/contrib/chipos/browser/runs/runHistoryView.js';
 import { RunDetailPanel } from '../../../../workbench/contrib/chipos/browser/runs/runDetailPanel.js';
+import { OPEN_PPA_DETAIL_COMMAND_ID, PpaHistoryTreeDataProvider, PpaHistoryTreeHandler } from '../../../../workbench/contrib/chipos/browser/ppa/ppaHistoryView.js';
+import { PpaDetailPanel } from '../../../../workbench/contrib/chipos/browser/ppa/ppaDetailPanel.js';
+import { IPpaSnapshot } from '../../../../workbench/contrib/chipos/browser/ppa/ppaStorageService.js';
+import { AgentWorkbenchTreeDataProvider, AgentWorkbenchTreeHandler } from '../../../../workbench/contrib/chipos/browser/agents/agentWorkbenchView.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
@@ -89,6 +93,8 @@ import '../../../../workbench/contrib/chipos/browser/settings/modelDiscoveryServ
 import '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchy.contribution.js';
 import '../../../../workbench/contrib/chipos/browser/waveform/waveform.contribution.js';
 import '../../../../workbench/contrib/chipos/browser/runs/runs.contribution.js';
+import '../../../../workbench/contrib/chipos/browser/ppa/ppa.contribution.js';
+import '../../../../workbench/contrib/chipos/browser/agents/agents.contribution.js';
 import '../../../../workbench/contrib/chipos/browser/sessions/sessionStorageService.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposAtContextCompletions.js';
 import '../../../../workbench/contrib/chipos/browser/chatAgent/chiposSlashCommandCompletions.js';
@@ -125,6 +131,8 @@ const SKILL_TREE_VIEW_ID = 'chipos.skillTree';
 const WORKER_TOOLS_VIEW_ID = 'chipos.workerTools';
 const MODULE_HIERARCHY_VIEW_ID = 'chipos.moduleHierarchy';
 const RUNS_VIEW_ID = 'chipos.runs';
+const PPA_VIEW_ID = 'chipos.ppa';
+const AGENTS_VIEW_ID = 'chipos.agents';
 
 const viewContainersRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
@@ -1031,6 +1039,8 @@ class ChipOSContribution extends Disposable {
 		this._registerWorkerToolsView();
 		this._registerModuleHierarchyView();
 		this._registerRunsView();
+		this._registerPpaView();
+		this._registerAgentsView();
 	}
 
 	private _mapSidecarToConnectionState(state: SidecarState): ConnectionState {
@@ -1511,6 +1521,119 @@ class ChipOSContribution extends Disposable {
 		}));
 
 		this._logService.info('[ChipOS] Runs view registered');
+	}
+
+	/**
+	 * Phase 6 option 3: the Timing/PPA view. A flat list of optimization-round
+	 * snapshots captured from `ppa_report` frames; clicking a row opens a detail
+	 * dashboard (Baseline | Current | Best | Δ). Mirrors `_registerRunsView`.
+	 */
+	private _registerPpaView(): void {
+		const treeView = this._instantiationService.createInstance(
+			CustomTreeView, PPA_VIEW_ID, localize('chiposPpa', 'Timing / PPA'), 'chipos'
+		);
+		this._register(treeView);
+
+		const handler = this._register(this._instantiationService.createInstance(PpaHistoryTreeHandler));
+		const dataProvider = this._register(new PpaHistoryTreeDataProvider(handler));
+		treeView.dataProvider = dataProvider;
+
+		// A single, reused detail panel the list items open via the command below.
+		const detailPanel = this._register(this._instantiationService.createInstance(PpaDetailPanel));
+
+		viewsRegistry.registerViews([{
+			id: PPA_VIEW_ID,
+			name: { value: localize('chiposPpa', 'Timing / PPA'), original: 'Timing / PPA' },
+			ctorDescriptor: new SyncDescriptor(TreeViewPane),
+			treeView,
+			canToggleVisibility: true,
+			canMoveView: true,
+			collapsed: true,
+			order: 50,
+			hideByDefault: false,
+		} as ITreeViewDescriptor], chiposViewContainer);
+
+		// Empty-state message (mirrors how the pane renders a welcome string).
+		const updateEmptyMessage = () => {
+			treeView.message = dataProvider.isTreeEmpty
+				? localize('chiposPpaEmpty', "No PPA reports captured yet.")
+				: undefined;
+		};
+		updateEmptyMessage();
+		this._register(dataProvider.onDidChangeEmpty(updateEmptyMessage));
+
+		// Re-render whenever the captured snapshot set changes.
+		this._register(handler.onDidChangeTreeData(() => {
+			treeView.refresh();
+		}));
+
+		// Open the detail dashboard for a snapshot (invoked by list-item clicks).
+		this._register(CommandsRegistry.registerCommand(OPEN_PPA_DETAIL_COMMAND_ID, (_accessor, snapshot?: IPpaSnapshot) => {
+			if (snapshot) {
+				detailPanel.open(snapshot);
+			}
+		}));
+
+		// Explicit Refresh title button.
+		this._register(CommandsRegistry.registerCommand('chipos.ppa.refresh', () => {
+			treeView.refresh();
+		}));
+		this._register(MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+			command: {
+				id: 'chipos.ppa.refresh',
+				title: localize('chiposPpaRefresh', "Refresh"),
+				icon: Codicon.refresh,
+			},
+			when: ContextKeyExpr.equals('view', PPA_VIEW_ID),
+			group: 'navigation',
+		}));
+
+		this._logService.info('[ChipOS] PPA view registered');
+	}
+
+	/**
+	 * Phase 6 option 4: the Agents workbench view. A live 2-level tree of the
+	 * current turn's delegated sub-agents (role → tool activities), fed by
+	 * `subagentEvent` frames the chat agent records into the in-memory
+	 * {@link IAgentActivityStore}. Mirrors `_registerModuleHierarchyView`.
+	 */
+	private _registerAgentsView(): void {
+		const treeView = this._instantiationService.createInstance(
+			CustomTreeView, AGENTS_VIEW_ID, localize('chiposAgents', 'Agents'), 'chipos'
+		);
+		this._register(treeView);
+
+		const handler = this._register(this._instantiationService.createInstance(AgentWorkbenchTreeHandler));
+		const dataProvider = this._register(new AgentWorkbenchTreeDataProvider(handler));
+		treeView.dataProvider = dataProvider;
+
+		viewsRegistry.registerViews([{
+			id: AGENTS_VIEW_ID,
+			name: { value: localize('chiposAgents', 'Agents'), original: 'Agents' },
+			ctorDescriptor: new SyncDescriptor(TreeViewPane),
+			treeView,
+			canToggleVisibility: true,
+			canMoveView: true,
+			collapsed: true,
+			order: 60,
+			hideByDefault: false,
+		} as ITreeViewDescriptor], chiposViewContainer);
+
+		// Empty-state message (no sub-agents running in the current turn).
+		const updateEmptyMessage = () => {
+			treeView.message = dataProvider.isTreeEmpty
+				? localize('chiposAgentsEmpty', "No sub-agents active in this turn.")
+				: undefined;
+		};
+		updateEmptyMessage();
+		this._register(dataProvider.onDidChangeEmpty(updateEmptyMessage));
+
+		// Re-render whenever the live activity set changes.
+		this._register(handler.onDidChangeTreeData(() => {
+			treeView.refresh();
+		}));
+
+		this._logService.info('[ChipOS] Agents view registered');
 	}
 
 	private _registerInlineDiffCommands(agent: ChipOSChatAgent): void {

@@ -580,7 +580,11 @@ suite('dispatchStatelessEvent', () => {
 	test('ppa_report → edaPpaReport (stage passthrough)', () => {
 		assert.deepStrictEqual(
 			dispatchStatelessEvent(ev('ppa_report', { stage: 'improved', round: 2, improvement: { area: 0.1 }, strategy: 'r1' })),
-			{ flushText: true, edaParts: [{ kind: 'edaPpaReport', stage: 'improved', round: 2, ppa: undefined, baseline_ppa: undefined, previous_best_ppa: undefined, current_ppa: undefined, best_ppa: undefined, improvement: { area: 0.1 }, strategy: 'r1', sta_report: undefined, power_report: undefined, pareto_front_size: undefined }] },
+			{
+				flushText: true,
+				edaParts: [{ kind: 'edaPpaReport', stage: 'improved', round: 2, ppa: undefined, baseline_ppa: undefined, previous_best_ppa: undefined, current_ppa: undefined, best_ppa: undefined, improvement: { area: 0.1 }, strategy: 'r1', sta_report: undefined, power_report: undefined, pareto_front_size: undefined }],
+				ppaReport: { round: 2, stage: 'improved', strategy: 'r1', current: undefined, baseline: undefined, best: undefined, improvement: { area: 0.1 } },
+			},
 		);
 		// Unknown stage → defaulted to eval_round.
 		assert.strictEqual((dispatchStatelessEvent(ev('ppa_report', { stage: 'bogus' })).edaParts?.[0] as { stage: string }).stage, 'eval_round');
@@ -733,5 +737,34 @@ suite('classifySseFailure', () => {
 	test('EDA schema guard: empty payload → legit no-op, not degraded', () => {
 		const r = dispatchStatelessEvent(ev('sim_report', {}));
 		assert.ok(!r.markdownContents, 'empty payload is a no-op, not a degrade');
+	});
+
+	test('ppa_report → ppaReport capture directive (Phase 6 Timing/PPA view feed)', () => {
+		// The same frame that renders the PPA card ALSO carries a `ppaReport`
+		// directive the agent folds into IPpaStorageService → the PPA sidebar.
+		const r = dispatchStatelessEvent(ev('ppa_report', {
+			stage: 'improved',
+			round: 2,
+			strategy: 'pareto-sweep',
+			current_ppa: { area: 13560, delay_ns: 2.94 },
+			baseline_ppa: { area: 14820, delay_ns: 3.21 },
+			best_ppa: { area: 13560, delay_ns: 2.94 },
+			improvement: { area: 8.5 },
+		}));
+		assert.deepStrictEqual(r.ppaReport, {
+			round: 2,
+			stage: 'improved',
+			strategy: 'pareto-sweep',
+			current: { area: 13560, delay_ns: 2.94 },
+			baseline: { area: 14820, delay_ns: 3.21 },
+			best: { area: 13560, delay_ns: 2.94 },
+			improvement: { area: 8.5 },
+		});
+	});
+
+	test('ppa_report current falls back to `ppa` when `current_ppa` absent', () => {
+		const r = dispatchStatelessEvent(ev('ppa_report', { stage: 'baseline', round: 0, ppa: { area: 14820 } }));
+		assert.strictEqual(r.ppaReport?.stage, 'baseline');
+		assert.deepStrictEqual(r.ppaReport?.current, { area: 14820 });
 	});
 });
