@@ -15,6 +15,9 @@ import { IPpaMetrics, IPpaSnapshot } from './ppaStorageService.js';
 /** Webview view type used to identify (and revive/reuse) the PPA detail editor. */
 const PPA_DETAIL_VIEW_TYPE = 'chipos.ppaDetail';
 
+/** Command id invoked to open a snapshot's detail dashboard. */
+export const OPEN_PPA_DETAIL_COMMAND_ID = 'chipos.ppa.openDetail';
+
 /**
  * Manages a single, reused webview editor that renders a metrics dashboard for
  * a captured PPA snapshot. Mirrors the lightweight webview-input lifecycle used

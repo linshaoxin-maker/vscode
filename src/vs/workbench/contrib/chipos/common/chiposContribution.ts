@@ -56,11 +56,9 @@ import { IWorkerToolManagerService, WorkerToolsViewDataProvider } from '../../..
 import { IModuleHierarchyService } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyService.js';
 import { ModuleHierarchyTreeHandler } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTree.js';
 import { ModuleHierarchyTreeDataProvider } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTreeDataProvider.js';
-import { OPEN_RUN_DETAIL_COMMAND_ID } from '../../../../workbench/contrib/chipos/browser/runs/runHistoryView.js';
-import { RunDetailPanel } from '../../../../workbench/contrib/chipos/browser/runs/runDetailPanel.js';
+import { OPEN_RUN_DETAIL_COMMAND_ID, RunDetailPanel } from '../../../../workbench/contrib/chipos/browser/runs/runDetailPanel.js';
 import { IRunStorageService } from '../../../../workbench/contrib/chipos/browser/runs/runStorageService.js';
-import { OPEN_PPA_DETAIL_COMMAND_ID } from '../../../../workbench/contrib/chipos/browser/ppa/ppaHistoryView.js';
-import { PpaDetailPanel } from '../../../../workbench/contrib/chipos/browser/ppa/ppaDetailPanel.js';
+import { OPEN_PPA_DETAIL_COMMAND_ID, PpaDetailPanel } from '../../../../workbench/contrib/chipos/browser/ppa/ppaDetailPanel.js';
 import { IPpaSnapshot, IPpaStorageService } from '../../../../workbench/contrib/chipos/browser/ppa/ppaStorageService.js';
 import { AgentsWorkflowViewPane, AGENTS_WORKFLOW_VIEW_ID } from '../../../../workbench/contrib/chipos/browser/agents/agentsWorkflowView.js';
 import { IAgentActivityStore } from '../../../../workbench/contrib/chipos/browser/agents/agentActivityStore.js';

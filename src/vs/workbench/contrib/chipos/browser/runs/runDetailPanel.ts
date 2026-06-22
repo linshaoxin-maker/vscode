@@ -13,10 +13,12 @@ import { ACTIVE_GROUP, IEditorService } from '../../../../../workbench/services/
 import { WebviewInput } from '../../../../../workbench/contrib/webviewPanel/browser/webviewEditorInput.js';
 import { IWebviewWorkbenchService } from '../../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { IRunMetadata, IRunStorageService } from './runStorageService.js';
-import { relativeTime } from './runHistoryView.js';
 
 /** Webview view type used to identify (and revive/reuse) the run detail editor. */
 const RUN_DETAIL_VIEW_TYPE = 'chipos.runDetail';
+
+/** Command id invoked to open a run's detail view. */
+export const OPEN_RUN_DETAIL_COMMAND_ID = 'chipos.runs.openDetail';
 
 /** Shape of the messages the webview posts back to the host. */
 interface IRunDetailMessage {
@@ -303,4 +305,23 @@ function formatDuration(durationMs: number): string {
 		return localize('chipos.runs.detail.durationMs', '{0}ms', durationMs);
 	}
 	return localize('chipos.runs.detail.durationSec', '{0}s', (durationMs / 1000).toFixed(1));
+}
+
+/** Coarse relative-time string (`just now`, `2m ago`, `3h ago`, `4d ago`). */
+function relativeTime(timestamp: number): string {
+	const deltaMs = Math.max(0, Date.now() - timestamp);
+	const seconds = Math.floor(deltaMs / 1000);
+	if (seconds < 45) {
+		return localize('chipos.runs.time.now', 'just now');
+	}
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) {
+		return localize('chipos.runs.time.minutes', '{0}m ago', Math.max(1, minutes));
+	}
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) {
+		return localize('chipos.runs.time.hours', '{0}h ago', hours);
+	}
+	const days = Math.floor(hours / 24);
+	return localize('chipos.runs.time.days', '{0}d ago', days);
 }
