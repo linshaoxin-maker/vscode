@@ -5,6 +5,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { AgentActivityStore, IAgentRun } from '../../../../../workbench/contrib/chipos/browser/agents/agentActivityStore.js';
 
 /** Project a run to a timestamp-free shape so snapshots stay deterministic. */
@@ -24,7 +26,7 @@ suite('AgentActivityStore — Phase 6 Agents view feed', () => {
 	const ds = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('tool_start opens a running run; tool_end resolves the activity with its result', () => {
-		const store = ds.add(new AgentActivityStore());
+		const store = ds.add(new AgentActivityStore(ds.add(new TestStorageService()), new NullLogService()));
 		store.recordEvent({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'edit_file' });
 		store.recordEvent({ taskId: 'rtl-coder', kind: 'tool_end', toolName: 'edit_file', result: '改 1 处' });
 
@@ -34,7 +36,7 @@ suite('AgentActivityStore — Phase 6 Agents view feed', () => {
 	});
 
 	test('two roles produce two independent runs in first-seen order', () => {
-		const store = ds.add(new AgentActivityStore());
+		const store = ds.add(new AgentActivityStore(ds.add(new TestStorageService()), new NullLogService()));
 		store.recordEvent({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'edit_file' });
 		store.recordEvent({ taskId: 'verifier', kind: 'tool_start', toolName: 'verilog_lint' });
 		store.recordEvent({ taskId: 'verifier', kind: 'tool_end', toolName: 'verilog_lint', result: '✓ 通过' });
@@ -46,13 +48,13 @@ suite('AgentActivityStore — Phase 6 Agents view feed', () => {
 	});
 
 	test('a tool_end with no matching tool_start is dropped', () => {
-		const store = ds.add(new AgentActivityStore());
+		const store = ds.add(new AgentActivityStore(ds.add(new TestStorageService()), new NullLogService()));
 		store.recordEvent({ taskId: 'ghost', kind: 'tool_end', toolName: 'edit_file' });
 		assert.deepStrictEqual(store.getRuns(), []);
 	});
 
 	test('markAllDone closes every run and every still-open activity', () => {
-		const store = ds.add(new AgentActivityStore());
+		const store = ds.add(new AgentActivityStore(ds.add(new TestStorageService()), new NullLogService()));
 		store.recordEvent({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'edit_file' });
 		store.recordEvent({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'verilog_lint' });
 		store.markAllDone();
@@ -68,7 +70,7 @@ suite('AgentActivityStore — Phase 6 Agents view feed', () => {
 	});
 
 	test('clear drops all runs; malformed frames (no taskId) are guarded', () => {
-		const store = ds.add(new AgentActivityStore());
+		const store = ds.add(new AgentActivityStore(ds.add(new TestStorageService()), new NullLogService()));
 		store.recordEvent({ taskId: 'rtl-coder', kind: 'tool_start', toolName: 'edit_file' });
 		store.clear();
 		store.recordEvent({ taskId: '', kind: 'tool_start', toolName: 'edit_file' });

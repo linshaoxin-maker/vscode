@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { localize } from '../../../../../nls.js';
 import { IStatusbarService, StatusbarAlignment, IStatusbarEntryAccessor } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
 import { ConnectionState } from '../../../../../workbench/contrib/chipos/browser/eventTypes.js';
 
@@ -21,6 +22,16 @@ const STATUSBAR_FILES_ID = 'chipos.statusbar.files';
 const STATUSBAR_MCP_ID = 'chipos.statusbar.mcp';
 const STATUSBAR_USAGE_ID = 'chipos.statusbar.usage';
 const STATUSBAR_RECONNECT_ID = 'chipos.statusbar.reconnect';
+// Phase 6 tool-surfacing pills — live, clickable shortcuts that replace the
+// old auxiliary-bar tree views. Each reflects a chat-turn store and opens its
+// detail editor on click (no command palette, no stealing the Chat panel).
+const STATUSBAR_AGENTS_ID = 'chipos.statusbar.agents';
+const STATUSBAR_PPA_ID = 'chipos.statusbar.ppa';
+const STATUSBAR_RUNS_ID = 'chipos.statusbar.runs';
+// A single "expand" entry for the reference/catalog tools (Skill Tree, Worker
+// Tools, Module Hierarchy) — the less-frequent ones that don't warrant their
+// own always-on pill. Clicking opens a quick-pick to reveal one on demand.
+const STATUSBAR_TOOLS_ID = 'chipos.statusbar.tools';
 
 /**
  * Why the reconnect entry is visible. Each variant maps to a slightly
@@ -48,6 +59,10 @@ export class StatusBarHandler extends Disposable {
 	private _mcpEntry: IStatusbarEntryAccessor | undefined;
 	private _usageEntry: IStatusbarEntryAccessor | undefined;
 	private _reconnectEntry: IStatusbarEntryAccessor | undefined;
+	private _agentsEntry: IStatusbarEntryAccessor | undefined;
+	private _ppaEntry: IStatusbarEntryAccessor | undefined;
+	private _runsEntry: IStatusbarEntryAccessor | undefined;
+	private _toolsEntry: IStatusbarEntryAccessor | undefined;
 
 	// 2026-05-23: empty-workbench gate for the Worker pill.
 	// _ensureLocalWorker() short-circuits when no folder is open ("no
@@ -200,6 +215,111 @@ export class StatusBarHandler extends Disposable {
 				{ location: { id: STATUSBAR_CONNECTION_ID, priority: 98 }, alignment: StatusbarAlignment.LEFT, compact: true },
 			);
 			this._register(this._mcpEntry);
+		}
+	}
+
+	// ── ChipOS tool pills (Phase 6) ───────────────────────────────────────
+	//
+	// Live, clickable shortcuts grouped on the RIGHT of the status bar. Each
+	// mirrors a chat-turn store and opens its detail editor on click; absent
+	// when there's nothing to show (disposed/recreated like the other pills).
+
+	/** Live sub-agent activity: `running` count while a turn delegates, else total. */
+	updateAgentsStatus(running: number, total: number): void {
+		if (total <= 0) {
+			this._agentsEntry?.dispose();
+			this._agentsEntry = undefined;
+			return;
+		}
+		const text = running > 0
+			? `$(loading~spin) Agents · ${running} running`
+			: `$(hubot) Agents · ${total} done`;
+		const entry = {
+			name: 'ChipOS Agents',
+			text,
+			ariaLabel: text,
+			command: 'chipos.agents.openWorkflow',
+			tooltip: localize('chipos.statusbar.agents.tooltip', "Sub-agent activity this turn — click to open the Agents workflow panel"),
+		};
+		if (this._agentsEntry) {
+			this._agentsEntry.update(entry);
+		} else {
+			this._agentsEntry = this._statusbarService.addEntry(entry, STATUSBAR_AGENTS_ID, StatusbarAlignment.RIGHT, 100);
+			this._register(this._agentsEntry);
+		}
+	}
+
+	/** Latest captured PPA round + headline improvement; absent until a `ppa_report` lands. */
+	updatePpaStatus(round: number | null, improvementPct: number | null): void {
+		if (round === null) {
+			this._ppaEntry?.dispose();
+			this._ppaEntry = undefined;
+			return;
+		}
+		const delta = (improvementPct !== null && isFinite(improvementPct) && Math.abs(improvementPct) >= 0.05)
+			? ` $(arrow-down)${Math.abs(improvementPct).toFixed(0)}%`
+			: '';
+		const text = `$(graph) PPA R${round}${delta}`;
+		const entry = {
+			name: 'ChipOS PPA',
+			text,
+			ariaLabel: text,
+			command: 'chipos.ppa.openDetail',
+			tooltip: localize('chipos.statusbar.ppa.tooltip', "Latest timing/PPA report — click to open the dashboard"),
+		};
+		if (this._ppaEntry) {
+			this._ppaEntry.update(entry);
+		} else {
+			this._ppaEntry = this._statusbarService.addEntry(entry, STATUSBAR_PPA_ID, StatusbarAlignment.RIGHT, 99);
+			this._register(this._ppaEntry);
+		}
+	}
+
+	/**
+	 * The "expand" pill for the reference tools (Skill Tree / Worker Tools /
+	 * Module Hierarchy). Always present (those tools always exist); clicking
+	 * runs `chipos.tools.quickOpen`, which pops a quick-pick to reveal one.
+	 */
+	ensureToolsMenuEntry(): void {
+		if (this._toolsEntry) {
+			return;
+		}
+		const text = '$(beaker) ChipOS Tools';
+		this._toolsEntry = this._statusbarService.addEntry(
+			{
+				name: 'ChipOS Tools',
+				text,
+				ariaLabel: text,
+				command: 'chipos.tools.quickOpen',
+				tooltip: localize('chipos.statusbar.tools.tooltip', "Open a ChipOS tool — Skill Tree, Worker Tools, Module Hierarchy"),
+			},
+			STATUSBAR_TOOLS_ID,
+			StatusbarAlignment.RIGHT,
+			97,
+		);
+		this._register(this._toolsEntry);
+	}
+
+	/** Count of captured EDA runs this session; absent until the first run lands. */
+	updateRunsStatus(count: number): void {
+		if (count <= 0) {
+			this._runsEntry?.dispose();
+			this._runsEntry = undefined;
+			return;
+		}
+		const text = `$(history) Runs: ${count}`;
+		const entry = {
+			name: 'ChipOS Runs',
+			text,
+			ariaLabel: text,
+			command: 'chipos.runs.openDetail',
+			tooltip: localize('chipos.statusbar.runs.tooltip', "Captured EDA runs — click to open the latest run"),
+		};
+		if (this._runsEntry) {
+			this._runsEntry.update(entry);
+		} else {
+			this._runsEntry = this._statusbarService.addEntry(entry, STATUSBAR_RUNS_ID, StatusbarAlignment.RIGHT, 98);
+			this._register(this._runsEntry);
 		}
 	}
 
@@ -367,6 +487,14 @@ export class StatusBarHandler extends Disposable {
 		this._usageEntry = undefined;
 		this._reconnectEntry?.dispose();
 		this._reconnectEntry = undefined;
+		this._agentsEntry?.dispose();
+		this._agentsEntry = undefined;
+		this._ppaEntry?.dispose();
+		this._ppaEntry = undefined;
+		this._runsEntry?.dispose();
+		this._runsEntry = undefined;
+		this._toolsEntry?.dispose();
+		this._toolsEntry = undefined;
 		super.dispose();
 	}
 

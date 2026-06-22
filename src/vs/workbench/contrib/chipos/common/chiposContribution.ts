@@ -18,7 +18,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
@@ -48,7 +48,7 @@ import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/m
 import { autorun } from '../../../../base/common/observable.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { Extensions as ViewContainerExtensions, IViewContainersRegistry, IViewsRegistry, ITreeViewDescriptor, TreeViewItemHandleArg, ViewContainerLocation } from '../../../../workbench/common/views.js';
+import { Extensions as ViewContainerExtensions, IViewContainersRegistry, IViewDescriptor, IViewsRegistry, ITreeViewDescriptor, TreeViewItemHandleArg, ViewContainerLocation } from '../../../../workbench/common/views.js';
 import { TreeViewPane, CustomTreeView, TreeView } from '../../../../workbench/browser/parts/views/treeView.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { SkillTreeViewDataProvider } from '../../../../workbench/contrib/chipos/browser/migration/skillTreeHandler.js';
@@ -56,12 +56,14 @@ import { IWorkerToolManagerService, WorkerToolsViewDataProvider } from '../../..
 import { IModuleHierarchyService } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyService.js';
 import { ModuleHierarchyTreeHandler } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTree.js';
 import { ModuleHierarchyTreeDataProvider } from '../../../../workbench/contrib/chipos/browser/moduleHierarchy/moduleHierarchyTreeDataProvider.js';
-import { OPEN_RUN_DETAIL_COMMAND_ID, RunHistoryTreeDataProvider, RunHistoryTreeHandler } from '../../../../workbench/contrib/chipos/browser/runs/runHistoryView.js';
+import { OPEN_RUN_DETAIL_COMMAND_ID } from '../../../../workbench/contrib/chipos/browser/runs/runHistoryView.js';
 import { RunDetailPanel } from '../../../../workbench/contrib/chipos/browser/runs/runDetailPanel.js';
-import { OPEN_PPA_DETAIL_COMMAND_ID, PpaHistoryTreeDataProvider, PpaHistoryTreeHandler } from '../../../../workbench/contrib/chipos/browser/ppa/ppaHistoryView.js';
+import { IRunStorageService } from '../../../../workbench/contrib/chipos/browser/runs/runStorageService.js';
+import { OPEN_PPA_DETAIL_COMMAND_ID } from '../../../../workbench/contrib/chipos/browser/ppa/ppaHistoryView.js';
 import { PpaDetailPanel } from '../../../../workbench/contrib/chipos/browser/ppa/ppaDetailPanel.js';
-import { IPpaSnapshot } from '../../../../workbench/contrib/chipos/browser/ppa/ppaStorageService.js';
-import { AgentWorkbenchTreeDataProvider, AgentWorkbenchTreeHandler } from '../../../../workbench/contrib/chipos/browser/agents/agentWorkbenchView.js';
+import { IPpaSnapshot, IPpaStorageService } from '../../../../workbench/contrib/chipos/browser/ppa/ppaStorageService.js';
+import { AgentsWorkflowViewPane, AGENTS_WORKFLOW_VIEW_ID } from '../../../../workbench/contrib/chipos/browser/agents/agentsWorkflowView.js';
+import { IAgentActivityStore } from '../../../../workbench/contrib/chipos/browser/agents/agentActivityStore.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
@@ -133,9 +135,6 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 const SKILL_TREE_VIEW_ID = 'chipos.skillTree';
 const WORKER_TOOLS_VIEW_ID = 'chipos.workerTools';
 const MODULE_HIERARCHY_VIEW_ID = 'chipos.moduleHierarchy';
-const RUNS_VIEW_ID = 'chipos.runs';
-const PPA_VIEW_ID = 'chipos.ppa';
-const AGENTS_VIEW_ID = 'chipos.agents';
 
 const viewContainersRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
@@ -925,6 +924,9 @@ class ChipOSContribution extends Disposable {
 		@IChipOSTokenManager private readonly _tokenManager: IChipOSTokenManager,
 		@IChipOSUsageService private readonly _usageService: IChipOSUsageService,
 		@IProductService private readonly _productService: IProductService,
+		@IRunStorageService private readonly _runStorageService: IRunStorageService,
+		@IPpaStorageService private readonly _ppaStorageService: IPpaStorageService,
+		@IAgentActivityStore private readonly _agentActivityStore: IAgentActivityStore,
 	) {
 		super();
 
@@ -1041,9 +1043,13 @@ class ChipOSContribution extends Disposable {
 		this._registerEdaContentParts();
 		this._registerWorkerToolsView();
 		this._registerModuleHierarchyView();
-		this._registerRunsView();
-		this._registerPpaView();
-		this._registerAgentsView();
+		this._registerAgentsWorkflowView();
+		// Phase 6: Runs / Timing-PPA / Agents are surfaced as live status-bar
+		// pills + chat-card buttons + detail editor tabs (not auxiliary-bar
+		// tree views that fight the Chat panel). Wire the detail editors and the
+		// status-bar pills here.
+		this._registerDetailPanels();
+		this._registerToolStatusBarPills();
 	}
 
 	private _mapSidecarToConnectionState(state: SidecarState): ConnectionState {
@@ -1463,180 +1469,115 @@ class ChipOSContribution extends Disposable {
 		this._logService.info('[ChipOS] Module Hierarchy view registered');
 	}
 
-	private _registerRunsView(): void {
-		const treeView = this._instantiationService.createInstance(
-			CustomTreeView, RUNS_VIEW_ID, localize('chiposRuns', 'Runs'), 'chipos'
-		);
-		this._register(treeView);
+	private _registerDetailPanels(): void {
+		const runDetail = this._register(this._instantiationService.createInstance(RunDetailPanel));
+		const ppaDetail = this._register(this._instantiationService.createInstance(PpaDetailPanel));
 
-		const handler = this._register(this._instantiationService.createInstance(RunHistoryTreeHandler));
-		const dataProvider = this._register(new RunHistoryTreeDataProvider(handler));
-		treeView.dataProvider = dataProvider;
-
-		// A single, reused detail panel the list items open via the command below.
-		const detailPanel = this._register(this._instantiationService.createInstance(RunDetailPanel));
-
-		viewsRegistry.registerViews([{
-			id: RUNS_VIEW_ID,
-			name: { value: localize('chiposRuns', 'Runs'), original: 'Runs' },
-			ctorDescriptor: new SyncDescriptor(TreeViewPane),
-			treeView,
-			canToggleVisibility: true,
-			canMoveView: true,
-			collapsed: true,
-			order: 40,
-			hideByDefault: false,
-		} as ITreeViewDescriptor], chiposViewContainer);
-
-		// Empty-state message (mirrors how the pane renders a welcome string).
-		const updateEmptyMessage = () => {
-			treeView.message = dataProvider.isTreeEmpty
-				? localize('chiposRunsEmpty', "No runs captured yet.")
-				: undefined;
-		};
-		updateEmptyMessage();
-		this._register(dataProvider.onDidChangeEmpty(updateEmptyMessage));
-
-		// Re-render whenever the persisted run set changes.
-		this._register(handler.onDidChangeTreeData(() => {
-			treeView.refresh();
-		}));
-
-		// Open the detail view for a given trace id (invoked by list-item clicks).
+		// PPA / Runs detail open as editor tabs (reports — you open the specific
+		// one). Each command accepts an explicit target (a chat-card button could
+		// pass one) OR falls back to the latest captured item (a status-bar click
+		// passes nothing). getRuns()/getReports() are both newest-first. Agents is
+		// different — it's a browsable workbench panel, see `_registerAgentsWorkflowView`.
 		this._register(CommandsRegistry.registerCommand(OPEN_RUN_DETAIL_COMMAND_ID, (_accessor, traceId?: string) => {
-			if (typeof traceId === 'string') {
-				detailPanel.open(traceId);
+			const id = typeof traceId === 'string' ? traceId : this._runStorageService.getRuns()[0]?.traceId;
+			if (id) {
+				runDetail.open(id);
 			}
 		}));
 
-		// Explicit Refresh title button.
-		this._register(CommandsRegistry.registerCommand('chipos.runs.refresh', () => {
-			treeView.refresh();
-		}));
-		this._register(MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-			command: {
-				id: 'chipos.runs.refresh',
-				title: localize('chiposRunsRefresh', "Refresh"),
-				icon: Codicon.refresh,
-			},
-			when: ContextKeyExpr.equals('view', RUNS_VIEW_ID),
-			group: 'navigation',
-		}));
-
-		this._logService.info('[ChipOS] Runs view registered');
-	}
-
-	/**
-	 * Phase 6 option 3: the Timing/PPA view. A flat list of optimization-round
-	 * snapshots captured from `ppa_report` frames; clicking a row opens a detail
-	 * dashboard (Baseline | Current | Best | Δ). Mirrors `_registerRunsView`.
-	 */
-	private _registerPpaView(): void {
-		const treeView = this._instantiationService.createInstance(
-			CustomTreeView, PPA_VIEW_ID, localize('chiposPpa', 'Timing / PPA'), 'chipos'
-		);
-		this._register(treeView);
-
-		const handler = this._register(this._instantiationService.createInstance(PpaHistoryTreeHandler));
-		const dataProvider = this._register(new PpaHistoryTreeDataProvider(handler));
-		treeView.dataProvider = dataProvider;
-
-		// A single, reused detail panel the list items open via the command below.
-		const detailPanel = this._register(this._instantiationService.createInstance(PpaDetailPanel));
-
-		viewsRegistry.registerViews([{
-			id: PPA_VIEW_ID,
-			name: { value: localize('chiposPpa', 'Timing / PPA'), original: 'Timing / PPA' },
-			ctorDescriptor: new SyncDescriptor(TreeViewPane),
-			treeView,
-			canToggleVisibility: true,
-			canMoveView: true,
-			collapsed: true,
-			order: 50,
-			hideByDefault: false,
-		} as ITreeViewDescriptor], chiposViewContainer);
-
-		// Empty-state message (mirrors how the pane renders a welcome string).
-		const updateEmptyMessage = () => {
-			treeView.message = dataProvider.isTreeEmpty
-				? localize('chiposPpaEmpty', "No PPA reports captured yet.")
-				: undefined;
-		};
-		updateEmptyMessage();
-		this._register(dataProvider.onDidChangeEmpty(updateEmptyMessage));
-
-		// Re-render whenever the captured snapshot set changes.
-		this._register(handler.onDidChangeTreeData(() => {
-			treeView.refresh();
-		}));
-
-		// Open the detail dashboard for a snapshot (invoked by list-item clicks).
 		this._register(CommandsRegistry.registerCommand(OPEN_PPA_DETAIL_COMMAND_ID, (_accessor, snapshot?: IPpaSnapshot) => {
-			if (snapshot) {
-				detailPanel.open(snapshot);
+			const snap = snapshot ?? this._ppaStorageService.getReports()[0];
+			if (snap) {
+				ppaDetail.open(snap);
 			}
 		}));
 
-		// Explicit Refresh title button.
-		this._register(CommandsRegistry.registerCommand('chipos.ppa.refresh', () => {
-			treeView.refresh();
-		}));
-		this._register(MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-			command: {
-				id: 'chipos.ppa.refresh',
-				title: localize('chiposPpaRefresh', "Refresh"),
-				icon: Codicon.refresh,
-			},
-			when: ContextKeyExpr.equals('view', PPA_VIEW_ID),
-			group: 'navigation',
-		}));
-
-		this._logService.info('[ChipOS] PPA view registered');
+		this._logService.info('[ChipOS] Run/PPA detail editors registered');
 	}
 
 	/**
-	 * Phase 6 option 4: the Agents workbench view. A live 2-level tree of the
-	 * current turn's delegated sub-agents (role → tool activities), fed by
-	 * `subagentEvent` frames the chat agent records into the in-memory
-	 * {@link IAgentActivityStore}. Mirrors `_registerModuleHierarchyView`.
+	 * Phase 6: the multi-agent workflow panel. A rich-card view in the ChipOS
+	 * Tools container (alongside Skill Tree / Worker Tools / Module Hierarchy)
+	 * that overviews the current turn's delegated sub-agents — one card per role
+	 * with its tool activities. Distinct from the in-chat sub-agent cards. Opened
+	 * from the `ChipOS Tools` quick-pick and revealed by the `Agents` status pill.
 	 */
-	private _registerAgentsView(): void {
-		const treeView = this._instantiationService.createInstance(
-			CustomTreeView, AGENTS_VIEW_ID, localize('chiposAgents', 'Agents'), 'chipos'
-		);
-		this._register(treeView);
-
-		const handler = this._register(this._instantiationService.createInstance(AgentWorkbenchTreeHandler));
-		const dataProvider = this._register(new AgentWorkbenchTreeDataProvider(handler));
-		treeView.dataProvider = dataProvider;
-
+	private _registerAgentsWorkflowView(): void {
 		viewsRegistry.registerViews([{
-			id: AGENTS_VIEW_ID,
-			name: { value: localize('chiposAgents', 'Agents'), original: 'Agents' },
-			ctorDescriptor: new SyncDescriptor(TreeViewPane),
-			treeView,
+			id: AGENTS_WORKFLOW_VIEW_ID,
+			name: { value: localize('chiposAgentsWorkflow', 'Agents'), original: 'Agents' },
+			ctorDescriptor: new SyncDescriptor(AgentsWorkflowViewPane),
 			canToggleVisibility: true,
 			canMoveView: true,
 			collapsed: true,
-			order: 60,
+			order: 35,
 			hideByDefault: false,
-		} as ITreeViewDescriptor], chiposViewContainer);
+		} as IViewDescriptor], chiposViewContainer);
 
-		// Empty-state message (no sub-agents running in the current turn).
-		const updateEmptyMessage = () => {
-			treeView.message = dataProvider.isTreeEmpty
-				? localize('chiposAgentsEmpty', "No sub-agents active in this turn.")
-				: undefined;
-		};
-		updateEmptyMessage();
-		this._register(dataProvider.onDidChangeEmpty(updateEmptyMessage));
-
-		// Re-render whenever the live activity set changes.
-		this._register(handler.onDidChangeTreeData(() => {
-			treeView.refresh();
+		this._register(CommandsRegistry.registerCommand('chipos.agents.openWorkflow', async () => {
+			await this._viewsService.openView(AGENTS_WORKFLOW_VIEW_ID, true);
 		}));
 
-		this._logService.info('[ChipOS] Agents view registered');
+		this._logService.info('[ChipOS] Agents workflow view registered');
+	}
+
+	/**
+	 * Phase 6: live, clickable status-bar pills for the chat-driven tool views
+	 * (Agents / Timing-PPA / Runs). Each subscribes to its store and reflects
+	 * live turn state; clicking opens the corresponding detail editor. This is
+	 * the discoverable entry that replaces the old palette/auxiliary-bar trees.
+	 */
+	private _registerToolStatusBarPills(): void {
+		const handler = this._statusBarHandler;
+		if (!handler) {
+			return;
+		}
+
+		const refreshAgents = () => {
+			const runs = this._agentActivityStore.getRuns();
+			const running = runs.filter(r => r.status === 'running').length;
+			handler.updateAgentsStatus(running, runs.length);
+		};
+		refreshAgents();
+		this._register(this._agentActivityStore.onDidChange(refreshAgents));
+
+		const refreshPpa = () => {
+			const latest = this._ppaStorageService.getReports()[0];
+			if (!latest) {
+				handler.updatePpaStatus(null, null);
+				return;
+			}
+			const improvement = latest.improvement?.area;
+			handler.updatePpaStatus(latest.round ?? 0, typeof improvement === 'number' ? improvement : null);
+		};
+		refreshPpa();
+		this._register(this._ppaStorageService.onDidChange(refreshPpa));
+
+		const refreshRuns = () => {
+			handler.updateRunsStatus(this._runStorageService.getRuns().length);
+		};
+		refreshRuns();
+		this._register(this._runStorageService.onDidChangeRuns(refreshRuns));
+
+		// The reference/catalog tools (Skill Tree / Worker Tools / Module
+		// Hierarchy) don't warrant their own always-on pill — they live behind a
+		// single "ChipOS Tools" expand entry that pops a quick-pick to reveal one.
+		handler.ensureToolsMenuEntry();
+		this._register(CommandsRegistry.registerCommand('chipos.tools.quickOpen', async (accessor) => {
+			const quickInput = accessor.get(IQuickInputService);
+			const items: Array<IQuickPickItem & { viewId: string }> = [
+				{ label: '$(hubot) Agents', description: localize('chipos.tools.agents.desc', "Multi-agent workflow for the current turn"), viewId: AGENTS_WORKFLOW_VIEW_ID },
+				{ label: '$(list-tree) Skill Tree', description: localize('chipos.tools.skillTree.desc', "Learned + built-in skills"), viewId: SKILL_TREE_VIEW_ID },
+				{ label: '$(tools) Worker Tools', description: localize('chipos.tools.workerTools.desc', "Available worker tool catalog"), viewId: WORKER_TOOLS_VIEW_ID },
+				{ label: '$(symbol-structure) Module Hierarchy', description: localize('chipos.tools.moduleHierarchy.desc', "RTL module tree for this workspace"), viewId: MODULE_HIERARCHY_VIEW_ID },
+			];
+			const picked = await quickInput.pick(items, { placeHolder: localize('chipos.tools.placeholder', "Open a ChipOS tool…") });
+			if (picked) {
+				await this._viewsService.openView(picked.viewId, true);
+			}
+		}));
+
+		this._logService.info('[ChipOS] Tool status-bar pills registered');
 	}
 
 	private _registerInlineDiffCommands(agent: ChipOSChatAgent): void {

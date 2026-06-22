@@ -5,6 +5,7 @@
 
 import * as dom from '../../../../../../../base/browser/dom.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
+import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
 import { IChatEdaPpaReport, IChatEdaPpaMetrics } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
@@ -39,6 +40,7 @@ export class ChatEdaPpaReportContentPart extends Disposable implements IChatCont
 
 	constructor(
 		private readonly content: IChatEdaPpaReport,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
 
@@ -91,6 +93,20 @@ export class ChatEdaPpaReportContentPart extends Disposable implements IChatCont
 		if (content.power_report) {
 			container.appendChild(this._collapsible('Power Report', content.power_report));
 		}
+
+		// Chat → status-bar → editor linkage: open the full PPA dashboard as an
+		// editor tab. No argument means "latest snapshot", which is exactly the
+		// one this card was rendered from (same ppa_report event).
+		const actions = $('div.eda-ppa-actions');
+		const openBtn = document.createElement('button');
+		openBtn.className = 'eda-spec-btn';
+		openBtn.type = 'button';
+		openBtn.textContent = 'Open Dashboard ↗';
+		this._register(dom.addDisposableListener(openBtn, 'click', () => {
+			this.commandService.executeCommand('chipos.ppa.openDetail');
+		}));
+		actions.appendChild(openBtn);
+		container.appendChild(actions);
 
 		this.domNode = edaSection('PPA Report', container);
 		this.domNode.classList.add('eda-ppa-report-section');

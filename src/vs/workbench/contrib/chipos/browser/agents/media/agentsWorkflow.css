@@ -1,0 +1,134 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) ChipOS IDE contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root.
+ *--------------------------------------------------------------------------------------------*/
+
+.chipos-agents-workflow {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 6px 8px;
+	overflow-y: auto;
+	height: 100%;
+	box-sizing: border-box;
+}
+
+.chipos-agents-workflow .chipos-agents-empty {
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	line-height: 1.5;
+	padding: 8px 2px;
+}
+
+.chipos-agents-workflow .chipos-agent-card {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.chipos-agents-workflow .chipos-agent-card.running {
+	border-color: var(--vscode-focusBorder);
+}
+
+.chipos-agents-workflow .chipos-agent-card-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+}
+
+.chipos-agents-workflow .chipos-agent-card.running .chipos-agent-card-head {
+	background: var(--vscode-inputValidation-infoBackground, var(--vscode-editorWidget-background));
+}
+
+.chipos-agents-workflow .chipos-agent-card-head > .codicon {
+	font-size: 14px;
+}
+
+.chipos-agents-workflow .chipos-agent-card.done .chipos-agent-card-head > .codicon-pass {
+	color: var(--vscode-charts-green, var(--vscode-testing-iconPassed));
+}
+
+.chipos-agents-workflow .chipos-agent-card.running .chipos-agent-card-head > .codicon-loading {
+	color: var(--vscode-charts-blue, var(--vscode-progressBar-background));
+}
+
+.chipos-agents-workflow .chipos-agent-role {
+	font-weight: 600;
+	font-size: 12px;
+}
+
+.chipos-agents-workflow .chipos-agent-badge {
+	font-size: 10px;
+	padding: 1px 7px;
+	border-radius: 8px;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+.chipos-agents-workflow .chipos-agent-card.done .chipos-agent-badge {
+	color: var(--vscode-editor-background);
+	background: var(--vscode-charts-green, var(--vscode-testing-iconPassed));
+}
+
+.chipos-agents-workflow .chipos-agent-card.running .chipos-agent-badge {
+	color: var(--vscode-editor-background);
+	background: var(--vscode-charts-blue, var(--vscode-progressBar-background));
+}
+
+.chipos-agents-workflow .chipos-agent-count {
+	margin-left: auto;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chipos-agents-workflow .chipos-agent-card-body {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	padding: 5px 8px;
+}
+
+.chipos-agents-workflow .chipos-agent-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 100%;
+	font-size: 11px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	padding: 2px 6px;
+	border-radius: 4px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.chipos-agents-workflow .chipos-agent-chip-tool {
+	white-space: nowrap;
+}
+
+.chipos-agents-workflow .chipos-agent-chip-result {
+	max-width: 96px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chipos-agents-workflow .chipos-agent-chip > .codicon {
+	font-size: 12px;
+}
+
+.chipos-agents-workflow .chipos-agent-chip.done > .codicon-check {
+	color: var(--vscode-charts-green, var(--vscode-testing-iconPassed));
+}
+
+.chipos-agents-workflow .chipos-agent-chip.pending {
+	opacity: 0.8;
+}
+
+.chipos-agents-workflow .chipos-agent-chip.idle {
+	color: var(--vscode-descriptionForeground);
+	background: transparent;
+	font-style: italic;
+}

@@ -7,6 +7,11 @@ import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { InstantiationType, registerSingleton } from '../../../../../platform/instantiation/common/extensions.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { ILogService } from '../../../../../platform/log/common/log.js';
+
+/** Workspace-scoped storage key holding the last turn's `{ [role]: IAgentRun }`. */
+const AGENTS_STORAGE_KEY = 'chipos.agents.live';
 
 // ── Data model ─────────────────────────────────────────────────────────────
 
@@ -94,6 +99,14 @@ export class AgentActivityStore extends Disposable implements IAgentActivityStor
 	/** Runs keyed by `role`, preserving first-seen insertion order. */
 	private readonly _runs = new Map<string, IAgentRun>();
 
+	constructor(
+		@IStorageService private readonly _storageService: IStorageService,
+		@ILogService private readonly _logService: ILogService,
+	) {
+		super();
+		this._load();
+	}
+
 	recordEvent(evt: IAgentActivityEvent): void {
 		// Guard against malformed frames — a role is required to key the run.
 		if (!evt || typeof evt.taskId !== 'string' || evt.taskId.length === 0) {
@@ -106,7 +119,7 @@ export class AgentActivityStore extends Disposable implements IAgentActivityStor
 			const run = this._findOrCreateRun(role);
 			run.status = 'running';
 			run.activities.push({ toolName, ts: Date.now(), done: false });
-			this._onDidChange.fire();
+			this._changed();
 			return;
 		}
 
@@ -122,7 +135,7 @@ export class AgentActivityStore extends Disposable implements IAgentActivityStor
 				if (typeof evt.result === 'string' && evt.result.length > 0) {
 					activity.result = evt.result;
 				}
-				this._onDidChange.fire();
+				this._changed();
 			}
 		}
 	}
@@ -181,6 +194,46 @@ export class AgentActivityStore extends Disposable implements IAgentActivityStor
 			}
 		}
 		return undefined;
+	}
+
+	/** Fire the change event and persist the current run set (best-effort). */
+	private _changed(): void {
+		this._save();
+		this._onDidChange.fire();
+	}
+
+	private _load(): void {
+		const raw = this._storageService.get(AGENTS_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return;
+		}
+		try {
+			const map = JSON.parse(raw) as { [role: string]: IAgentRun };
+			for (const role of Object.keys(map)) {
+				const run = map[role];
+				if (run && typeof run.role === 'string' && Array.isArray(run.activities)) {
+					this._runs.set(run.role, run);
+				}
+			}
+			this._logService.trace('[ChipOS] Loaded', this._runs.size, 'agent run(s) from storage');
+		} catch (err) {
+			this._logService.warn('[ChipOS] Failed to parse persisted agent runs, starting empty:', err);
+		}
+	}
+
+	private _save(): void {
+		// Persist the last turn's runs so the workflow panel survives a reload
+		// (and is reviewable). The in-memory map drives live updates; this is a
+		// snapshot, intentionally WORKSPACE-scoped and machine-local.
+		if (this._runs.size === 0) {
+			this._storageService.store(AGENTS_STORAGE_KEY, '{}', StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			return;
+		}
+		const map: { [role: string]: IAgentRun } = {};
+		for (const [role, run] of this._runs) {
+			map[role] = run;
+		}
+		this._storageService.store(AGENTS_STORAGE_KEY, JSON.stringify(map), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 }
 

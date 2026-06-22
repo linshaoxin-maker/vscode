@@ -315,6 +315,13 @@
 	content: ' ✓';
 }
 
+/* PPA card: "Open Dashboard" action row, links the chat card to the editor-tab dashboard. */
+.eda-ppa-actions {
+	margin-top: 10px;
+	display: flex;
+	justify-content: flex-end;
+}
+
 /* ── Agent Error Card ───────────────────────────────────────────────────────── */
 
 .chat-agent-error {
