@@ -642,6 +642,58 @@ suite('dispatchStatelessEvent', () => {
 		);
 	});
 
+	test('waveform → edaWaveform (signals normalized, path ignored)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('waveform', {
+				path: '/abs/w/counter.vcd',
+				title: 'counter.vcd',
+				timescale: '1ns',
+				summary: '2 signal(s) from counter.vcd',
+				signals: [
+					{ name: 'tb.clk', wave: '0101.', data: [] },
+					{ name: 'tb.count', wave: '=.=.=', data: ['0x0', '0x1', '0x2'] },
+				],
+			})),
+			{
+				flushText: true,
+				edaParts: [{
+					kind: 'edaWaveform',
+					title: 'counter.vcd',
+					timescale: '1ns',
+					summary: '2 signal(s) from counter.vcd',
+					signals: [
+						{ name: 'tb.clk', wave: '0101.', data: [] },
+						{ name: 'tb.count', wave: '=.=.=', data: ['0x0', '0x1', '0x2'] },
+					],
+				}],
+			},
+		);
+	});
+
+	test('vcd_waveform alias → edaWaveform (handled identically)', () => {
+		const payload = { title: 'a.vcd', signals: [{ name: 's', wave: '01', data: [] }] };
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('vcd_waveform', payload)),
+			dispatchStatelessEvent(ev('waveform', payload)),
+		);
+	});
+
+	test('waveform with non-array/garbled data → defensively coerced (never crash)', () => {
+		assert.deepStrictEqual(
+			dispatchStatelessEvent(ev('waveform', { signals: [{ name: 'x', wave: '0', data: 'nope' }, { wave: '1' }] })),
+			{
+				flushText: true,
+				edaParts: [{
+					kind: 'edaWaveform',
+					title: '',
+					timescale: undefined,
+					summary: undefined,
+					signals: [{ name: 'x', wave: '0', data: [] }, { name: '', wave: '1', data: [] }],
+				}],
+			},
+		);
+	});
+
 	test('diff_preview → markdownContents (fenced diff block)', () => {
 		assert.deepStrictEqual(
 			dispatchStatelessEvent(ev('diff_preview', {
@@ -688,6 +740,7 @@ suite('dispatchStatelessEvent', () => {
 			// Fusion EDA report cards must also tolerate missing data.
 			'sim_report', 'lint_report', 'coverage_report', 'ppa_report',
 			'negotiation_view', 'parallel_progress', 'spec_review', 'diff_preview',
+			'waveform', 'vcd_waveform',
 		];
 		const results = types.map(t => {
 			const evNoData = { type: t, sequence_id: 1, data: undefined } as unknown as InvokeEvent;
