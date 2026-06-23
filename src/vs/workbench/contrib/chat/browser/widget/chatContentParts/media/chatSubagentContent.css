@@ -139,3 +139,18 @@
 		}
 	}
 }
+
+/* "Open the Agents workflow panel" action in the sub-agent card header. */
+.chat-subagent-part .chat-subagent-workflow-link {
+	margin-left: 6px;
+	flex-shrink: 0;
+	opacity: 0.55;
+	cursor: pointer;
+	font-size: 13px;
+	color: var(--vscode-foreground);
+}
+
+.chat-subagent-part .chat-subagent-workflow-link:hover {
+	opacity: 1;
+	color: var(--vscode-textLink-foreground);
+}

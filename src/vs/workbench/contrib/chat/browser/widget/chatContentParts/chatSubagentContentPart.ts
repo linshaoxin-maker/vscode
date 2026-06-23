@@ -13,6 +13,7 @@ import { IDisposable, MutableDisposable } from '../../../../../../base/common/li
 import { autorun } from '../../../../../../base/common/observable.js';
 import { rcut } from '../../../../../../base/common/strings.js';
 import { localize } from '../../../../../../nls.js';
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IHoverService } from '../../../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -164,6 +165,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		@IChatMarkdownAnchorService private readonly chatMarkdownAnchorService: IChatMarkdownAnchorService,
 		@IHoverService hoverService: IHoverService,
 		@IConfigurationService configurationService: IConfigurationService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		// Extract description, agentName, and prompt from toolInvocation
 		const { description, agentName, prompt, modelName } = ChatSubagentContentPart.extractSubagentInfo(toolInvocation);
@@ -184,6 +186,21 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 
 		if (!this.element.isComplete) {
 			node.classList.add('chat-thinking-active');
+		}
+
+		// "Open the Agents workflow panel" — a small header action that jumps from
+		// this in-chat sub-agent card to the consolidated multi-agent workflow
+		// view (the ChipOS Tools panel). stopPropagation so it doesn't toggle the
+		// card's collapse state.
+		if (this._collapseButton) {
+			const workflowLink = $('a.chat-subagent-workflow-link.codicon.codicon-link-external', { role: 'button', tabIndex: 0 });
+			workflowLink.title = localize('chat.subagent.openWorkflow', "Open the Agents workflow panel");
+			this._register(dom.addDisposableListener(workflowLink, 'click', e => {
+				e.stopPropagation();
+				e.preventDefault();
+				this.commandService.executeCommand('chipos.agents.openWorkflow');
+			}));
+			this._collapseButton.element.appendChild(workflowLink);
 		}
 
 		// Apply shimmer to the initial title when still active

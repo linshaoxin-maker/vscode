@@ -21,6 +21,7 @@ import { IRenderedMarkdown, MarkdownRenderOptions } from '../../../../../../../b
 import { IMarkdownString } from '../../../../../../../base/common/htmlContent.js';
 import { CodeBlockModelCollection } from '../../../../common/widget/codeBlockModelCollection.js';
 import { EditorPool, DiffEditorPool } from '../../../../browser/widget/chatContentParts/chatContentCodePools.js';
+import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
 import { IHoverService } from '../../../../../../../platform/hover/browser/hover.js';
 import { IConfigurationService } from '../../../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -312,6 +313,26 @@ suite('ChatSubagentContentPart', () => {
 			const part = createPart(toolInvocation, context);
 
 			assert.ok(part.domNode.classList.contains('chat-used-context-collapsed'), 'Should be collapsed by default');
+		});
+	});
+
+	suite('Agents workflow link', () => {
+		test('renders a header action that runs chipos.agents.openWorkflow on click', () => {
+			const executed: string[] = [];
+			instantiationService.stub(ICommandService, {
+				_serviceBrand: undefined,
+				executeCommand: (id: string) => { executed.push(id); return Promise.resolve(undefined); },
+				onWillExecuteCommand: () => ({ dispose: () => { } }),
+				onDidExecuteCommand: () => ({ dispose: () => { } }),
+			} as Partial<ICommandService> as ICommandService);
+
+			const part = createPart(createMockToolInvocation(), createMockRenderContext(false));
+
+			const link = part.domNode.querySelector('.chat-subagent-workflow-link');
+			assert.ok(link, 'workflow link should be rendered in the sub-agent card header');
+
+			(link as HTMLElement).click();
+			assert.deepStrictEqual(executed, ['chipos.agents.openWorkflow']);
 		});
 	});
 
