@@ -19,7 +19,7 @@ export function buildWaveformSvg(data: WaveformData): string {
 	var sigs = (data && Array.isArray(data.signals) ? data.signals : [])
 		.filter(function (s) { return s && typeof s.wave === 'string'; });
 	if (!sigs.length) {
-		return '<svg viewBox="0 0 220 24" width="100%" role="img" class="cw-svg">' +
+		return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 24" width="100%" role="img" class="cw-svg">' +
 			'<text x="4" y="16" font-family="var(--vscode-editor-font-family, monospace)" font-size="12" fill="' + MUT + '">（空波形）</text></svg>';
 	}
 	var nameW = 86, x0 = nameW + 6, stepW = 42, tw = 6, rowH = 34, top = 6, axisH = 12;
@@ -75,5 +75,5 @@ export function buildWaveformSvg(data: WaveformData): string {
 	for (var i = 0; i <= nSteps; i += 2) {
 		p.push('<line x1="' + xAt(i) + '" y1="' + top + '" x2="' + xAt(i) + '" y2="' + (top + sigs.length * rowH) + '" stroke="' + GRID + '" stroke-width="0.5" opacity="0.5"/>');
 	}
-	return '<svg viewBox="0 0 ' + W + ' ' + Hgt + '" width="100%" preserveAspectRatio="xMinYMin meet" role="img" class="cw-svg">' + p.join('') + '</svg>';
+	return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + Hgt + '" width="100%" preserveAspectRatio="xMinYMin meet" role="img" class="cw-svg">' + p.join('') + '</svg>';
 }

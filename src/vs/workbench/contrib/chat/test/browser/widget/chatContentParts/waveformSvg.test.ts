@@ -27,6 +27,10 @@ suite('buildWaveformSvg (pure WaveJSON → SVG)', () => {
 			],
 		});
 		assert.ok(svg.startsWith('<svg') && svg.endsWith('</svg>'), 'returns an <svg>');
+		// MUST carry the SVG namespace: the IDE injects via DOMParser('image/svg+xml')
+		// + importNode, which (unlike innerHTML) does NOT auto-namespace — without xmlns
+		// the elements parse into the null namespace and render as raw text, not graphics.
+		assert.ok(svg.includes('xmlns="http://www.w3.org/2000/svg"'), 'root svg declares the SVG namespace');
 		// one signal-name text per signal (right-anchored name labels).
 		assert.strictEqual((svg.match(/text-anchor="end"/g) || []).length, 2, 'two signal-name labels');
 		// '=.=.=' → three bus segments → three centered bus value labels.
