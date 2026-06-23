@@ -618,3 +618,41 @@
 .chipos-next-steps-row:focus .chipos-next-steps-row-chevron {
 	opacity: 1;
 }
+
+/* ── EDA Waveform card (P6 — inline graphical SVG) ───────────────────────────── */
+
+.chat-eda-waveform {
+	margin: 6px 0;
+	border: 1px solid color-mix(in srgb, var(--vscode-panel-border, var(--vscode-input-border)) 72%, transparent);
+	border-left: 3px solid var(--chipos-brand, #5ED3B3);
+	border-radius: var(--chipos-radius-lg, 6px);
+	padding: 9px 10px;
+	background: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-foreground) 4%);
+}
+
+.chat-eda-waveform .cw-header {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin: 0 0 6px 0;
+}
+
+.chat-eda-waveform .cw-title {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--chipos-brand, #5ED3B3);
+}
+
+.chat-eda-waveform .cw-subtitle {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chat-eda-waveform .cw-body {
+	overflow-x: auto;
+}
+
+.chat-eda-waveform .cw-svg {
+	max-width: 100%;
+	display: block;
+}

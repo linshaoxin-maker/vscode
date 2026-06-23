@@ -642,6 +642,10 @@ export type InvokeEventType =
 	| 'parallel_progress'
 	| 'spec_review'
 	| 'diff_preview'
+	// [ChipOS] P6 render-family waveform card (alias `vcd_waveform`). The dispatcher
+	// maps both onto the native IChatEdaWaveform inline-SVG content part.
+	| 'waveform'
+	| 'vcd_waveform'
 	| 'keepalive'
 	| 'checkpoint'
 	| 'resumed_buffer_drained'

@@ -1046,7 +1046,8 @@ export type IChatProgress =
 	| IChatRoundProgress
 	| IChatAgentError
 	| IChatChiposTodoCard
-	| IChatChiposNextStepsCard;
+	| IChatChiposNextStepsCard
+	| IChatEdaWaveform;
 
 // ── EDA-specific content parts (extracted to chatEdaTypes.ts) ────────────────
 // Re-exported for backward compatibility — all consumers can still import from chatService.ts
@@ -1070,13 +1071,14 @@ export {
 	type IChatChiposTodoCardItem,
 	type IChatChiposNextStepsCard,
 	type IChatChiposNextStepsItem,
+	type IChatEdaWaveform,
 	type IChatEdaProgress,
 	type EdaContentKind,
 	EDA_CONTENT_KINDS,
 	isEdaContentKind,
 } from '../chatEdaTypes.js';
 
-import type { IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaPpaReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview, IChatRoundProgress, IChatAgentError, IChatChiposTodoCard, IChatChiposNextStepsCard } from '../chatEdaTypes.js';
+import type { IChatEdaSimReport, IChatEdaCoverageReport, IChatEdaLintReport, IChatEdaPpaReport, IChatEdaParallelProgress, IChatEdaNegotiationView, IChatEdaSpecReview, IChatRoundProgress, IChatAgentError, IChatChiposTodoCard, IChatChiposNextStepsCard, IChatEdaWaveform } from '../chatEdaTypes.js';
 
 export interface IChatFollowup {
 	kind: 'reply';

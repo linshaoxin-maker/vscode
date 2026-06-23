@@ -57,6 +57,7 @@ import type {
 	IChatEdaSimReport,
 	IChatEdaSimTestResult,
 	IChatEdaSpecReview,
+	IChatEdaWaveform,
 	IChatRoundProgress,
 } from '../../../../chat/common/chatEdaTypes.js';
 import type { ITaskSummaryPayload } from '../../eventTypes.js';
@@ -949,6 +950,42 @@ function dispatchUnwrappedEvent(
 					summary: typeof data.summary === 'string' ? data.summary : '',
 					files: Array.isArray(data.files) ? data.files : undefined,
 				} satisfies IChatEdaSpecReview],
+			};
+		}
+
+		case 'waveform':
+		case 'vcd_waveform': {
+			// [ChipOS] P6 waveform card — an inline GRAPHICAL SVG rendered from the
+			// reasoner's `waveform` (alias `vcd_waveform`, handled identically) event.
+			// Inner payload (post-RenderEnvelope-unwrap):
+			//   { kind, path, title, signals:[{name,wave,data?}], timescale?, summary? }
+			// `signals` is the ONLY required consumed field; `path` is IGNORED here (that
+			// is the SEPARATE `viewer_action` / open_waveform control event for the
+			// external Vaporview viewer). Read defensively + fail closed — a backend
+			// key rename must surface a visible degrade note, never a crash or a
+			// silently-empty card.
+			const guard = edaSchemaGuard('waveform', (event.data ?? {}) as Record<string, unknown>, ['signals', 'title', 'timescale', 'summary', 'path']);
+			if (guard) { return guard; }
+			const data = (event.data ?? {}) as {
+				title?: string;
+				timescale?: string;
+				summary?: string;
+				signals?: Array<{ name?: string; wave?: string; data?: unknown }>;
+			};
+			const signals = (Array.isArray(data.signals) ? data.signals : []).map(s => ({
+				name: typeof s.name === 'string' ? s.name : '',
+				wave: typeof s.wave === 'string' ? s.wave : '',
+				data: Array.isArray(s.data) ? s.data.map(d => String(d)) : [],
+			}));
+			return {
+				flushText: true,
+				edaParts: [{
+					kind: 'edaWaveform',
+					title: typeof data.title === 'string' ? data.title : '',
+					signals,
+					timescale: typeof data.timescale === 'string' ? data.timescale : undefined,
+					summary: typeof data.summary === 'string' ? data.summary : undefined,
+				} satisfies IChatEdaWaveform],
 			};
 		}
 

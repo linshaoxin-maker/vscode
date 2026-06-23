@@ -82,6 +82,12 @@ export const IDE_RENDER_KINDS: ReadonlySet<string> = new Set([
 	'spec_review',
 	'task_summary',
 	'todo',
+	// P6 waveform card — render-family (the SSEEmitSink WRAPS it), and the IDE has
+	// dedicated `case 'waveform'` / `case 'vcd_waveform'` cases that draw an inline
+	// SVG. Both must be present or a wrapped waveform would DEGRADE to its raw
+	// fallback. `vcd_waveform` is the backend alias, handled identically.
+	'waveform',
+	'vcd_waveform',
 	// backend `control` family → never enveloped, so this is a no-op; kept only because
 	// the IDE has a dedicated `case 'parallel_progress'` (would unwrap right if ever wrapped).
 	'parallel_progress',

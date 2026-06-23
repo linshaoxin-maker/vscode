@@ -228,6 +228,25 @@ export interface IChatEdaPpaReport {
 	pareto_front_size?: number;
 }
 
+// ── EDA Waveform ─────────────────────────────────────────────────────────────
+
+/**
+ * P6 / waveform card: an inline GRAPHICAL SVG waveform rendered from the
+ * reasoner's `waveform` (alias `vcd_waveform`) render-family event. `signals` is
+ * the ONLY required consumed field (WaveJSON-ish `{name, wave, data?}`); `title`
+ * names the card. The reasoner also ships `path` / `summary` / `timescale`, but
+ * the SVG render ignores `path` (that's the separate `viewer_action` /
+ * `open_waveform` control event for the external Vaporview viewer) and only uses
+ * `timescale` / `summary` as optional footer/subtitle context.
+ */
+export interface IChatEdaWaveform {
+	kind: 'edaWaveform';
+	title: string;
+	signals: Array<{ name: string; wave: string; data: string[] }>;
+	timescale?: string;
+	summary?: string;
+}
+
 // ── Union type for all EDA content parts ────────────────────────────────────
 
 export type IChatEdaProgress =
@@ -241,7 +260,8 @@ export type IChatEdaProgress =
 	| IChatAgentError
 	| IChatEdaPpaReport
 	| IChatChiposTodoCard
-	| IChatChiposNextStepsCard;
+	| IChatChiposNextStepsCard
+	| IChatEdaWaveform;
 
 // ── EDA kind constants ──────────────────────────────────────────────────────
 
@@ -257,6 +277,7 @@ export const EDA_CONTENT_KINDS = [
 	'edaPpaReport',
 	'chiposTodoCard',
 	'chiposNextSteps',
+	'edaWaveform',
 ] as const;
 
 export type EdaContentKind = typeof EDA_CONTENT_KINDS[number];

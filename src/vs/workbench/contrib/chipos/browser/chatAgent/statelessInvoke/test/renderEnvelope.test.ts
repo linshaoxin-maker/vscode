@@ -165,4 +165,40 @@ suite('dispatchStatelessEvent — RenderEnvelope wiring (F-1-ide)', () => {
 		const r = dispatchStatelessEvent(ev('content_block_delta', { delta: { type: 'text_delta', text: 'hi' } }));
 		assert.deepStrictEqual(r, { appendText: 'hi' });
 	});
+
+	test('⭐ waveform RenderEnvelope unwraps (degraded:false) → edaWaveform card, identical to bare', () => {
+		const payload = {
+			path: '/w/counter.vcd', title: 'counter.vcd', timescale: '1ns',
+			summary: '1 signal(s) from counter.vcd',
+			signals: [{ name: 'tb.clk', wave: '0101.', data: [] }],
+		};
+		// layer-2: envelope kind 'waveform' is now in IDE_RENDER_KINDS → not degraded.
+		assert.strictEqual(resolveRenderEnvelope(envelope('waveform', payload, { text: 'fb' })).degraded, false);
+		const bare = dispatchStatelessEvent(ev('waveform', payload));
+		const enveloped = dispatchStatelessEvent(ev('waveform', envelope('waveform', payload, { text: 'fb' })));
+		assert.deepStrictEqual(enveloped, bare);
+		assert.strictEqual(bare.flushText, true);
+		assert.ok(Array.isArray(bare.edaParts) && bare.edaParts[0].kind === 'edaWaveform');
+	});
+
+	test('vcd_waveform alias RenderEnvelope unwraps identically (not degraded)', () => {
+		const payload = { title: 'a.vcd', signals: [{ name: 's', wave: '01', data: [] }] };
+		assert.strictEqual(resolveRenderEnvelope(envelope('vcd_waveform', payload, {})).degraded, false);
+		const bare = dispatchStatelessEvent(ev('vcd_waveform', payload));
+		const enveloped = dispatchStatelessEvent(ev('vcd_waveform', envelope('vcd_waveform', payload, {})));
+		assert.deepStrictEqual(enveloped, bare);
+	});
+
+	test('legacy bare waveform frame (no envelope) still renders the card (backward-compat D-2)', () => {
+		const r = dispatchStatelessEvent(ev('waveform', { title: 'b.vcd', signals: [{ name: 's', wave: '0', data: [] }] }));
+		assert.strictEqual(r.flushText, true);
+		assert.ok(Array.isArray(r.edaParts) && r.edaParts[0].kind === 'edaWaveform');
+	});
+
+	test('viewer_action stays a SEPARATE control event (returns viewerAction, never edaWaveform)', () => {
+		// Prove the render `waveform` path and the control `viewer_action` path are distinct.
+		const r = dispatchStatelessEvent(ev('viewer_action', { path: '/w/counter.vcd', signals: ['tb.clk'], cycle: 3 }));
+		// The exact shape (viewerAction only, no edaParts) proves the control path is distinct.
+		assert.deepStrictEqual(r, { viewerAction: { path: '/w/counter.vcd', signals: ['tb.clk'], cycle: 3 } });
+	});
 });
