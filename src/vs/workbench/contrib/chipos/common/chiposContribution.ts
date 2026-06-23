@@ -803,6 +803,22 @@ MenuRegistry.appendMenuItems([
 			command: { id: 'chipos.pickSession', title: localize('chipos.pickSession', 'ChipOS: Switch Chat Session'), icon: Codicon.history },
 		},
 	},
+	// Discoverable entry points for the Agents workflow panel and the
+	// stop-all-backends recovery command. Both existed only as code-callable
+	// CommandsRegistry commands (status pill / logout hook); surface them in
+	// the palette so users can reach them via Cmd+Shift+P.
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: 'chipos.agents.openWorkflow', title: localize('chipos.agents.openWorkflow.title', 'ChipOS: Open Agents Workflow'), icon: Codicon.hubot },
+		},
+	},
+	{
+		id: MenuId.CommandPalette,
+		item: {
+			command: { id: 'chipos.backend.stopAll', title: localize('chipos.backend.stopAll.title', 'ChipOS: Stop All Backends'), icon: Codicon.debugStop },
+		},
+	},
 	// ── Chat View Title Toolbar (Cursor-style header actions) ──────────────
 	{
 		id: MenuId.ChatViewSessionTitleToolbar,
@@ -1009,6 +1025,9 @@ class ChipOSContribution extends Disposable {
 				// failure mode so we surface it preferentially over a stale
 				// worker state.
 				this._statusBarHandler.updateReconnectButton(this._computeReconnectReason());
+				// Feature #5: discoverable stop-all-backends pill, only while the
+				// sidecar is actually Connected (nothing to stop otherwise).
+				this._statusBarHandler.updateStopAllStatus(state === SidecarState.Connected);
 			}
 
 			if (state === SidecarState.Error) {
@@ -1557,6 +1576,11 @@ class ChipOSContribution extends Disposable {
 		};
 		refreshRuns();
 		this._register(this._runStorageService.onDidChangeRuns(refreshRuns));
+
+		// Feature #5: reflect the current sidecar state for the stop-all pill in
+		// case the sidecar connected before these pills were registered (the
+		// onDidChangeState subscription only fires on subsequent transitions).
+		handler.updateStopAllStatus(this._sidecarManager.state === SidecarState.Connected);
 
 		// The reference/catalog tools (Skill Tree / Worker Tools / Module
 		// Hierarchy) don't warrant their own always-on pill — they live behind a

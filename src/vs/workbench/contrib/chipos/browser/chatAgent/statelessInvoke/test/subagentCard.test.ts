@@ -17,7 +17,7 @@
 
 import assert from 'assert';
 import type { DispatchResult } from '../eventDispatcher.js';
-import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState } from '../subagentCard.js';
+import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, isSubagentMode, normalizeAgentMode } from '../subagentCard.js';
 
 type SubagentFrame = NonNullable<DispatchResult['subagentEvent']>;
 
@@ -164,5 +164,26 @@ suite('subagentCard.computeSubagentFinalizeUpdates', () => {
 		]);
 		// State fully reset → a re-finalize is a no-op.
 		assert.deepStrictEqual(computeSubagentFinalizeUpdates(state, friendly), []);
+	});
+});
+
+suite('subagentCard.isSubagentMode', () => {
+
+	test('accepts the canonical spelling across quote/case/space variants but rejects typos', () => {
+		// Mirror the reasoner gate (agent_core._normalize_agent_mode) so the IDE and
+		// backend agree on which `@agent` turns isolate vs. silently overlay.
+		const accepts = ['subagent', '"subagent"', '\'subagent\'', 'Subagent', 'SUBAGENT', 'subagent ', ' "Subagent" '];
+		const rejects = ['subagnt', 'sub-agent', 'sub_agent', 'persona', '', '  ', undefined, 'subagents'];
+		assert.deepStrictEqual(
+			{ accepts: accepts.map(isSubagentMode), rejects: rejects.map(isSubagentMode) },
+			{ accepts: accepts.map(() => true), rejects: rejects.map(() => false) },
+		);
+	});
+
+	test('normalizeAgentMode strips quotes/case/space and passes nullish through', () => {
+		assert.deepStrictEqual(
+			[normalizeAgentMode(' "Subagent" '), normalizeAgentMode('\'X\''), normalizeAgentMode('PerSona'), normalizeAgentMode(undefined)],
+			['subagent', 'x', 'persona', undefined],
+		);
 	});
 });

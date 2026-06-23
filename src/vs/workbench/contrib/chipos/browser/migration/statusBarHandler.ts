@@ -32,6 +32,10 @@ const STATUSBAR_RUNS_ID = 'chipos.statusbar.runs';
 // Tools, Module Hierarchy) — the less-frequent ones that don't warrant their
 // own always-on pill. Clicking opens a quick-pick to reveal one on demand.
 const STATUSBAR_TOOLS_ID = 'chipos.statusbar.tools';
+// A stop-all-backends pill, shown only while the sidecar is Connected so users
+// have a one-click way to tear down running backends (sidecar + remote worker)
+// without digging through the command palette / logout flow.
+const STATUSBAR_STOP_ID = 'chipos.statusbar.stop';
 
 /**
  * Why the reconnect entry is visible. Each variant maps to a slightly
@@ -63,6 +67,7 @@ export class StatusBarHandler extends Disposable {
 	private _ppaEntry: IStatusbarEntryAccessor | undefined;
 	private _runsEntry: IStatusbarEntryAccessor | undefined;
 	private _toolsEntry: IStatusbarEntryAccessor | undefined;
+	private _stopEntry: IStatusbarEntryAccessor | undefined;
 
 	// 2026-05-23: empty-workbench gate for the Worker pill.
 	// _ensureLocalWorker() short-circuits when no folder is open ("no
@@ -323,6 +328,33 @@ export class StatusBarHandler extends Disposable {
 		}
 	}
 
+	/**
+	 * Stop-all-backends pill. Only shown while the sidecar is Connected — there's
+	 * nothing to stop otherwise. Clicking runs `chipos.backend.stopAll`, which
+	 * tears down the local sidecar and any remote-ssh worker sessions.
+	 */
+	updateStopAllStatus(connected: boolean): void {
+		if (!connected) {
+			this._stopEntry?.dispose();
+			this._stopEntry = undefined;
+			return;
+		}
+		const text = '$(debug-stop) Stop Backends';
+		const entry = {
+			name: localize('chipos.statusbar.stop.name', "ChipOS Stop Backends"),
+			text,
+			ariaLabel: text,
+			command: 'chipos.backend.stopAll',
+			tooltip: localize('chipos.statusbar.stop.tooltip', "Stop all ChipOS backends (sidecar + remote worker)"),
+		};
+		if (this._stopEntry) {
+			this._stopEntry.update(entry);
+		} else {
+			this._stopEntry = this._statusbarService.addEntry(entry, STATUSBAR_STOP_ID, StatusbarAlignment.RIGHT, 96);
+			this._register(this._stopEntry);
+		}
+	}
+
 	// ── Usage / quota ─────────────────────────────────────────────────────
 
 	updateUsage(display: IChipOSUsageDisplay | null): void {
@@ -495,6 +527,8 @@ export class StatusBarHandler extends Disposable {
 		this._runsEntry = undefined;
 		this._toolsEntry?.dispose();
 		this._toolsEntry = undefined;
+		this._stopEntry?.dispose();
+		this._stopEntry = undefined;
 		super.dispose();
 	}
 

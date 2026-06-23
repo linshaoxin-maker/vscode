@@ -1076,14 +1076,11 @@ export function registerSidecarIpcHandlers(): void {
 			pid: meta.pid,
 			ref_count: meta.ref_count,
 			http_port: meta.http_port,
-			// permission_token: surfaced for the worker-direct permission ASK
-			// channel (the renderer WorkerPermissionService → worker
-			// /api/v1/permissions/*), which was REMOVED 2026-06-16 — worker
-			// permission ASKs now flow reverse-channel (confirm_request →
-			// /confirm_response). No live renderer consumer reads it today; kept
-			// for instance.json contract parity. Empty when the worker mints none.
-			permission_token: pidAlive && typeof meta.permission_token === 'string'
-				? meta.permission_token : '',
+			// permission_token: dropped from the renderer-facing meta — the
+			// worker-direct permission ASK channel was REMOVED 2026-06-16
+			// (ASKs now flow reverse-channel: confirm_request →
+			// /confirm_response). The worker still writes it to instance.json
+			// (InstanceMeta.permission_token), but no renderer consumer reads it.
 		};
 	});
 

@@ -77,7 +77,6 @@ export interface IWorkerInstanceMeta {
 	readonly pid?: number;
 	readonly ref_count?: number;
 	readonly http_port?: number;
-	readonly permission_token?: string;
 }
 
 export const ISidecarManagerService = createDecorator<ISidecarManagerService>('chiposSidecarManagerService');
@@ -119,10 +118,6 @@ export interface ISidecarManagerService {
 	 *
 	 * Primary consumer: worker HTTP-port discovery (the worker rolls to a
 	 * kernel-assigned port on EADDRINUSE, so instance.json is authoritative).
-	 * The surfaced `permission_token` fed the worker-direct permission ASK
-	 * channel, removed 2026-06-16 — worker permission ASKs now flow over the
-	 * reasoner reverse channel (confirm_request → /confirm_response), so that
-	 * field is currently unconsumed.
 	 */
 	readonly readInstanceMeta?: (workspaceRoot: string) => Promise<IWorkerInstanceMeta | undefined>;
 

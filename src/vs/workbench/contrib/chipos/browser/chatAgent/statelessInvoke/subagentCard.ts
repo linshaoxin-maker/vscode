@@ -57,6 +57,97 @@ export function createSubagentCardState(): ISubagentCardState {
 }
 
 /**
+ * The single canonical `mode:` spelling that flips an `@agent` turn from a
+ * persona overlay (runs as the MAIN agent) to an isolated delegated sub-role.
+ * Mirrors the reasoner gate `agent_core._normalize_agent_mode` → `== "subagent"`.
+ */
+export const SUBAGENT_MODE = 'subagent';
+
+/**
+ * Normalize a raw frontmatter `mode:` value the way the reasoner does before its
+ * `== "subagent"` gate: strip surrounding YAML quotes, trim, and casefold. Lets
+ * the IDE recognize the SAME set of accepted spellings (`"Subagent"`, `'subagent'`,
+ * trailing space, …) so it can tell a real subagent from a typo. Returns the
+ * normalized string, or `undefined` for nullish / non-string input.
+ */
+export function normalizeAgentMode(raw: string | undefined): string | undefined {
+	if (typeof raw !== 'string') {
+		return undefined;
+	}
+	let v = raw.trim();
+	if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith('\'') && v.endsWith('\'')))) {
+		v = v.slice(1, -1).trim();
+	}
+	return v.toLowerCase();
+}
+
+/**
+ * Whether a frontmatter `mode:` value selects the isolated subagent path. True
+ * only for the canonical {@link SUBAGENT_MODE} spelling (after normalization), so
+ * a typo like `subagnt` / `sub-agent` reads as false — the caller can then warn
+ * the user instead of silently degrading to the persona overlay.
+ */
+export function isSubagentMode(raw: string | undefined): boolean {
+	return normalizeAgentMode(raw) === SUBAGENT_MODE;
+}
+
+/**
+ * The agent-definition shape `buildSelectedAgent` folds into the `selected_agent`
+ * request field. Mirrors `SelectedAgentDefinition` (resources/chiposAgentsService)
+ * but is declared locally so this module stays import-light + host-agnostic.
+ */
+export interface ISelectedAgentDefinition {
+	readonly name: string;
+	readonly instructions: string;
+	readonly description?: string;
+	readonly tools?: readonly string[];
+	readonly mode?: string;
+}
+
+/** The `InvokeRequest.selected_agent` field shape (FEAT-005 Stage B). */
+export interface ISelectedAgentField {
+	readonly name: string;
+	readonly instructions: string;
+	readonly description?: string;
+	readonly tools?: string[];
+	readonly mode?: string;
+}
+
+/**
+ * Extract the `@<name>` agent mention from a user message, the way
+ * `chipOSChatAgent` does before resolving it to a subagent definition. chipos
+ * repurposes `@` for FILE attachments, so a stem that names an attached
+ * file/folder is NOT an agent mention (the caller passes those stems in
+ * `attachedStems`, already lowercased). Returns the matched agent name verbatim
+ * (case preserved for display), or `undefined` when there is no eligible mention.
+ */
+export function parseAgentMention(message: string | undefined, attachedStems: ReadonlySet<string>): string | undefined {
+	const m = /(?:^|\s)@(?<agent>[\w-]+)/.exec(message ?? '');
+	const name = m?.groups?.agent;
+	if (!name || attachedStems.has(name.toLowerCase())) {
+		return undefined;
+	}
+	return name;
+}
+
+/**
+ * Build the `InvokeRequest.selected_agent` field from a resolved agent
+ * definition, dropping empty optionals so the wire frame stays minimal. An empty
+ * `tools` array is treated as "no restriction" (omitted) — the reasoner reads an
+ * absent `tools` as the full proxy catalog, whereas an EMPTY list would gate ALL
+ * tools off; that distinction is asserted in subagentCard.test.ts.
+ */
+export function buildSelectedAgent(def: ISelectedAgentDefinition): ISelectedAgentField {
+	return {
+		name: def.name,
+		instructions: def.instructions,
+		...(def.description ? { description: def.description } : {}),
+		...(def.tools && def.tools.length ? { tools: [...def.tools] } : {}),
+		...(def.mode ? { mode: def.mode } : {}),
+	};
+}
+
+/**
  * Build the child-row label as markdown so the object (file path / command /
  * pattern) renders monospace — matching how Cursor / Claude Code / Codex show
  * `Read <file>` with the target in code style. `friendly` stays plain; only the

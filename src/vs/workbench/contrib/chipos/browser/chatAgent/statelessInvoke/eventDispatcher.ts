@@ -282,9 +282,25 @@ export interface DispatchResult {
 	 */
 	edaParts?: IChatEdaProgress[];
 	/**
+	 * [ChipOS] `diff_preview` → a framework-native `textEditGroup` (side-by-side
+	 * diff editor with built-in Apply/Discard buttons), NOT a fenced ```diff```
+	 * markdown block. The caller resolves `filePath` against the workspace and
+	 * emits a `kind: 'textEdit'` progress part per file; the chat model folds
+	 * those into one `textEditGroup` rendered by `ChatTextEditContentPart`. The
+	 * `edits` are whole-line replacements derived purely from the hunk headers
+	 * (the `@@ -oldStart,oldLen @@` ranges) so we never have to read the file —
+	 * the renderer loads the on-disk original itself and applies these edits to
+	 * produce the modified side.
+	 */
+	diffPreview?: {
+		filePath: string;
+		edits: IDiffTextEdit[];
+	};
+	/**
 	 * [ChipOS] Markdown blocks to render (each via the caller's `_markdown`
-	 * helper). Used for `diff_preview` (a fenced ```diff``` block), which legacy
-	 * rendered as markdown rather than a dedicated card.
+	 * helper). Used as a fallback when a `diff_preview` carries no parseable
+	 * hunks (so the native diff path has nothing to render), plus the layer-3
+	 * RenderEnvelope degrade note.
 	 */
 	markdownContents?: string[];
 	/**
@@ -338,6 +354,79 @@ function renderEnvelopeFallback(resolved: ResolvedRender): DispatchResult {
 		parts.push(resolved.kind ? `\`${resolved.kind}\`` : 'Result');
 	}
 	return { flushText: true, markdownContents: [parts.join('\n\n')] };
+}
+
+/**
+ * A whole-line replacement edit, in the shape the framework's `kind: 'textEdit'`
+ * progress part expects (`range` is an `IRange`, `text` is the replacement).
+ * Kept structurally compatible with `editor/common/languages.ts#TextEdit` /
+ * `core/range.ts#IRange` so the caller can hand it straight to the chat model
+ * without a conversion step — declared locally to keep this module DI-free and
+ * unit-testable.
+ */
+export interface IDiffTextEdit {
+	range: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number };
+	text: string;
+}
+
+/**
+ * Reconstruct framework `TextEdit`s from a `diff_preview` hunk list so the
+ * caller can render a native side-by-side diff (with Apply/Discard) instead of a
+ * fenced ```diff``` block.
+ *
+ * Each hunk header is `@@ -oldStart[,oldLen] +newStart[,newLen] @@`; we replace
+ * the original lines `[oldStart, oldStart+oldLen)` with the hunk's resulting
+ * lines (its `ctx` + `add` lines, in order — `del` lines are dropped). The
+ * replacement is a *whole-line* edit: the range runs from `(oldStart, 1)` to the
+ * start of the line after the block, and the text keeps a trailing newline, so
+ * the framework applies it cleanly against the on-disk original it loads itself
+ * (we never read the file here).
+ *
+ * Hunks with no parseable header, or whose lines are all context (no real
+ * change), are skipped. Returns `[]` when nothing is renderable so the caller
+ * can fall back to a markdown block.
+ */
+export function buildTextEditsFromDiffHunks(
+	hunks: Array<{ header?: string; lines?: Array<{ type?: string; content?: string }> }>,
+): IDiffTextEdit[] {
+	const edits: IDiffTextEdit[] = [];
+	for (const hunk of hunks) {
+		const header = typeof hunk.header === 'string' ? hunk.header : '';
+		// `@@ -oldStart,oldLen +newStart,newLen @@` — oldLen defaults to 1 when omitted.
+		const match = /^@@\s*-(?<oldStart>\d+)(?:,(?<oldLen>\d+))?\s+\+\d+(?:,\d+)?\s*@@/.exec(header);
+		if (!match || !match.groups) {
+			continue;
+		}
+		const oldStart = Number(match.groups.oldStart);
+		const oldLen = match.groups.oldLen !== undefined ? Number(match.groups.oldLen) : 1;
+		if (!Number.isFinite(oldStart) || oldStart < 1 || !Number.isFinite(oldLen) || oldLen < 0) {
+			continue;
+		}
+		const lines = Array.isArray(hunk.lines) ? hunk.lines : [];
+		const hasChange = lines.some(l => l.type === 'add' || l.type === 'del');
+		if (!hasChange) {
+			// Pure-context hunk — nothing to apply.
+			continue;
+		}
+		// New side = ctx + add lines, in order; del lines are removed.
+		const newLines = lines
+			.filter(l => l.type !== 'del')
+			.map(l => typeof l.content === 'string' ? l.content : '');
+		// Whole-line replace of [oldStart, oldStart+oldLen): from (oldStart,1) to
+		// the first column of the line just past the block. Keep a trailing \n so
+		// the replaced lines remain newline-terminated.
+		const text = newLines.length > 0 ? newLines.join('\n') + '\n' : '';
+		edits.push({
+			range: {
+				startLineNumber: oldStart,
+				startColumn: 1,
+				endLineNumber: oldStart + oldLen,
+				endColumn: 1,
+			},
+			text,
+		});
+	}
+	return edits;
 }
 
 /**
@@ -991,10 +1080,20 @@ function dispatchUnwrappedEvent(
 
 		case 'diff_preview': {
 			// {file_path, hunks:[{header, lines:[{type:'add'|'del'|'ctx', content}]}]}.
-			// Legacy rendered this as a fenced ```diff``` markdown block (no card).
+			// Render a framework-native `textEditGroup` (side-by-side diff editor with
+			// built-in Apply/Discard) instead of the legacy fenced ```diff``` block.
+			// The caller resolves `filePath` → a URI and emits one `kind: 'textEdit'`
+			// progress part; the chat model folds it into a `textEditGroup`.
 			const data = (event.data ?? {}) as { file_path?: string; hunks?: Array<{ header?: string; lines?: Array<{ type?: string; content?: string }> }> };
 			const filePath = typeof data.file_path === 'string' ? data.file_path : '';
-			const hunks = (Array.isArray(data.hunks) ? data.hunks : []).map(h => {
+			const rawHunks = Array.isArray(data.hunks) ? data.hunks : [];
+			const edits = filePath ? buildTextEditsFromDiffHunks(rawHunks) : [];
+			if (edits.length > 0) {
+				return { flushText: true, diffPreview: { filePath, edits } };
+			}
+			// Fallback: no parseable hunk ranges (e.g. header-less or pure-context
+			// diff) — keep the legacy markdown block so nothing is silently dropped.
+			const hunks = rawHunks.map(h => {
 				const lines = (Array.isArray(h.lines) ? h.lines : []).map(l => {
 					const content = typeof l.content === 'string' ? l.content : '';
 					if (l.type === 'add') { return `+ ${content}`; }

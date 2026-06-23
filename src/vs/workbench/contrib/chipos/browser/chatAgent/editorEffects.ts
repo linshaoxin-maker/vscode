@@ -18,7 +18,6 @@ import { IChiposGitService } from '../../common/chiposGitService.js';
 import {
 	AgentEvent,
 	AgentEventType,
-	type IFileEditPayload,
 	type ILintReportPayload,
 	type IToolResultPayload,
 	type IWorktreeFilesAppliedPayload,
@@ -119,9 +118,6 @@ export class ChipOSEditorEffects extends Disposable {
 	handleEvent(sessionResource: URI, event: AgentEvent): void {
 		const state = this._getOrCreateSessionState(sessionResource);
 		switch (event.event_type) {
-			case AgentEventType.FileEdit:
-				this._handleFileEdit(state, event.payload as IFileEditPayload);
-				break;
 			case AgentEventType.LintReport:
 				this._handleLintDiagnostics(event.payload as ILintReportPayload);
 				break;
@@ -141,13 +137,6 @@ export class ChipOSEditorEffects extends Disposable {
 				this._handleTaskComplete(sessionResource, state);
 				break;
 		}
-	}
-
-	// ── FileEdit → track file changes (inline diff now handled by framework IChatTextEdit) ──
-
-	private _handleFileEdit(state: ISessionEditorEffectsState, payload: IFileEditPayload): void {
-		this._logService.info(`[ChipOS Effects] FileEdit: ${payload.file_path}, ${payload.edits.length} edits`);
-		state.trackedFiles.add(payload.file_path);
 	}
 
 	// ── SkillTree → SkillTreeHandler ────────────────────────────────────────

@@ -15,7 +15,7 @@ import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
-import { CommandsRegistry } from '../../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
@@ -35,6 +35,7 @@ import { URI, type UriComponents } from '../../../../../base/common/uri.js';
 import { dirname } from '../../../../../base/common/resources.js';
 import {
 	IChatProgress,
+	IChatTextEdit,
 	IChatFollowup,
 	IChatMarkdownContent,
 	IChatConfirmation,
@@ -93,7 +94,7 @@ import { IRunStorageService, type IRunMetadata, type RunStatus } from '../runs/r
 import { IChiposWaveformService } from '../waveform/chiposWaveformService.js';
 import { IPpaStorageService, type IPpaSnapshot } from '../ppa/ppaStorageService.js';
 import { IAgentActivityStore } from '../agents/agentActivityStore.js';
-import { computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
+import { buildSelectedAgent, computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, isSubagentMode, parseAgentMention, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
 import { isStatelessTurnResumable } from './statelessInvoke/statelessResumability.js';
@@ -423,6 +424,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IChiposWaveformService private readonly _waveformService: IChiposWaveformService,
 		@IPpaStorageService private readonly _ppaStorageService: IPpaStorageService,
 		@IAgentActivityStore private readonly _agentActivityStore: IAgentActivityStore,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -786,7 +788,75 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			});
 		}
 
+		// Pre-flight: the reasoner needs apiBaseUrl + model + apiKey to talk to the
+		// LLM provider. These ship with empty defaults (provider-agnostic), so on a
+		// fresh install the very first turn would otherwise fail server-side with an
+		// opaque error. Surface a clear, actionable prompt that opens Settings filtered
+		// to the missing fields instead.
+		const missing = this._getMissingLlmConfigFields();
+		if (missing.length > 0) {
+			this._promptForMissingLlmConfig(missing);
+			return {
+				errorDetails: {
+					message: localize(
+						'chipos.config.missing.inline',
+						"请先在设置中填写 ChipOS 的 {0}，然后重新发送。",
+						missing.map(m => m.label).join('、'),
+					),
+				},
+			};
+		}
+
 		return this._invokeStateless(request, progress, _history, token);
+	}
+
+	/**
+	 * Required-but-empty LLM connection settings, in the order the user should
+	 * fill them. Returns the setting key (for the Settings deep-link) plus a
+	 * localized human label for the prompt. Empty array = ready to send.
+	 */
+	private _getMissingLlmConfigFields(): Array<{ key: string; label: string }> {
+		const missing: Array<{ key: string; label: string }> = [];
+		const apiKey = (this._configurationService.getValue<string>('chipos.apiKey') ?? '').trim();
+		const baseUrl = (this._configurationService.getValue<string>('chipos.apiBaseUrl') ?? '').trim();
+		const model = (this._configurationService.getValue<string>('chipos.model') ?? '').trim();
+		if (!apiKey) {
+			missing.push({ key: 'chipos.apiKey', label: localize('chipos.config.field.apiKey', 'API 密钥') });
+		}
+		if (!baseUrl) {
+			missing.push({ key: 'chipos.apiBaseUrl', label: localize('chipos.config.field.apiBaseUrl', 'API 地址 (apiBaseUrl)') });
+		}
+		if (!model) {
+			missing.push({ key: 'chipos.model', label: localize('chipos.config.field.model', '模型名称 (model)') });
+		}
+		return missing;
+	}
+
+	/**
+	 * Notify the user which ChipOS LLM settings are still empty and offer a
+	 * one-click jump into Settings, pre-filtered to the missing fields.
+	 */
+	private _promptForMissingLlmConfig(missing: Array<{ key: string; label: string }>): void {
+		// Settings search filters on the `@id:` query; list every missing key so
+		// the user sees exactly the fields to fill.
+		const query = missing.map(m => `@id:${m.key}`).join(' ');
+		void this._notificationService.prompt(
+			Severity.Warning,
+			localize(
+				'chipos.config.missing.prompt',
+				"ChipOS 尚未配置完整：缺少 {0}。请在设置中填写后再开始对话。",
+				missing.map(m => m.label).join('、'),
+			),
+			[
+				{
+					label: localize('chipos.config.missing.openSettings', "打开设置"),
+					run: () => {
+						void this._commandService.executeCommand('workbench.action.openSettings', query);
+					},
+				},
+			],
+			{ sticky: true },
+		);
 	}
 
 	/**
@@ -1158,73 +1228,99 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 
 	// ── FEAT-26: Friendly tool name mapping (used by IChatExternalToolInvocationUpdate) ──
 
-	private static readonly _toolNameMap: Record<string, string> = {
-		run_simulation: '执行仿真',
-		run_sim: '执行仿真',
-		run_lint: '代码检查',
-		read_file: '读取文件',
-		read_skill_body: '加载技能',
-		read_rule_body: '加载规则',
-		write_file: '写入文件',
-		edit_file: '编辑文件',
-		file_edit: '编辑文件',
-		list_directory: '列出目录',
-		list_dir: '列出目录',
-		ls: '列出目录',
-		search_files: '搜索文件',
-		glob: '搜索文件',
-		grep_search: '文本搜索',
-		semantic_search: '语义搜索',
-		run_command: '执行命令',
-		shell_command: '执行命令',
-		create_file: '创建文件',
-		delete_file: '删除文件',
-		get_coverage: '检查覆盖率',
-		check_coverage: '检查覆盖率',
-		apply_diff: '应用差异',
-		str_replace: '替换文本',
-		generate_rtl: '生成 RTL',
-		generate_testbench: '生成测试平台',
-		analyze_waveform: '分析波形',
-		cdc_check: 'CDC 检查',
-		read_lints: '读取诊断',
-		ask_user: '询问用户',
-		task: '子代理执行',
-		transfer_to_agent: '代理切换',
-		write_todos: '更新计划',
-		web_search: '网络搜索',
-		web_fetch: '网页获取',
-		code_execution: '代码执行',
-		// EDA worker tools + common aliases the master calls directly — without
-		// these the row falls back to title-cased English ("Grep" / "Verilog Lint").
-		grep: '文本搜索',
-		verilog_lint: '代码检查',
-		lint: '代码检查',
-		verilog_syntax_check: '语法检查',
-		check_syntax: '语法检查',
-		verilog_simulate: '运行仿真',
-		verilog_format: '格式化',
-		format: '格式化',
-		yosys_synthesis: '逻辑综合',
-		yosys_qor: 'QoR 分析',
-		rtl_ppa_scan: 'PPA 扫描',
-		power_analysis: '功耗分析',
-		equiv_check: '等价性检查',
-		formal_equiv_check: '形式等价检查',
-		fpga_synthesize: 'FPGA 综合',
-		vcd_info: '波形信息',
-		vcd_signals: '波形信号',
-		vcd_waveform: '波形分析',
-		execute: '执行命令',
-		execute_command: '执行命令',
-		run_in_terminal: '执行命令',
-		get_terminal_output: '读取终端输出',
-		query_verification_guide: '查阅验证指南',
-		calculate: '计算',
-	};
+	/**
+	 * Friendly tool-name labels (used by IChatExternalToolInvocationUpdate).
+	 *
+	 * Lazily built once on first use so the labels can be externalized via
+	 * `localize()` (nls is not available at static-field-init evaluation time
+	 * the way per-call evaluation is, and we want each label translatable).
+	 * Many tool aliases share one concept, so we localize the concept once and
+	 * reuse it across aliases.
+	 */
+	private static _toolNameMapCache: Record<string, string> | undefined;
+
+	private static _buildToolNameMap(): Record<string, string> {
+		const simulate = localize('chipos.tool.runSimulation', '运行仿真');
+		const lint = localize('chipos.tool.lint', '代码检查');
+		const listDir = localize('chipos.tool.listDir', '列出目录');
+		const searchFiles = localize('chipos.tool.searchFiles', '搜索文件');
+		const textSearch = localize('chipos.tool.textSearch', '文本搜索');
+		const runCommand = localize('chipos.tool.runCommand', '执行命令');
+		const editFile = localize('chipos.tool.editFile', '编辑文件');
+		const coverage = localize('chipos.tool.coverage', '检查覆盖率');
+		const syntaxCheck = localize('chipos.tool.syntaxCheck', '语法检查');
+		const format = localize('chipos.tool.format', '格式化');
+		return {
+			run_simulation: simulate,
+			run_sim: simulate,
+			run_lint: lint,
+			read_file: localize('chipos.tool.readFile', '读取文件'),
+			read_skill_body: localize('chipos.tool.readSkill', '加载技能'),
+			read_rule_body: localize('chipos.tool.readRule', '加载规则'),
+			write_file: localize('chipos.tool.writeFile', '写入文件'),
+			edit_file: editFile,
+			file_edit: editFile,
+			list_directory: listDir,
+			list_dir: listDir,
+			ls: listDir,
+			search_files: searchFiles,
+			glob: searchFiles,
+			grep_search: textSearch,
+			semantic_search: localize('chipos.tool.semanticSearch', '语义搜索'),
+			run_command: runCommand,
+			shell_command: runCommand,
+			create_file: localize('chipos.tool.createFile', '创建文件'),
+			delete_file: localize('chipos.tool.deleteFile', '删除文件'),
+			get_coverage: coverage,
+			check_coverage: coverage,
+			apply_diff: localize('chipos.tool.applyDiff', '应用差异'),
+			str_replace: localize('chipos.tool.strReplace', '替换文本'),
+			generate_rtl: localize('chipos.tool.generateRtl', '生成 RTL'),
+			generate_testbench: localize('chipos.tool.generateTb', '生成测试平台'),
+			analyze_waveform: localize('chipos.tool.analyzeWaveform', '分析波形'),
+			cdc_check: localize('chipos.tool.cdcCheck', 'CDC 检查'),
+			read_lints: localize('chipos.tool.readLints', '读取诊断'),
+			ask_user: localize('chipos.tool.askUser', '询问用户'),
+			task: localize('chipos.tool.task', '子代理执行'),
+			transfer_to_agent: localize('chipos.tool.transferAgent', '代理切换'),
+			write_todos: localize('chipos.tool.writeTodos', '更新计划'),
+			web_search: localize('chipos.tool.webSearch', '网络搜索'),
+			web_fetch: localize('chipos.tool.webFetch', '网页获取'),
+			code_execution: localize('chipos.tool.codeExecution', '代码执行'),
+			// EDA worker tools + common aliases the master calls directly — without
+			// these the row falls back to title-cased English ("Grep" / "Verilog Lint").
+			grep: textSearch,
+			verilog_lint: lint,
+			lint: lint,
+			verilog_syntax_check: syntaxCheck,
+			check_syntax: syntaxCheck,
+			verilog_simulate: simulate,
+			verilog_format: format,
+			format: format,
+			yosys_synthesis: localize('chipos.tool.yosysSynth', '逻辑综合'),
+			yosys_qor: localize('chipos.tool.yosysQor', 'QoR 分析'),
+			rtl_ppa_scan: localize('chipos.tool.ppaScan', 'PPA 扫描'),
+			power_analysis: localize('chipos.tool.powerAnalysis', '功耗分析'),
+			equiv_check: localize('chipos.tool.equivCheck', '等价性检查'),
+			formal_equiv_check: localize('chipos.tool.formalEquiv', '形式等价检查'),
+			fpga_synthesize: localize('chipos.tool.fpgaSynth', 'FPGA 综合'),
+			vcd_info: localize('chipos.tool.vcdInfo', '波形信息'),
+			vcd_signals: localize('chipos.tool.vcdSignals', '波形信号'),
+			vcd_waveform: localize('chipos.tool.vcdWaveform', '波形分析'),
+			execute: runCommand,
+			execute_command: runCommand,
+			run_in_terminal: runCommand,
+			get_terminal_output: localize('chipos.tool.terminalOutput', '读取终端输出'),
+			query_verification_guide: localize('chipos.tool.verifyGuide', '查阅验证指南'),
+			calculate: localize('chipos.tool.calculate', '计算'),
+		};
+	}
 
 	private _friendlyToolName(toolName: string): string {
-		return ChipOSChatAgent._toolNameMap[toolName] || toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+		if (!ChipOSChatAgent._toolNameMapCache) {
+			ChipOSChatAgent._toolNameMapCache = ChipOSChatAgent._buildToolNameMap();
+		}
+		return ChipOSChatAgent._toolNameMapCache[toolName] || toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 	}
 
 	/**
@@ -1755,6 +1851,37 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			progress([this._progress('$(output) Task Summary')]);
 			progress([this._markdown(ChipOSChatAgent._formatTaskSummary(handled.taskSummary))]);
 		}
+	}
+
+	/**
+	 * [ChipOS] Render a `diff_preview` event as a framework-native `textEditGroup`
+	 * (a side-by-side diff editor with built-in Apply Edits / Discard Edits
+	 * buttons) instead of the legacy fenced ```diff``` markdown block. We emit a
+	 * single `kind: 'textEdit'` progress part; the chat model folds it into a
+	 * `textEditGroup` rendered by `ChatTextEditContentPart` → `CodeCompareBlockPart`,
+	 * which loads the on-disk original itself and applies our (whole-line)
+	 * `edits` to produce the modified side. The diff is a *preview* (the file is
+	 * not written by us), so the toolbar's Apply/Discard — not the editing
+	 * session — is how the user accepts it; that toolbar is built into the
+	 * compare block (`MenuId.ChatCompareBlock`).
+	 */
+	private _renderStatelessDiffPreview(
+		diffPreview: NonNullable<DispatchResult['diffPreview']>,
+		progress: (parts: IChatProgress[]) => void,
+	): void {
+		const { filePath, edits } = diffPreview;
+		if (!filePath || edits.length === 0) {
+			return;
+		}
+		const workspaceRoot = this._getWorkspaceRoot();
+		const fileUri = filePath.startsWith('/')
+			? URI.file(filePath)
+			: workspaceRoot
+				? URI.joinPath(URI.file(workspaceRoot), filePath)
+				: URI.file(filePath);
+		// `done: true` — the preview ships the complete diff in one event (not a
+		// streamed sequence), so the renderer can settle immediately.
+		progress([{ kind: 'textEdit', uri: fileUri, edits, done: true } satisfies IChatTextEdit]);
 	}
 
 	private _renderStatelessSubagentEvent(
@@ -3577,12 +3704,24 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					.map(m => (m.path.split('/').pop() ?? '').split('.')[0].toLowerCase())
 					.filter(Boolean)
 			);
-			const agentMatch = /(?:^|\s)@(?<agent>[\w-]+)/.exec(request.message ?? '');
-			const agentName = agentMatch?.groups?.agent;
-			if (agentName && !attachedStems.has(agentName.toLowerCase()) && extensionSystemEnabled) {
+			const agentName = parseAgentMention(request.message, attachedStems);
+			if (agentName && extensionSystemEnabled) {
 				const def = await this._instantiationService.createInstance(ChiposAgentsService).getAgentDefinition(agentName);
 				if (def) {
-					invokeReq.selected_agent = { name: def.name, instructions: def.instructions, ...(def.description ? { description: def.description } : {}), ...(def.tools && def.tools.length ? { tools: def.tools } : {}), ...(def.mode ? { mode: def.mode } : {}) };
+					invokeReq.selected_agent = buildSelectedAgent(def);
+					// A non-empty `mode:` that ISN'T the canonical `subagent` spelling
+					// (a typo like `subagnt` / `sub-agent`) silently degrades to the
+					// persona overlay on the MAIN agent — no isolation, no tool gate —
+					// with zero feedback. Surface it so the author can fix the
+					// frontmatter rather than wonder why delegation never happened.
+					const rawMode = def.mode?.trim();
+					if (rawMode && !isSubagentMode(rawMode)) {
+						progress([this._markdown(localize(
+							'chipos.subagent.modeTypo',
+							"$(warning) **ChipOS:** agent `@{0}` declares `mode: {1}`, which isn't a recognized mode — running it as a persona overlay on the main agent (no isolated delegation). Use `mode: subagent` to delegate.",
+							def.name, rawMode,
+						))]);
+					}
 				}
 			}
 		} catch (err) {
@@ -3811,11 +3950,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				// [ChipOS] Phase 6: also record into the live Agents workbench view.
 				this._agentActivityStore.recordEvent(handled.subagentEvent);
 			}
+			if (handled.diffPreview) {
+				// [ChipOS] `diff_preview` → framework-native side-by-side diff with
+				// Apply/Discard, replacing the legacy fenced ```diff``` markdown.
+				trackFirstProgress();
+				this._renderStatelessDiffPreview(handled.diffPreview, progress);
+			}
 			if (handled.edaParts || handled.markdownContents || handled.taskSummary) {
 				// [ChipOS] Fusion: rich EDA report cards (sim/lint/coverage/PPA/
-				// negotiation/parallel/spec) + diff-preview markdown + task-summary
-				// card. Phase 0 dropped all of these (`default: {}`) so a prod
-				// stateless turn showed only tool rows; restore the legacy cards.
+				// negotiation/parallel/spec) + diff-preview markdown fallback +
+				// task-summary card. Phase 0 dropped all of these (`default: {}`) so a
+				// prod stateless turn showed only tool rows; restore the legacy cards.
 				trackFirstProgress();
 				this._renderStatelessEdaParts(handled, progress);
 				if (this._maybeEmitNextStepsCard(handled, progress, request.sessionResource, fullReplyText)) {
@@ -4579,6 +4724,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			if (handled.subagentEvent) {
 				this._renderStatelessSubagentEvent(handled.subagentEvent, progress, request, resumeSubagentCardState);
 				this._agentActivityStore.recordEvent(handled.subagentEvent);
+			}
+			if (handled.diffPreview) {
+				// [ChipOS] `diff_preview` → native diff with Apply/Discard (parity
+				// with the live loop above).
+				this._renderStatelessDiffPreview(handled.diffPreview, progress);
 			}
 			if (handled.edaParts || handled.markdownContents || handled.taskSummary) {
 				// [ChipOS] Fusion: rich EDA report cards on the resume path too

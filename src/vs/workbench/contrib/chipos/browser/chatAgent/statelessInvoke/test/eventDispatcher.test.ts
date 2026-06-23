@@ -18,7 +18,7 @@
  */
 
 import assert from 'assert';
-import { classifySseFailure, dispatchStatelessEvent } from '../eventDispatcher.js';
+import { buildTextEditsFromDiffHunks, classifySseFailure, dispatchStatelessEvent } from '../eventDispatcher.js';
 import { StatelessHttpError, StatelessReplayExpiredError } from '../statelessClient.js';
 import type { InvokeEvent, Message, TokenUsage } from '../types.js';
 
@@ -694,13 +694,46 @@ suite('dispatchStatelessEvent', () => {
 		);
 	});
 
-	test('diff_preview → markdownContents (fenced diff block)', () => {
+	test('diff_preview → native textEditGroup (whole-line replace, not markdown)', () => {
 		assert.deepStrictEqual(
 			dispatchStatelessEvent(ev('diff_preview', {
 				file_path: 'rtl/x.v',
 				hunks: [{ header: '@@ -1 +1 @@', lines: [{ type: 'del', content: 'old' }, { type: 'add', content: 'new' }] }],
 			})),
-			{ flushText: true, markdownContents: ['**Diff: `rtl/x.v`**\n```diff\n@@ -1 +1 @@\n- old\n+ new\n```'] },
+			{
+				flushText: true,
+				diffPreview: {
+					filePath: 'rtl/x.v',
+					// `@@ -1 +1 @@` (oldLen omitted → 1) → replace line 1 with "new\n".
+					edits: [{ range: { startLineNumber: 1, startColumn: 1, endLineNumber: 2, endColumn: 1 }, text: 'new\n' }],
+				},
+			},
+		);
+	});
+
+	test('diff_preview → markdown fallback when no parseable hunk header', () => {
+		const r = dispatchStatelessEvent(ev('diff_preview', {
+			file_path: 'rtl/x.v',
+			hunks: [{ header: '', lines: [{ type: 'add', content: 'new' }] }],
+		}));
+		assert.ok(!r.diffPreview, 'header-less hunk has no range → no native diff');
+		assert.ok(r.markdownContents && /```diff/.test(r.markdownContents[0]), 'falls back to fenced diff block');
+	});
+
+	test('buildTextEditsFromDiffHunks: multi-line replace + ctx preserved + pure-context skip', () => {
+		assert.deepStrictEqual(
+			buildTextEditsFromDiffHunks([
+				// Replace lines 3-4 (oldLen 2) with ctx "a" + add "b" (del "x" dropped).
+				{ header: '@@ -3,2 +3,2 @@', lines: [{ type: 'ctx', content: 'a' }, { type: 'del', content: 'x' }, { type: 'add', content: 'b' }] },
+				// Pure-context hunk → skipped (no real change).
+				{ header: '@@ -10,1 +10,1 @@', lines: [{ type: 'ctx', content: 'unchanged' }] },
+				// Deletion-only: oldLen 2, new side empty → empty replacement text.
+				{ header: '@@ -20,2 +19,0 @@', lines: [{ type: 'del', content: 'gone1' }, { type: 'del', content: 'gone2' }] },
+			]),
+			[
+				{ range: { startLineNumber: 3, startColumn: 1, endLineNumber: 5, endColumn: 1 }, text: 'a\nb\n' },
+				{ range: { startLineNumber: 20, startColumn: 1, endLineNumber: 22, endColumn: 1 }, text: '' },
+			],
 		);
 	});
 
