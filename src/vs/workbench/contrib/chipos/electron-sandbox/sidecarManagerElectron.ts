@@ -1250,6 +1250,20 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		// 5. Spawn.
 		const env: Record<string, string> = {
 			CHIPOS_REASONING_SERVER: grpcTarget,
+			// Stable worker_id across respawns (worker intermittent-disconnect fix):
+			// the reasoner pins a worker_id at turn-start via workspace affinity; a
+			// respawned worker that self-assigns a fresh uuid4 (shared config.py
+			// _resolve_worker_id) orphans that id and trips "No remote worker
+			// connection available". A deterministic per-workspace id keeps it
+			// matching after a respawn. Inline djb2 (renderer is sandboxed — no Node
+			// crypto here); the worker honors CHIPOS_WORKER_ID when set.
+			CHIPOS_WORKER_ID: `chipos-worker-${(() => {
+				let h = 5381;
+				for (let i = 0; i < workspaceRoot.length; i++) {
+					h = ((h * 33) ^ workspaceRoot.charCodeAt(i)) >>> 0;
+				}
+				return h.toString(16).padStart(8, '0');
+			})()}`,
 		};
 		if (workerToken) {
 			env['CHIPOS_WORKER_TOKEN'] = workerToken;
