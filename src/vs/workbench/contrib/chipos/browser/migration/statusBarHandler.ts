@@ -229,16 +229,22 @@ export class StatusBarHandler extends Disposable {
 	// mirrors a chat-turn store and opens its detail editor on click; absent
 	// when there's nothing to show (disposed/recreated like the other pills).
 
-	/** Live sub-agent activity: `running` count while a turn delegates, else total. */
+	/**
+	 * Live sub-agent activity pill. Always resident (like the "ChipOS Tools"
+	 * and "Stop Backends" entries) so the Agents workflow panel is discoverable
+	 * from the status bar even before any sub-agent runs: with no activity it
+	 * shows an idle `$(hubot) Agents` entry, then reflects `running`/`done`
+	 * counts live while a turn delegates.
+	 */
 	updateAgentsStatus(running: number, total: number): void {
-		if (total <= 0) {
-			this._agentsEntry?.dispose();
-			this._agentsEntry = undefined;
-			return;
+		let text: string;
+		if (running > 0) {
+			text = `$(loading~spin) Agents · ${running} running`;
+		} else if (total > 0) {
+			text = `$(hubot) Agents · ${total} done`;
+		} else {
+			text = '$(hubot) Agents';
 		}
-		const text = running > 0
-			? `$(loading~spin) Agents · ${running} running`
-			: `$(hubot) Agents · ${total} done`;
 		const entry = {
 			name: 'ChipOS Agents',
 			text,
@@ -296,7 +302,7 @@ export class StatusBarHandler extends Disposable {
 				text,
 				ariaLabel: text,
 				command: 'chipos.tools.quickOpen',
-				tooltip: localize('chipos.statusbar.tools.tooltip', "Open a ChipOS tool — Skill Tree, Worker Tools, Module Hierarchy"),
+				tooltip: localize('chipos.statusbar.tools.tooltip', "Open a ChipOS tool — Agents, Skill Tree, Worker Tools, Module Hierarchy"),
 			},
 			STATUSBAR_TOOLS_ID,
 			StatusbarAlignment.RIGHT,

@@ -24,6 +24,18 @@
 	color: var(--chipos-brand, #5ED3B3);
 }
 
+/* Header title that hosts an inline action button (e.g. Lint Report → Open File). */
+.eda-lint-report > .eda-section-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.eda-lint-report > .eda-section-title .eda-header-btn {
+	margin-left: auto;
+	font-weight: 400;
+}
+
 /* ── Table ──────────────────────────────────────────────────────────────────── */
 
 .eda-table {

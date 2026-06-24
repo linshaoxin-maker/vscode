@@ -77,6 +77,22 @@ export class ChatEdaLintReportContentPart extends Disposable implements IChatCon
 
 		this.domNode = edaSection(`Lint Report${content.tool ? ` (${content.tool})` : ''}`, ...children);
 		this.domNode.classList.add('eda-lint-report');
+
+		// Header-level "Open File" — jumps to the linted file regardless of
+		// whether there are error rows (lint passed → errors=[] → no per-row button).
+		const lintFile = content.file ?? errors.find(e => e.file)?.file;
+		if (lintFile) {
+			const header = this.domNode.querySelector('.eda-section-title');
+			if (header) {
+				const { button, listener } = edaButton(
+					localize('chipos.lintReport.openFile', "Open File"),
+					() => void edaOpenFile(this.editorService, lintFile),
+				);
+				button.classList.add('eda-header-btn');
+				this._register(listener);
+				header.appendChild(button);
+			}
+		}
 	}
 
 	hasSameContent(other: IChatRendererContent): boolean {
@@ -84,6 +100,6 @@ export class ChatEdaLintReportContentPart extends Disposable implements IChatCon
 			return false;
 		}
 		const o = other as IChatEdaLintReport;
-		return o.errors?.length === this.content.errors?.length;
+		return o.errors?.length === this.content.errors?.length && o.file === this.content.file;
 	}
 }

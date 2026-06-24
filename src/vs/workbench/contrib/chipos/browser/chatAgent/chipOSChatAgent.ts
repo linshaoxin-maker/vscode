@@ -1859,11 +1859,19 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * buttons) instead of the legacy fenced ```diff``` markdown block. We emit a
 	 * single `kind: 'textEdit'` progress part; the chat model folds it into a
 	 * `textEditGroup` rendered by `ChatTextEditContentPart` → `CodeCompareBlockPart`,
-	 * which loads the on-disk original itself and applies our (whole-line)
-	 * `edits` to produce the modified side. The diff is a *preview* (the file is
-	 * not written by us), so the toolbar's Apply/Discard — not the editing
-	 * session — is how the user accepts it; that toolbar is built into the
-	 * compare block (`MenuId.ChatCompareBlock`).
+	 * which loads the on-disk file as the "original" side and applies our
+	 * (whole-line) `edits` to produce the "modified" side. The compare block's
+	 * toolbar (`MenuId.ChatCompareBlock`) carries the framework's hard-coded
+	 * `"Apply Edits"` / `"Discard Edits"` buttons.
+	 *
+	 * ⚠️ Inverted semantics: the agent has ALREADY written the file on disk to its
+	 * edited form, and the `diff_preview` hunks revert that edit (new → old). So
+	 * the on-disk "original" side the framework loads is the AI-edited content, and
+	 * the framework's "Apply Edits" actually *reverts* the file back to the
+	 * pre-edit version, while "Discard Edits" *keeps* the AI edit. We cannot
+	 * override the framework button labels, so we precede the diff with a one-line
+	 * note that states the real meaning — never the misleading bare Apply/Discard
+	 * (and never Accept/Reject). See task #1-A.
 	 */
 	private _renderStatelessDiffPreview(
 		diffPreview: NonNullable<DispatchResult['diffPreview']>,
@@ -1879,6 +1887,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			: workspaceRoot
 				? URI.joinPath(URI.file(workspaceRoot), filePath)
 				: URI.file(filePath);
+		// Clarifying note (rendered above the diff): the file already carries the AI
+		// edit; the toolbar's "Apply Edits" reverts to the original, "Discard Edits"
+		// keeps the AI edit. This corrects the framework's misleading button labels.
+		progress([this._markdown(localize(
+			'chipos.diffPreview.invertedNote',
+			"$(info) ChipOS applied this edit to **{0}**. In the diff below, **Apply Edits** reverts to the original, **Discard Edits** keeps the change.",
+			filePath,
+		))]);
 		// `done: true` — the preview ships the complete diff in one event (not a
 		// streamed sequence), so the renderer can settle immediately.
 		progress([{ kind: 'textEdit', uri: fileUri, edits, done: true } satisfies IChatTextEdit]);
@@ -3309,6 +3325,13 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	//     run, so we offer resume at most once per thread per launch.
 	private static readonly _STATELESS_CSID_STORAGE_KEY = 'chipos.stateless.chatSessionIds';
 	private static readonly _COMPACTION_CHECKPOINT_STORAGE_KEY = 'chipos.stateless.compactionCheckpoints';
+	//   - `_DISCARDED_TRACES_STORAGE_KEY`: workspace-storage key holding a
+	//     FIFO-capped list of trace_ids the user explicitly discarded from the
+	//     restart-resume prompt, so a subsequent restart never re-offers them
+	//     even when `getTurnState` still reports them (cancel can fail or a stale
+	//     reasoner copy lingers).
+	private static readonly _DISCARDED_TRACES_STORAGE_KEY = 'chipos.stateless.discardedTraces';
+	private static readonly _DISCARDED_TRACES_MAX = 100;
 	private readonly _probedStatelessSessions = new Set<string>();
 
 	/**
@@ -4513,7 +4536,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				return;
 			}
 		}
-		if (!turnState || turnState.in_flight_traces.length === 0) {
+		// Drop traces the user already discarded in a previous launch — the
+		// reasoner may still report them (cancel can fail, or a stale replica copy
+		// lingers), but re-offering a dismissed turn makes "丢弃" feel broken.
+		const discarded = new Set(this._readDiscardedStatelessTraces());
+		const liveTraces = (turnState?.in_flight_traces ?? []).filter(t => !discarded.has(t.trace_id));
+		if (!turnState || liveTraces.length === 0) {
 			this._logService.info('[ChipOS Stateless] resume probe: turn_state empty for cs=%s — nothing to resume', chatSessionId);
 			// `getTurnState` is authoritative: no in-flight trace means the reasoner
 			// has nothing left to resume (the turn finished, or its state expired /
@@ -4525,7 +4553,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			return;
 		}
 		// Offer to resume the most-recently-started in-flight trace.
-		const trace = turnState.in_flight_traces.reduce((a, b) => (b.started_at >= a.started_at ? b : a));
+		const trace = liveTraces.reduce((a, b) => (b.started_at >= a.started_at ? b : a));
 		this._logService.info('[ChipOS Stateless] resume probe: in-flight trace=%s state=%s for cs=%s', trace.trace_id, trace.state, chatSessionId);
 		this._offerStatelessResume(sessionResource, chatSessionId, trace);
 	}
@@ -4578,6 +4606,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			lastSequenceId: trace.last_checkpoint_seq ?? -1,
 		});
 		const doCancel = () => {
+			// Persist the discard FIRST so a restart never re-offers this trace,
+			// even if the server keeps reporting it (cancel can fail / stale copy
+			// lingers). Filtered out in `_maybeProbeInFlightTurn`.
+			this._markStatelessTraceDiscarded(trace.trace_id);
 			void this._ensureStatelessClient()
 				.then(c => c.cancel(trace.trace_id, 'ide_restart_discarded'))
 				.catch(err => this._logService.warn('[ChipOS Stateless] resume-discard /cancel failed:', String(err)));
@@ -4942,6 +4974,42 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 		delete map[sessionResource.toString()];
 		this._storageService.store(ChipOSChatAgent._STATELESS_CSID_STORAGE_KEY, JSON.stringify(map), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	// ── Discarded resume traces (survives IDE restart) ──────────────────────
+	// When the user picks "取消该回合"/"丢弃" on the restart-resume prompt we
+	// persist the trace_id here so `_maybeProbeInFlightTurn` never re-offers it.
+	// The reasoner may keep reporting an in-flight trace after a discard (cancel
+	// can fail, or a stale replica copy lingers); without this the user sees the
+	// same prompt every restart and discard feels broken. Mirrors the extension's
+	// ChatPanelProvider `_DISCARDED_TRACES_KEY` implementation.
+
+	/** Ordered (array) view of persisted discarded trace_ids (best-effort; never throws). */
+	private _readDiscardedStatelessTraces(): string[] {
+		const raw = this._storageService.get(ChipOSChatAgent._DISCARDED_TRACES_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return [];
+		}
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+		} catch {
+			return [];
+		}
+	}
+
+	/** Persist that `traceId` was discarded so it's never re-offered (FIFO-capped). */
+	private _markStatelessTraceDiscarded(traceId: string): void {
+		if (!traceId) {
+			return;
+		}
+		const ids = this._readDiscardedStatelessTraces();
+		if (ids.includes(traceId)) {
+			return;
+		}
+		// Keep insertion order so the oldest entries fall off first when capped.
+		const trimmed = [...ids, traceId].slice(-ChipOSChatAgent._DISCARDED_TRACES_MAX);
+		this._storageService.store(ChipOSChatAgent._DISCARDED_TRACES_STORAGE_KEY, JSON.stringify(trimmed), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	// ── Reserved /compact: summarise older turns + persist a checkpoint ──────

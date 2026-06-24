@@ -889,7 +889,7 @@ function dispatchUnwrappedEvent(
 			// — note `column`, not the IDE's `col`.
 			const data = (event.data ?? {}) as {
 				errors?: Array<{ file?: string; line?: number; col?: number; column?: number; severity?: string; message?: string; rule?: string; auto_fixable?: boolean }>;
-				auto_fixable?: number; tool?: string;
+				auto_fixable?: number; tool?: string; file?: string; file_path?: string;
 			};
 			const errors: IChatEdaLintError[] = Array.isArray(data.errors)
 				? data.errors.map(e => ({
@@ -902,6 +902,14 @@ function dispatchUnwrappedEvent(
 					auto_fixable: typeof e.auto_fixable === 'boolean' ? e.auto_fixable : undefined,
 				}))
 				: [];
+			// Resolve the linted file so the card can offer "Open File" even when
+			// lint passed (errors=[]). Prefer an explicit top-level field; fall
+			// back to the first error's file.
+			const lintFile = typeof data.file === 'string' && data.file
+				? data.file
+				: typeof data.file_path === 'string' && data.file_path
+					? data.file_path
+					: errors.find(e => e.file)?.file;
 			return {
 				flushText: true,
 				edaParts: [{
@@ -909,6 +917,7 @@ function dispatchUnwrappedEvent(
 					errors,
 					auto_fixable: typeof data.auto_fixable === 'number' ? data.auto_fixable : undefined,
 					tool: typeof data.tool === 'string' ? data.tool : undefined,
+					file: lintFile || undefined,
 				} satisfies IChatEdaLintReport],
 			};
 		}

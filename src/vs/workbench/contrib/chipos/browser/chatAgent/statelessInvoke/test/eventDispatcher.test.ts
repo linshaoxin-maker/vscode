@@ -590,7 +590,7 @@ suite('dispatchStatelessEvent', () => {
 				round: 1,
 				errors: [{ file: 'a.v', line: 3, column: 5, rule: 'X', message: 'oops', severity: 'warning' }],
 			})),
-			{ flushText: true, edaParts: [{ kind: 'edaLintReport', errors: [{ file: 'a.v', line: 3, col: 5, severity: 'warning', message: 'oops', rule: 'X', auto_fixable: undefined }], auto_fixable: undefined, tool: undefined }] },
+			{ flushText: true, edaParts: [{ kind: 'edaLintReport', errors: [{ file: 'a.v', line: 3, col: 5, severity: 'warning', message: 'oops', rule: 'X', auto_fixable: undefined }], auto_fixable: undefined, tool: undefined, file: 'a.v' }] },
 		);
 	});
 
@@ -835,6 +835,13 @@ suite('classifySseFailure', () => {
 		const r = dispatchStatelessEvent(ev('lint_report', { errors: [] }));
 		assert.ok(r.edaParts && r.edaParts[0].kind === 'edaLintReport', 'real lint card still renders');
 		assert.ok(!r.markdownContents, 'no degraded note for a legit empty payload');
+	});
+
+	test('lint_report (passed, errors:[]) carries top-level file so the card can offer Open File', () => {
+		const r = dispatchStatelessEvent(ev('lint_report', { errors: [], file_path: 'rtl/top.v', tool: 'verible' }));
+		const part = r.edaParts?.[0] as { kind: string; file?: string } | undefined;
+		assert.strictEqual(part?.kind, 'edaLintReport');
+		assert.strictEqual(part?.file, 'rtl/top.v', 'file_path surfaced as file even with zero errors');
 	});
 
 	test('EDA schema guard: empty payload → legit no-op, not degraded', () => {

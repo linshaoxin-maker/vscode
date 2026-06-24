@@ -66,6 +66,8 @@ export interface IChatEdaLintReport {
 	errors: IChatEdaLintError[];
 	auto_fixable?: number;
 	tool?: string;
+	/** The linted file, so the card can offer "Open File" even when lint passed (errors=[]). */
+	file?: string;
 }
 
 // ── EDA Parallel Progress ───────────────────────────────────────────────────
