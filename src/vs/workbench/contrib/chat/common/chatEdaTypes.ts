@@ -159,6 +159,16 @@ export interface IChatAgentError {
 		traceId: string;
 		lastSequenceId: number;
 	};
+	/**
+	 * [ChipOS] The stateless chat_session_id this failed turn belongs to, when
+	 * known. The card's "Retry" (resend) button passes it to
+	 * `_chipos.retryStatelessTurn` so the agent reverse-maps it to the right
+	 * session and re-runs the last user message there — precisely, even if focus
+	 * has since moved to another chat widget. Optional: error cards built without
+	 * a session handle (e.g. a mid-stream reasoner `type=error`) omit it and the
+	 * retry command falls back to the last-focused chat widget.
+	 */
+	chatSessionId?: string;
 }
 
 // ── ChipOS Todo Summary Card ─────────────────────────────────────────────────

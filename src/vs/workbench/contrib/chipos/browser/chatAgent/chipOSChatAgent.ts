@@ -53,6 +53,7 @@ import type { IToolResultInputOutputDetails } from '../../../../contrib/chat/com
 import { IChatTodoListService, type IChatTodo } from '../../../../contrib/chat/common/tools/chatTodoListService.js';
 import { IChatEditingService, type IChatEditingSession } from '../../../../contrib/chat/common/editing/chatEditingService.js';
 import { IChatService } from '../../../../contrib/chat/common/chatService/chatService.js';
+import { IChatWidgetService } from '../../../../contrib/chat/browser/chat.js';
 import { IChatSlashCommandService } from '../../../../contrib/chat/common/participants/chatSlashCommands.js';
 import { ChatAgentLocation } from '../../../../contrib/chat/common/constants.js';
 import type { IChatResponseModel, IChatModel, IChatProgressResponseContent } from '../../../../contrib/chat/common/model/chatModel.js';
@@ -495,8 +496,8 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Request then POSTs /confirm_response (the proven timeout path).
 		this._register(CommandsRegistry.registerCommand(
 			'_chipos.resolveStatelessConfirm',
-			(_accessor, requestId: string, action: string, selections?: Record<string, string>, comment?: string) =>
-				this._resolveStatelessConfirm(requestId, action, selections, comment),
+			(_accessor, requestId: string, action: string, selections?: Record<string, string>, comment?: string, traceId?: string) =>
+				this._resolveStatelessConfirm(requestId, action, selections, comment, traceId),
 		));
 
 		// ADR-018 resume-from-break: the error card's PRIMARY "继续 (从中断处)" button
@@ -509,6 +510,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			'_chipos.resumeStatelessTurn',
 			(_accessor, ctx: { chatSessionId: string; traceId: string; lastSequenceId: number }) =>
 				this._resumeStatelessTurnFromCard(ctx),
+		));
+
+		// The error card's "Retry" (resend) button, and the resume button's
+		// fallback, fire this to RE-RUN the last user message from scratch. It
+		// replaces the previous `executeCommand('workbench.action.chat.resend')`
+		// call — a command id that is NOT registered in this fork (the framework
+		// action is `workbench.action.chat.retry`, and it requires a response
+		// view-model arg the card can't supply), so the old button silently
+		// no-op'd (rejected promise, fire-and-forget) → "Retry 点了无反应,
+		// reasoner 零请求". We resend via `IChatService.resendRequest`, which
+		// cancels any pending request then re-dispatches — robust even against a
+		// busy/zombie restored row.
+		this._register(CommandsRegistry.registerCommand(
+			'_chipos.retryStatelessTurn',
+			(accessor, chatSessionId?: string) =>
+				this._retryStatelessTurnFromCard(chatSessionId, accessor.get(IChatWidgetService)),
 		));
 
 		// [ChipOS][F-4 redesign] Inline next-step card: each chip is a non-blocking
@@ -550,10 +567,29 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 * Confirm` command when the user clicks a permission-card button, bypassing
 	 * the chat re-entry path that deadlocks while the originating turn is
 	 * in-flight. Returns true if a pending confirm matched.
+	 *
+	 * When NO pending confirm matches but `traceId` names a turn the startup probe
+	 * found still-resumable, the card is a STALE one restored after an IDE restart
+	 * (its parked Promise died with the old process). Rather than dead-end on a
+	 * silent no-op, drive the resume so the click continues the turn — the
+	 * rehydrated loop re-emits a fresh confirm the user can then answer.
 	 */
-	private _resolveStatelessConfirm(requestId: string, action: string, selections?: Record<string, string>, comment?: string): boolean {
+	private _resolveStatelessConfirm(requestId: string, action: string, selections?: Record<string, string>, comment?: string, traceId?: string): boolean {
 		const pending = this._pendingStatelessConfirms.get(requestId);
 		if (!pending) {
+			const resumable = traceId ? this._restartResumableTraces.get(traceId) : undefined;
+			if (resumable) {
+				// Restored (post-restart) confirm card: the parked Promise is gone, so
+				// continue the in-flight turn instead of no-op'ing. One-shot.
+				this._restartResumableTraces.delete(traceId!);
+				this._logService.info('[ChipOS Stateless] resolve: restored confirm click → resuming trace=%s (request_id=%s)', traceId, requestId);
+				void this._sendStatelessResumeRequest(resumable.sessionResource, {
+					traceId: traceId!,
+					chatSessionId: resumable.chatSessionId,
+					lastSequenceId: resumable.lastSequenceId,
+				});
+				return true;
+			}
 			this._logService.warn('[ChipOS Stateless] resolve: no pending confirm for request_id=%s', requestId);
 			return false;
 		}
@@ -598,6 +634,64 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		}
 		this._logService.info('[ChipOS Stateless] resume-from-card: trace=%s cs=%s from seq=%d', ctx.traceId, ctx.chatSessionId, ctx.lastSequenceId);
 		return this._sendStatelessResumeRequest(sessionResource, ctx);
+	}
+
+	/**
+	 * Handler for the error card's "Retry" (resend) button. RE-RUNS the last user
+	 * message of the failed turn from scratch (fresh /invoke), as opposed to the
+	 * "继续 (从中断处)" button which CONTINUES from the last checkpoint (/resume).
+	 *
+	 * Resolves the target session in priority order:
+	 *   1. `chatSessionId` carried on the card (reverse-mapped to its
+	 *      sessionResource) — precise even if focus moved to another chat;
+	 *   2. the last-focused chat widget's session — fallback for cards built
+	 *      without a session handle (a mid-stream reasoner `type=error` card).
+	 * Re-runs via `IChatService.resendRequest`, which cancels any pending request
+	 * first, so it works even on a busy/zombie restored row. Returns true iff a
+	 * resend was issued (the resume button's fallback uses this to decide whether
+	 * the click dead-ended).
+	 */
+	private _retryStatelessTurnFromCard(chatSessionId: string | undefined, widgetService: IChatWidgetService): boolean {
+		let sessionResource: URI | undefined;
+		if (chatSessionId) {
+			for (const [resource, csId] of this._statelessChatSessionIds) {
+				if (csId === chatSessionId) {
+					sessionResource = resource;
+					break;
+				}
+			}
+		}
+		if (!sessionResource) {
+			// Fallback: the chat the user is looking at (error cards from a
+			// mid-stream reasoner error carry no chat_session_id).
+			sessionResource = widgetService.lastFocusedWidget?.viewModel?.sessionResource;
+		}
+		if (!sessionResource) {
+			this._logService.warn('[ChipOS Stateless] retry-from-card: could not resolve a session (cs=%s)', String(chatSessionId));
+			return false;
+		}
+		return this._resendLastTurnForSession(sessionResource, chatSessionId);
+	}
+
+	/**
+	 * Resend a session's last turn via `IChatService.resendRequest`, which cancels
+	 * any pending request first — so it works even on a busy/zombie restored row.
+	 * Shared by the error-card Retry ({@link _retryStatelessTurnFromCard}) and the
+	 * resume fallback in {@link _offerStatelessResume} (when /resume's sendRequest is
+	 * rejected because the restored row's finalize no-op'd and the session is still
+	 * busy). Returns true iff a resend was issued.
+	 */
+	private _resendLastTurnForSession(sessionResource: URI, chatSessionId: string | undefined): boolean {
+		const model = this._chatService.getSession(sessionResource);
+		const lastRequest = model?.getRequests().at(-1);
+		if (!lastRequest) {
+			this._logService.warn('[ChipOS Stateless] resend: no request to resend for cs=%s', String(chatSessionId));
+			return false;
+		}
+		this._logService.info('[ChipOS Stateless] resend: resending last turn for cs=%s (attempt=%d)', String(chatSessionId), (lastRequest.attempt ?? 0) + 1);
+		void this._chatService.resendRequest(lastRequest, { attempt: (lastRequest.attempt ?? 0) + 1 })
+			.catch(err => this._logService.error('[ChipOS Stateless] resend failed:', String(err)));
+		return true;
 	}
 
 	/**
@@ -683,6 +777,11 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			resumeContext: args.resumable
 				? { chatSessionId: args.chatSessionId, traceId: args.traceId, lastSequenceId: args.lastSequenceId }
 				: undefined,
+			// Always carry the session id (even when !resumable) so the "Retry"
+			// (resend) button can re-run the last user message in the RIGHT session
+			// via `_chipos.retryStatelessTurn` rather than the now-removed framework
+			// `workbench.action.chat.resend` command (which never existed here).
+			chatSessionId: args.chatSessionId || undefined,
 		} satisfies IChatAgentError;
 	}
 
@@ -1802,6 +1901,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private _renderStatelessAgentError(
 		ae: NonNullable<DispatchResult['agentError']>,
 		progress: (parts: IChatProgress[]) => void,
+		sessionResource?: URI,
 	): void {
 		// [ChipOS] Render a structured error card (matches the old
 		// WebSocket-path Error handler's category presets for a
@@ -1818,12 +1918,17 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			INTERNAL: { icon: '❌', label: '内部错误', suggestion: '请稍后重试，问题持续可联系支持。' },
 		};
 		const preset = presets[cat] ?? presets.INTERNAL;
+		// Carry the chat_session_id so the card's "Retry" button resends the last
+		// user message in the RIGHT session via `_chipos.retryStatelessTurn`
+		// (the framework `workbench.action.chat.resend` command does not exist here).
+		const chatSessionId = sessionResource ? this._statelessChatSessionIds.get(sessionResource) : undefined;
 		progress([{
 			kind: 'agentError',
 			error_code: ae.errorCode ?? 'AGENT_ERROR',
 			message: `${preset.icon} **${preset.label}**：${ae.message}`,
 			retryable: ae.retryable ?? (cat === 'WORKER' || cat === 'TOOL' || cat === 'PROTO'),
 			suggestion: preset.suggestion,
+			chatSessionId,
 		} satisfies IChatAgentError]);
 	}
 
@@ -3334,6 +3439,14 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	private static readonly _DISCARDED_TRACES_MAX = 100;
 	private readonly _probedStatelessSessions = new Set<string>();
 
+	// Restart-resume bookkeeping: when the startup probe finds an in-flight turn
+	// that is still resumable, we record it here keyed by trace_id. A confirm card
+	// that was restored after the IDE restart (its parked Promise died with the old
+	// process, so the in-process resolver finds nothing) reads this on click to
+	// continue the turn (POST /resume) instead of dead-ending on a silent no-op —
+	// see `_resolveStatelessConfirm`. One-shot: cleared once a resume is issued.
+	private readonly _restartResumableTraces = new Map<string, { sessionResource: URI; chatSessionId: string; lastSequenceId: number }>();
+
 	/**
 	 * Lazy / reused StatelessClient. Recreated when the configured baseUrl
 	 * changes (mode switch, user override edit). Token is read at request time
@@ -3997,7 +4110,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				progress([this._markdown(handled.markdownError)]);
 			}
 			if (handled.agentError) {
-				this._renderStatelessAgentError(handled.agentError, progress);
+				this._renderStatelessAgentError(handled.agentError, progress, request.sessionResource);
 			}
 			if (handled.usage !== undefined) {
 				usage = handled.usage;
@@ -4555,7 +4668,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// Offer to resume the most-recently-started in-flight trace.
 		const trace = liveTraces.reduce((a, b) => (b.started_at >= a.started_at ? b : a));
 		this._logService.info('[ChipOS Stateless] resume probe: in-flight trace=%s state=%s for cs=%s', trace.trace_id, trace.state, chatSessionId);
-		this._offerStatelessResume(sessionResource, chatSessionId, trace);
+		this._offerStatelessResume(model, sessionResource, chatSessionId, trace);
 	}
 
 	/**
@@ -4591,20 +4704,82 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	}
 
 	/**
+	 * Close a restored zombie row whose turn IS still resumable by appending an
+	 * in-row `resumable:true` card ("继续 (从中断处)" + "Retry"). Unlike
+	 * {@link _finalizeRestoredZombieRow} (the unrecoverable case), this preserves a
+	 * working continue path right in the conversation — the easily-missed toast is
+	 * no longer the only affordance — and hides the stale trailing `reconnecting…`
+	 * / `Working…` progress line (the framework hides a progress message once a
+	 * non-progress part follows it). Guarded by {@link _finalizeUnrecoverableRestoredRow},
+	 * which no-ops unless the row is an in-flight-at-restart zombie (isCanceled).
+	 */
+	private _finalizeResumableRestoredRow(model: IChatModel, chatSessionId: string, trace: InFlightTrace, lastSequenceId: number): void {
+		const response = model.getRequests().at(-1)?.response;
+		const card = this._statelessFailureCard({
+			errorCode: 'TURN_INTERRUPTED',
+			message: localize('chipos.stateless.fail.restoreResumable', "上一个回答在 IDE 重启时被中断。点「继续 (从中断处)」可继续生成，已生成的内容会保留。"),
+			resumable: true,
+			chatSessionId,
+			traceId: trace.trace_id,
+			lastSequenceId,
+		});
+		const finalized = _finalizeUnrecoverableRestoredRow(
+			response,
+			card,
+			(msg, ...args) => this._logService.info(msg, ...args),
+		);
+		this._logService.info(
+			'[ChipOS Stateless] resume probe: %s restored zombie row with resumable card for cs=%s (trace=%s)',
+			finalized ? 'closed' : 'no-op on', chatSessionId, trace.trace_id,
+		);
+	}
+
+	/**
 	 * Surface the restart-resume affordance. `running` → an info prompt that
 	 * continues the turn on click; `stale` (§2.9: reasoner replica may have died)
 	 * → a warning that asks the user before attempting resume. Both offer a
 	 * cancel so the dangling server turn can be torn down.
+	 *
+	 * Also closes the restored zombie row with an in-row, resumable "继续 (从中断处)"
+	 * card (not just the transient toast): the toast is easy to miss, and the
+	 * restored row otherwise keeps a stale `Working…` progress line + a now-dead
+	 * confirm card. The in-row card hides the stale progress line and gives a
+	 * discoverable, working continue button. The trace is also recorded so a click
+	 * on the (dead) restored confirm card can recover via `_resolveStatelessConfirm`.
 	 */
-	private _offerStatelessResume(sessionResource: URI, chatSessionId: string, trace: InFlightTrace): void {
+	private _offerStatelessResume(model: IChatModel, sessionResource: URI, chatSessionId: string, trace: InFlightTrace): void {
+		const lastSequenceId = trace.last_checkpoint_seq ?? -1;
+		// Record so a restored (dead) confirm-card click can recover the turn.
+		this._restartResumableTraces.set(trace.trace_id, { sessionResource, chatSessionId, lastSequenceId });
+		// Close the zombie row with an in-row resumable card (discoverable + hides
+		// the stale reconnecting/Working progress line). Guarded: no-ops unless the
+		// row was an in-flight-at-restart zombie (isCanceled).
+		this._finalizeResumableRestoredRow(model, chatSessionId, trace, lastSequenceId);
 		const preview = trace.last_user_message_preview ? `（"${trace.last_user_message_preview}"）` : '';
-		const doResume = () => this._sendStatelessResumeRequest(sessionResource, {
-			traceId: trace.trace_id,
-			chatSessionId,
-			// last_checkpoint_seq is the reasoner's "safe to resume from here"
-			// watermark; -1 means "replay everything from the start of the turn".
-			lastSequenceId: trace.last_checkpoint_seq ?? -1,
-		});
+		const doResume = async () => {
+			const sent = await this._sendStatelessResumeRequest(sessionResource, {
+				traceId: trace.trace_id,
+				chatSessionId,
+				// last_checkpoint_seq is the reasoner's "safe to resume from here"
+				// watermark; -1 means "replay everything from the start of the turn".
+				lastSequenceId,
+			});
+			if (sent) {
+				return;
+			}
+			// sendRequest was rejected — the chat session is still busy. The restored
+			// row's finalize (_finalizeResumableRestoredRow) no-ops unless the row is
+			// isCanceled; on the edge case where it isn't (or a new turn raced in),
+			// /resume can't re-enter invoke() and the click would dead-end SILENTLY
+			// (reasoner sees zero requests — the exact bug this whole path fixes). Fall
+			// back to a resend, which cancels any pending request first so it works even
+			// on a busy row. Degrades replay-from-checkpoint to a full re-run, but a
+			// re-run beats a silent no-op.
+			this._logService.warn('[ChipOS Stateless] resume sendRequest rejected (session busy) — falling back to resend for cs=%s', chatSessionId);
+			if (!this._resendLastTurnForSession(sessionResource, chatSessionId)) {
+				this._notificationService.warn(localize('chipos.stateless.resume.deadEnd', "无法继续生成：会话仍被占用，且没有可重试的回合，请新开对话。"));
+			}
+		};
 		const doCancel = () => {
 			// Persist the discard FIRST so a restart never re-offers this trace,
 			// even if the server keeps reporting it (cancel can fail / stale copy
@@ -4775,7 +4950,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				progress([this._markdown(handled.markdownError)]);
 			}
 			if (handled.agentError) {
-				this._renderStatelessAgentError(handled.agentError, progress);
+				this._renderStatelessAgentError(handled.agentError, progress, request.sessionResource);
 			}
 			if (handled.usage !== undefined) {
 				usage = handled.usage;

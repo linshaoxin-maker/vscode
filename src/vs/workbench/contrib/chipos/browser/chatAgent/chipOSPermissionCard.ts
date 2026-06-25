@@ -654,12 +654,17 @@ export class ChipOSPermissionCardContentPart extends Disposable implements IChat
 			if (statelessReqId) {
 				try {
 					const selections = (this.confirmation.data as { selections?: Record<string, string> })?.selections;
+					// Pass the trace_id too: after an IDE restart the parked Promise is
+					// gone, so the resolver finds no pending confirm; the trace_id lets it
+					// recover by continuing the in-flight turn instead of no-op'ing.
+					const statelessTraceId = (this.confirmation.data as { __chiposStatelessConfirmTraceId?: string })?.__chiposStatelessConfirmTraceId;
 					await this.commandService.executeCommand(
 						'_chipos.resolveStatelessConfirm',
 						statelessReqId,
 						opt.action_id ?? opt.label,
 						selections,
 						comment,
+						statelessTraceId,
 					);
 					this.confirmation.isUsed = true;
 					swapToRespondedPill(opt);

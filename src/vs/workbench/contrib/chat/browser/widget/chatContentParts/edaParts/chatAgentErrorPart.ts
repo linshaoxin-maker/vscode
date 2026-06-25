@@ -98,12 +98,13 @@ export class ChatAgentErrorContentPart extends Disposable implements IChatConten
 						// can't (session disposed / busy / history restored after a
 						// restart) it resolves falsy → fall back to resend so the button
 						// is never a dead end. Re-enable after a short cool-down either way.
+						const csId = this._data.chatSessionId ?? resumeContext.chatSessionId;
 						void Promise.resolve(this._commandService.executeCommand('_chipos.resumeStatelessTurn', resumeContext))
 							.then(resumed => {
 								if (!resumed) {
-									this._commandService.executeCommand('workbench.action.chat.resend');
+									this._commandService.executeCommand('_chipos.retryStatelessTurn', csId);
 								}
-							}, () => this._commandService.executeCommand('workbench.action.chat.resend'))
+							}, () => this._commandService.executeCommand('_chipos.retryStatelessTurn', csId))
 							.finally(() => {
 								resumeResetTimer = setTimeout(() => {
 									resumeBtn.disabled = false;
@@ -138,7 +139,10 @@ export class ChatAgentErrorContentPart extends Disposable implements IChatConten
 						}
 						retryBtn.disabled = true;
 						retryBtn.setAttribute('aria-busy', 'true');
-						this._commandService.executeCommand('workbench.action.chat.resend');
+						// Resend the last user message. Routes through the ChipOS agent
+						// command (NOT the framework `workbench.action.chat.resend`, which
+						// is unregistered here → the click used to silently no-op).
+						this._commandService.executeCommand('_chipos.retryStatelessTurn', this._data.chatSessionId);
 						// Re-enable after a short cool-down so users can retry if the resend silently failed.
 						resetTimer = setTimeout(() => {
 							retryBtn.disabled = false;
