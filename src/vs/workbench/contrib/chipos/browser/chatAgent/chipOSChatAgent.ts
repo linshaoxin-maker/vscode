@@ -95,6 +95,7 @@ import { IRunStorageService, type IRunMetadata, type RunStatus } from '../runs/r
 import { IChiposWaveformService } from '../waveform/chiposWaveformService.js';
 import { IPpaStorageService, type IPpaSnapshot } from '../ppa/ppaStorageService.js';
 import { IAgentActivityStore } from '../agents/agentActivityStore.js';
+import { ICockpitStoreService } from '../cockpit/cockpitStoreService.js';
 import { buildSelectedAgent, computeSubagentFinalizeUpdates, computeSubagentToolUpdates, createSubagentCardState, isSubagentMode, parseAgentMention, type ISubagentCardState } from './statelessInvoke/subagentCard.js';
 import { buildToolRowLabel, summarizeToolOutput, withResultBadge } from './statelessInvoke/toolRowFormat.js';
 import { StatelessObservability } from './statelessInvoke/statelessObservability.js';
@@ -386,6 +387,44 @@ export function _finalizeUnrecoverableRestoredRow(
 	return true;
 }
 
+/**
+ * Dependency surface for {@link _runResumeWithFallback}, mirroring the
+ * `I409RecoveryClient` pattern so the busy-reject branch is unit-testable.
+ */
+export interface IResumeFallbackDeps {
+	/** Issue /resume via the synthetic sendRequest; false ⇒ rejected (session busy). */
+	sendResume(): Promise<boolean>;
+	/** Resend the session's last turn (cancels pending first); false ⇒ nothing to resend. */
+	resendLastTurn(): boolean;
+	/** Loud notification when both /resume and resend dead-end. */
+	notifyDeadEnd(): void;
+	warn(msg: string): void;
+}
+
+/**
+ * Run an IDE-restart resume with a busy-session fallback. Happy path: `sendResume`
+ * succeeds (`sent=true`) and we're done. Edge path (the defense this exists for):
+ * `sendResume` is REJECTED because the restored row's finalize no-op'd (it wasn't
+ * `isCanceled`) and the chat session is still busy — without this the click would
+ * dead-end SILENTLY (reasoner sees zero requests). We instead `resendLastTurn`,
+ * which cancels any pending request first so it works even on a busy row; if even
+ * that has nothing to resend, surface a loud notification.
+ *
+ * Pure orchestration over {@link IResumeFallbackDeps} so the reject branch can be
+ * unit-tested: it is near-impossible to trigger live, because a pending confirm
+ * card makes `sendResume` succeed (resolve-confirm) instead of being rejected.
+ */
+export async function _runResumeWithFallback(deps: IResumeFallbackDeps): Promise<void> {
+	const sent = await deps.sendResume();
+	if (sent) {
+		return;
+	}
+	deps.warn('[ChipOS Stateless] resume sendRequest rejected (session busy) — falling back to resend');
+	if (!deps.resendLastTurn()) {
+		deps.notifyDeadEnd();
+	}
+}
+
 export class ChipOSChatAgent extends Disposable implements IChatAgentImplementation {
 
 	private readonly _sessionRuntimes = new ResourceMap<IChatSessionRuntime>();
@@ -426,6 +465,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		@IPpaStorageService private readonly _ppaStorageService: IPpaStorageService,
 		@IAgentActivityStore private readonly _agentActivityStore: IAgentActivityStore,
 		@ICommandService private readonly _commandService: ICommandService,
+		@ICockpitStoreService private readonly _cockpitStore: ICockpitStoreService,
 	) {
 		super();
 		// T6b IDE FullTracer (ADR-009 §4.2) — buffers IDE-side trace events per
@@ -4248,7 +4288,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					if (trace && event.sequence_id > trace.lastSequenceId) {
 						trace.lastSequenceId = event.sequence_id;
 					}
-					applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+					this._cockpitStore.ingest(event.type, event.data); applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
 				}
 				break retryLoop;  // success — no retry needed
 			} catch (err) {
@@ -4390,7 +4430,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 								if (trace && event.sequence_id > trace.lastSequenceId) {
 									trace.lastSequenceId = event.sequence_id;
 								}
-								applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+								this._cockpitStore.ingest(event.type, event.data); applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
 							}
 							this._statelessObs.resumeOutcome('success', resumeAttempt);  // §5.2 client mirror
 							break;  // resume stream completed cleanly
@@ -4756,30 +4796,18 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 		// row was an in-flight-at-restart zombie (isCanceled).
 		this._finalizeResumableRestoredRow(model, chatSessionId, trace, lastSequenceId);
 		const preview = trace.last_user_message_preview ? `（"${trace.last_user_message_preview}"）` : '';
-		const doResume = async () => {
-			const sent = await this._sendStatelessResumeRequest(sessionResource, {
+		const doResume = () => _runResumeWithFallback({
+			sendResume: () => this._sendStatelessResumeRequest(sessionResource, {
 				traceId: trace.trace_id,
 				chatSessionId,
 				// last_checkpoint_seq is the reasoner's "safe to resume from here"
 				// watermark; -1 means "replay everything from the start of the turn".
 				lastSequenceId,
-			});
-			if (sent) {
-				return;
-			}
-			// sendRequest was rejected — the chat session is still busy. The restored
-			// row's finalize (_finalizeResumableRestoredRow) no-ops unless the row is
-			// isCanceled; on the edge case where it isn't (or a new turn raced in),
-			// /resume can't re-enter invoke() and the click would dead-end SILENTLY
-			// (reasoner sees zero requests — the exact bug this whole path fixes). Fall
-			// back to a resend, which cancels any pending request first so it works even
-			// on a busy row. Degrades replay-from-checkpoint to a full re-run, but a
-			// re-run beats a silent no-op.
-			this._logService.warn('[ChipOS Stateless] resume sendRequest rejected (session busy) — falling back to resend for cs=%s', chatSessionId);
-			if (!this._resendLastTurnForSession(sessionResource, chatSessionId)) {
-				this._notificationService.warn(localize('chipos.stateless.resume.deadEnd', "无法继续生成：会话仍被占用，且没有可重试的回合，请新开对话。"));
-			}
-		};
+			}),
+			resendLastTurn: () => this._resendLastTurnForSession(sessionResource, chatSessionId),
+			notifyDeadEnd: () => this._notificationService.warn(localize('chipos.stateless.resume.deadEnd', "无法继续生成：会话仍被占用，且没有可重试的回合，请新开对话。")),
+			warn: msg => this._logService.warn(msg),
+		});
 		const doCancel = () => {
 			// Persist the discard FIRST so a restart never re-offers this trace,
 			// even if the server keeps reporting it (cancel can fail / stale copy
@@ -5034,7 +5062,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 					if (trace && event.sequence_id > trace.lastSequenceId) {
 						trace.lastSequenceId = event.sequence_id;
 					}
-					applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
+					this._cockpitStore.ingest(event.type, event.data); applyDispatch(dispatchStatelessEvent(event, friendlyToolName));
 				}
 				break;  // resume stream completed cleanly
 			} catch (resumeErr) {

@@ -26,7 +26,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { _recoverFrom409Conflict, _finalizeUnrecoverableRestoredRow, type I409RecoveryClient, type IFinalizableRestoredResponse } from '../../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
+import { _recoverFrom409Conflict, _finalizeUnrecoverableRestoredRow, _runResumeWithFallback, type I409RecoveryClient, type IFinalizableRestoredResponse, type IResumeFallbackDeps } from '../../../../../workbench/contrib/chipos/browser/chatAgent/chipOSChatAgent.js';
 import type { IChatAgentError } from '../../../../../workbench/contrib/chat/common/chatEdaTypes.js';
 import type { IChatProgressResponseContent } from '../../../../../workbench/contrib/chat/common/model/chatModel.js';
 
@@ -219,5 +219,63 @@ suite('_finalizeUnrecoverableRestoredRow', () => {
 			{ returned: false, appended: [] },
 			're-entry on an already-finalized row must not stack a second card',
 		);
+	});
+});
+
+/**
+ * Unit test for `_runResumeWithFallback` — the busy-session defense behind the
+ * IDE-restart "继续生成" / "尝试继续" buttons. The button's doResume calls
+ * `_sendStatelessResumeRequest`; when the chat session is still busy (the restored
+ * row's finalize no-op'd because it wasn't `isCanceled`) that sendRequest is
+ * rejected. Without a fallback the click dead-ends silently (reasoner sees zero
+ * requests — the original bug). The fix resends the last turn (cancels pending
+ * first), and only if even that has nothing to resend surfaces a loud notification.
+ *
+ * Why a unit test rather than a live repro: the reject path is near-unreachable
+ * live — a pending confirm card makes `_sendStatelessResumeRequest` succeed via
+ * resolve-confirm (observed: clicking the toast on a busy session yields a
+ * `confirm_response`, not a reject). This pins the three branches against a mock
+ * deps surface so the silent-dead-end regression can never come back.
+ */
+suite('_runResumeWithFallback', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	function makeDeps(opts: { sendResume: boolean; resendLastTurn?: boolean }): IResumeFallbackDeps & { calls: string[] } {
+		const calls: string[] = [];
+		return {
+			calls,
+			async sendResume() { calls.push('sendResume'); return opts.sendResume; },
+			resendLastTurn() { calls.push('resendLastTurn'); return opts.resendLastTurn ?? true; },
+			notifyDeadEnd() { calls.push('notifyDeadEnd'); },
+			warn() { calls.push('warn'); },
+		};
+	}
+
+	test('sendResume accepted → done, no fallback fires', async () => {
+		const deps = makeDeps({ sendResume: true });
+
+		await _runResumeWithFallback(deps);
+
+		assert.deepStrictEqual(deps.calls, ['sendResume'],
+			'happy path: resend/notify never fire when /resume is accepted');
+	});
+
+	test('sendResume rejected (busy) + a turn to resend → falls back to resend, no loud', async () => {
+		const deps = makeDeps({ sendResume: false, resendLastTurn: true });
+
+		await _runResumeWithFallback(deps);
+
+		assert.deepStrictEqual(deps.calls, ['sendResume', 'warn', 'resendLastTurn'],
+			'the defense: a busy-rejected /resume resends instead of dead-ending silently');
+	});
+
+	test('sendResume rejected + nothing to resend → loud notification, never silent', async () => {
+		const deps = makeDeps({ sendResume: false, resendLastTurn: false });
+
+		await _runResumeWithFallback(deps);
+
+		assert.deepStrictEqual(deps.calls, ['sendResume', 'warn', 'resendLastTurn', 'notifyDeadEnd'],
+			'if even the resend has no turn, surface a loud notification (never a silent no-op)');
 	});
 });
