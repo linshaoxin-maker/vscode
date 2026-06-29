@@ -58,7 +58,7 @@ import {
 	BackendMode,
 	WorkerState,
 } from '../common/sidecarService.js';
-import { planWorkerAutoRestart } from '../common/workerAutoRestart.js';
+import { planWorkerAutoRestart, shouldRecycleWorker, type IWorkerHealthSnapshot } from '../common/workerAutoRestart.js';
 
 export class SidecarManagerElectron extends Disposable implements ISidecarManagerService {
 
@@ -123,6 +123,8 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 	 */
 	private _healthWatchTimer: ReturnType<typeof setInterval> | undefined;
 	private _healthWatchFailureCount = 0;
+	/** ①a re-entrancy guard so an in-flight recycle (restartWorker) isn't double-fired. */
+	private _recyclingWorker = false;
 
 	// 2026-05-23: cached "actually-bound" worker HTTP port.
 	//
@@ -738,6 +740,10 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 				const ok = await this._probeWorkerLiveness();
 				if (ok) {
 					this._healthWatchFailureCount = 0;
+					// ①a: worker is alive — proactively recycle it if it's old/churned
+					// AND idle, before it degrades past the mcp_loader retry's reach.
+					// Fire-and-forget; _maybeRecycleWorker guards against overlap.
+					void this._maybeRecycleWorker();
 					return;
 				}
 				// 2026-05-22 fix: worker is single-threaded aiohttp; it
@@ -780,6 +786,80 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 		if (this._healthWatchTimer !== undefined) {
 			clearInterval(this._healthWatchTimer);
 			this._healthWatchTimer = undefined;
+		}
+	}
+
+	// ── ①a worker 健康换新 ────────────────────────────────────────────────────
+
+	/**
+	 * Proactively recycle a long-running / heavily-reconnected LOCAL worker in an
+	 * idle window. The defensive companion to the worker-side mcp_loader stdio
+	 * retry: it stops a worker from degrading (long uptime + many gRPC reconnects
+	 * → async-state decay → create_session stdio crash) past the point the retry
+	 * can save it. Fired (fire-and-forget) from the health watch's success branch.
+	 *
+	 * Conservative by construction:
+	 *   - Local mode only — in CloudReasoning/Manual/REH the worker lives
+	 *     elsewhere and we must not kill it.
+	 *   - Idle gate (running_tasks_count == 0, worker-wide) — never interrupts a
+	 *     running turn, in this or any other window sharing the worker.
+	 *   - restartWorker() only truly recycles for the window that SPAWNED the
+	 *     worker (its killProcess targets that window's managed process); an
+	 *     adopting window's restartWorker re-adopts — so it's multi-window safe.
+	 */
+	private async _maybeRecycleWorker(): Promise<void> {
+		if (this._disposed || this._recyclingWorker) {
+			return;
+		}
+		if (this._mode !== BackendMode.Local || this._workerState !== WorkerState.Connected) {
+			return;
+		}
+		const snap = await this._fetchWorkerHealthSnapshot();
+		// Re-check state after the await — it may have moved on.
+		if (!snap || this._disposed || this._recyclingWorker || this._workerState !== WorkerState.Connected) {
+			return;
+		}
+		const reason = shouldRecycleWorker(snap);
+		if (!reason) {
+			return;
+		}
+		this._recyclingWorker = true;
+		this._logService.info(`[ChipOS SidecarElectron] recycling long-running worker (${reason}) — restarting for a fresh async state`);
+		try {
+			await this.restartWorker();
+		} catch (err) {
+			this._logService.warn(`[ChipOS SidecarElectron] worker recycle failed: ${err}`);
+		} finally {
+			this._recyclingWorker = false;
+		}
+	}
+
+	/** Read uptime / running-tasks / disconnect-count off the worker's status
+	 *  endpoint (①b). Returns undefined on any error so the recycle is skipped. */
+	private async _fetchWorkerHealthSnapshot(): Promise<IWorkerHealthSnapshot | undefined> {
+		try {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 2000);
+			try {
+				const resp = await fetch(`${this.workerHttpUrl}/api/v1/worker/status`, { signal: controller.signal });
+				if (!resp.ok) {
+					return undefined;
+				}
+				const j = await resp.json() as Record<string, unknown>;
+				const uptimeSec = typeof j.uptime === 'number' ? j.uptime : undefined;
+				if (uptimeSec === undefined) {
+					return undefined; // can't assess age → don't recycle
+				}
+				return {
+					uptimeMs: uptimeSec * 1000,
+					runningTasks: typeof j.running_tasks_count === 'number' ? j.running_tasks_count : 0,
+					disconnectCount: typeof j.disconnect_count === 'number' ? j.disconnect_count : undefined,
+				};
+			} finally {
+				clearTimeout(timer);
+			}
+		} catch {
+			return undefined;
 		}
 	}
 

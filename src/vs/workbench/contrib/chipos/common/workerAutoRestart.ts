@@ -50,3 +50,56 @@ export function planWorkerAutoRestart(attemptsSoFar: number, options?: IWorkerAu
 	const delayMs = Math.min(base * Math.pow(2, attemptsSoFar), cap);
 	return { delayMs, nextAttempt: attemptsSoFar + 1 };
 }
+
+// ── ①a worker 健康换新 (2026-06-29) ──────────────────────────────────────────
+// Proactively recycle a long-running / heavily-reconnected LOCAL worker in an
+// idle window. Companion to the worker-side mcp_loader stdio retry: it stops a
+// worker from degrading (long uptime + many gRPC reconnects → async-state decay
+// → create_session stdio crash) past the point the retry can save it. Pure +
+// deterministic so the decision is unit-testable; the side-effecting poll +
+// restartWorker() call lives in SidecarManagerElectron. The same logic ships in
+// the CLI/extension WorkerLifecycle so all three surfaces behave alike.
+
+/** Health fields read off the worker's GET /api/v1/worker/status (①b). */
+export interface IWorkerHealthSnapshot {
+	/** Worker process uptime in milliseconds. */
+	readonly uptimeMs: number;
+	/** Tool tasks currently running — recycle ONLY when 0 (never mid-turn). */
+	readonly runningTasks: number;
+	/** Cumulative gRPC disconnects; undefined on older worker binaries. */
+	readonly disconnectCount?: number;
+}
+
+export interface IWorkerRecycleThresholds {
+	/** Recycle once uptime crosses this (ms). <=0 disables. Default 4h. */
+	readonly maxUptimeMs?: number;
+	/** Recycle once disconnectCount crosses this. <=0 disables. Default 20. */
+	readonly maxDisconnectCount?: number;
+}
+
+/** Default thresholds: 4h uptime / 20 reconnects (match CLI + extension). */
+export const DEFAULT_WORKER_RECYCLE_THRESHOLDS: Required<IWorkerRecycleThresholds> = {
+	maxUptimeMs: 4 * 60 * 60 * 1000,
+	maxDisconnectCount: 20,
+};
+
+/**
+ * Pure decision: should an OWNED worker be recycled? Returns a short human
+ * reason (for the log line) or null. Gated on idle — a worker mid-turn
+ * (runningTasks > 0) is never recycled, so a recycle never interrupts a running
+ * EDA turn.
+ */
+export function shouldRecycleWorker(snap: IWorkerHealthSnapshot, thresholds?: IWorkerRecycleThresholds): string | null {
+	const maxUptimeMs = thresholds?.maxUptimeMs ?? DEFAULT_WORKER_RECYCLE_THRESHOLDS.maxUptimeMs;
+	const maxDisconnectCount = thresholds?.maxDisconnectCount ?? DEFAULT_WORKER_RECYCLE_THRESHOLDS.maxDisconnectCount;
+	if (snap.runningTasks > 0) {
+		return null;
+	}
+	if (maxUptimeMs > 0 && snap.uptimeMs >= maxUptimeMs) {
+		return `uptime ${Math.round(snap.uptimeMs / 60_000)}min >= ${Math.round(maxUptimeMs / 60_000)}min`;
+	}
+	if (maxDisconnectCount > 0 && (snap.disconnectCount ?? 0) >= maxDisconnectCount) {
+		return `disconnects ${snap.disconnectCount} >= ${maxDisconnectCount}`;
+	}
+	return null;
+}
