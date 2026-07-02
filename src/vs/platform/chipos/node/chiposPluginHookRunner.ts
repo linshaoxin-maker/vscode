@@ -68,7 +68,7 @@ process.on('message', async (msg) => {
 interface IChildReply {
 	readonly evalId?: string;
 	readonly decision?: string;
-	readonly amended_args?: object;
+	readonly amended_args?: Record<string, unknown>;
 	readonly agent_message?: string;
 	readonly user_message?: string;
 	readonly error?: string;

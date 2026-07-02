@@ -179,21 +179,27 @@ suite('StatelessClient — Phase 0 #8b', () => {
 	});
 
 	test('invoke_passes_abort_signal_to_fetch', async () => {
-		// Capture the wrapped signal the moment fetch is invoked (i.e. while
-		// the request is still "in flight"), so we can test abort propagation
-		// without race vs the in-progress async generator's cleanup.
+		// Capture the wrapped signal the moment fetch is invoked, and keep the
+		// SSE stream OPEN (no close) so the request is genuinely in flight when
+		// the caller aborts — the transport releases its signal wiring as soon
+		// as a stream finishes, so abort propagation is only promised for a
+		// live stream (matching the real cancel-an-inflight-turn use).
 		let capturedSignal: AbortSignal | undefined;
+		const encoder = new TextEncoder();
 		const responder = (_url: string, init: RequestInit | undefined) => {
 			capturedSignal = init?.signal as AbortSignal | undefined;
-			return makeSseResponse(200, [sseFrame({ type: 'round_end', sequence_id: 1, data: { reason: 'end_turn' } })]);
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					// One frame, then hold the stream open (no close()).
+					controller.enqueue(encoder.encode(sseFrame({ type: 'content_block_delta', sequence_id: 1, data: { delta: 'x' } })));
+				},
+			});
+			return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 		};
 		const { fn, calls } = makeFetchSpy(responder);
 		const client = new StatelessClient({ baseUrl, fetchFn: fn });
 
 		const ac = new AbortController();
-		// Iterate to drive the first fetch (capturedSignal is populated by
-		// then), but stop after one event so cleanup hasn't run yet — verify
-		// caller-abort propagates while the wrapper is still alive.
 		const iter = client.invoke(makeReq(), ac.signal)[Symbol.asyncIterator]();
 		const first = await iter.next();
 		assert.strictEqual(first.done, false);
@@ -208,7 +214,9 @@ suite('StatelessClient — Phase 0 #8b', () => {
 		ac.abort(new Error('test cancel'));
 		assert.strictEqual(capturedSignal.aborted, true, 'caller-abort must propagate to fetch signal');
 
-		// Drain the iterator to release resources cleanly.
+		// Release the iterator. (A REAL fetch would reject the pending read on
+		// abort and the iterator would throw; the mock Response's stream does
+		// not model abort, so end via return() which never depends on it.)
 		await iter.return?.(undefined);
 	});
 
@@ -259,44 +267,9 @@ suite('StatelessClient — Phase 0 #8b', () => {
 		assert.deepStrictEqual(got, body);
 	});
 
-	test('replay_throws_StatelessReplayExpiredError_on_410', async () => {
-		const { fn } = makeFetchSpy(() =>
-			makeJsonResponse(410, { error: 'replay_window_expired', trace_id: 't-old' }),
-		);
-		const client = new StatelessClient({ baseUrl, fetchFn: fn });
-
-		await assert.rejects(
-			() => collect(client.replay('t-old', 0)),
-			(err: unknown) => {
-				assert.ok(err instanceof StatelessReplayExpiredError, `expected StatelessReplayExpiredError, got ${err}`);
-				assert.strictEqual((err as StatelessReplayExpiredError).traceId, 't-old');
-				return true;
-			},
-		);
-	});
-
-	test('replay_yields_events_from_sse_like_invoke', async () => {
-		const events: InvokeEvent[] = [
-			{ type: 'content_block_delta', sequence_id: 4, data: { delta: 'd' } },
-			{ type: 'content_block_delta', sequence_id: 5, data: { delta: 'e' } },
-			{ type: 'round_end', sequence_id: 6, data: { reason: 'end_turn' } },
-		];
-		const body = events.map(sseFrame).join('');
-		const { fn, calls } = makeFetchSpy((url) => {
-			// Replay endpoint must include the query string with last_sequence_id.
-			assert.ok(
-				url.endsWith('/api/v1/replay/t-replay?last_sequence_id=3'),
-				`unexpected url ${url}`,
-			);
-			return makeSseResponse(200, [body]);
-		});
-		const client = new StatelessClient({ baseUrl, fetchFn: fn });
-
-		const got = await collect(client.replay('t-replay', 3));
-
-		assert.deepStrictEqual(got, events);
-		assert.strictEqual(calls.length, 1);
-	});
+	// (The Phase 0 `replay()` method was removed in M3b: zero call sites — the
+	// IDE recovers SSE drops via `resume()` below. Its 410 semantics live on in
+	// resume_throws_StatelessReplayExpiredError_on_410.)
 
 	test('compact_returns_typed_response', async () => {
 		const body = {

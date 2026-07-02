@@ -34,7 +34,8 @@ export interface IPluginHookEvalArgs {
 /** The decision returned from the main-process hook runner. */
 export interface IPluginHookDecision {
 	readonly decision: 'proceed' | 'deny' | 'ask' | 'amend';
-	readonly amendedArgs?: object;
+	/** JSON object from the plugin hook (crosses IPC) — wire shape is HookResultRequest.amended_args. */
+	readonly amendedArgs?: Record<string, unknown>;
 	readonly agentMessage?: string;
 	readonly userMessage?: string;
 	readonly reason?: string;

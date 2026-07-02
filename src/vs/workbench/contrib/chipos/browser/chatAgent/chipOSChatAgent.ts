@@ -67,6 +67,7 @@ import {
 	StatelessResumeNotFoundError,
 } from './statelessInvoke/statelessClient.js';
 import type {
+	HookEvalDecision,
 	InFlightTrace,
 	InvokeRequest,
 	Message,
@@ -5659,7 +5660,7 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	 */
 	private async _handleStatelessHookEval(client: StatelessClient, traceId: string, sessionResource: URI, hookEval: { evalId: string; point: string; toolName?: string; callId?: string; args: Record<string, unknown>; module?: string; export?: string; pluginIds?: string[]; timeoutMs?: number; failClosed?: boolean }, token: CancellationToken): Promise<void> {
 		const failClosed = hookEval.failClosed !== false;
-		const post = async (decision: string, extra?: { amended_args?: object; agent_message?: string; user_message?: string }) => {
+		const post = async (decision: HookEvalDecision, extra?: { amended_args?: Record<string, unknown>; agent_message?: string; user_message?: string }) => {
 			try { await client.postHookResult(traceId, hookEval.evalId, { eval_id: hookEval.evalId, decision, ...(extra ?? {}) }); }
 			catch (err) { this._logService.warn('[ChipOS Stateless] POST /hook_result failed for eval_id=%s: %s', hookEval.evalId, String(err)); }
 		};

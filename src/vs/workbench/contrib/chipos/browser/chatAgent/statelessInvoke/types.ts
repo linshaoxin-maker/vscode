@@ -9,7 +9,7 @@
  *
  * The protocol shapes (mirror of
  * `backend_v2/packages/shared/src/shared/contracts/invoke.py`, pydantic v2)
- * live in `./vendor/invokeTypes.ts` — a vendored copy of
+ * live in `./vendor/agent/invokeTypes.ts` — a vendored copy of
  * `packages/invoke-client/src/agent/invokeTypes.ts` — so all three surfaces
  * (CLI / extension / IDE) consume the SAME canonical contract instead of
  * hand-maintained parallel mirrors. This module stays the single import path
@@ -31,7 +31,7 @@
  * events on the stable `family` band, never on the open `type`.
  */
 
-import type { ContentBlock, ImageBlock, InvokeEvent, ReasonerHookDefinition as CanonicalReasonerHookDefinition, RoundEndData, TextBlock, ToolResultBlock, ToolUseBlock } from './vendor/invokeTypes.js';
+import type { ContentBlock, ImageBlock, InvokeEvent, ReasonerHookDefinition as CanonicalReasonerHookDefinition, RoundEndData, TextBlock, ToolResultBlock, ToolUseBlock } from './vendor/agent/invokeTypes.js';
 
 // =============================================================================
 // Canonical wire types (single source: packages/invoke-client)
@@ -86,7 +86,7 @@ export type {
 	CompactRequest,
 	CompactResponse,
 	HookResultRequest,
-} from './vendor/invokeTypes.js';
+} from './vendor/agent/invokeTypes.js';
 
 // =============================================================================
 // IDE extension — ReasonerHookDefinition with the function-hook carrier
