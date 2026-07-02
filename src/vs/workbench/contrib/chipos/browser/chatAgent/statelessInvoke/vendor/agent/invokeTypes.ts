@@ -1,7 +1,7 @@
 /* ────────────────────────────────────────────────────────────────────
  * VENDORED — DO NOT EDIT BY HAND. Regenerate by re-copying the canonical source
  * canonical source: packages/invoke-client/src/agent/invokeTypes.ts
- * @chipos/invoke-client — shared reasoner /invoke wire types (M3a vendored copy; sync-vendor ide target lands after M2).
+ * @chipos/invoke-client — shared reasoner /invoke wire types (M3a vendored copy; import specifiers get a .js suffix for NodeNext).
  * ──────────────────────────────────────────────────────────────────── */
 /*---------------------------------------------------------------------------------------------
  *  Phase 2-A: TS mirror of the reasoner invoke protocol.
@@ -17,12 +17,51 @@
  *  here are forward compatible.
  *--------------------------------------------------------------------------------------------*/
 
-// ── Content blocks (Anthropic Messages API 对齐) ─────────────────────────────
+// ── Generated single-source re-exports (P-rust-4 / M4) ──────────────────────
+// These shapes come from the Rust single source (packages/invoke-core →
+// ts-rs bindings), materialized into ./generated.ts by scripts/gen-bindings.mjs
+// so the vendored copies of this file stay self-contained at any directory
+// depth. Editing invoke.py/lib.rs + regenerating flows through here with zero
+// hand edits. Everything NOT in this list stays a hand-written facade below,
+// because its ts-rs shape marks serde-defaulted fields as REQUIRED (#6) or the
+// binding models a different runtime shape — each facade notes its reason.
+export type {
+	SkillSource,
+	PromptSource,
+	PromptResourceKind,
+	ReasonerHookPoint,
+	ReasonerHookAction,
+	HookEvalDecision,
+	EventFamily,
+	ChiposSource,
+	TextBlock,
+	SelectedAgent,
+	SkillHeader,
+	Identity,
+	AllowedTools,
+	ToolDefinition,
+	RegisterToolsRequest,
+	RenderEnvelope,
+} from './generated.js';
+import type {
+	AllowedTools,
+	EventFamily,
+	HookEvalDecision,
+	Identity,
+	PromptResourceKind,
+	PromptSource,
+	ReasonerHookAction,
+	ReasonerHookPoint,
+	SelectedAgent,
+	SkillHeader,
+	TextBlock,
+} from './generated.js';
 
-export interface TextBlock {
-	type: 'text';
-	text: string;
-}
+// ── Content blocks (Anthropic Messages API 对齐) ─────────────────────────────
+// Hand-written: the ts-rs ContentBlock is a serde tagged enum with inlined
+// variants (is_error: boolean | null, content: ToolResultContent) — no
+// standalone ToolUseBlock/ToolResultBlock/ImageBlock binding files exist (#7),
+// and the parse-side optionality here is looser on purpose.
 
 export interface ToolUseBlock {
 	type: 'tool_use';
@@ -59,56 +98,9 @@ export interface Message {
 }
 
 // ── Sub-role / skills / hooks / prompt-resources (request-side: FEAT-003/004/005 + marketplace v5) ──
-// Shapes mirror invoke-core/bindings/*.ts (the ts-rs-generated canonical) so the
-// P-rust-4 swap (canonical = generated re-export) is a drop-in. SSOT = invoke.py.
-
-/** invoke.py SkillSource — where a skill came from. */
-export type SkillSource = 'builtin' | 'user' | 'plugin' | 'workspace';
-/** invoke.py PromptSource — where a hook / prompt-resource was configured. */
-export type PromptSource = 'user' | 'workspace' | 'plugin';
-/** invoke.py PromptResourceKind. */
-export type PromptResourceKind = 'rule' | 'command';
-/** invoke.py ReasonerHookPoint — the 14 dotted hook anchor points (FEAT-004). */
-export type ReasonerHookPoint =
-	| 'turn.before_start'
-	| 'context.before_collect'
-	| 'context.after_collect'
-	| 'prompt.before_render'
-	| 'prompt.after_render'
-	| 'llm.before_call'
-	| 'llm.after_response'
-	| 'tool.before_dispatch'
-	| 'tool.after_result'
-	| 'subagent.before_invoke'
-	| 'subagent.after_result'
-	| 'final.before_emit'
-	| 'turn.after_end'
-	| 'turn.on_error';
-/** invoke.py ReasonerHookAction. */
-export type ReasonerHookAction = 'observe' | 'deny' | 'amend' | 'ask';
-/** invoke.py HookEvalDecision — the surface's verdict POSTed back for an 'ask' hook. */
-export type HookEvalDecision = 'proceed' | 'deny' | 'ask' | 'amend';
-
-/** invoke.py SelectedAgent — FEAT-005 user @agent routing (extra=allow). */
-export interface SelectedAgent {
-	name: string;
-	instructions: string;
-	description?: string;
-	/** Non-empty clamps this turn's tool catalog to this allow-list. */
-	tools?: string[];
-	/** 'subagent' = isolated delegation; else persona overlay (default, keeps conversation). */
-	mode?: string;
-	/** FEAT-005: per-agent model override (only on the mode:subagent isolated path); omit = inherit the turn's model. */
-	model?: string;
-}
-
-/** invoke.py SkillHeader — skill catalog header (name+description, body lazy-loaded, FEAT-003). */
-export interface SkillHeader {
-	name: string;
-	description: string;
-	source: SkillSource;
-	source_ref?: string;
-}
+// SkillSource/PromptSource/PromptResourceKind/ReasonerHookPoint/ReasonerHookAction/
+// HookEvalDecision/SelectedAgent/SkillHeader now re-export the generated single
+// source (see the P-rust-4 block above). SSOT = invoke.py.
 
 /**
  * invoke.py PromptResourceAttachment — rule/command injected into the prompt (marketplace v5).
@@ -226,6 +218,8 @@ export interface InvokeRequest {
  * `backend_v2/packages/shared/src/shared/contracts/invoke.py` RenderCapability.
  * `kind` is an OPEN string (not an enum), so a new EDA card is a new registry
  * entry with the wire contract unchanged.
+ * Hand-written facade (#6): the binding marks `max_schema_version` REQUIRED
+ * (serde default 1) — clients declare capabilities without it.
  */
 export interface RenderCapability {
 	/** Event kind the surface renders natively, e.g. "sim_report" | "lint_report" | future. */
@@ -281,23 +275,8 @@ export interface ClientCapabilities {
 // `backend_v2/packages/shared/src/shared/contracts/invoke.py`
 // Identity / AllowedTools / ResolvedInvokeContext.
 
-/** Authenticated actor for a turn — JWT/chiops derived, NEVER client-reported (R1). */
-export interface Identity {
-	user_id: string;
-	workspace_id: string;
-	/** Authorization scopes — server-derived (R1), never a client claim. */
-	scopes: string[];
-}
-
-/** The scope-clamped single-catalog tool view for a turn — server-derived (R1/R5). */
-export interface AllowedTools {
-	/** worker-executed tools (registry × scopes). */
-	worker: string[];
-	/** IDE/MCP-executed tools (registry × scopes). */
-	mcp: string[];
-	/** Host operations the surface may be asked to perform (host_tools ∩ scope-allowed). */
-	surface: string[];
-}
+// Identity / AllowedTools now re-export the generated single source (P-rust-4
+// block above) — both were shape-identical to the bindings.
 
 /**
  * Server-internal resolved context (§5) — client never sees or reports this (R1).
@@ -322,30 +301,10 @@ export interface TokenUsage {
 	cache_creation_input_tokens?: number;
 }
 
-/**
- * The 8 stable event families (/invoke v1.1 S5 / §8). A surface routes on the
- * stable `family` band — NEVER on the open `type` (which a newer reasoner may
- * extend). Mirrors `EVENT_FAMILIES` in
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py`.
- *
- *   stream    — Anthropic content: message_start / content_block_* / message_delta / …
- *   tool      — tool_start / tool_result / tool_call_emitted / ide_tool_call / …
- *   control   — round_start / round_progress / checkpoint / keepalive / heartbeat / …
- *   render    — ⭐ rich cards (sim / lint / ppa / diff / spec / …); `data` is a RenderEnvelope
- *   confirm   — confirm_request / confirm_auto_resolved
- *   subagent  — subagent_event
- *   custom    — ⭐ escape hatch: an event not (yet) classified; route generically
- *   terminal  — round_end (with FinalResult) / error
- */
-export type EventFamily =
-	| 'stream'
-	| 'tool'
-	| 'control'
-	| 'render'
-	| 'confirm'
-	| 'subagent'
-	| 'custom'
-	| 'terminal';
+// EventFamily (the 8 stable routing bands, §8) now re-exports the generated
+// single source (P-rust-4 block above) — route on `family`, never on the open
+// `type`: stream / tool / control / render(⭐RenderEnvelope) / confirm /
+// subagent / custom(⭐escape hatch) / terminal.
 
 /**
  * The set of SSE event `type`s the reasoner emits. Anthropic streaming events +
@@ -432,31 +391,9 @@ export interface InvokeEvent {
 	data: Record<string, unknown>;
 }
 
-/**
- * The uniform shell for every `family === 'render'` card (/invoke v1.1 S5 / §8).
- * Mirrors `RenderEnvelope` in
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py`. The reasoner wraps
- * each rich card in this at the SSEEmitSink boundary; a surface does the three-layer
- * degrade:
- *   - `kind` known & `schema_version` ≤ its max → render `payload` richly
- *   - `kind` unknown / schema too new            → render `fallback` (never dropped)
- *   - `kind === 'ui_spec'` (supports_generative_ui) → generic declarative render
- *     (D-1: contract placeholder — Beta-1 does NOT implement this third layer)
- */
-export interface RenderEnvelope {
-	/** Open card kind — "sim_report" | "lint_report" | … | future | "ui_spec". */
-	kind: string;
-	/** Schema version of THIS kind's `payload` (default 1). */
-	schema_version: number;
-	/** The rich render data (rendered when the surface knows `kind`). */
-	payload: Record<string, unknown>;
-	/**
-	 * REQUIRED (D10) — what the surface shows when it cannot richly render the card
-	 * (unknown kind / schema too new). Canonical shapes: `{ text: string }` or
-	 * `{ artifact_ref: ArtifactRef }`.
-	 */
-	fallback: { text: string } | { artifact_ref: ArtifactRef } | Record<string, unknown>;
-}
+// RenderEnvelope (the uniform render-card shell with the mandatory D10
+// fallback + three-layer degrade) now re-exports the generated single source
+// (P-rust-4 block above) — the P-rust-3 fallback union is byte-equivalent.
 
 /**
  * A pointer to a turn-produced artifact (report / patch / waveform / …).
@@ -522,27 +459,14 @@ export interface CancelRequest {
 }
 
 // ── Tool catalog registration ────────────────────────────────────────────────
+// ToolDefinition (chipos_source routing: worker_mcp→gRPC / ide_mcp+ide_builtin→
+// reverse channel) + RegisterToolsRequest now re-export the generated single
+// source (P-rust-4 block above).
 
-export interface ToolDefinition {
-	name: string;
-	description: string;
-	input_schema: Record<string, unknown>;
-	/**
-	 * Routing metadata (not shown to the LLM):
-	 *   worker_mcp  → reasoner dispatches via gRPC to the worker
-	 *   ide_mcp     → reasoner emits ide_tool_call to the IDE
-	 *   ide_builtin → same reverse-channel path as ide_mcp
-	 */
-	chipos_source: 'worker_mcp' | 'ide_mcp' | 'ide_builtin';
-}
-
-export interface RegisterToolsRequest {
-	chat_session_id: string;
-	tools: ToolDefinition[];
-	ide_version?: string;
-	workspace_path?: string;
-}
-
+/**
+ * Hand-written facade (#6): the binding marks `rejected` REQUIRED (serde
+ * default []) — parse-side must tolerate an older reasoner omitting it.
+ */
 export interface RegisterToolsResponse {
 	/** sha256[:16] of the canonical tools[]; IDE sends as expected_catalog_version. */
 	catalog_version: string;
