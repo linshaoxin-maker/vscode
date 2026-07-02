@@ -4,406 +4,119 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Phase 1 — TS schema types for the reasoner-driven mixed-state architecture.
+ * Reasoner /invoke protocol types — thin re-export of the canonical
+ * `@chipos/invoke-client` wire types (M3a, 19-SURFACE-CONVERGENCE).
  *
- * Mirror of `backend_v2/packages/shared/src/shared/contracts/invoke.py` (pydantic v2).
- * Field names / defaults / nullability must align literally with the python side or
- * the wire contract breaks. See ADR-018 + PHASE-1-PROTOCOL-SPEC.md §2.
+ * The protocol shapes (mirror of
+ * `backend_v2/packages/shared/src/shared/contracts/invoke.py`, pydantic v2)
+ * live in `./vendor/invokeTypes.ts` — a vendored copy of
+ * `packages/invoke-client/src/agent/invokeTypes.ts` — so all three surfaces
+ * (CLI / extension / IDE) consume the SAME canonical contract instead of
+ * hand-maintained parallel mirrors. This module stays the single import path
+ * for IDE consumers (the old-path shim): it re-exports the canonical types
+ * verbatim and keeps the IDE-ONLY extensions below:
  *
- * Phase 1 schema changes from Phase 0 (ADR-017 → ADR-018):
- *   - InvokeRequest: dropped `tools: dict[]` and `langgraph_state_blob: string`
- *     (tools registered out-of-band via RegisterToolsRequest at IDE startup;
- *     internal LangGraph state lives reasoner-side in FileStateStore)
- *   - InvokeRequest: added `expected_catalog_version: string` (required, 412
- *     on mismatch) and `workspace_meta: dict | null` (open editor context)
- *   - New schemas: ToolDefinition, RegisterToolsRequest/Response, ToolResultRequest,
- *     ConfirmResponseRequest, ResumeRequest, InFlightTrace, TurnStateResponse
- *   - SSE event types: added `ide_tool_call`, `confirm_request`, `keepalive`,
- *     `checkpoint`, `resumed_buffer_drained`
+ *   - `ReasonerHookDefinition` — canonical + the tier-2 *function* hook carrier
+ *     fields (`kind`/`module`/`export`/`timeout_ms`/`fail_closed`, FEAT-004/H-1).
+ *     These are NOT invoke.py fields — the reasoner accepts them via
+ *     `extra="allow"` and mirrors them back on `hook_eval` (same pattern as the
+ *     CLI's domain-side hook type).
+ *   - The reserved slash-command layer (`RESERVED_COMMANDS` / `RESERVED_NAMES`).
+ *   - Runtime helpers: ContentBlock type guards + round_end readers.
+ *   - Typed SSE payload views (`IdeToolCallData` / `HookEvalData` / …) the
+ *     eventDispatcher narrows `InvokeEvent.data` into.
  *
- * Design goals:
- *   - Anthropic Messages API alignment (ADR-018 §2 D13) → multi-provider trivial
- *   - IDE chatSessions/*.jsonl is the user-data truth; reasoner FileStateStore
- *     is the reasoner-internal-state truth (D8 mixed-state)
- *   - Reasoner-driven agent loop (one /invoke = one user turn, internal LLM ↔
- *     tool loop on reasoner side) per D2
- *
- * Forward-compat conventions (mirroring python `extra="allow"`):
- *   - Listed fields are the minimum subset; unknown fields may appear from future
- *     reasoner versions — downstream consumers MUST NOT exhaustively switch
- *     `Object.keys()` and MUST tolerate unknown keys silently.
- *   - `ContentBlock` is a discriminated union — narrow via `type` field.
- *   - `Message.content` accepts `string` or `ContentBlock[]` (both Anthropic shapes).
+ * Forward-compat conventions (mirroring python `extra="allow"`) are unchanged:
+ * unknown fields may appear from newer reasoners and MUST be tolerated; route
+ * events on the stable `family` band, never on the open `type`.
  */
+
+import type { ContentBlock, ImageBlock, InvokeEvent, ReasonerHookDefinition as CanonicalReasonerHookDefinition, RoundEndData, TextBlock, ToolResultBlock, ToolUseBlock } from './vendor/invokeTypes.js';
 
 // =============================================================================
-// Content blocks (Anthropic Messages API 对齐)
+// Canonical wire types (single source: packages/invoke-client)
 // =============================================================================
 
-/**
- * 纯文本 block。
- *
- * - `type`: 判别字段, 固定 "text"
- * - `text`: 文本内容
- */
-export interface TextBlock {
-	type: 'text';
-	text: string;
-}
-
-/**
- * assistant 发起的工具调用 block。
- *
- * 覆盖两种语义（ADR-017 §11.2）:
- *   - 普通工具调用 → `id="toolu_xxxxxx"`, `name="<tool_name>"`
- *   - ChipOS 用户确认 → `id="chipos_confirm_xxxxxx"`, `name="chipos_user_confirm"`
- *
- * - `type`: 判别字段, 固定 "tool_use"
- * - `id`: 唯一调用 id, 与后续 `ToolResultBlock.tool_use_id` 配对
- * - `name`: 工具名（或 "chipos_user_confirm"）
- * - `input`: 工具入参（confirm 场景为 card_data）
- */
-export interface ToolUseBlock {
-	type: 'tool_use';
-	/** toolu_xxxxxx OR chipos_confirm_xxxxxx */
-	id: string;
-	/** tool name OR "chipos_user_confirm" */
-	name: string;
-	/** tool args OR confirm card_data */
-	input: Record<string, unknown>;
-}
-
-/**
- * 工具结果 block（包在 role="user" 的 message.content 里回给 assistant）。
- *
- * - `type`: 判别字段, 固定 "tool_result"
- * - `tool_use_id`: 配对的 `ToolUseBlock.id`
- * - `content`: 结果文本（短结果可直接 string; 长/混合结果用 `TextBlock[]`）
- * - `is_error`: 工具执行失败时置 true, LLM 看到自行决定下一步; 默认 false
- */
-export interface ToolResultBlock {
-	type: 'tool_result';
-	/** 配对的 tool_use.id */
-	tool_use_id: string;
-	content: string | TextBlock[];
-	/** 默认 false */
-	is_error?: boolean;
-}
-
-/**
- * 图片 block (Anthropic vision API 对齐)。
- *
- * - `type`: 判别字段, 固定 "image"
- * - `source`: 图片源描述, 典型 `{type:"base64", media_type:"image/png", data:"..."}`
- */
-export interface ImageBlock {
-	type: 'image';
-	/** {type:"base64", media_type:..., data:...} */
-	source: Record<string, unknown>;
-}
-
-/**
- * Discriminated union — 按 `type` 字段 narrow 到具体 block 类型。
- *
- * 使用方法见本文件下方的 `isTextBlock` / `isToolUseBlock` / `isToolResultBlock` /
- * `isImageBlock` type guards。
- */
-export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock | ImageBlock;
+export type {
+	// Content blocks + messages (Anthropic Messages API 对齐)
+	TextBlock,
+	ToolUseBlock,
+	ToolResultBlock,
+	ImageBlock,
+	ContentBlock,
+	Message,
+	// Request-side extension types (FEAT-003/004/005 + marketplace v5)
+	SkillSource,
+	PromptSource,
+	PromptResourceKind,
+	ReasonerHookPoint,
+	ReasonerHookAction,
+	HookEvalDecision,
+	SelectedAgent,
+	SkillHeader,
+	PromptResourceAttachment,
+	// Invoke request + capability declaration (/invoke v1.1 S1)
+	InvokeRequest,
+	InvokeRequestInput,
+	RenderCapability,
+	ClientCapabilities,
+	// Server-derived resolved context (R1 — inbound/read-only mirrors)
+	Identity,
+	AllowedTools,
+	ResolvedInvokeContext,
+	// SSE event stream
+	TokenUsage,
+	EventFamily,
+	InvokeEventType,
+	InvokeEvent,
+	RenderEnvelope,
+	ArtifactRef,
+	FinalResult,
+	RoundEndData,
+	// Endpoints: cancel / tools / reverse channel / resume / compact / hooks
+	CancelRequest,
+	ToolDefinition,
+	RegisterToolsRequest,
+	RegisterToolsResponse,
+	ToolResultRequest,
+	ConfirmResponseRequest,
+	ResumeRequest,
+	InFlightTrace,
+	TurnStateResponse,
+	CompactRequest,
+	CompactResponse,
+	HookResultRequest,
+} from './vendor/invokeTypes.js';
 
 // =============================================================================
-// Messages
+// IDE extension — ReasonerHookDefinition with the function-hook carrier
 // =============================================================================
 
 /**
- * 单条 conversation message — Anthropic Messages API 对齐 + ChipOS 扩展。
- *
- * - `role`: 消息角色 "user" / "assistant" / "system"
- * - `content`: 文本（string）或 block 列表（`ContentBlock[]`); 两种 shape 都接受
- * - `is_compact_summary`: ChipOS 扩展。IDE 端 compact 后插入的总结消息打这个标记,
- *   用 Anthropic API 时这个字段会被 ignore (pydantic extra="allow"), 不影响 multi-provider。
- *   默认 false
- * - `is_visible_in_transcript_only`: ChipOS 扩展（沿用 Claude Code 同名字段）。
- *   消息只在 transcript UI 显示, 不参与 LLM 推理。默认 false
+ * A user/workspace/plugin-configured reasoner hook (FEAT-004) — the canonical
+ * wire shape plus the IDE's tier-2 *function* (executable) hook fields
+ * (FEAT-004 / H-1). Optional + additive: declarative hooks omit them and
+ * behave exactly as before. When `kind === 'function'` the reasoner bridges to
+ * the IDE reverse channel (`hook_eval` → POST /hook_result), and the IDE loads
+ * `module`/`export` to run the plugin hook. The extra fields ride the wire via
+ * the reasoner's `extra="allow"` (they are NOT canonical invoke.py fields).
  */
-export interface Message {
-	role: 'user' | 'assistant' | 'system';
-	content: string | ContentBlock[];
-	// ChipOS 扩展字段 (Anthropic 没有, 但兼容):
-	/** IDE 端 compact 后插入的总结消息; 默认 false */
-	is_compact_summary?: boolean;
-	/** 用 Claude Code 同名字段; UI 提示; 默认 false */
-	is_visible_in_transcript_only?: boolean;
+export interface ReasonerHookDefinition extends CanonicalReasonerHookDefinition {
+	/** `'function'` marks an executable hook the IDE must run; absent ⇒ declarative. */
+	kind?: 'function';
+	/** Module path the IDE loads to run the hook (function hooks only). */
+	module?: string;
+	/** Named export within `module` to invoke (function hooks only). */
+	export?: string;
+	/** Per-eval timeout in ms; reasoner clamps + falls closed on overrun. */
+	timeout_ms?: number;
+	/** On eval failure/timeout: deny (true, default) vs proceed (false). */
+	fail_closed?: boolean;
 }
 
 // =============================================================================
-// Invoke request (IDE → reasoner)
+// IDE-only — reserved built-in slash commands (not part of the wire contract)
 // =============================================================================
-
-/**
- * LLM token usage for billing / observability.
- *
- * PHASE-0-SPEC-AUDIT P0-3 (2026-05-27): emitted as the `usage` field on
- * `message_delta` events (Anthropic API style — same field shape they use, so
- * multi-provider routing is trivial).
- *
- * All fields are cumulative-since-invoke-start (NOT delta). Counts are in
- * tokens, not bytes. Provider may not report all fields; in that case fields
- * default to 0.
- */
-export interface TokenUsage {
-	input_tokens: number;
-	output_tokens: number;
-	/** Anthropic prompt-caching read */
-	cache_read_input_tokens: number;
-	/** Anthropic prompt-caching write */
-	cache_creation_input_tokens: number;
-}
-
-/**
- * Phase 1 invoke request — IDE → reasoner (per-turn long-lived SSE).
- *
- * Per ADR-018 §2 D2: one /invoke = one user turn. Reasoner runs an internal
- * agent loop (LLM ↔ tool ↔ LLM ... → end_turn) until natural termination,
- * streaming events back via SSE. State within a turn lives in reasoner-side
- * FileStateStore; conversation messages between turns live in IDE chatSessions/*.jsonl.
- *
- * Schema-level changes from Phase 0 (ADR-017 → ADR-018):
- *   - DROPPED `tools: dict[]` — now registered out-of-band via
- *     `RegisterToolsRequest`, referenced by `expected_catalog_version`
- *   - DROPPED `langgraph_state_blob` — internal reasoner state, no longer
- *     round-trips through IDE (ADR-018 §2 D8 mixed-state)
- *   - DROPPED `langgraph_state_version` — same reason
- *   - ADDED `expected_catalog_version` — 412 retry on mismatch (D9 + R-S)
- *   - ADDED `workspace_meta` — open structural metadata for system prompt
- *
- * Field reference (matches `invoke.py::InvokeRequest`):
- *   - `trace_id`: per-turn UUID, IDE-generated
- *   - `chat_session_id`: stable per-chat-thread id; reasoner uses for sticky
- *     routing in Phase 2 and for tool catalog cache lookup
- *   - `messages`: full user-visible conversation, min 1 (P0-2)
- *   - `system`: optional user-level addendum; reasoner prepends its own
- *     mode-specific system prompt (Issue-1 in PHASE-1-DOC-AUDIT)
- *   - `mode`: Agent mode
- *   - `model/provider/base_url/api_key_alias/temperature/max_tokens/thinking`:
- *     standard LLM routing config from user settings
- *   - `expected_catalog_version`: opaque hash from prior `RegisterToolsResponse`.
- *     Reasoner returns 412 if cache mismatch.
- *   - `workspace_path`: absolute workspace root (worker affinity uses it)
- *   - `auto_approve_mode`: "standard" / "autopilot"
- *   - `workspace_meta`: free-form structural metadata for current edit context
- *     (current_file, selection, git_branch, open_files, etc.)
- *   - `user/metadata`: opaque telemetry
- *   - `protocol_version`: wire-protocol version (409 if unsupported)
- */
-export interface InvokeRequest {
-	// 标识
-	trace_id: string;
-	chat_session_id: string;
-	// Conversation — min 1 (PHASE-0-SPEC-AUDIT P0-2 still applies)
-	messages: Message[];
-	// System prompt / mode (Phase 1: user-supplied system is OPTIONAL ADDENDUM,
-	// reasoner has its own mode-specific system prompt that comes first)
-	system?: string | null;
-	mode?: 'agent' | 'spec';
-	// LLM config
-	model: string;
-	provider?: string;
-	base_url?: string | null;
-	api_key_alias?: string | null;
-	// F6 fix (PHASE-1-IMPLEMENTATION-AUDIT post-deploy): IDE may ship the
-	// actual LLM provider key in-band as legacy stateful path does, until
-	// reasoner-side vault is wired (ADR-018 §1.1). When both `api_key` and
-	// `api_key_alias` are present, reasoner uses `api_key`.
-	api_key?: string | null;
-	temperature?: number | null;
-	max_tokens?: number | null;
-	thinking?: boolean;
-	// Tool catalog reference (must register first via /tools/register)
-	// 412 on mismatch → IDE re-registers and retries (ADR-018 §2 D9 / R-S).
-	expected_catalog_version: string;
-	// Workspace + EXECUTION binding
-	workspace_path: string;
-	auto_approve_mode?: string;
-	/** FEAT-011a: per-turn tool allow-list (`chipos.tools.allowlist`). Non-empty => the reasoner restricts this turn's actionable IDE + worker tools to these names. Omit/empty = no restriction. */
-	allowed_tools?: string[];
-	/** FEAT-011c: per-turn opt-in for executable skill scripts (`chipos.skills.executableScripts` AND workspace trust). When false/absent the reasoner drops the run_skill_script tool. */
-	skill_scripts_enabled?: boolean;
-	/** FEAT-DS-006: per-turn dynamic-skill learning toggle (`chipos.dynamicSkill.enabled`). When false the reasoner skips extracting skills from this turn's debug session; overrides the reasoner's env default. */
-	dynamic_skill_learn?: boolean;
-	/** FEAT-005 Stage B: the user-selected subagent for this turn (the user typed `@<name>`). The reasoner applies `instructions` as a persona overlay + restricts tools to `tools` if set. Absent = a normal turn. */
-	selected_agent?: { name: string; instructions: string; description?: string; tools?: string[]; mode?: string };
-	// Open structural editor context for reasoner system prompt
-	// Common keys (all optional): current_file, selection, git_branch, open_files
-	workspace_meta?: Record<string, unknown> | null;
-	// Telemetry
-	user?: Record<string, unknown> | null;
-	metadata?: Record<string, unknown> | null;
-	// Prompt resources (rules/commands) — marketplace v5 extension system.
-	// Additive + backward compatible: reasoner defaults to [] when absent (ADR-008).
-	// The collector (FEAT-001a) populates this from ~/.chipos/{rules,commands};
-	// the reasoner renders them into a synthetic user message at the head of
-	// `messages` (ADR-002). Mirrors backend_v2 shared.contracts.invoke.
-	prompt_resource_attachments?: PromptResourceAttachment[];
-	// Skill catalog headers (FEAT-003 / ADR-004) — name+description only; bodies
-	// are lazy-loaded via the IDE `read_skill_body` tool. Additive + backward
-	// compatible: reasoner defaults to [] when absent. The collector
-	// (ChiposSkillsService) populates this from `.chipos/skills/<id>/SKILL.md`; the
-	// reasoner renders a `## Available Skills` catalog segment. Mirrors backend_v2
-	// shared.contracts.invoke.SkillHeader.
-	skills?: SkillHeader[];
-	// Reasoner hooks (FEAT-004) — extension system. Additive + backward
-	// compatible: reasoner defaults to [] when absent. The collector
-	// (ChiposHooksService) populates this from `.chipos/hooks/`; the reasoner
-	// registers each as a per-turn subscriber on its ReasonerHookDispatcher, so a
-	// `deny` hook at `tool.before_dispatch` blocks the matching tool. Mirrors
-	// backend_v2 shared.contracts.invoke.ReasonerHookDefinition.
-	hooks?: ReasonerHookDefinition[];
-	// Protocol version handshake — bump when wire format breaks
-	protocol_version?: number;
-	// Surface capability declaration (/invoke v1.1 S1). Additive + optional; the
-	// reasoner uses it for render/confirm degradation. Mirrors backend_v2
-	// shared.contracts.invoke.ClientCapabilities — NO identity/scopes (R1).
-	client_capabilities?: ClientCapabilities;
-}
-
-/**
- * One event `kind` a surface can natively render + the schema version it knows.
- * Mirrors `backend_v2/packages/shared/src/shared/contracts/invoke.py`
- * RenderCapability. `kind` is an OPEN string (not an enum), so a new EDA card is
- * a new registry entry with the wire contract unchanged (/invoke v1.1 S1 / §4).
- */
-export interface RenderCapability {
-	/** Event kind the surface renders natively, e.g. 'sim_report' | 'lint_report' | future. */
-	kind: string;
-	/** Highest payload schema version the surface knows for this kind. Default 1. */
-	max_schema_version?: number;
-}
-
-/**
- * A surface's self-declared capability facts (/invoke v1.1 S1 / §4). Mirrors
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py` ClientCapabilities.
- *
- * Purely capability facts — NO identity / scopes / user_id / workspace_id /
- * allowed_tools (R1): those are derived server-side from the JWT + session +
- * registry, never reported by the client. Per R4 the reasoner never branches
- * behaviour on `client_type` (telemetry + preset selection only).
- */
-export interface ClientCapabilities {
-	/** 'ide' | 'extension' | 'cli' — telemetry + preset selection ONLY (R4). Open string. */
-	client_type: string;
-	/** Surface build version (telemetry). */
-	client_version: string;
-	/** Registry of natively renderable kinds (NOT an enum). */
-	renders?: RenderCapability[];
-	/** Can render a `ui_spec` kind. Contract placeholder — Beta-1 does NOT implement it (D-1). */
-	supports_generative_ui?: boolean;
-	/** Host operations the surface can execute, e.g. 'apply_edit' / 'open_diff' / 'terminal' / 'waveform_viewer'. */
-	host_tools?: string[];
-	/** How confirm/permission prompts are presented: 'cards' (rich) | 'stdin' (CLI) | 'none' (headless). */
-	confirm_ui?: 'cards' | 'stdin' | 'none';
-	/** Whether the surface can execute reasoner reverse-channel `ide_tool_call` events. */
-	supports_reverse_channel?: boolean;
-	/** Stable machine-output contract for CLI/CI: 'none' | 'json' | 'ndjson'. */
-	machine_output?: 'none' | 'json' | 'ndjson';
-	/** Whether the surface needs a process exit code (CLI/CI). */
-	requires_exit_code?: boolean;
-	/** Whether the surface can resume an in-flight turn after an SSE disconnect. */
-	supports_resume?: boolean;
-}
-
-// =============================================================================
-// Resolved invoke context (SERVER-DERIVED — /invoke v1.1 S2 / §5)
-// =============================================================================
-//
-// ⚠️ R1 SECURITY RED LINE: these three shapes are produced SERVER-SIDE by the
-// reasoner's CapabilityResolver from the JWT + session + registry. The client
-// NEVER constructs, sends, or self-reports them — they are NOT fields of
-// InvokeRequest. A client self-reporting `scopes` / `identity` / `allowed_tools`
-// would be privilege spoofing, and the resolver explicitly IGNORES any such key
-// smuggled into the request body (ClientCapabilities is extra="allow").
-//
-// They are mirrored here ONLY so a shared client SDK / CLI can PARSE a
-// server-emitted resolved context if one is ever surfaced read-only. Treat them
-// as inbound/read-only. Mirrors
-// `backend_v2/packages/shared/src/shared/contracts/invoke.py`
-// Identity / AllowedTools / ResolvedInvokeContext.
-
-/** Authenticated actor for a turn — JWT/chiops derived, NEVER client-reported (R1). */
-export interface Identity {
-	user_id: string;
-	workspace_id: string;
-	/** Authorization scopes — server-derived (R1), never a client claim. */
-	scopes: string[];
-}
-
-/** The scope-clamped single-catalog tool view for a turn — server-derived (R1/R5). */
-export interface AllowedTools {
-	/** worker-executed tools (registry × scopes). */
-	worker: string[];
-	/** IDE/MCP-executed tools (registry × scopes). */
-	mcp: string[];
-	/** Host operations the surface may be asked to perform (host_tools ∩ scope-allowed). */
-	surface: string[];
-}
-
-/**
- * Server-internal resolved context (§5) — client never sees or reports this (R1).
- * `effective_capabilities` is preset ⊕ request ⊕ registry-clamped; downstream
- * reads only it (never `client_type`, R4).
- */
-export interface ResolvedInvokeContext {
-	identity: Identity;
-	allowed_tools: AllowedTools;
-	effective_capabilities: ClientCapabilities;
-}
-
-/**
- * Kind of a prompt resource (ADR-001 narrow scope: Beta-1 only `rule` + `command`).
- */
-export type PromptResourceKind = 'rule' | 'command';
-
-/**
- * A user/workspace/plugin-authored resource injected into the prompt. Mirrors
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py` PromptResourceAttachment.
- * The reasoner renders these into a synthetic user message at the head of
- * `messages` (ADR-002), NOT the system-prompt segment.
- */
-export interface PromptResourceAttachment {
-	kind: PromptResourceKind;
-	/** Short identifier, <=128 chars. */
-	name: string;
-	/** Human-readable summary, <=512 chars. */
-	description?: string;
-	/** Who contributed it. */
-	source?: 'user' | 'workspace' | 'plugin';
-	/** Plugin id / file path that contributed it, <=256 chars. */
-	source_ref?: string | null;
-	/** Why it is in this turn (e.g. `always`, or a glob-match reason), <=512 chars. */
-	reason?: string;
-	/** Higher wins when truncating under the byte/count cap. */
-	priority?: number;
-	/** Optional IDE-side token estimate for budget accounting. */
-	token_estimate?: number | null;
-	/** Kind-specific body (rule text / command definition). */
-	payload?: Record<string, unknown>;
-}
-
-/**
- * A skill's catalog-visible header (FEAT-003 / ADR-004). Mirrors
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py` SkillHeader.
- * Only name + description travel in-band; the body is lazy-loaded by the model
- * via the IDE-side `read_skill_body` tool.
- */
-export interface SkillHeader {
-	/** Skill id / name, <=128 chars. */
-	name: string;
-	/** One-line catalog summary, <=512 chars. */
-	description?: string;
-	/** Who contributed it. */
-	source?: 'builtin' | 'user' | 'plugin';
-	/** Plugin id / file path that contributed it, <=256 chars. */
-	source_ref?: string;
-}
 
 /**
  * How a reserved built-in slash command executes. Mirrors
@@ -456,397 +169,6 @@ export const RESERVED_COMMANDS: readonly ReservedCommandSpec[] = [
 export const RESERVED_NAMES: ReadonlySet<string> = new Set(
 	RESERVED_COMMANDS.flatMap(c => [c.name, ...c.aliases]));
 
-/**
- * Canonical reasoner lifecycle point a hook attaches to (mirrors
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py` ReasonerHookPoint).
- * `tool.before_dispatch` is the deny-capable point used by Beta-1.
- */
-export type ReasonerHookPoint =
-	| 'turn.before_start'
-	| 'context.before_collect'
-	| 'context.after_collect'
-	| 'prompt.before_render'
-	| 'prompt.after_render'
-	| 'llm.before_call'
-	| 'llm.after_response'
-	| 'tool.before_dispatch'
-	| 'tool.after_result'
-	| 'subagent.before_invoke'
-	| 'subagent.after_result'
-	| 'final.before_emit'
-	| 'turn.after_end'
-	| 'turn.on_error';
-
-/**
- * What a configured hook asks the reasoner to do when it matches (mirrors
- * ReasonerHookAction). `deny` is only honoured at deny-capable points (Beta-1:
- * `tool.before_dispatch`); elsewhere it degrades to `observe`. `amend` and `ask`
- * are additive — accepted by the schema but honoured only where wired on the
- * reasoner side; everywhere else they too degrade to `observe`.
- */
-export type ReasonerHookAction = 'observe' | 'deny' | 'amend' | 'ask';
-
-/**
- * A user/workspace/plugin-configured reasoner hook (FEAT-004). Mirrors
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py`
- * ReasonerHookDefinition. Carried in-band on {@link InvokeRequest.hooks}; the
- * reasoner registers each as a per-turn dispatcher subscriber.
- */
-export interface ReasonerHookDefinition {
-	/** Lifecycle point this hook attaches to. */
-	point: ReasonerHookPoint;
-	/** observe (default) | deny. */
-	action?: ReasonerHookAction;
-	/** Matcher (Beta-1): exact tool name, or `*`/absent to match any tool, <=128 chars. */
-	tool_name?: string | null;
-	/** Agent-facing explanation surfaced on a deny, <=512 chars. */
-	reason?: string;
-	/** Who configured it. */
-	source?: 'user' | 'workspace' | 'plugin';
-	/** Plugin id / file path that contributed it, <=256 chars. */
-	source_ref?: string | null;
-	// Tier-2 *function* (executable) hook fields (FEAT-004 / H-1). Optional +
-	// additive: declarative hooks omit them and behave exactly as before. When
-	// `kind === 'function'` the reasoner bridges to the IDE reverse channel
-	// (`hook_eval` → POST /hook_result), and the IDE loads `module`/`export` to
-	// run the plugin hook. Mirrors backend_v2 ReasonerHookDefinition extras.
-	/** `'function'` marks an executable hook the IDE must run; absent ⇒ declarative. */
-	kind?: 'function';
-	/** Module path the IDE loads to run the hook (function hooks only). */
-	module?: string;
-	/** Named export within `module` to invoke (function hooks only). */
-	export?: string;
-	/** Per-eval timeout in ms; reasoner clamps + falls closed on overrun. */
-	timeout_ms?: number;
-	/** On eval failure/timeout: deny (true, default) vs proceed (false). */
-	fail_closed?: boolean;
-}
-
-// =============================================================================
-// Invoke response (SSE event stream, reasoner → IDE)
-// =============================================================================
-
-/**
- * The 8 stable event families (/invoke v1.1 S5 / §8). A surface routes on the
- * stable `family` band — NEVER on the open `type` (which a newer reasoner may
- * extend). Mirrors `EVENT_FAMILIES` in
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py`.
- *
- *   stream    — Anthropic content: message_start / content_block_* / message_delta / …
- *   tool      — tool_start / tool_result / tool_call_emitted / ide_tool_call / …
- *   control   — round_start / round_progress / checkpoint / keepalive / heartbeat / …
- *   render    — ⭐ rich cards (sim / lint / ppa / diff / spec / …); `data` is a RenderEnvelope
- *   confirm   — confirm_request / confirm_auto_resolved
- *   subagent  — subagent_event
- *   custom    — ⭐ escape hatch: an event not (yet) classified; route generically
- *   terminal  — round_end (with FinalResult) / error
- */
-export type EventFamily =
-	| 'stream'
-	| 'tool'
-	| 'control'
-	| 'render'
-	| 'confirm'
-	| 'subagent'
-	| 'custom'
-	| 'terminal';
-
-/**
- * SSE event type literal — covers Anthropic 流式事件 + ChipOS 自定义事件.
- *
- * NOTE (/invoke v1.1 S5 / §8): this union is kept for reference, but {@link InvokeEvent}
- * types `type` as a plain `string` for forward-compat — a newer reasoner may add events
- * an older client doesn't know. Route on the stable `family` band, NOT on `type`.
- *
- * Anthropic 对齐:
- *   - `message_start` / `content_block_start` / `content_block_delta` /
- *     `content_block_stop` / `message_delta` / `message_stop`
- *
- * Tool / control:
- *   - `tool_call_emitted`    — display-purpose: LLM decided to call a tool (all tools)
- *   - `tool_result_observed` — display-purpose: tool result observed by reasoner
- *   - `ide_tool_call`        — Phase 1: reverse-channel call to IDE for IDE-side tool
- *                              execution. IDE responds via POST /tool_result/{trace_id}/{call_id}.
- *                              Reasoner blocks awaiting that POST.
- *   - `confirm_request`      — Phase 1: reverse-channel call for chipos_user_confirm.
- *                              IDE renders confirm card, user clicks, IDE POSTs to
- *                              /confirm_response/{trace_id}/{request_id}.
- *   - `hook_eval`            — FEAT-004/H-1: reverse-channel call to RUN a plugin
- *                              function hook at a lifecycle point. IDE loads the
- *                              module/export, runs it, POSTs the decision to
- *                              /hook_result/{trace_id}/{eval_id}. Reasoner blocks
- *                              awaiting that POST.
- *
- * ChipOS specific:
- *   - `thinking_delta`
- *   - `round_progress`   — {round_idx, phase, progress_pct}
- *   - `trace_link`       — {trace_id} for chat bubble pill
- *   - `keepalive`        — Phase 1: every 25s anti-proxy-timeout heartbeat {ts}
- *   - `checkpoint`       — Phase 1: agent loop iteration completed + state persisted
- *                          {iteration, messages_count} — IDE can use as resume watermark
- *   - `resumed_buffer_drained` — emitted by /resume endpoint after replay catches up
- *                                {sequence_id} — Phase 1 buffer-drain-only handoff marker
- *
- * Termination:
- *   - `round_end` — {reason: "end_turn"|"max_iterations"|"max_tokens"|"error"|"cancelled"|"interrupted",
- *                    final_messages: Message[]  — IDE appends to chatSessions/*.jsonl}
- *   - `error`     — {category, error_code, message, retryable} followed by round_end{error}
- *
- * **Phase 1 removed**: `round_end.data.reason === "tool_use"` (tool_use is a
- * mid-turn step, not a terminal state — agent loop continues internally).
- */
-export type InvokeEventType =
-	| 'message_start'
-	| 'content_block_start'
-	| 'content_block_delta'
-	| 'content_block_stop'
-	| 'message_delta'
-	| 'message_stop'
-	| 'tool_call_emitted'
-	| 'tool_result_observed'
-	// [ChipOS] Fusion: the agent_core bridge surfaces the MASTER's own tool
-	// calls via the legacy 10-event names `tool_start` / `tool_result` (NOT the
-	// Anthropic-passthrough pair above). `eventDispatcher` maps both onto the
-	// shared toolInvocation render directive (verb + `object` + result).
-	| 'tool_start'
-	| 'tool_result'
-	| 'ide_tool_call'
-	| 'confirm_request'
-	| 'hook_eval'
-	| 'thinking_delta'
-	| 'round_progress'
-	| 'trace_link'
-	// [ChipOS] Fusion (Direction 2): rich agent events emitted when the
-	// reasoner drives /invoke through the full agent_core stack
-	// (CHIPOS_STATELESS_DRIVER=agentcore). The bare loop never emits these;
-	// the dispatcher maps them onto existing render channels.
-	| 'round_start'
-	| 'status'
-	| 'chat'
-	| 'model_output'
-	| 'model_turn_start'
-	| 'model_turn_end'
-	| 'subagent_event'
-	| 'task_summary'
-	| 'todo'
-	// [ChipOS] Fusion: rich EDA report cards emitted by composite_tools
-	// (sim_debug_loop / lint_fix_loop / coverage_boost / ppa_optimize_loop /
-	// multi_agent_debate / parallel_generate) + graph/subagent_tracker paths.
-	// Mirrors shared/contracts/invoke.py InvokeEvent.type. The dispatcher maps
-	// each onto the native IChatEda* content parts (was: dropped to default {}).
-	| 'sim_report'
-	| 'lint_report'
-	| 'coverage_report'
-	| 'ppa_report'
-	| 'negotiation_view'
-	| 'parallel_progress'
-	| 'spec_review'
-	| 'diff_preview'
-	// [ChipOS] P6 render-family waveform card (alias `vcd_waveform`). The dispatcher
-	// maps both onto the native IChatEdaWaveform inline-SVG content part.
-	| 'waveform'
-	| 'vcd_waveform'
-	| 'keepalive'
-	| 'checkpoint'
-	| 'resumed_buffer_drained'
-	| 'resumed_live'
-	| 'viewer_action'
-	| 'round_end'
-	| 'error';
-
-/**
- * SSE event from reasoner during one invoke's lifecycle.
- *
- * 每个 invoke 的 HTTP response 是一个 SSE stream, 里面是若干 `InvokeEvent`。
- * `sequence_id` 跨 invoke 单调递增, 断线后用于 replay 端点续传。
- *
- * - `type`: One of {@link InvokeEventType}; OPEN string for forward-compat (§8). Route on `family`.
- * - `family`: stable routing band (/invoke v1.1 S5 / §8). The reasoner sets it (derived
- *   from `type`, "custom" when unmapped); a surface routes on THIS, not `type`. Optional
- *   here so frames from an older reasoner that omits it still parse.
- * - `sequence_id`: 跨 invoke 单调; replay 用
- * - `data`: 事件 payload（每个 type 有自己的 shape, opaque dict）
- *     - 对于 `type=message_delta`: `data` 应包含 `usage: TokenUsage` (P0-3)
- *     - 对于 `type=error`: `data` 应包含 `category` / `error_code` / `message`,
- *       且 emit error 后 reasoner 必须紧跟着 emit `round_end{reason:"error"}` 再
- *       关闭 SSE (P0-4 严格顺序)
- *     - 对于 `family === 'render'`: `data` 是一个 {@link RenderEnvelope}
- *       (kind/schema_version/payload/fallback), 未知卡 kind 经 mandatory fallback 降级 (D10) 而非丢弃
- */
-export interface InvokeEvent {
-	/** One of {@link InvokeEventType}; OPEN string for forward-compat (§8). Route on `family`. */
-	type: string;
-	/**
-	 * Stable routing band (/invoke v1.1 S5 / §8). The reasoner sets it (derived
-	 * from `type`, "custom" when unmapped); a surface routes on THIS, not `type`.
-	 * Optional here so frames from an older reasoner that omits it still parse.
-	 */
-	family?: EventFamily;
-	/** 跨 invoke 单调; replay 用 */
-	sequence_id: number;
-	data: Record<string, unknown>;
-}
-
-/**
- * The uniform shell for every `family === 'render'` card (/invoke v1.1 S5 / §8).
- * Mirrors `RenderEnvelope` in
- * `backend_v2/packages/shared/src/shared/contracts/invoke.py`. The reasoner wraps
- * each rich card in this at the SSEEmitSink boundary; a surface does the three-layer
- * degrade:
- *   - `kind` known & `schema_version` ≤ its max → render `payload` richly
- *   - `kind` unknown / schema too new            → render `fallback` (never dropped)
- *   - `kind === 'ui_spec'` (supports_generative_ui) → generic declarative render
- *     (D-1: contract placeholder — Beta-1 does NOT implement this third layer)
- */
-export interface RenderEnvelope {
-	/** Open card kind — 'sim_report' | 'lint_report' | … | future | 'ui_spec'. */
-	kind: string;
-	/** Schema version of THIS kind's `payload` (default 1). */
-	schema_version: number;
-	/** The rich render data (rendered when the surface knows `kind`). */
-	payload: Record<string, unknown>;
-	/**
-	 * REQUIRED (D10) — what the surface shows when it cannot richly render the card
-	 * (unknown kind / schema too new). Canonical shapes: `{ text: string }` or
-	 * `{ artifact_ref: ArtifactRef }`.
-	 */
-	fallback: { text: string } | { artifact_ref: ArtifactRef } | Record<string, unknown>;
-}
-
-/**
- * A pointer to a turn-produced artifact (report / patch / waveform / …).
- * Mirrors `backend_v2/packages/shared/src/shared/contracts/invoke.py` ArtifactRef
- * (/invoke v1.1 S4, §7). `uri` is a reference (worker-relative / trace-store path),
- * not the bytes.
- */
-export interface ArtifactRef {
-	/** 'report' | 'patch' | 'waveform' | 'trace' | … (open string) */
-	kind: string;
-	/** worker-relative or trace-store path */
-	uri: string;
-	/** optional one-line human description */
-	summary?: string;
-}
-
-/**
- * Structured outcome of one turn — the CLI exit-code / `--json` basis.
- * Mirrors `backend_v2/packages/shared/src/shared/contracts/invoke.py` FinalResult
- * (/invoke v1.1 S4, §7). Assembled by the reasoner at the round_end boundary and
- * carried on the terminal `round_end` frame (additive — `extra="allow"`, no
- * protocol_version break). `verdict` is produced by the agent that ENDS the turn
- * (D-4: main-agent if it finishes; the sub-agent if a sub finishes).
- */
-export interface FinalResult {
-	/** terminal disposition — drives the CLI exit code */
-	status: 'success' | 'stopped' | 'cancelled' | 'error' | 'needs_input';
-	/** one-line conclusion (D-4: from the turn-ending agent) */
-	verdict?: string;
-	/** workspace files the turn modified (best-effort) */
-	changed_files?: string[];
-	/** structured pointers to produced artifacts */
-	artifacts?: ArtifactRef[];
-	/** failure records — `{category, code, message}` */
-	errors?: Array<Record<string, unknown>>;
-	/** suggested next steps */
-	followups?: string[];
-	/** the invoke's trace_id (correlates with the event stream) */
-	trace_id: string;
-	/** cumulative token usage for the turn, if known */
-	usage?: TokenUsage;
-}
-
-// =============================================================================
-// Cancellation
-// =============================================================================
-
-/**
- * IDE → reasoner: 取消正在进行的 invoke。
- *
- * 对应 endpoint: `POST /api/v1/invoke/{trace_id}/cancel`
- *
- * - `trace_id`: 待取消的 invoke trace_id
- * - `reason`: 取消原因（默认 "user_cancelled", 便于 telemetry）
- */
-export interface CancelRequest {
-	trace_id: string;
-	/** 默认 "user_cancelled" */
-	reason?: string;
-}
-
-// =============================================================================
-// Conversation compact (ADR-017 Q3 / PHASE-0-PROTOCOL-SPEC §6)
-// =============================================================================
-
-/**
- * IDE → reasoner: 压缩老对话生成 summary message。
- *
- * 对应 endpoint: `POST /api/v1/compact`（同步 JSON, 非 SSE）。
- *
- * 语义: IDE 端 chatSession 累计 token 超阈值后, 把"老 turns"批量送来; reasoner 调一次
- * LLM 摘要返回 `summary_message`, IDE 端把老 turns 替换为
- * `[summary_message, ...recent_turns]` 写回 jsonl。reasoner 端完全无 session state,
- * 本请求 self-contained。
- *
- * 与 `InvokeRequest` 共享公共字段 (trace_id / chat_session_id / model / provider /
- * base_url / api_key_alias / user / metadata), 但不携带 system prompt / tools /
- * workspace_path / langgraph state — compact 只是一次纯 LLM summarize 调用。
- *
- * - `trace_id`: 本 compact 调用的 UUID (与触发它的 invoke 的 trace_id 区分)
- * - `chat_session_id`: IDE 端 chatSession uuid, 关联 telemetry
- * - `messages`: 待压缩的全部 messages (IDE 决定截取哪段历史送来)。**min 1**
- *   (PHASE-0-SPEC-AUDIT P0-2)
- * - `model`: 用于摘要的 LLM 模型标识
- * - `provider`: provider 标识, 默认 "auto"
- * - `base_url`: 可选 base URL
- * - `api_key_alias`: IDE 端别名, reasoner 端从 vault 解
- * - `max_summary_tokens`: 摘要 token 上限（默认 4000）; 作为 LLM `max_tokens` 参数下发
- * - `user`: 用户/组织 telemetry, opaque dict
- * - `metadata`: IDE 端 opaque metadata
- * - `protocol_version`: mirrors `InvokeRequest.protocol_version` semantics. 默认 1
- */
-export interface CompactRequest {
-	// 标识
-	trace_id: string;
-	chat_session_id: string;
-	// Conversation — min 1 (PHASE-0-SPEC-AUDIT P0-2)
-	messages: Message[];
-	// LLM config
-	model: string;
-	provider?: string;
-	base_url?: string | null;
-	api_key_alias?: string | null;
-	/** F6 parity with InvokeRequest: body-supplied raw key for the summarize
-	 * LLM call. Required for /api/v1/compact to authenticate (the vault alias is
-	 * unwired and the reasoner env fallback doesn't cover the IDE's model). */
-	api_key?: string | null;
-	// Compact-specific
-	/** 摘要 token 上限; 作为 LLM max_tokens 下发; 默认 4000 */
-	max_summary_tokens?: number;
-	// Telemetry
-	user?: Record<string, unknown> | null;
-	metadata?: Record<string, unknown> | null;
-	// Protocol version handshake — bump when wire format breaks
-	protocol_version?: number;
-}
-
-/**
- * reasoner → IDE: compact 调用结果 (同步 JSON, 非 SSE)。
- *
- * - `summary_message`: 摘要 message, IDE 端把它前置到 recent turns 之前。
- *   shape: `{role:"user", content:"<markdown summary>", is_compact_summary: true,
- *           is_visible_in_transcript_only: true}`
- *   role="user" 参照 Claude Code 行为 (summary 作为下一轮 user turn 头注入)
- * - `tokens_in`: 摘要调用消耗的输入 token 数 (best-effort, provider 不报则为 0)
- * - `tokens_out`: 摘要调用输出 token 数 (best-effort, provider 不报则为 0)
- * - `cost_usd`: 摘要调用估算成本 (best-effort, provider 不报则为 0.0)
- */
-export interface CompactResponse {
-	summary_message: Message;
-	tokens_in: number;
-	tokens_out: number;
-	cost_usd: number;
-}
-
 // =============================================================================
 // Type guards — discriminated-union narrowing for ContentBlock
 // =============================================================================
@@ -872,32 +194,8 @@ export function isImageBlock(b: ContentBlock): b is ImageBlock {
 }
 
 // =============================================================================
-// round_end event helper (most-used event shape)
+// round_end event helpers (most-used event shape)
 // =============================================================================
-
-/**
- * Typed view of `InvokeEvent.data` for `type === 'round_end'`.
- *
- * Phase 1 changes (ADR-018):
- *   - Removed `tool_use` reason (tool_use is a mid-turn step, agent loop continues)
- *   - Added `max_iterations` reason (loop hit MAX_ITERATIONS cap)
- *   - Added `interrupted` reason (reasoner-side unrecoverable failure)
- *   - Removed `langgraph_state_blob` field (state lives reasoner-side now)
- *   - Added `final_messages` field — Message[] the IDE should append to
- *     chatSessions/*.jsonl on this turn's completion
- *
- * - `reason`: spec-defined termination reason or unknown string (forward-compat)
- * - `final_messages`: assistant + tool_result messages added during this turn
- *                     (NOT including the original input messages — IDE already has those)
- * - `final_result`: structured turn outcome (/invoke v1.1 S4, §7). Carried on the
- *                   SAME terminal frame as `reason` + `final_messages`; optional so
- *                   older reasoners (v1.0) that omit it don't break this client.
- */
-export interface RoundEndData {
-	reason: 'end_turn' | 'max_iterations' | 'max_tokens' | 'error' | 'cancelled' | 'interrupted' | string;
-	final_messages?: Message[];
-	final_result?: FinalResult;
-}
 
 /** Predicate: is this event a `round_end` terminator? */
 export function isRoundEndEvent(e: InvokeEvent): boolean {
@@ -910,185 +208,14 @@ export function roundEndReason(e: InvokeEvent): string | undefined {
 		return undefined;
 	}
 	// Cast through `unknown` because `Record<string, unknown>` and `RoundEndData`
-	// (which has a required `reason: string` field) don't structurally overlap
-	// in tsgo's view. The reasoner contract guarantees `reason` is present on
-	// every `round_end` payload (PHASE-1-PROTOCOL-SPEC §2.3).
+	// don't structurally overlap in tsgo's view. The reasoner contract guarantees
+	// `reason` is present on every `round_end` payload (PHASE-1-PROTOCOL-SPEC §2.3).
 	const data = e.data as unknown as RoundEndData;
 	return data.reason;
 }
 
 // =============================================================================
-// Phase 1 — Tool catalog registration (ADR-018 §2 D9)
-// =============================================================================
-
-/**
- * Single tool descriptor — Anthropic Messages API tool format + ChipOS routing meta.
- *
- * Mirror of python `invoke.py::ToolDefinition`. The `chipos_source` field is
- * server-internal routing metadata (NOT shown to LLM) that tells reasoner
- * where this tool's execution lives:
- *   - "worker_mcp"  → reasoner dispatches via gRPC to worker
- *   - "ide_mcp"     → reasoner emits ide_tool_call SSE event for IDE to execute
- *   - "ide_builtin" → same channel as ide_mcp (read_file / run_in_terminal / etc.)
- */
-export interface ToolDefinition {
-	name: string;
-	description: string;
-	input_schema: Record<string, unknown>;
-	chipos_source: 'worker_mcp' | 'ide_mcp' | 'ide_builtin';
-}
-
-/**
- * IDE → reasoner: long-lived tool catalog registration.
- *
- * Endpoint: `POST /api/v1/tools/register`.
- *
- * Called by IDE on startup and again whenever the live MCP server set changes
- * (user installs/removes an MCP server, or worker tools update). Replaces the
- * per-invoke `tools[]` field that Phase 0 had — InvokeRequest now references
- * the catalog by `expected_catalog_version`, reasoner returns 412 on mismatch.
- *
- * - `chat_session_id`: catalog scoped per chat session (different chats may
- *   have different MCP sets enabled)
- * - `tools`: 1..500 definitions
- */
-export interface RegisterToolsRequest {
-	chat_session_id: string;
-	tools: ToolDefinition[];
-	ide_version?: string;
-	workspace_path?: string;
-}
-
-/**
- * Reasoner → IDE: catalog accepted, opaque version handle for later InvokeRequest.
- *
- * - `catalog_version`: sha256[:16] hex of canonicalised tools JSON. IDE caches
- *   and sends as `expected_catalog_version` on every subsequent invoke.
- * - `accepted_tool_count`: == tools.length on full success
- * - `rejected`: list of {name, reason} for any tool the reasoner couldn't accept
- */
-export interface RegisterToolsResponse {
-	catalog_version: string;
-	accepted_tool_count: number;
-	rejected: { name: string; reason: string }[];
-}
-
-// =============================================================================
-// Phase 1 — Reverse-channel callbacks (ADR-018 §2 D7 + D14)
-// =============================================================================
-
-/**
- * IDE → reasoner: IDE finished executing an `ide_tool_call` event.
- *
- * Endpoint: `POST /api/v1/tool_result/{trace_id}/{call_id}`.
- *
- * Reasoner's agent loop awaits the corresponding `asyncio.Future`; the POST
- * resolves it and the loop continues. Default timeout on the reasoner side
- * is 300s — after that the loop synthesises an error tool_result and
- * continues (R-F in PHASE-1-DOC-AUDIT).
- *
- * - `call_id`: must match the SSE `ide_tool_call.data.call_id` (reasoner
- *   uses it to look up the pending Future)
- * - `content`: tool output (short = string; long output caller may truncate)
- * - `output_type`: "text" default; "image"/"binary_ref" reserved for future
- * - `metadata`: optional structured output (e.g. {file_modified, exit_code})
- */
-export interface ToolResultRequest {
-	call_id: string;
-	content: string;
-	is_error?: boolean;
-	output_type?: 'text' | 'image' | 'binary_ref';
-	metadata?: Record<string, unknown> | null;
-}
-
-/**
- * IDE → reasoner: user clicked a button on a confirm card.
- *
- * Endpoint: `POST /api/v1/confirm_response/{trace_id}/{request_id}`.
- *
- * Reasoner converts this into a `tool_result` content (JSON serialised) for
- * the `chipos_user_confirm` tool_use (ADR-018 §2 D13).
- *
- * - `request_id`: must match the SSE `confirm_request.data.request_id`
- *   (typically equal to the tool_use.id, "toolu_xxx" or "chipos_confirm_xxx")
- * - `action`: clicked button's action_id, e.g. "approve" / "reject" / "submit" / "skip"
- * - `selections`: agent_ask radio form picks (key=question_id, value=option_id)
- * - `comment`: optional extra text (e.g. user note on submit)
- */
-export interface ConfirmResponseRequest {
-	request_id: string;
-	action: string;
-	selections?: Record<string, string> | null;
-	comment?: string | null;
-}
-
-// =============================================================================
-// Phase 1 — Resume + turn state (ADR-018 §2 D10 + R-D)
-// =============================================================================
-
-/**
- * IDE → reasoner: SSE drop → reconnect + continue in-flight turn.
- *
- * Endpoint: `POST /api/v1/resume/{chat_session_id}`.
- *
- * Reasoner behaviour:
- *   - in-flight trace_id not found → 404 (turn done or never existed)
- *   - SSE buffer evicted (24h GC) → 410 (IDE shows "session expired")
- *   - Otherwise: SSE 200 + replays events > last_sequence_id from FileStateStore,
- *     then emits `resumed_buffer_drained` marker and closes (Phase 1 buffer-
- *     drain-only; live event handoff is integrated later in CP-2)
- *
- * - `trace_id`: which turn to resume
- * - `last_sequence_id`: client's last received seq (use -1 for "everything from start")
- * - `disconnect_reason`: optional telemetry ("network" / "ide_restart" / "user_action")
- */
-export interface ResumeRequest {
-	trace_id: string;
-	last_sequence_id: number;
-	disconnect_reason?: string;
-	/**
-	 * P2 (reasoner-restart-during-confirm): re-supply the LLM key on resume,
-	 * mirroring InvokeRequest.api_key (F6). A reasoner restart rehydrates the
-	 * turn from a checkpoint that does NOT persist the raw key (security), so
-	 * the re-driven LLM call would otherwise 401 at the provider. Sending it
-	 * here keeps per-user keys working without writing them to disk.
-	 */
-	api_key?: string | null;
-	api_key_alias?: string | null;
-}
-
-/**
- * One in-flight turn's metadata, included in TurnStateResponse.
- *
- * - `state`: "running" if last activity within 5 min, "stale" otherwise
- *   (reasoner instance may have died — IDE should ask user before resuming)
- * - `last_user_message_preview`: first ~100 chars of the user prompt that
- *   started this turn (for UI "you asked: ...")
- */
-export interface InFlightTrace {
-	trace_id: string;
-	started_at: number;
-	last_checkpoint_seq?: number;
-	state: 'running' | 'stale';
-	last_user_message_preview?: string;
-}
-
-/**
- * Reasoner → IDE: list of in-flight turns for a chat session.
- *
- * Endpoint response: `GET /api/v1/turn_state/{chat_session_id}`.
- *
- * IDE calls this on startup to check whether to auto-resume any unfinished
- * turn (e.g. user closed IDE mid-LLM-call → reasoner finished the turn in
- * background → next IDE open should fetch the result).
- */
-export interface TurnStateResponse {
-	chat_session_id: string;
-	in_flight_traces: InFlightTrace[];
-}
-
-// =============================================================================
-// Phase 1 — Typed payload helpers for new SSE events (most-used shapes)
+// Typed payload views for reverse-channel / control SSE events (IDE-side)
 // =============================================================================
 
 /**

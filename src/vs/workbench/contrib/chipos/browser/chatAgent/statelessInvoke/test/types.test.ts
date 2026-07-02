@@ -171,6 +171,9 @@ suite('statelessInvoke/types — Phase 0 #8a schema contract', () => {
 	});
 
 	test('compact_request_response_shapes', () => {
+		// Canonical CompactRequest models "not set" as omission (M1: base_url
+		// null→omit is the one accepted wire delta — pydantic resolves both to
+		// None), so unset optional fields are left out instead of null here.
 		const req: CompactRequest = {
 			protocol_version: 1,
 			trace_id: 'compact-001',
@@ -181,11 +184,7 @@ suite('statelessInvoke/types — Phase 0 #8a schema contract', () => {
 			],
 			model: 'zhipu/glm-5.1',
 			provider: 'auto',
-			base_url: null,
-			api_key_alias: null,
 			max_summary_tokens: 4000,
-			user: null,
-			metadata: null,
 		};
 		const reqRoundtrip = JSON.parse(JSON.stringify(req)) as CompactRequest;
 		assert.deepStrictEqual(reqRoundtrip, req);
