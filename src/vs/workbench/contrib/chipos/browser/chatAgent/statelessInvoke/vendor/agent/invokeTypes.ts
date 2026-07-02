@@ -276,7 +276,8 @@ export interface ClientCapabilities {
 // Identity / AllowedTools / ResolvedInvokeContext.
 
 // Identity / AllowedTools now re-export the generated single source (P-rust-4
-// block above) — both were shape-identical to the bindings.
+// block above) — both were shape-identical to the bindings. Same R1 semantics:
+// JWT/chiops derived, NEVER client-reported — inbound/read-only mirrors.
 
 /**
  * Server-internal resolved context (§5) — client never sees or reports this (R1).
