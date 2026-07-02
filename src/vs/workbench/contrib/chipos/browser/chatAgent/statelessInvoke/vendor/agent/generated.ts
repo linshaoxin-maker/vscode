@@ -1,4 +1,9 @@
 /* ────────────────────────────────────────────────────────────────────
+ * VENDORED — DO NOT EDIT BY HAND. Regenerate via: npm run sync (in packages/invoke-client)
+ * canonical source: packages/invoke-client/src/agent/generated.ts
+ * @chipos/invoke-client — shared reasoner /invoke client (B phase: vendored copy; ADR-CLI-009 / 09-landing).
+ * ──────────────────────────────────────────────────────────────────── */
+/* ────────────────────────────────────────────────────────────────────
  * GENERATED — DO NOT EDIT BY HAND. Regenerate via: node scripts/gen-bindings.mjs
  * source: packages/invoke-core/bindings/*.ts (ts-rs output of the Rust single source)
  * Aggregated subset re-exported by ./invokeTypes.ts (P-rust-4 / M4). Types whose

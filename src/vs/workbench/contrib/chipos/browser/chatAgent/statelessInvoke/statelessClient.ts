@@ -210,20 +210,33 @@ function toAsyncIterable(
 	run: (onEvent: (e: InvokeEvent) => void, signal: AbortSignal) => Promise<void>,
 	callerSignal?: AbortSignal,
 ): AsyncIterable<InvokeEvent> {
+	// Single-shot latch: each iterator lazily fires its own POST, so iterating
+	// the same iterable twice would re-send the SAME trace_id (a duplicate turn
+	// server-side). The IDE's retry loops correctly construct a fresh iterable
+	// per attempt — this latch turns the latent misuse into a loud error.
+	let iterated = false;
 	return {
 		[Symbol.asyncIterator](): AsyncIterator<InvokeEvent> {
+			if (iterated) {
+				throw new Error('StatelessClient stream already consumed — a turn stream is single-shot; call invoke()/resume() again for a retry');
+			}
+			iterated = true;
 			const queue: InvokeEvent[] = [];
 			const controller = new AbortController();
 			let started = false;
 			let done = false;
+			let failed = false; // explicit flag — a rejection reason of `undefined` must still surface
 			let failure: unknown;
 			let returned = false;
-			let wake: (() => void) | undefined;
+			// A QUEUE of waiters (not a single slot): the AsyncIterator protocol
+			// allows overlapping next() calls (e.g. Promise.all of two next()s) —
+			// a single slot would drop the first waiter's wake-up and hang it.
+			const waiters: Array<() => void> = [];
 
 			const notify = () => {
-				const w = wake;
-				wake = undefined;
-				w?.();
+				// Wake everyone; each re-checks queue/done state in its loop.
+				const ws = waiters.splice(0, waiters.length);
+				for (const w of ws) { w(); }
 			};
 
 			const onCallerAbort = () => {
@@ -260,6 +273,7 @@ function toAsyncIterable(
 						// An abort triggered by return() is a clean early exit,
 						// not a failure to surface.
 						if (!returned) {
+							failed = true;
 							failure = err;
 						}
 						done = true;
@@ -275,25 +289,32 @@ function toAsyncIterable(
 					}
 					// eslint-disable-next-line no-constant-condition
 					while (true) {
+						if (returned) {
+							// return() was called — the iteration is over even if
+							// the (aborted) run has not settled yet.
+							return { value: undefined as unknown as InvokeEvent, done: true };
+						}
 						if (queue.length > 0) {
 							return { value: queue.shift()!, done: false };
 						}
 						if (done) {
-							if (failure !== undefined) {
+							if (failed) {
 								const err = failure;
-								failure = undefined; // surface once
+								failed = false; // surface once
+								failure = undefined;
 								release();
 								throw err;
 							}
 							release();
 							return { value: undefined as unknown as InvokeEvent, done: true };
 						}
-						await new Promise<void>(resolve => { wake = resolve; });
+						await new Promise<void>(resolve => { waiters.push(resolve); });
 					}
 				},
 				async return(value?: unknown): Promise<IteratorResult<InvokeEvent>> {
 					// Caller broke out of the for-await loop — tear down the
-					// underlying stream; the run's AbortError is swallowed.
+					// underlying stream; the run's AbortError is swallowed and any
+					// pending concurrent next() is woken to observe `returned`.
 					returned = true;
 					try {
 						controller.abort(new Error('consumer stopped iterating'));
@@ -301,6 +322,7 @@ function toAsyncIterable(
 						// best-effort
 					}
 					release();
+					notify();
 					return { value: value as InvokeEvent, done: true };
 				},
 			};

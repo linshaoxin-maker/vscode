@@ -73,6 +73,12 @@ function createToolResultEvent(filePath: string): IToolResultEvent {
 }
 
 function createSkillTreeEvent(domainId: string, skillName: string): ISkillTreeEvent {
+	// Mirrors the REAL reasoner payload shape (skill_tree_manager.add_skill →
+	// GET /api/v1/skill-tree): a category node carries its leaf skills in a
+	// `skills` array ({skill_id, description, status, confidence}); `children`
+	// holds nested SUB-CATEGORIES only. The FEAT-DS-006 flattener
+	// (_convertSkillTreePayload) walks exactly this shape — the old fixture
+	// (skills-inside-children) predated it and exercised nothing.
 	return {
 		event_id: `skill-tree:${domainId}`,
 		event_type: AgentEventType.SkillTree,
@@ -83,12 +89,11 @@ function createSkillTreeEvent(domainId: string, skillName: string): ISkillTreeEv
 			children: [{
 				id: domainId,
 				label: `${domainId}-label`,
-				children: [{
-					id: `${domainId}-skill`,
-					name: skillName,
-					description: `${skillName} description`,
-					trigger_mode: 'manual',
-					enabled: true,
+				skills: [{
+					skill_id: `${domainId}-skill`,
+					description: skillName,
+					status: 'active',
+					confidence: 0.9,
 				}],
 			}],
 		},

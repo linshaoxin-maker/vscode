@@ -1,7 +1,7 @@
 /* ────────────────────────────────────────────────────────────────────
- * VENDORED — DO NOT EDIT BY HAND. Regenerate by re-copying the canonical source (import specifiers get a .js suffix for NodeNext)
+ * VENDORED — DO NOT EDIT BY HAND. Regenerate via: npm run sync (in packages/invoke-client)
  * canonical source: packages/invoke-client/src/agent/reasonerClient.ts
- * @chipos/invoke-client — shared reasoner /invoke client (M3 vendored copy; sync-vendor ide target lands after M2).
+ * @chipos/invoke-client — shared reasoner /invoke client (B phase: vendored copy; ADR-CLI-009 / 09-landing).
  * ──────────────────────────────────────────────────────────────────── */
 /*---------------------------------------------------------------------------------------------
  *  Phase 2-A: ReasonerClient — vscode-extension gateway to the backend_v2
@@ -185,13 +185,20 @@ export class ReasonerClient {
 	 * POST /api/v1/tools/register — long-lived out-of-band tool catalog upload.
 	 * The returned `catalog_version` is what every invoke must echo back as
 	 * `expected_catalog_version`. Throws ReasonerHttpError on non-2xx.
+	 *
+	 * Also refreshes this client's per-session catalog cache: a surface that
+	 * registers a CHANGED catalog directly and then calls the batteries-included
+	 * `invoke()` would otherwise ride the stale cached version into a
+	 * deterministic 412 round-trip before self-healing.
 	 */
 	async registerTools(req: RegisterToolsRequest): Promise<RegisterToolsResponse> {
 		const resp = await this._post('/api/v1/tools/register', req);
 		if (!resp.ok) {
 			throw new ReasonerHttpError(resp.status, await parseJsonSafe(resp));
 		}
-		return (await resp.json()) as RegisterToolsResponse;
+		const parsed = (await resp.json()) as RegisterToolsResponse;
+		this._catalogVersions.set(req.chat_session_id, parsed.catalog_version);
+		return parsed;
 	}
 
 	/**

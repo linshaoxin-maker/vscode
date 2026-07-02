@@ -1,7 +1,7 @@
 /* ────────────────────────────────────────────────────────────────────
- * VENDORED — DO NOT EDIT BY HAND. Regenerate by re-copying the canonical source
+ * VENDORED — DO NOT EDIT BY HAND. Regenerate via: npm run sync (in packages/invoke-client)
  * canonical source: packages/invoke-client/src/transport/fetchSSE.ts
- * @chipos/invoke-client — shared reasoner /invoke client (M3 vendored copy; sync-vendor ide target lands after M2).
+ * @chipos/invoke-client — shared reasoner /invoke client (B phase: vendored copy; ADR-CLI-009 / 09-landing).
  * ──────────────────────────────────────────────────────────────────── */
 /*---------------------------------------------------------------------------------------------
  *  Phase 2-A: shared SSE transport primitive.

@@ -1,7 +1,7 @@
 /* ────────────────────────────────────────────────────────────────────
- * VENDORED — DO NOT EDIT BY HAND. Regenerate by re-copying the canonical source
+ * VENDORED — DO NOT EDIT BY HAND. Regenerate via: npm run sync (in packages/invoke-client)
  * canonical source: packages/invoke-client/src/agent/invokeTypes.ts
- * @chipos/invoke-client — shared reasoner /invoke wire types (M3a vendored copy; import specifiers get a .js suffix for NodeNext).
+ * @chipos/invoke-client — shared reasoner /invoke client (B phase: vendored copy; ADR-CLI-009 / 09-landing).
  * ──────────────────────────────────────────────────────────────────── */
 /*---------------------------------------------------------------------------------------------
  *  Phase 2-A: TS mirror of the reasoner invoke protocol.

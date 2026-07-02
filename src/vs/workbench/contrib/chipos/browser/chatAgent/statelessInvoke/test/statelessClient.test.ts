@@ -636,3 +636,105 @@ suite('StatelessClient — Phase 1 (ADR-018)', () => {
 		);
 	});
 });
+
+
+// ── push→pull bridge edge cases (M3b toAsyncIterable) ─────────────────────
+
+suite('StatelessClient — AsyncIterable bridge edges', () => {
+
+	const baseUrl = 'http://test.local:8080';
+
+	/** An SSE Response whose stream emits `frames` then HOLDS OPEN (never closes). */
+	function makeHeldSseResponse(frames: string[]): Response {
+		const encoder = new TextEncoder();
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const f of frames) { controller.enqueue(encoder.encode(f)); }
+				// no close() — in flight until the client aborts.
+			},
+		});
+		return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+	}
+
+	test('bridge_is_lazy_no_fetch_until_first_next', async () => {
+		const { fn, calls } = makeFetchSpy(() => makeSseResponse(200, [sseFrame({ type: 'round_end', sequence_id: 1, data: { reason: 'end_turn' } })]));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const iterable = client.invoke(makeReq());
+		// Constructing (and even getting an iterator) must not fire the request.
+		const iter = iterable[Symbol.asyncIterator]();
+		await new Promise(r => setTimeout(r, 20));
+		assert.strictEqual(calls.length, 0, 'no fetch before first next()');
+
+		const first = await iter.next();
+		assert.strictEqual(calls.length, 1);
+		assert.strictEqual(first.done, false);
+		await iter.return?.(undefined);
+	});
+
+	test('bridge_supports_concurrent_next_calls', async () => {
+		// Two next() calls awaited TOGETHER while the stream is still open: both
+		// must resolve (one per event) — a single-waiter bridge would hang one.
+		const { fn } = makeFetchSpy(() => makeHeldSseResponse([
+			sseFrame({ type: 'content_block_delta', sequence_id: 1, data: { i: 1 } }),
+			sseFrame({ type: 'content_block_delta', sequence_id: 2, data: { i: 2 } }),
+		]));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const iter = client.invoke(makeReq())[Symbol.asyncIterator]();
+		const [a, b] = await Promise.all([iter.next(), iter.next()]);
+		assert.strictEqual(a.done, false);
+		assert.strictEqual(b.done, false);
+		assert.deepStrictEqual(
+			[(a.value.data as { i: number }).i, (b.value.data as { i: number }).i].sort(),
+			[1, 2],
+		);
+		await iter.return?.(undefined);
+	});
+
+	test('bridge_return_wakes_pending_next_as_done', async () => {
+		// A next() parked on an idle (held-open, no more frames) stream must be
+		// released as {done:true} when the consumer calls return().
+		const { fn } = makeFetchSpy(() => makeHeldSseResponse([
+			sseFrame({ type: 'message_start', sequence_id: 1, data: {} }),
+		]));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const iter = client.invoke(makeReq())[Symbol.asyncIterator]();
+		const first = await iter.next();
+		assert.strictEqual(first.done, false);
+
+		const pending = iter.next(); // parks — no more frames are coming
+		const ret = await iter.return?.(undefined);
+		assert.strictEqual(ret?.done, true);
+		const released = await pending;
+		assert.strictEqual(released.done, true, 'parked next() must resolve done after return()');
+	});
+
+	test('bridge_is_single_shot_second_iteration_throws', async () => {
+		// Re-iterating the SAME iterable would re-POST the same trace_id (a
+		// duplicate turn server-side) — the latch turns that misuse into a loud
+		// error instead. Retries must call invoke()/resume() again.
+		const { fn, calls } = makeFetchSpy(() => makeSseResponse(200, [sseFrame({ type: 'round_end', sequence_id: 1, data: { reason: 'end_turn' } })]));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const iterable = client.invoke(makeReq());
+		const got = await collect(iterable);
+		assert.strictEqual(got.length, 1);
+		assert.strictEqual(calls.length, 1);
+
+		assert.throws(() => iterable[Symbol.asyncIterator](), /single-shot/);
+		assert.strictEqual(calls.length, 1, 'no second POST from the latched iterable');
+	});
+
+	test('bridge_surfaces_run_failure_once_then_done', async () => {
+		const { fn } = makeFetchSpy(() => makeJsonResponse(500, { error: 'boom' }));
+		const client = new StatelessClient({ baseUrl, fetchFn: fn });
+
+		const iter = client.invoke(makeReq())[Symbol.asyncIterator]();
+		await assert.rejects(() => iter.next(), (e: unknown) => e instanceof StatelessHttpError && (e as StatelessHttpError).status === 500);
+		// The failure is surfaced exactly once; a follow-up next() ends cleanly.
+		const after = await iter.next();
+		assert.strictEqual(after.done, true);
+	});
+});
