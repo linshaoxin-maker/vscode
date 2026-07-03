@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root.
  *--------------------------------------------------------------------------------------------*/
 
-import { DeferredPromise, raceCancellation, timeout } from '../../../../../base/common/async.js';
+import { DeferredPromise, disposableTimeout, raceCancellation, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../base/common/observable.js';
@@ -61,6 +61,7 @@ import { ChatModelToRecordsAdapter } from './statelessInvoke/chatModelAdapter.js
 import { ConversationAssembler, ConversationAssemblyError } from './statelessInvoke/conversationAssembler.js';
 import { ConversationCompactor } from './statelessInvoke/conversationCompactor.js';
 import { applyCompactionCheckpoint, deriveCompactionCheckpoint, isCheckpointStale, type CompactionCheckpoint } from './statelessInvoke/compactionCheckpoint.js';
+import { planOrphanSweep, pickResumableTrace, type OrphanSweepCandidate } from './statelessInvoke/orphanTurnSweep.js';
 import {
 	StatelessClient,
 	StatelessHttpError,
@@ -522,6 +523,22 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				this._logService.warn('[ChipOS Stateless] in-flight turn probe failed:', String(err));
 			});
 		}
+		// §2.9 addendum — ORPHAN sweep. The probe above requires the thread's
+		// model to be (re)created, but thread content only reaches disk on a
+		// GRACEFUL shutdown (chatServiceImpl saveState ← onWillSaveState). After
+		// a crash / hard reload the thread was never persisted: the chat view
+		// falls back to a fresh session, no model for the old thread ever
+		// exists, and an in-flight turn keeps running server-side with zero
+		// user-visible hint. ChipOS's sessionResource→chat_session_id map IS
+		// durable (written at invoke start), so sweep it shortly after startup
+		// and offer resume for any thread the reasoner still reports in-flight.
+		// Delayed so a normal (graceful) restore wins the race and those
+		// threads stay owned by the model-probe path.
+		this._register(disposableTimeout(() => {
+			void this._sweepOrphanInFlightTurns().catch(err => {
+				this._logService.warn('[ChipOS Stateless] orphan in-flight sweep failed:', String(err));
+			});
+		}, ChipOSChatAgent._ORPHAN_SWEEP_DELAY_MS));
 
 		// 2026-05-26: carousel subscription removed (see _pendingCarousels
 		// removal comment above). agent_ask now uses option-as-buttons via
@@ -3470,6 +3487,10 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 	//   - `_probedStatelessSessions`: sessionResources already probed this IDE
 	//     run, so we offer resume at most once per thread per launch.
 	private static readonly _STATELESS_CSID_STORAGE_KEY = 'chipos.stateless.chatSessionIds';
+	/** §2.9 orphan sweep: startup delay (lets a graceful restore win the race)
+	 *  and probe budget (a pathological CSID map must not storm the reasoner). */
+	private static readonly _ORPHAN_SWEEP_DELAY_MS = 6000;
+	private static readonly _ORPHAN_SWEEP_MAX_PROBES = 8;
 	private static readonly _COMPACTION_CHECKPOINT_STORAGE_KEY = 'chipos.stateless.compactionCheckpoints';
 	//   - `_DISCARDED_TRACES_STORAGE_KEY`: workspace-storage key holding a
 	//     FIFO-capped list of trace_ids the user explicitly discarded from the
@@ -4690,12 +4711,12 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				return;
 			}
 		}
-		// Drop traces the user already discarded in a previous launch — the
-		// reasoner may still report them (cancel can fail, or a stale replica copy
-		// lingers), but re-offering a dismissed turn makes "丢弃" feel broken.
-		const discarded = new Set(this._readDiscardedStatelessTraces());
-		const liveTraces = (turnState?.in_flight_traces ?? []).filter(t => !discarded.has(t.trace_id));
-		if (!turnState || liveTraces.length === 0) {
+		// Drop traces the user already discarded in a previous launch (a reasoner
+		// may keep reporting them — cancel can fail / a stale replica lingers)
+		// and take the most recently started. Shared with the orphan sweep via
+		// `pickResumableTrace` so the two paths cannot drift.
+		const trace = pickResumableTrace(turnState?.in_flight_traces, new Set(this._readDiscardedStatelessTraces()));
+		if (!turnState || !trace) {
 			this._logService.info('[ChipOS Stateless] resume probe: turn_state empty for cs=%s — nothing to resume', chatSessionId);
 			// `getTurnState` is authoritative: no in-flight trace means the reasoner
 			// has nothing left to resume (the turn finished, or its state expired /
@@ -4706,8 +4727,6 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			this._finalizeRestoredZombieRow(model, chatSessionId, 'no in-flight trace');
 			return;
 		}
-		// Offer to resume the most-recently-started in-flight trace.
-		const trace = liveTraces.reduce((a, b) => (b.started_at >= a.started_at ? b : a));
 		this._logService.info('[ChipOS Stateless] resume probe: in-flight trace=%s state=%s for cs=%s', trace.trace_id, trace.state, chatSessionId);
 		this._offerStatelessResume(model, sessionResource, chatSessionId, trace);
 	}
@@ -4839,6 +4858,167 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 				],
 				{ sticky: true },
 			);
+		}
+	}
+
+	/**
+	 * §2.9 addendum — startup sweep for ORPHANED in-flight turns: threads with a
+	 * durable chat_session_id but NO chat model this run (crash / hard reload —
+	 * the framework never persisted the thread, so `onDidCreateModel` will never
+	 * fire for it and `_maybeProbeInFlightTurn` cannot cover it). For each such
+	 * thread, ask the reasoner whether a turn is still in flight and offer to
+	 * resume it. Selection is pure (`planOrphanSweep`) and unit-tested.
+	 */
+	private async _sweepOrphanInFlightTurns(): Promise<void> {
+		const storedMap = this._readStoredStatelessChatSessionIds();
+		if (Object.keys(storedMap).length === 0) {
+			return;
+		}
+		const candidates = planOrphanSweep({
+			storedMap,
+			probedKeys: this._probedStatelessSessions,
+			liveModelKeys: new Set([...this._chatService.chatModels.get()].map(m => m.sessionResource.toString())),
+			activeTraceKeys: new Set([...this._statelessTraces.keys()].map(r => r.toString())),
+			maxProbes: ChipOSChatAgent._ORPHAN_SWEEP_MAX_PROBES,
+		});
+		if (candidates.length === 0) {
+			return;
+		}
+		this._logService.info('[ChipOS Stateless] orphan sweep: %d stored thread(s) without a live model — probing turn_state', candidates.length);
+		let client: StatelessClient;
+		try {
+			client = await this._ensureStatelessClient();
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] orphan sweep: client init failed: %s', String(err));
+			return;
+		}
+		const discarded = new Set(this._readDiscardedStatelessTraces());
+		for (const cand of candidates) {
+			// Short 401 backoff: the sweep can still race TokenManager.initialize()
+			// (same startup auth race as the restore probe, same remedy).
+			let turnState: TurnStateResponse | undefined;
+			for (let attempt = 1; attempt <= 3; attempt++) {
+				try {
+					turnState = await client.getTurnState(cand.chatSessionId);
+					break;
+				} catch (err) {
+					const is401 = err instanceof StatelessHttpError && err.status === 401;
+					const retriable = is401 || !(err instanceof StatelessHttpError);
+					if (attempt < 3 && retriable) {
+						await timeout(1000 * attempt);
+						continue;
+					}
+					// Best-effort by design: an unreachable / 404-ing turn_state just
+					// means nothing to offer for this thread.
+					this._logService.info('[ChipOS Stateless] orphan sweep: getTurnState failed for cs=%s: %s', cand.chatSessionId, String(err));
+					break;
+				}
+			}
+			const trace = pickResumableTrace(turnState?.in_flight_traces, discarded);
+			if (!trace) {
+				continue;
+			}
+			// Re-check: while we probed, the framework (or the user) may have
+			// created the model — then the restore probe owns this thread.
+			if (this._probedStatelessSessions.has(cand.resourceKey)) {
+				continue;
+			}
+			this._probedStatelessSessions.add(cand.resourceKey);
+			this._logService.info('[ChipOS Stateless] orphan sweep: in-flight trace=%s state=%s for cs=%s (thread not restored)', trace.trace_id, trace.state, cand.chatSessionId);
+			this._offerOrphanStatelessResume(cand, trace);
+		}
+	}
+
+	/**
+	 * Notification for an orphaned in-flight turn (thread NOT restored — no
+	 * model, nothing on screen). "继续生成" first re-opens the thread
+	 * ({@link _reopenThreadForOrphanResume}: original thread when its data made
+	 * it to disk, otherwise a fresh session with the durable chat_session_id
+	 * re-pointed at it) and then drives the standard resume-marker sendRequest.
+	 */
+	private _offerOrphanStatelessResume(cand: OrphanSweepCandidate, trace: InFlightTrace): void {
+		const lastSequenceId = trace.last_checkpoint_seq ?? -1;
+		// Let a restored (dead) confirm-card click recover this turn too.
+		this._restartResumableTraces.set(trace.trace_id, { sessionResource: URI.parse(cand.resourceKey), chatSessionId: cand.chatSessionId, lastSequenceId });
+		const preview = trace.last_user_message_preview ? `（"${trace.last_user_message_preview}"）` : '';
+		const doResume = async () => {
+			const target = await this._reopenThreadForOrphanResume(cand);
+			if (!target) {
+				this._notificationService.warn(localize('chipos.stateless.orphan.openFailed', "无法打开会话以继续生成，请新开对话后重试。"));
+				return;
+			}
+			await _runResumeWithFallback({
+				sendResume: () => this._sendStatelessResumeRequest(target, {
+					traceId: trace.trace_id,
+					chatSessionId: cand.chatSessionId,
+					lastSequenceId,
+				}),
+				resendLastTurn: () => this._resendLastTurnForSession(target, cand.chatSessionId),
+				notifyDeadEnd: () => this._notificationService.warn(localize('chipos.stateless.resume.deadEnd', "无法继续生成：会话仍被占用，且没有可重试的回合，请新开对话。")),
+				warn: msg => this._logService.warn(msg),
+			});
+		};
+		const doCancel = () => {
+			this._markStatelessTraceDiscarded(trace.trace_id);
+			void this._ensureStatelessClient()
+				.then(c => c.cancel(trace.trace_id, 'ide_restart_discarded'))
+				.catch(err => this._logService.warn('[ChipOS Stateless] orphan-discard /cancel failed:', String(err)));
+		};
+		if (trace.state === 'running') {
+			void this._notificationService.prompt(
+				Severity.Info,
+				localize('chipos.stateless.orphan.running', "ChipOS：上一个回合仍在后台运行{0}，但其会话未能自动恢复。是否打开会话并继续生成？", preview),
+				[
+					{ label: localize('chipos.stateless.resume.continueBtn', "继续生成"), run: () => void doResume() },
+					{ label: localize('chipos.stateless.resume.cancelBtn', "取消该回合"), run: doCancel, isSecondary: true },
+				],
+				{ sticky: true },
+			);
+		} else {
+			void this._notificationService.prompt(
+				Severity.Warning,
+				localize('chipos.stateless.orphan.stale', "ChipOS：上一个回合的连接已断开较久{0}，且其会话未能自动恢复。要尝试打开会话并继续吗？", preview),
+				[
+					{ label: localize('chipos.stateless.resume.tryBtn', "尝试继续"), run: () => void doResume() },
+					{ label: localize('chipos.stateless.resume.discardBtn', "丢弃"), run: doCancel, isSecondary: true },
+				],
+				{ sticky: true },
+			);
+		}
+	}
+
+	/**
+	 * Re-open a stored thread for an orphan resume and return the sessionResource
+	 * to drive the resume into. `IChatWidgetService.openSession` restores the
+	 * original thread when its content reached disk; after a crash it degrades
+	 * gracefully to a fresh session — in that case re-point the durable
+	 * chat_session_id at the new thread (the reasoner's owner-check keys on the
+	 * chat_session_id, not on any IDE-side thread URI) so the /resume replay and
+	 * all future turns of this conversation land there.
+	 */
+	private async _reopenThreadForOrphanResume(cand: OrphanSweepCandidate): Promise<URI | undefined> {
+		try {
+			const widgetService = this._instantiationService.invokeFunction(accessor => accessor.get(IChatWidgetService));
+			const stored = URI.parse(cand.resourceKey);
+			const widget = await widgetService.openSession(stored);
+			const actual = widget?.viewModel?.sessionResource;
+			if (!actual) {
+				this._logService.warn('[ChipOS Stateless] orphan resume: openSession yielded no session for %s', cand.resourceKey);
+				return undefined;
+			}
+			if (actual.toString() !== cand.resourceKey) {
+				this._logService.info('[ChipOS Stateless] orphan resume: thread %s not restorable — re-pointing cs=%s at %s', cand.resourceKey, cand.chatSessionId, actual.toString());
+				this._removeStoredStatelessChatSessionId(stored);
+				this._writeStoredStatelessChatSessionId(actual, cand.chatSessionId);
+				// The replacement thread is now owned by this recovery — keep the
+				// restore probe from re-offering it on a later model (re)create.
+				this._probedStatelessSessions.add(actual.toString());
+			}
+			this._statelessChatSessionIds.set(actual, cand.chatSessionId);
+			return actual;
+		} catch (err) {
+			this._logService.warn('[ChipOS Stateless] orphan resume: reopen failed for %s: %s', cand.resourceKey, String(err));
+			return undefined;
 		}
 	}
 
