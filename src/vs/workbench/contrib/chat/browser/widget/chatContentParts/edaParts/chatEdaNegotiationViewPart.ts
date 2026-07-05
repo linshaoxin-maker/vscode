@@ -5,6 +5,7 @@
 
 import * as dom from '../../../../../../../base/browser/dom.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
+import { localize } from '../../../../../../../nls.js';
 import { IChatEdaNegotiationView } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
@@ -49,7 +50,7 @@ export class ChatEdaNegotiationViewContentPart extends Disposable implements ICh
 		recText.textContent = content.recommendation;
 		recommendation.appendChild(recText);
 
-		this.domNode = edaSection(`Negotiation: ${content.issue}`, perspectivesContainer, recommendation);
+		this.domNode = edaSection(localize('chipos.negotiationView.title', "团队分析: {0}", content.issue), perspectivesContainer, recommendation);
 		this.domNode.classList.add('eda-negotiation-view');
 	}
 
