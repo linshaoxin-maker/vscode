@@ -5,7 +5,6 @@
 
 import * as dom from '../../../../../../../base/browser/dom.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
-import { localize } from '../../../../../../../nls.js';
 import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
 import { IChatEdaPpaReport, IChatEdaPpaMetrics } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
@@ -109,7 +108,7 @@ export class ChatEdaPpaReportContentPart extends Disposable implements IChatCont
 		actions.appendChild(openBtn);
 		container.appendChild(actions);
 
-		this.domNode = edaSection(localize('chipos.eda.ppaTitle', "PPA 报告"), container);
+		this.domNode = edaSection('PPA Report', container);
 		this.domNode.classList.add('eda-ppa-report-section');
 	}
 
