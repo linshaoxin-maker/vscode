@@ -21,8 +21,9 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { URI } from '../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
-import { IChipOSTokenManager, type ChipOSAuthUserResponse, type IChipOSUserInfo } from './chiposTokenManager.js';
+import { IChipOSTokenManager, type IChipOSUserInfo } from './chiposTokenManager.js';
 import { fetchMyOrgs, postSwitchOrg, type OrgSummary as IChipOSOrgSummary } from '../chatAgent/statelessInvoke/vendor/auth/orgSwitchClient.js';
+import { exchangeCode, requestWorkerToken, postLogout } from '../chatAgent/statelessInvoke/vendor/auth/authWire.js';
 
 export type { OrgSummary as IChipOSOrgSummary } from '../chatAgent/statelessInvoke/vendor/auth/orgSwitchClient.js';
 
@@ -189,18 +190,8 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 		const accessToken = this._tokenManager.getAccessTokenForLogout();
 		const websiteUrl = this._tokenManager.resolveWebsiteUrl();
 		if (websiteUrl && refreshToken && accessToken) {
-			try {
-				await fetch(`${websiteUrl}/api/auth/logout`, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						Authorization: `Bearer ${accessToken}`,
-					},
-					body: JSON.stringify({ refresh_token: refreshToken }),
-				});
-			} catch (err) {
-				this._logService.warn('[ChipOS Auth] /api/auth/logout failed (continuing local logout):', String(err));
-			}
+			// A6: canonical postLogout — best-effort, never throws (offline/4xx → false).
+			await postLogout(websiteUrl, accessToken, refreshToken);
 		} else if (websiteUrl && refreshToken && !accessToken) {
 			this._logService.info('[ChipOS Auth] skipping server-side logout — no live access_token (RT will expire naturally)');
 		}
@@ -219,30 +210,13 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 			this._logService.warn('[ChipOS Auth] getWorkerToken: no access_token (user not logged in)');
 			return undefined;
 		}
-		try {
-			const resp = await fetch(`${websiteUrl}/api/auth/worker-token`, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${accessToken}`,
-				},
-				body: JSON.stringify(workerId ? { worker_id: workerId } : {}),
-			});
-			if (!resp.ok) {
-				const text = await resp.text().catch(() => '');
-				this._logService.warn('[ChipOS Auth] /api/auth/worker-token failed:', resp.status, text);
-				return undefined;
-			}
-			const data = await resp.json() as { worker_token?: string; expires_in?: number };
-			if (!data?.worker_token || !data?.expires_in) {
-				this._logService.warn('[ChipOS Auth] /api/auth/worker-token returned malformed response');
-				return undefined;
-			}
-			return { worker_token: data.worker_token, expires_in: data.expires_in };
-		} catch (err) {
-			this._logService.warn('[ChipOS Auth] getWorkerToken error:', String(err));
+		// A6: canonical requestWorkerToken — surfaces status, never throws.
+		const r = await requestWorkerToken(websiteUrl, accessToken, workerId ? { workerId } : {});
+		if (!r.ok || !r.worker_token || !r.expires_in) {
+			this._logService.warn('[ChipOS Auth] /api/auth/worker-token failed or malformed:', r.status);
 			return undefined;
 		}
+		return { worker_token: r.worker_token, expires_in: r.expires_in };
 	}
 
 	async getMyOrgs(): Promise<IChipOSOrgSummary[]> {
@@ -300,35 +274,17 @@ export class ChipOSAuthService extends Disposable implements IChipOSAuthService 
 			return;
 		}
 
-		try {
-			const resp = await fetch(`${websiteUrl}/api/auth/token/exchange`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					code,
-					challenge: this._pendingChallenge,
-				}),
-			});
-
-			if (!resp.ok) {
-				const text = await resp.text();
-				this._logService.error('[ChipOS Auth] Token exchange failed:', resp.status, text);
-				return;
-			}
-
-			const data = await resp.json() as {
-				access_token: string;
-				refresh_token: string;
-				user?: ChipOSAuthUserResponse;
-			};
-
-			const mappedUser = this._tokenManager.mapAuthUser(data.user);
-			await this._tokenManager.storeTokens(data.access_token, data.refresh_token, mappedUser);
-			this._pendingChallenge = undefined;
-			this._logService.info('[ChipOS Auth] Login successful, user:', data.user?.email ?? 'unknown');
-		} catch (err) {
-			this._logService.error('[ChipOS Auth] Token exchange error:', String(err));
+		// A6: canonical exchangeCode — undefined on any failure (non-2xx / malformed /
+		// network), never throws.
+		const bundle = await exchangeCode(websiteUrl, code, this._pendingChallenge);
+		if (!bundle) {
+			this._logService.error('[ChipOS Auth] Token exchange failed');
+			return;
 		}
+		const mappedUser = this._tokenManager.mapAuthUser(bundle.user);
+		await this._tokenManager.storeTokens(bundle.access_token, bundle.refresh_token ?? '', mappedUser);
+		this._pendingChallenge = undefined;
+		this._logService.info('[ChipOS Auth] Login successful, user:', bundle.user?.email ?? 'unknown');
 	}
 
 	isLoggedIn(): boolean {

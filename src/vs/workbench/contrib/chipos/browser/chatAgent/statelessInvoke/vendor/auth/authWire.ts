@@ -75,24 +75,28 @@ export async function exchangeCode(
 	opts?: AuthWireOptions,
 ): Promise<TokenBundle | undefined> {
 	const fetchFn = opts?.fetchFn ?? fetch;
-	const resp = await fetchFn(`${base(websiteUrl)}/api/auth/token/exchange`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-		body: JSON.stringify({ code, challenge }),
-		signal: signal(opts),
-	});
-	if (!resp.ok) {
-		return undefined;
+	try {
+		const resp = await fetchFn(`${base(websiteUrl)}/api/auth/token/exchange`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+			body: JSON.stringify({ code, challenge }),
+			signal: signal(opts),
+		});
+		if (!resp.ok) {
+			return undefined;
+		}
+		const data = (await resp.json().catch(() => ({}))) as Partial<TokenBundle>;
+		if (!data || typeof data.access_token !== 'string' || !data.access_token) {
+			return undefined;
+		}
+		return {
+			access_token: data.access_token,
+			refresh_token: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
+			user: data.user,
+		};
+	} catch {
+		return undefined; // network / timeout — a typed failure; caller decides how to surface
 	}
-	const data = (await resp.json().catch(() => ({}))) as Partial<TokenBundle>;
-	if (!data || typeof data.access_token !== 'string' || !data.access_token) {
-		return undefined;
-	}
-	return {
-		access_token: data.access_token,
-		refresh_token: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
-		user: data.user,
-	};
 }
 
 /**
