@@ -26,11 +26,20 @@
  */
 
 import { SimpleEmitter, type Disposable, type Logger, type TokenStore } from './ports.js';
+import { postSwitchOrg } from './orgSwitchClient.js';
 
 // ── Storage keys (shared with every surface adapter) ──
 export const KEY_ACCESS_TOKEN = 'chipos.auth.accessToken';
 export const KEY_REFRESH_TOKEN = 'chipos.auth.refreshToken';
 export const KEY_USER_INFO = 'chipos.auth.userInfo';
+/**
+ * The org the access_token is currently scoped to (set by an active-org switch).
+ * A plain `/refresh` re-mints under the PERSONAL org, so if this is set the core
+ * re-applies the org after a refresh (§3.3 convergence). GATED: a surface that
+ * never persists it (IDE/ext pre-A5) never triggers the re-apply. The CLI maps
+ * this key to its `current_org` blob field.
+ */
+export const KEY_ACTIVE_ORG = 'chipos.auth.activeOrg';
 
 // ── Refresh config ──
 const DEFAULT_REFRESH_MARGIN_MS = 5 * 60 * 1000; // refresh 5 min before expiry
@@ -287,13 +296,18 @@ export class AuthTokenManagerCore implements Disposable {
 	/**
 	 * Active-org switch: replace ONLY the access_token (refresh_token + user are
 	 * unchanged), persist, re-schedule auto-refresh, fire onDidChangeToken so the
-	 * reasoner transport picks up the org-scoped token next request.
+	 * reasoner transport picks up the org-scoped token next request. When
+	 * `activeOrgId` is given it is persisted so a later refresh re-applies the org
+	 * (§3.3); pass it on a real org switch, omit it for a plain token replacement.
 	 */
-	async updateAccessToken(accessToken: string): Promise<void> {
+	async updateAccessToken(accessToken: string, activeOrgId?: string): Promise<void> {
 		this._accessToken = accessToken;
 		this._usingManualTokenFallback = false;
 		this._parseTokenExpiry(accessToken);
 		await this._store.set(KEY_ACCESS_TOKEN, accessToken);
+		if (activeOrgId !== undefined) {
+			await this._store.set(KEY_ACTIVE_ORG, activeOrgId);
+		}
 		this._scheduleAutoRefresh();
 		this._onDidChangeToken.fire(accessToken);
 		this._logger?.info?.('[ChipOS Auth] access_token replaced (active-org switch)');
@@ -310,6 +324,7 @@ export class AuthTokenManagerCore implements Disposable {
 		await this._store.delete(KEY_ACCESS_TOKEN);
 		await this._store.delete(KEY_REFRESH_TOKEN);
 		await this._store.delete(KEY_USER_INFO);
+		await this._store.delete(KEY_ACTIVE_ORG);
 
 		this._onDidChangeToken.fire(undefined);
 		this._onDidChangeUser.fire(undefined);
@@ -447,6 +462,26 @@ export class AuthTokenManagerCore implements Disposable {
 			}
 			const data = (await resp.json()) as { access_token: string; refresh_token?: string; user?: AuthUserResponse };
 			await this.storeTokens(data.access_token, data.refresh_token ?? this._refreshToken!, this.mapAuthUser(data.user) ?? this._user);
+
+			// Active-org re-apply (§3.3): a plain /refresh re-mints under the PERSONAL
+			// org. If this session has an active org persisted, swap back to it so it
+			// keeps its org scopes. GATED on a persisted active org → surfaces that
+			// never persist one (IDE/ext pre-A5) skip this entirely. The re-swap is a
+			// SEPARATE call: a blip there must NOT throw away the refresh we just
+			// succeeded at — storeTokens already persisted the personal token, so a
+			// swap failure (e.g. membership revoked) simply degrades to it.
+			const activeOrg = await this._store.get(KEY_ACTIVE_ORG);
+			if (activeOrg && this._accessToken) {
+				try {
+					const swapped = await postSwitchOrg(websiteUrl, this._accessToken, activeOrg, { fetchFn: this._fetchFn });
+					if (swapped) {
+						await this.updateAccessToken(swapped.access_token, swapped.active_org_id);
+						return swapped.access_token;
+					}
+				} catch {
+					/* keep the personal-scoped token already stored */
+				}
+			}
 			return data.access_token;
 		} catch (err) {
 			this._logger?.error?.('[ChipOS Auth] Refresh error:', String(err));
