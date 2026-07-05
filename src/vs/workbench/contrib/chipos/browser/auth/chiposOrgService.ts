@@ -18,10 +18,10 @@ import { IChipOSTokenManager } from './chiposTokenManager.js';
 import {
 	fetchOrgMembers, patchOrgMemberRole, deleteOrgMember,
 	createOrgInvite, fetchOrgInvites, deleteOrgInvite,
-	type IChipOSOrgMember, type IChipOSOrgInvite, type IChipOSInviteCreated,
-} from './orgSwitchClient.js';
+	type OrgMember as IChipOSOrgMember, type OrgInvite as IChipOSOrgInvite, type InviteCreated as IChipOSInviteCreated,
+} from '../chatAgent/statelessInvoke/vendor/auth/orgSwitchClient.js';
 
-export type { IChipOSOrgMember, IChipOSOrgInvite, IChipOSInviteCreated } from './orgSwitchClient.js';
+export type { OrgMember as IChipOSOrgMember, OrgInvite as IChipOSOrgInvite, InviteCreated as IChipOSInviteCreated } from '../chatAgent/statelessInvoke/vendor/auth/orgSwitchClient.js';
 
 export interface IChipOSOrgService {
 	readonly _serviceBrand: undefined;

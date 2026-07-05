@@ -9,7 +9,7 @@ import {
 	fetchMyOrgs, postSwitchOrg,
 	fetchOrgMembers, patchOrgMemberRole, deleteOrgMember,
 	createOrgInvite, deleteOrgInvite,
-} from '../../browser/auth/orgSwitchClient.js';
+} from '../../browser/chatAgent/statelessInvoke/vendor/auth/orgSwitchClient.js';
 
 /**
  * Active-org switching — orgSwitchClient pure HTTP (fetchMyOrgs / postSwitchOrg).

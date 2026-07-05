@@ -22,9 +22,9 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IChipOSTokenManager, type ChipOSAuthUserResponse, type IChipOSUserInfo } from './chiposTokenManager.js';
-import { fetchMyOrgs, postSwitchOrg, type IChipOSOrgSummary } from './orgSwitchClient.js';
+import { fetchMyOrgs, postSwitchOrg, type OrgSummary as IChipOSOrgSummary } from '../chatAgent/statelessInvoke/vendor/auth/orgSwitchClient.js';
 
-export type { IChipOSOrgSummary } from './orgSwitchClient.js';
+export type { OrgSummary as IChipOSOrgSummary } from '../chatAgent/statelessInvoke/vendor/auth/orgSwitchClient.js';
 
 export interface IChipOSWorkerTokenResult {
 	worker_token: string;
