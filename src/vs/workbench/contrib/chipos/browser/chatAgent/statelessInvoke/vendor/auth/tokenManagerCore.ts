@@ -27,6 +27,11 @@
 
 import { SimpleEmitter, type Disposable, type Logger, type TokenStore } from './ports.js';
 import { postSwitchOrg } from './orgSwitchClient.js';
+import { type AuthUserResponse } from './authWire.js';
+
+// Re-export the wire user shape from its SSOT (authWire) — surfaces import it from
+// here as `ChipOSAuthUserResponse` / `AuthUserResponse`.
+export type { AuthUserResponse } from './authWire.js';
 
 // ── Storage keys (shared with every surface adapter) ──
 export const KEY_ACCESS_TOKEN = 'chipos.auth.accessToken';
@@ -54,17 +59,6 @@ export interface AuthUserInfo {
 	status?: string;
 	created_at?: string;
 }
-
-/** Wire mirror of chiops `UserResponse` (backend/app/auth/schemas.py). */
-export type AuthUserResponse = {
-	id?: string;
-	email?: string;
-	role?: string;
-	org_id?: string;
-	display_name?: string;
-	status?: string;
-	created_at?: string;
-};
 
 /**
  * Authz claims decoded from the active access_token's JWT payload. `role` is the
