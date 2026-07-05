@@ -5,6 +5,7 @@
 
 import * as dom from '../../../../../../../base/browser/dom.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
+import { localize } from '../../../../../../../nls.js';
 import { IChatEdaCoverageReport } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
@@ -69,7 +70,7 @@ export class ChatEdaCoverageReportContentPart extends Disposable implements ICha
 			children.push(edaTable(['File', 'Lines', 'Type'], rows));
 		}
 
-		this.domNode = edaSection('Coverage Report', ...children);
+		this.domNode = edaSection(localize('chipos.eda.coverageTitle', "覆盖率报告"), ...children);
 		this.domNode.classList.add('eda-coverage-report');
 	}
 

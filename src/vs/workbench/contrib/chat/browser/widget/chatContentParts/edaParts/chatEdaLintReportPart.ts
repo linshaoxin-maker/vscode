@@ -75,7 +75,7 @@ export class ChatEdaLintReportContentPart extends Disposable implements IChatCon
 		}
 		children.push(summary);
 
-		this.domNode = edaSection(`Lint Report${content.tool ? ` (${content.tool})` : ''}`, ...children);
+		this.domNode = edaSection(content.tool ? localize('chipos.eda.lintTitleTool', "Lint 报告 ({0})", content.tool) : localize('chipos.eda.lintTitle', "Lint 报告"), ...children);
 		this.domNode.classList.add('eda-lint-report');
 
 		// Header-level "Open File" — jumps to the linted file regardless of
