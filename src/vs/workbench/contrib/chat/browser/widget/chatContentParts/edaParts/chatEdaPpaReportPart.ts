@@ -5,6 +5,7 @@
 
 import * as dom from '../../../../../../../base/browser/dom.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
+import { localize } from '../../../../../../../nls.js';
 import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
 import { IChatEdaPpaReport, IChatEdaPpaMetrics } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
@@ -19,10 +20,13 @@ function fmtNum(v: number | undefined, unit: string, precision = 2): string {
 	return `${v.toFixed(precision)} ${unit}`;
 }
 
+// `improvement` is ALREADY a percentage (ppa_optimize_loop._calc_improvement:
+// (baseline-current)/baseline*100). Do NOT re-scale ×100 (was rendering 8.3% as
+// 830%). Matches the ext's formatImprovement + the CLI's ppaImpTail.
 function fmtPct(v: number | undefined): string {
 	if (v === undefined || v === null) { return '-'; }
 	const sign = v > 0 ? '+' : '';
-	return `${sign}${(v * 100).toFixed(1)}%`;
+	return `${sign}${v.toFixed(1)}%`;
 }
 
 function metricsRow(label: string, m: IChatEdaPpaMetrics | undefined): string[] {
@@ -101,23 +105,23 @@ export class ChatEdaPpaReportContentPart extends Disposable implements IChatCont
 		const openBtn = document.createElement('button');
 		openBtn.className = 'eda-spec-btn';
 		openBtn.type = 'button';
-		openBtn.textContent = 'Open Dashboard ↗';
+		openBtn.textContent = localize('chipos.ppa.openDashboard', "打开仪表盘 ↗");
 		this._register(dom.addDisposableListener(openBtn, 'click', () => {
 			this.commandService.executeCommand('chipos.ppa.openDetail');
 		}));
 		actions.appendChild(openBtn);
 		container.appendChild(actions);
 
-		this.domNode = edaSection('PPA Report', container);
+		this.domNode = edaSection(localize('chipos.ppaReport.title', "PPA 报告"), container);
 		this.domNode.classList.add('eda-ppa-report-section');
 	}
 
 	private _stageLabel(stage: string): string {
 		switch (stage) {
-			case 'baseline': return 'Baseline';
-			case 'eval_round': return 'Evaluation';
-			case 'improved': return 'Improved ✓';
-			case 'not_improved': return 'Not Improved';
+			case 'baseline': return localize('chipos.ppa.stage.baseline', "基线");
+			case 'eval_round': return localize('chipos.ppa.stage.eval', "评估");
+			case 'improved': return localize('chipos.ppa.stage.improved', "已改进 ✓");
+			case 'not_improved': return localize('chipos.ppa.stage.notImproved', "未改进");
 			default: return stage;
 		}
 	}

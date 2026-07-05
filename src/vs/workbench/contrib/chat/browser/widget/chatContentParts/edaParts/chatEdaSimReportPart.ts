@@ -5,6 +5,7 @@
 
 import * as dom from '../../../../../../../base/browser/dom.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
+import { localize } from '../../../../../../../nls.js';
 import { IChatEdaSimReport } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
 import { IChatContentPart } from '../chatContentParts.js';
@@ -49,7 +50,7 @@ export class ChatEdaSimReportContentPart extends Disposable implements IChatCont
 			}
 		}
 
-		this.domNode = edaSection('Simulation Report', table, summary);
+		this.domNode = edaSection(localize('chipos.simReport.title', "仿真结果"), table, summary);
 		this.domNode.classList.add('eda-sim-report');
 	}
 
