@@ -96,6 +96,12 @@ export interface TokenManagerDeps {
 	readLegacyToken?(): string | undefined;
 	/** Override the 5-min pre-expiry refresh margin (tests). */
 	readonly refreshMarginMs?: number;
+	/**
+	 * Skip the `/api/auth/me` call in initialize() (the CLI reads its user from the
+	 * stored blob and doesn't want a network round-trip gating every session start).
+	 * The 401-on-request → refresh path still validates the token when it's used.
+	 */
+	readonly skipUserRestore?: boolean;
 }
 
 /** base64url-correct JWT payload decode — works in browser (atob) and Node. */
@@ -164,7 +170,9 @@ export class AuthTokenManagerCore implements Disposable {
 			}
 			this._parseTokenExpiry(stored);
 			this._scheduleAutoRefresh();
-			await this.restoreUserFromServer();
+			if (!this._deps.skipUserRestore) {
+				await this.restoreUserFromServer();
+			}
 			this._logger?.info?.('[ChipOS Auth] Restored tokens from store, user:', this._user?.email ?? 'unknown');
 			return;
 		}
