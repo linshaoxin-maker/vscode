@@ -21,6 +21,7 @@ import { chatSubcommandLeader } from '../../../chat/common/requestParser/chatPar
 import { ChiposCommandsService } from '../resources/chiposCommandsService.js';
 import { ChiposPluginsService } from '../resources/chiposPluginsService.js';
 import { RESERVED_COMMANDS, RESERVED_NAMES } from './statelessInvoke/types.js';
+import { AI4EDA_WORKFLOWS } from '../cockpit/core/workflows.js';
 
 /**
  * ChipOS `/`-command completions. Adds a Cursor-style command picker popup when
@@ -116,6 +117,28 @@ export class ChipOSSlashCommandCompletions extends Disposable implements IWorkbe
 				insertText: reserved.takesArgs ? `${text} ` : text,
 				range,
 				kind: CompletionItemKind.Text,
+				sortText: String(order++).padStart(4, '0'),
+			});
+		}
+
+		// Audit F-10 (IDE leg): surface the AI4EDA workflows (/lint /sim /synth …) so
+		// they are DISCOVERABLE by typing `/` in the chat — the extension exposes them
+		// via a command + view-title button; the IDE's native chat surfaces them inline
+		// here (from the shared cockpit-core catalog, so the set never drifts).
+		for (const wf of AI4EDA_WORKFLOWS) {
+			const wfName = wf.command.slice(1); // drop the leading '/'
+			if (RESERVED_NAMES.has(wfName.toLowerCase())) {
+				continue; // reserved-wins (none today, but keep the invariant)
+			}
+			if (pattern && !isPatternInWord(pattern, 0, pattern.length, wfName, 0, wfName.length)) {
+				continue;
+			}
+			suggestions.push({
+				label: { label: wf.command, description: `${wf.label} · AI4EDA` },
+				filterText: wf.command,
+				insertText: `${wf.command} `,
+				range,
+				kind: CompletionItemKind.Event,
 				sortText: String(order++).padStart(4, '0'),
 			});
 		}
