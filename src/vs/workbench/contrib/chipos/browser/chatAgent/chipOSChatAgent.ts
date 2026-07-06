@@ -58,6 +58,7 @@ import { IChatSlashCommandService } from '../../../../contrib/chat/common/partic
 import { ChatAgentLocation } from '../../../../contrib/chat/common/constants.js';
 import type { IChatResponseModel, IChatModel, IChatProgressResponseContent } from '../../../../contrib/chat/common/model/chatModel.js';
 import { ChatModelToRecordsAdapter } from './statelessInvoke/chatModelAdapter.js';
+import { matchWorkflowCommand, evaluateWorkflowGate, probeWorkersConnected, type WorkflowGateVerdict } from './statelessInvoke/workflowGate.js';
 import { ConversationAssembler, ConversationAssemblyError } from './statelessInvoke/conversationAssembler.js';
 import { ConversationCompactor } from './statelessInvoke/conversationCompactor.js';
 import { applyCompactionCheckpoint, deriveCompactionCheckpoint, isCheckpointStale, type CompactionCheckpoint } from './statelessInvoke/compactionCheckpoint.js';
@@ -964,7 +965,44 @@ export class ChipOSChatAgent extends Disposable implements IChatAgentImplementat
 			};
 		}
 
+		// Audit F-6 (IDE leg): gate AI4EDA workflow dispatches (`/lint` `/sim` …) through
+		// the SHARED canonical decision the CLI + extension use, so a workflow fired at a
+		// reasoner with no online worker is stopped BEFORE the turn (tools time out → the
+		// model fabricates a report) rather than after. Only workflows are gated; ordinary
+		// chat passes straight through.
+		const workflowCommand = matchWorkflowCommand(request.message);
+		if (workflowCommand) {
+			const gate = await this._gateWorkflowDispatch(request.message);
+			if (gate?.block) {
+				return { errorDetails: { message: localize('chipos.workflow.gateBlocked', "{0}", gate.message) } };
+			}
+			if (gate?.ask) {
+				this._notificationService.warn(localize('chipos.workflow.noWorker', "{0}：当前无在线 worker，本轮可能因工具不可用而失败。", workflowCommand));
+			}
+		}
+
 		return this._invokeStateless(request, progress, _history, token);
+	}
+
+	/**
+	 * Audit F-6 (IDE leg): collect the preflight signals the IDE can observe (login state
+	 * + the probed remote worker-pool size) and run the SHARED gate decision. Best-effort:
+	 * a failed /health probe leaves the pool unknown, which the shared decision proceeds
+	 * on rather than reporting a false verdict. Returns null for non-workflow queries.
+	 */
+	private async _gateWorkflowDispatch(query: string): Promise<WorkflowGateVerdict | null> {
+		const baseUrl = resolveReasoningUrl(this._configurationService, this._productService);
+		const token = await this._tokenManager?.getAccessToken();
+		const remoteWorkers = await probeWorkersConnected(baseUrl, token);
+		return evaluateWorkflowGate(query, {
+			// The IDE surfaces transport / auth failures via its own stream-error + auth
+			// flows, so connectionState is assumed reachable here; this gate owns the
+			// login + worker-pool layers the invoke path can't otherwise foresee.
+			connectionState: 'connected',
+			loggedIn: this._tokenManager?.isLoggedIn() ?? true,
+			remoteWorkers,
+			approveMode: 'standard',
+		});
 	}
 
 	/**
