@@ -24,8 +24,8 @@ const $ = dom.$;
  * `build` drives the next agent round on the approved spec (spec→build loop).
  */
 const DEFAULT_SPEC_ACTIONS: ReadonlyArray<IChatEdaSpecReviewAction> = [
-	{ id: 'view', label: localize('chipos.specReview.view', "View Plan") },
-	{ id: 'regenerate', label: localize('chipos.specReview.regenerate', "Regenerate") },
+	{ id: 'view', label: localize('chipos.specReview.view', "查看方案") },
+	{ id: 'regenerate', label: localize('chipos.specReview.regenerate', "重新生成") },
 	{ id: 'build', label: localize('chipos.specReview.build', "Build") },
 ];
 

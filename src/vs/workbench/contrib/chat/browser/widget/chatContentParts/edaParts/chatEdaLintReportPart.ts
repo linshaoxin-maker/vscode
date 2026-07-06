@@ -32,11 +32,19 @@ export class ChatEdaLintReportContentPart extends Disposable implements IChatCon
 			e.severity,
 			e.message,
 			e.rule ?? '-',
-			e.auto_fixable ? 'Yes' : '-',
+			e.auto_fixable ? localize('chipos.lintReport.fixable.yes', "是") : '-',
 			'',
 		]);
 
-		const table = edaTable(['File', 'Line', 'Severity', 'Message', 'Rule', 'Fixable', ''], rows);
+		const table = edaTable([
+			localize('chipos.lintReport.col.file', "文件"),
+			localize('chipos.lintReport.col.line', "行"),
+			localize('chipos.lintReport.col.severity', "严重度"),
+			localize('chipos.lintReport.col.message', "信息"),
+			localize('chipos.lintReport.col.rule', "规则"),
+			localize('chipos.lintReport.col.fixable', "可修复"),
+			'',
+		], rows);
 
 		const bodyRows = table.querySelectorAll('tbody tr');
 		for (let i = 0; i < bodyRows.length; i++) {
@@ -54,7 +62,7 @@ export class ChatEdaLintReportContentPart extends Disposable implements IChatCon
 			const actionCell = cells[6];
 			if (error?.file) {
 				const { button, listener } = edaButton(
-					localize('chipos.lintReport.open', "Open"),
+					localize('chipos.lintReport.open', "打开"),
 					() => void edaOpenFile(this.editorService, error.file, error.line),
 				);
 				button.classList.add('eda-row-btn');
@@ -66,12 +74,12 @@ export class ChatEdaLintReportContentPart extends Disposable implements IChatCon
 		const children: HTMLElement[] = [table];
 
 		const summary = $('div.eda-summary');
-		summary.appendChild(edaSummaryRow('Total Issues', String(errors.length)));
+		summary.appendChild(edaSummaryRow(localize('chipos.lintReport.totalIssues', "问题总数"), String(errors.length)));
 		if (content.auto_fixable !== undefined) {
-			summary.appendChild(edaSummaryRow('Auto-fixable', String(content.auto_fixable)));
+			summary.appendChild(edaSummaryRow(localize('chipos.lintReport.autoFixable', "可自动修复"), String(content.auto_fixable)));
 		}
 		if (content.tool) {
-			summary.appendChild(edaSummaryRow('Tool', content.tool));
+			summary.appendChild(edaSummaryRow(localize('chipos.lintReport.tool', "工具"), content.tool));
 		}
 		children.push(summary);
 
@@ -85,7 +93,7 @@ export class ChatEdaLintReportContentPart extends Disposable implements IChatCon
 			const header = this.domNode.querySelector('.eda-section-title');
 			if (header) {
 				const { button, listener } = edaButton(
-					localize('chipos.lintReport.openFile', "Open File"),
+					localize('chipos.lintReport.openFile', "打开文件"),
 					() => void edaOpenFile(this.editorService, lintFile),
 				);
 				button.classList.add('eda-header-btn');

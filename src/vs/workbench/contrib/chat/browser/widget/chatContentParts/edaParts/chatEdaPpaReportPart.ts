@@ -56,7 +56,7 @@ export class ChatEdaPpaReportContentPart extends Disposable implements IChatCont
 		const header = $('div.eda-ppa-header');
 		header.appendChild(stageBadge);
 		if (content.round !== undefined) {
-			header.appendChild($('span.eda-ppa-round', undefined, `Round ${content.round}`));
+			header.appendChild($('span.eda-ppa-round', undefined, localize('chipos.ppa.round', "轮次 {0}", content.round)));
 		}
 		if (content.strategy) {
 			header.appendChild($('span.eda-ppa-strategy', undefined, content.strategy));
@@ -66,15 +66,15 @@ export class ChatEdaPpaReportContentPart extends Disposable implements IChatCont
 		// PPA comparison table
 		const rows: string[][] = [];
 		if (content.stage === 'baseline') {
-			rows.push(metricsRow('Baseline', content.ppa));
+			rows.push(metricsRow(localize('chipos.ppa.row.baseline', "基线"), content.ppa));
 		} else {
-			rows.push(metricsRow('Baseline', content.baseline_ppa));
+			rows.push(metricsRow(localize('chipos.ppa.row.baseline2', "基线"), content.baseline_ppa));
 			if (content.previous_best_ppa) {
-				rows.push(metricsRow('Previous Best', content.previous_best_ppa));
+				rows.push(metricsRow(localize('chipos.ppa.row.prevBest', "前最优"), content.previous_best_ppa));
 			}
-			rows.push(metricsRow('Current', content.current_ppa ?? content.ppa));
+			rows.push(metricsRow(localize('chipos.ppa.row.current', "当前"), content.current_ppa ?? content.ppa));
 			if (content.best_ppa) {
-				rows.push(metricsRow('Best', content.best_ppa));
+				rows.push(metricsRow(localize('chipos.ppa.row.best', "最优"), content.best_ppa));
 			}
 		}
 		const table = edaTable(['', 'Area', 'Delay', 'Power'], rows);

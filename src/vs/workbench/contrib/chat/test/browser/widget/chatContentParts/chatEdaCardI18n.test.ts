@@ -72,3 +72,63 @@ suite('ChatEda card i18n titles + PPA improvement %', () => {
 		assert.ok(!text.includes('830'), `must NOT show 830% (the ×100 bug): "${text}"`);
 	});
 });
+suite('ChatEda card column headers + summary labels i18n (Track-3 列头轮)', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+	const editorService = { openEditor: async () => undefined } as unknown as IEditorService;
+	const commandService = {
+		executeCommand: async () => undefined,
+		onWillExecuteCommand: () => ({ dispose() { } }),
+		onDidExecuteCommand: () => ({ dispose() { } }),
+	} as unknown as ICommandService;
+	const textsOf = (node: HTMLElement, sel: string): string =>
+		Array.from(node.querySelectorAll(sel)).map(el => el.textContent ?? '').join('|');
+
+	test('sim report: 列头 测试/状态/信息/耗时 + 摘要 总数/通过', () => {
+		const part = store.add(new ChatEdaSimReportContentPart(
+			{ tests: [{ name: 'tb_add', status: 'pass' }], summary: { total: 1, passed: 1, failed: 0 } } as unknown as IChatEdaSimReport));
+		const ths = textsOf(part.domNode, 'th');
+		for (const h of ['测试', '状态', '信息', '耗时']) {
+			assert.ok(ths.includes(h), `th missing ${h}: "${ths}"`);
+		}
+		const summary = textsOf(part.domNode, '.eda-summary-label');
+		assert.ok(summary.includes('总数') && summary.includes('通过'), `summary: "${summary}"`);
+	});
+
+	test('lint report: 列头 文件/严重度/规则/可修复 + 可修复行「是」+ 摘要 问题总数', () => {
+		const part = store.add(new ChatEdaLintReportContentPart(
+			{
+				errors: [{ file: 'alu.v', line: 3, severity: 'warning', message: 'w', rule: 'R1', auto_fixable: true }],
+				auto_fixable: 1,
+			} as unknown as IChatEdaLintReport, editorService));
+		const ths = textsOf(part.domNode, 'th');
+		for (const h of ['文件', '严重度', '规则', '可修复']) {
+			assert.ok(ths.includes(h), `th missing ${h}: "${ths}"`);
+		}
+		assert.ok(textsOf(part.domNode, 'td').includes('是'), 'fixable cell should render 是');
+		assert.ok(textsOf(part.domNode, '.eda-summary-label').includes('问题总数'), 'summary label 问题总数');
+	});
+
+	test('coverage report: 指标标签 行覆盖/分支覆盖 + 目标行 + gap 列头', () => {
+		const part = store.add(new ChatEdaCoverageReportContentPart(
+			{ line_cov: 92, branch_cov: 75, target: 90, gaps: [{ file: 'alu.v', lines: '12-18', type: 'branch' }] } as unknown as IChatEdaCoverageReport));
+		const labels = textsOf(part.domNode, '.eda-summary-label');
+		assert.ok(labels.includes('行覆盖') && labels.includes('分支覆盖'), `labels: "${labels}"`);
+		assert.ok((part.domNode.textContent ?? '').includes('目标: 90%'), 'target line localized');
+		const ths = textsOf(part.domNode, 'th');
+		for (const h of ['文件', '行范围', '类型']) {
+			assert.ok(ths.includes(h), `th missing ${h}: "${ths}"`);
+		}
+	});
+
+	test('ppa report: 行标签 基线/当前 + 轮次 徽记', () => {
+		const part = store.add(new ChatEdaPpaReportContentPart(
+			{
+				stage: 'eval_round', round: 2,
+				baseline_ppa: { area: 120, delay_ns: 2.4, power_w: 0.5 },
+				current_ppa: { area: 110, delay_ns: 2.2, power_w: 0.45 },
+			} as unknown as IChatEdaPpaReport, commandService));
+		const text = part.domNode.textContent ?? '';
+		assert.ok(text.includes('基线') && text.includes('当前'), `rows: ${text.slice(0, 120)}`);
+		assert.ok(text.includes('轮次 2'), 'Round → 轮次');
+	});
+});

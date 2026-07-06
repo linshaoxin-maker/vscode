@@ -36,7 +36,7 @@ export class ChatChiposTodoCardContentPart extends Disposable implements IChatCo
 		const header = dom.append(this.domNode, dom.$('.chipos-todo-card-header'));
 		dom.append(header, dom.$('.codicon.codicon-checklist'));
 		const titleEl = dom.append(header, dom.$('.chipos-todo-card-title'));
-		titleEl.textContent = localize('chipos.todoCard.title', "Tasks");
+		titleEl.textContent = localize('chipos.todoCard.title', "任务清单");
 		const countEl = dom.append(header, dom.$('.chipos-todo-card-count'));
 		countEl.textContent = `${completed}/${todos.length}`;
 

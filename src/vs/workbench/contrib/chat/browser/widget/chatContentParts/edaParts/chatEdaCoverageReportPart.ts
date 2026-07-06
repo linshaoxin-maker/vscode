@@ -49,25 +49,29 @@ export class ChatEdaCoverageReportContentPart extends Disposable implements ICha
 		// IDE's progress bar. Mirrors vscode-extension reportCards.js:53 (overall /
 		// line / branch / toggle four-row table) while keeping the IDE bar.
 		if (typeof content.overall_cov === 'number') {
-			metrics.appendChild(this._metricRow('Overall Coverage', content.overall_cov));
+			metrics.appendChild(this._metricRow(localize('chipos.coverage.overall', "总体覆盖"), content.overall_cov));
 		}
-		metrics.appendChild(this._metricRow('Line Coverage', content.line_cov));
-		metrics.appendChild(this._metricRow('Branch Coverage', content.branch_cov));
+		metrics.appendChild(this._metricRow(localize('chipos.coverage.line', "行覆盖"), content.line_cov));
+		metrics.appendChild(this._metricRow(localize('chipos.coverage.branch', "分支覆盖"), content.branch_cov));
 		if (typeof content.toggle_cov === 'number') {
-			metrics.appendChild(this._metricRow('Toggle Coverage', content.toggle_cov));
+			metrics.appendChild(this._metricRow(localize('chipos.coverage.toggle', "翻转覆盖"), content.toggle_cov));
 		}
 
 		const children: HTMLElement[] = [metrics];
 
 		if (typeof content.target === 'number') {
 			const targetEl = $('div.eda-coverage-target');
-			targetEl.textContent = `Target: ${toPercent(content.target).toFixed(0)}%`;
+			targetEl.textContent = localize('chipos.coverage.target', "目标: {0}%", toPercent(content.target).toFixed(0));
 			children.push(targetEl);
 		}
 
 		if (content.gaps && content.gaps.length > 0) {
 			const rows = content.gaps.map(g => [g.file, g.lines, g.type ?? '-']);
-			children.push(edaTable(['File', 'Lines', 'Type'], rows));
+			children.push(edaTable([
+				localize('chipos.coverage.col.file', "文件"),
+				localize('chipos.coverage.col.lines', "行范围"),
+				localize('chipos.coverage.col.type', "类型"),
+			], rows));
 		}
 
 		this.domNode = edaSection(localize('chipos.coverageReport.title', "覆盖率报告"), ...children);
