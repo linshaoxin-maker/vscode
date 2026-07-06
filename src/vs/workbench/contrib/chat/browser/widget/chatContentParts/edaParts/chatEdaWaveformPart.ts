@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as dom from '../../../../../../../base/browser/dom.js';
+import { createTrustedTypesPolicy } from '../../../../../../../base/browser/trustedTypes.js';
 import { Disposable } from '../../../../../../../base/common/lifecycle.js';
 import { IChatEdaWaveform } from '../../../../common/chatService/chatService.js';
 import { IChatRendererContent } from '../../../../common/model/chatViewModel.js';
@@ -12,6 +13,20 @@ import { buildWaveformSvg } from './waveformSvg.js';
 import '../media/edaParts.css';
 
 const $ = dom.$;
+
+/**
+ * The waveform SVG is produced by our own {@link buildWaveformSvg} (never user
+ * input), so blessing it through a trusted-types policy is the sanctioned way to
+ * assign it as `innerHTML`. `DOMParser().parseFromString` is NOT a viable
+ * alternative here: under the workbench's `require-trusted-types-for` policy it
+ * throws `This document requires 'TrustedHTML' assignment`, which silently broke
+ * every waveform card (caught by a real IDE→prod render, 2026-07-06).
+ */
+const _waveformSvgPolicy = createTrustedTypesPolicy('chiposWaveformSvg', {
+	createHTML(html: string) {
+		return html;
+	}
+});
 
 /**
  * Inline GRAPHICAL waveform card (P6). Renders the reasoner's `waveform` /
@@ -45,14 +60,13 @@ export class ChatEdaWaveformContentPart extends Disposable implements IChatConte
 		}
 		this.domNode.appendChild(header);
 
-		// Body: the inline SVG. Parse + importNode (trusted-types safe — no innerHTML).
+		// Body: the inline SVG. Assign the `<svg>…</svg>` string via the trusted-
+		// types policy — the browser parses a root <svg> in HTML context into the
+		// SVG namespace, so an inline waveform renders without `DOMParser` (which
+		// the workbench's trusted-types CSP rejects — see policy note above).
 		const body = $('.cw-body');
 		const svg = buildWaveformSvg(this._data);
-		const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
-		const el = doc.documentElement;
-		if (el && el.nodeName.toLowerCase() === 'svg') {
-			body.appendChild(document.importNode(el, true));
-		}
+		body.innerHTML = (_waveformSvgPolicy?.createHTML(svg) ?? svg) as unknown as string;
 		this.domNode.appendChild(body);
 	}
 
