@@ -29,7 +29,12 @@ export class ChatEdaSimReportContentPart extends Disposable implements IChatCont
 			t.duration_ms !== undefined ? `${t.duration_ms}ms` : '-',
 		]);
 
-		const table = edaTable(['Test', 'Status', 'Message', 'Duration'], rows);
+		const table = edaTable([
+			localize('chipos.simReport.col.test', "测试"),
+			localize('chipos.simReport.col.status', "状态"),
+			localize('chipos.simReport.col.message', "信息"),
+			localize('chipos.simReport.col.duration', "耗时"),
+		], rows);
 
 		for (let i = 0; i < table.querySelectorAll('tbody tr').length; i++) {
 			const tr = table.querySelectorAll('tbody tr')[i];
@@ -42,11 +47,11 @@ export class ChatEdaSimReportContentPart extends Disposable implements IChatCont
 		const summary = $('div.eda-summary');
 		if (content.summary) {
 			const s = content.summary;
-			summary.appendChild(edaSummaryRow('Total', String(s.total)));
-			summary.appendChild(edaSummaryRow('Passed', String(s.passed)));
-			summary.appendChild(edaSummaryRow('Failed', String(s.failed)));
+			summary.appendChild(edaSummaryRow(localize('chipos.simReport.total', "总数"), String(s.total)));
+			summary.appendChild(edaSummaryRow(localize('chipos.simReport.passed', "通过"), String(s.passed)));
+			summary.appendChild(edaSummaryRow(localize('chipos.simReport.failed', "失败"), String(s.failed)));
 			if (s.errors !== undefined) {
-				summary.appendChild(edaSummaryRow('Errors', String(s.errors)));
+				summary.appendChild(edaSummaryRow(localize('chipos.simReport.errors', "错误"), String(s.errors)));
 			}
 		}
 
