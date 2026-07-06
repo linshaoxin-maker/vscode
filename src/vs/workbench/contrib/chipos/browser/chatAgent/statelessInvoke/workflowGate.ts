@@ -18,6 +18,8 @@
  */
 
 import { decideWorkflowPreflight, type PreflightSignals, type PreflightReason } from './vendor/workflow/preflight.js';
+import { type ReadinessInput } from './vendor/workflow/readiness.js';
+import { formatReadinessLines } from './readinessDisplay.js';
 
 /**
  * The 7 canonical AI4EDA workflow commands (mirrors packages/cockpit-core AI4EDA_WORKFLOWS
@@ -55,7 +57,7 @@ export interface WorkflowGateVerdict {
  * gate never touches ordinary chat). With `remoteWorkers` in the signals, `ask` fires only
  * when the pool is empty — so a ready dispatch is never interrupted.
  */
-export function evaluateWorkflowGate(query: string, signals: PreflightSignals): WorkflowGateVerdict | null {
+export function evaluateWorkflowGate(query: string, signals: PreflightSignals, now: number = Date.now()): WorkflowGateVerdict | null {
 	const command = matchWorkflowCommand(query);
 	if (!command) {
 		return null;
@@ -68,7 +70,28 @@ export function evaluateWorkflowGate(query: string, signals: PreflightSignals): 
 		block,
 		ask,
 		reason: decision.reason,
-		message: block ? blockMessage(command, decision.reason) : ask ? askMessage(command) : '',
+		// On a hard BLOCK, append the five-layer breakdown (audit F-6 display) so the user
+		// sees WHICH layer failed — rendered from the SAME shared model the CLI /status and
+		// the extension render, single-sourced. The concise top line stays the actionable ask.
+		message: block ? `${blockMessage(command, decision.reason)}\n\n${formatReadinessLines(signalsToReadinessInput(signals), now).join('\n')}`
+			: ask ? askMessage(command) : '',
+	};
+}
+
+/**
+ * Map the gate's preflight signals onto the readiness-display input (remoteWorkers → poolCount).
+ * Capability is intentionally NOT forwarded: `PreflightSignals.capability` is a bare state STRING
+ * whereas the display's `ReadinessInput.capability` is the richer `{state, bound, genericCount,
+ * total}` object — different shapes. The invoke-chokepoint gate only ever supplies the
+ * connection / identity / worker-pool layers anyway (it has no registry assessment), so L4 stays
+ * unassessed and the display omits that row rather than mis-rendering a string as an object.
+ */
+function signalsToReadinessInput(s: PreflightSignals): ReadinessInput {
+	return {
+		connectionState: s.connectionState,
+		authFailed: s.authFailed,
+		loggedIn: s.loggedIn,
+		poolCount: s.remoteWorkers,
 	};
 }
 
