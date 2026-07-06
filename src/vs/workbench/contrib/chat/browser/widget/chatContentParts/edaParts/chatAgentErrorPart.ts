@@ -40,7 +40,7 @@ export class ChatAgentErrorContentPart extends Disposable implements IChatConten
 
 		const msgEl = dom.append(this.domNode, dom.$('.chat-agent-error-message'));
 		msgEl.textContent = isAuthFailure
-			? localize('chipos.error.auth.message', "Not signed in or your session has expired. Please log in to continue.")
+			? localize('chipos.error.auth.message', "未登录或会话已过期,请登录后继续。")
 			: message;
 
 		if (suggestion && !isAuthFailure) {
@@ -55,7 +55,7 @@ export class ChatAgentErrorContentPart extends Disposable implements IChatConten
 			const btnContainer = dom.append(this.domNode, dom.$('.chat-agent-error-actions'));
 			const loginBtn = dom.append(btnContainer, dom.$<HTMLButtonElement>('button.chat-agent-error-retry'));
 			loginBtn.type = 'button';
-			loginBtn.textContent = localize('chipos.error.login', "Log In");
+			loginBtn.textContent = localize('chipos.error.login', "登录");
 
 			this._register(dom.addDisposableListener(loginBtn, 'click', () => {
 				if (loginBtn.disabled) {
