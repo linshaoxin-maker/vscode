@@ -38,7 +38,7 @@ suite('shouldRecycleWorker', () => {
 	const decide = (snap: Parameters<typeof shouldRecycleWorker>[0], t?: Parameters<typeof shouldRecycleWorker>[1]): 'recycle' | null =>
 		shouldRecycleWorker(snap, t) === null ? null : 'recycle';
 
-	test('recycles old/idle or churned/idle; never a busy worker; honours disable knobs', () => {
+	test('recycles old/idle, churned/idle or stdio-exhausted/idle; never a busy worker; honours disable knobs', () => {
 		assert.deepStrictEqual(
 			[
 				decide({ uptimeMs: 5 * 3600_000, runningTasks: 0 }, T),                        // old + idle → uptime
@@ -47,21 +47,26 @@ suite('shouldRecycleWorker', () => {
 				decide({ uptimeMs: 60_000, runningTasks: 0, disconnectCount: 25 }, T),         // churned + idle → disconnect
 				decide({ uptimeMs: 60_000, runningTasks: 0, disconnectCount: 5 }, T),          // under disconnect threshold
 				decide({ uptimeMs: 60_000, runningTasks: 0 }, T),                              // missing count → treated as 0
+				decide({ uptimeMs: 68 * 60_000, runningTasks: 0, disconnectCount: 0, mcpStdioExhaustedCount: 1 }, T), // ①c live mode: young + 0 disconnects + exhausted → recycle
+				decide({ uptimeMs: 60_000, runningTasks: 1, mcpStdioExhaustedCount: 9 }, T),   // exhausted but busy (idle gate)
+				decide({ uptimeMs: 60_000, runningTasks: 0, disconnectCount: 0 }, T),          // missing exhausted count → treated as 0
 				decide({ uptimeMs: 99 * 3600_000, runningTasks: 0 }, { maxUptimeMs: 0, maxDisconnectCount: 20 }),                  // uptime disabled
 				decide({ uptimeMs: 60_000, runningTasks: 0, disconnectCount: 999 }, { maxUptimeMs: 4 * 3600_000, maxDisconnectCount: 0 }), // disconnect disabled
+				decide({ uptimeMs: 60_000, runningTasks: 0, mcpStdioExhaustedCount: 9 }, { maxMcpStdioExhausted: 0 }),             // stdio-exhaustion disabled
 			],
-			['recycle', null, null, 'recycle', null, null, null, null],
+			['recycle', null, null, 'recycle', null, null, 'recycle', null, null, null, null, null],
 		);
 	});
 
-	test('default thresholds: 4h uptime / 20 reconnects', () => {
+	test('default thresholds: 4h uptime / 20 reconnects / 1 stdio-exhaustion', () => {
 		assert.deepStrictEqual(
 			{
 				youngIdle: shouldRecycleWorker({ uptimeMs: 60_000, runningTasks: 0 }),
 				old: shouldRecycleWorker({ uptimeMs: 5 * 3600_000, runningTasks: 0 }) !== null,
 				churned: shouldRecycleWorker({ uptimeMs: 60_000, runningTasks: 0, disconnectCount: 20 }) !== null,
+				stdioExhausted: shouldRecycleWorker({ uptimeMs: 60_000, runningTasks: 0, mcpStdioExhaustedCount: 1 }) !== null,
 			},
-			{ youngIdle: null, old: true, churned: true },
+			{ youngIdle: null, old: true, churned: true, stdioExhausted: true },
 		);
 	});
 });

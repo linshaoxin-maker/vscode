@@ -854,6 +854,7 @@ export class SidecarManagerElectron extends Disposable implements ISidecarManage
 					uptimeMs: uptimeSec * 1000,
 					runningTasks: typeof j.running_tasks_count === 'number' ? j.running_tasks_count : 0,
 					disconnectCount: typeof j.disconnect_count === 'number' ? j.disconnect_count : undefined,
+					mcpStdioExhaustedCount: typeof j.mcp_stdio_exhausted_count === 'number' ? j.mcp_stdio_exhausted_count : undefined,
 				};
 			} finally {
 				clearTimeout(timer);

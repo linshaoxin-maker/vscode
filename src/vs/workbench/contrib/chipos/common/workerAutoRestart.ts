@@ -68,6 +68,12 @@ export interface IWorkerHealthSnapshot {
 	readonly runningTasks: number;
 	/** Cumulative gRPC disconnects; undefined on older worker binaries. */
 	readonly disconnectCount?: number;
+	/**
+	 * Cumulative MCP-stdio create_session exhaustions (①c); undefined on older
+	 * worker binaries. >=1 ⟹ the worker's async loop has decayed past the mcp_loader
+	 * retry's reach — recycle even when uptime/disconnects look healthy.
+	 */
+	readonly mcpStdioExhaustedCount?: number;
 }
 
 export interface IWorkerRecycleThresholds {
@@ -75,12 +81,15 @@ export interface IWorkerRecycleThresholds {
 	readonly maxUptimeMs?: number;
 	/** Recycle once disconnectCount crosses this. <=0 disables. Default 20. */
 	readonly maxDisconnectCount?: number;
+	/** Recycle once mcpStdioExhaustedCount crosses this. <=0 disables. Default 1. */
+	readonly maxMcpStdioExhausted?: number;
 }
 
-/** Default thresholds: 4h uptime / 20 reconnects (match CLI + extension). */
+/** Default thresholds: 4h uptime / 20 reconnects / 1 stdio-exhaustion (match CLI + extension). */
 export const DEFAULT_WORKER_RECYCLE_THRESHOLDS: Required<IWorkerRecycleThresholds> = {
 	maxUptimeMs: 4 * 60 * 60 * 1000,
 	maxDisconnectCount: 20,
+	maxMcpStdioExhausted: 1,
 };
 
 /**
@@ -92,8 +101,16 @@ export const DEFAULT_WORKER_RECYCLE_THRESHOLDS: Required<IWorkerRecycleThreshold
 export function shouldRecycleWorker(snap: IWorkerHealthSnapshot, thresholds?: IWorkerRecycleThresholds): string | null {
 	const maxUptimeMs = thresholds?.maxUptimeMs ?? DEFAULT_WORKER_RECYCLE_THRESHOLDS.maxUptimeMs;
 	const maxDisconnectCount = thresholds?.maxDisconnectCount ?? DEFAULT_WORKER_RECYCLE_THRESHOLDS.maxDisconnectCount;
+	const maxMcpStdioExhausted = thresholds?.maxMcpStdioExhausted ?? DEFAULT_WORKER_RECYCLE_THRESHOLDS.maxMcpStdioExhausted;
 	if (snap.runningTasks > 0) {
 		return null;
+	}
+	// ①c: MCP-stdio degradation is the strongest, most actionable signal — the
+	// worker self-reports its create_session retry EXHAUSTED, so the async loop is
+	// already broken. Churn-driven decay trips this with uptime < 4h AND
+	// disconnectCount 0 (both other gates blind), so check it first.
+	if (maxMcpStdioExhausted > 0 && (snap.mcpStdioExhaustedCount ?? 0) >= maxMcpStdioExhausted) {
+		return `mcp-stdio exhausted ${snap.mcpStdioExhaustedCount} >= ${maxMcpStdioExhausted}`;
 	}
 	if (maxUptimeMs > 0 && snap.uptimeMs >= maxUptimeMs) {
 		return `uptime ${Math.round(snap.uptimeMs / 60_000)}min >= ${Math.round(maxUptimeMs / 60_000)}min`;
