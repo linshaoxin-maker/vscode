@@ -30,16 +30,28 @@ export interface McpToolCallResult {
 
 /**
  * Map user-installed MCP server tools (VS Code IMcpService) to the Phase-1
- * `ToolDefinition` shape, tagged `ide_mcp`. Each tool's parsed JSON Schema is
- * passed through (empty object schema when absent) and a missing description
- * becomes the empty string — matching what the reasoner catalog expects.
+ * `ToolDefinition` shape, tagged `ide_mcp`. A missing description becomes the empty
+ * string, and the parsed JSON Schema is shallow-cloned through (empty object schema
+ * when absent or non-object), so a later catalog pass that mutates `input_schema`
+ * can't corrupt the source.
+ *
+ * PARITY PAIR with `@chipos/mcp-client` `src/mapping.ts` `toIdeMcpToolDef` (which
+ * the CLI + extension consume). The IDE keeps VS Code's native IMcpService for MCP
+ * discovery/connection, so it reuses ONLY this mapping's logic — kept
+ * behaviourally identical and pinned by matching unit tests (this dir's
+ * `ideToolCatalog.test.ts` ↔ `packages/mcp-client/test/transport.test.ts`).
+ * Design: docs/plan/surface-unification/21-MCP-CLIENT-REGISTRATION-UNIFICATION-2026-07-05.md (P5).
  */
 export function buildIdeMcpTools(mcpTools: ReadonlyArray<IdeMcpToolInfo>): ToolDefinition[] {
 	return mcpTools.map(tool => ({
 		name: tool.name,
 		description: tool.description || '',
-		// IMcpService delivers a parsed JSON Schema dict already.
-		input_schema: (tool.inputSchema as Record<string, unknown>) || { type: 'object', properties: {} },
+		// IMcpService delivers a parsed JSON Schema dict; shallow-clone with an empty
+		// object schema fallback (mirrors the shared mapping's clone + array guard).
+		input_schema:
+			tool.inputSchema && typeof tool.inputSchema === 'object' && !Array.isArray(tool.inputSchema)
+				? { ...(tool.inputSchema as Record<string, unknown>) }
+				: { type: 'object', properties: {} },
 		chipos_source: 'ide_mcp',
 	}));
 }

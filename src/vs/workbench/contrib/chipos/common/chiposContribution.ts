@@ -62,6 +62,8 @@ import { OPEN_PPA_DETAIL_COMMAND_ID, PpaDetailPanel } from '../../../../workbenc
 import { IPpaSnapshot, IPpaStorageService } from '../../../../workbench/contrib/chipos/browser/ppa/ppaStorageService.js';
 import { AgentsWorkflowViewPane, AGENTS_WORKFLOW_VIEW_ID } from '../../../../workbench/contrib/chipos/browser/agents/agentsWorkflowView.js';
 import { IAgentActivityStore } from '../../../../workbench/contrib/chipos/browser/agents/agentActivityStore.js';
+import { CockpitViewPane, COCKPIT_VIEW_ID } from '../../../../workbench/contrib/chipos/browser/cockpit/cockpitView.js';
+import { VIEW_CONTAINER as EXPLORER_VIEW_CONTAINER } from '../../../../workbench/contrib/files/browser/explorerViewlet.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
@@ -1062,6 +1064,7 @@ class ChipOSContribution extends Disposable {
 		this._registerWorkerToolsView();
 		this._registerModuleHierarchyView();
 		this._registerAgentsWorkflowView();
+		this._registerCockpitView();
 		// Phase 6: Runs / Timing-PPA / Agents are surfaced as live status-bar
 		// pills + chat-card buttons + detail editor tabs (not auxiliary-bar
 		// tree views that fight the Chat panel). Wire the detail editors and the
@@ -1537,6 +1540,33 @@ class ChipOSContribution extends Disposable {
 		}));
 
 		this._logService.info('[ChipOS] Agents workflow view registered');
+	}
+
+	/**
+	 * The EDA cockpit panel — a persistent FLOW / PPA / PLAN / ARTIFACTS overview
+	 * painted from the shared @chipos/cockpit-core view-model (the same core the
+	 * CLI paints as a right rail). Unlike the chat-fighting auxiliary-bar views,
+	 * this is registered into the LEFT Explorer container (alongside Outline /
+	 * Timeline), with a high order so it sits at the bottom. The chat agent feeds
+	 * the cockpit store the same wire events; this view re-renders live from it.
+	 */
+	private _registerCockpitView(): void {
+		viewsRegistry.registerViews([{
+			id: COCKPIT_VIEW_ID,
+			name: { value: localize('chiposCockpit', 'EDA Cockpit'), original: 'EDA Cockpit' },
+			ctorDescriptor: new SyncDescriptor(CockpitViewPane),
+			canToggleVisibility: true,
+			canMoveView: true,
+			collapsed: true,
+			order: 100,
+			hideByDefault: false,
+		} as IViewDescriptor], EXPLORER_VIEW_CONTAINER);
+
+		this._register(CommandsRegistry.registerCommand('chipos.cockpit.open', async () => {
+			await this._viewsService.openView(COCKPIT_VIEW_ID, true);
+		}));
+
+		this._logService.info('[ChipOS] EDA cockpit view registered (Explorer)');
 	}
 
 	/**

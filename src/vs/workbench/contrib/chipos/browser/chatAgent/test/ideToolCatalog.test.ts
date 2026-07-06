@@ -32,6 +32,20 @@ suite('ideToolCatalog', () => {
 		test('empty input → empty catalog', () => {
 			assert.deepStrictEqual(buildIdeMcpTools([]), []);
 		});
+
+		// Parity with @chipos/mcp-client toIdeMcpToolDef (21-mcp-unification P5):
+		// the shared mapping shallow-clones the schema + guards non-object schemas.
+		test('shallow-clones the schema so a later mutation cannot corrupt the source', () => {
+			const src = { type: 'object', properties: { x: {} } };
+			const out = buildIdeMcpTools([{ name: 'c', description: 'x', inputSchema: src }]);
+			(out[0].input_schema as Record<string, unknown>).properties = 'MUTATED';
+			assert.deepStrictEqual(src.properties, { x: {} });
+		});
+
+		test('a non-object (array) schema falls back to an empty object schema', () => {
+			const out = buildIdeMcpTools([{ name: 'arr', inputSchema: [1, 2, 3] }]);
+			assert.deepStrictEqual(out[0].input_schema, { type: 'object', properties: {} });
+		});
 	});
 
 	suite('shapeMcpToolResult', () => {
